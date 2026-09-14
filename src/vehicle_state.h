@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <stdint.h>
 
 enum class Gear : uint8_t {
@@ -10,7 +10,7 @@ struct VehicleState {
   float rpm = 0;
   float coolant_c = 20;
   float fuel_pct = 75;
-  Gear gear = Gear::P;
+  Gear gear = Gear::P;  // 屏不显示挡位（原表负责），字段保留给将来逻辑
   bool ign = true;
 };
 

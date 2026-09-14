@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "vehicle_state.h"
 
 enum class Face : uint8_t {
   Idle = 0,

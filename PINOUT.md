@@ -1,6 +1,6 @@
-﻿# 引脚
+# 引脚
 
-ESP32 型号：（待填）
+ESP32 型号：（待填，建议 ESP32-S3 N16R8）
 屏型号：（待填）
 
 功能        GPIO
@@ -8,5 +8,7 @@ ESP32 型号：（待填）
 屏 DC
 屏 RST
 背光
-OBD RX
-OBD TX
+K 线 OBD TX（ELM327）
+K 线 OBD RX（ELM327）
+VAN RX（SN65HVD230）
+VAN TX（SN65HVD230）

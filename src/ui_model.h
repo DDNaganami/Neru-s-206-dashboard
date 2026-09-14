@@ -5,7 +5,6 @@
 struct ArcDashView {
   float speed_t;
   float rpm_t;
-  Gear gear;
   float coolant_c;
   float fuel_pct;
   uint8_t center_mode;
@@ -22,7 +21,6 @@ inline ArcDashView make_view(const VehicleState& s, uint32_t now_ms) {
   if (v.rpm_t < 0) v.rpm_t = 0;
   if (v.rpm_t > 1) v.rpm_t = 1;
 
-  v.gear = s.gear;
   v.coolant_c = s.coolant_c;
   v.fuel_pct = s.fuel_pct;
   v.center_mode = 1;
