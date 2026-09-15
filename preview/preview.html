@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>206 dash 预览</title>
+<style>
+  body { background: #111; color: #ddd; font-family: monospace; margin: 24px; }
+  .row { display: flex; gap: 32px; align-items: flex-start; }
+  figure { margin: 0; text-align: center; }
+  img { width: 480px; height: 480px; background: #000; }
+  figcaption { margin-top: 8px; }
+  .hint { margin-top: 16px; color: #888; }
+</style>
+</head>
+<body>
+<h2>206 dash 预览(帧由 LVGL 在宿主机渲染,与真屏同一套 UI 代码)</h2>
+<div class="row">
+  <figure><img id="l" alt="左屏"><figcaption>左屏:车速弧 + 水温弧 + 表情</figcaption></figure>
+  <figure><img id="r" alt="右屏"><figcaption>右屏:转速弧 + 表情</figcaption></figure>
+</div>
+<p class="hint">
+  用法:先在项目里跑 python -m platformio run -e pcpreview -t exec,几秒后
+  Ctrl+C,再打开本页。frames/ 里最多 150 对帧(30 秒,5fps),循环播放。
+</p>
+<script>
+  const l = document.getElementById('l'), r = document.getElementById('r');
+  const N = 150;
+  let i = 0;
+  function tick() {
+    const idx = String(i).padStart(4, '0');
+    l.src = 'frames/l_' + idx + '.bmp';
+    r.src = 'frames/r_' + idx + '.bmp';
+    i = (i + 1) % N;
+    setTimeout(tick, 200);
+  }
+  tick();
+</script>
+</body>
+</html>

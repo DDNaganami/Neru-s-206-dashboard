@@ -7,3 +7,5 @@
 void dash_display_init();
 lv_display_t* dash_display_left();
 lv_display_t* dash_display_right();
+// 每个主循环调一次:设备上为空;pcpreview 里落 BMP 帧(见 preview/preview.html)
+void dash_display_poll();

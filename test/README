@@ -1,11 +1,22 @@
 
-This directory is intended for PlatformIO Test Runner and project tests.
+宿主机单元测试（不烧板、不需要真屏）。
 
-Unit Testing is a software testing method by which individual units of
-source code, sets of one or more MCU program modules together with associated
-control data, usage procedures, and operating procedures, are tested to
-determine whether they are fit for use. Unit testing finds problems early
-in the development cycle.
+结构：每个以 test_ 开头的子目录 = 一个测试程序，
+目录内所有 .cpp 编进同一个可执行文件，其中必须有且只有一个 main()。
+当前只有一个测试程序 test_dashcore/，覆盖 lib/dashcore 纯逻辑层：
+- test_obd_protocol：ELM327 文本行解析（含 0105 单字节回归用例）
+- test_obd_source：假串口驱动初始化/轮询状态机、坏帧钳制
+- test_van_source：VAN 帧解析、钳制、configureSpeedFrame
+- test_data_service：多源优先级、3 秒超时回退、按字段独立回退
+- test_expression：基础表情、眨眼、急加速惊喜（时间归一阈值）
+- arduino_shim/Arduino.h：Arduino API 最小桩，仅测试构建用
 
-More information about PlatformIO Unit Testing:
-- https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
+跑法（和固件构建一样要纯 ASCII 路径，见 ARCHITECTURE.md 构建注意）：
+
+    $env:PYTHONPATH = "<工作区>\.pio-pylibs"
+    $env:PLATFORMIO_CORE_DIR = "C:\Users\Public\206dash\.pio-core"
+    python -m platformio test -e native
+
+本机没有宿主机 gcc：先装 ziglang 到 .tools\pyzig（pip install --target），
+把 .tools\zigbin 加进 PATH（gcc/g++/cc/c++ 转发桩，源码 .tools\zigwrap.c），
+再跑上面的命令。有真 gcc 的机器不需要转发桩。

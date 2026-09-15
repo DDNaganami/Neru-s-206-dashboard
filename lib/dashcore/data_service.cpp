@@ -34,17 +34,18 @@ VehicleState VehicleDataService::update(uint32_t now_ms) {
   status_.rpm_age_ms = UINT32_MAX;
   status_.coolant_age_ms = UINT32_MAX;
 
-  // 2) K 线 OBD:转速 / 水温(高优先级)
+  // 2) K 线 OBD:转速 / 水温(高优先级,按字段独立超时:
+  //    转速断了不影响水温继续用 OBD,反之亦然)
   obd_.tick(now_ms);
-  if (obd_.enabled() && obd_.hasRpm() && fresh(obd_.lastUpdateMs(), now_ms)) {
+  if (obd_.enabled() && obd_.hasRpm() && fresh(obd_.lastRpmMs(), now_ms)) {
     state_.rpm = obd_.rpm();
     status_.rpm = FieldSource::Obd;
-    status_.rpm_age_ms = now_ms - obd_.lastUpdateMs();
+    status_.rpm_age_ms = now_ms - obd_.lastRpmMs();
   }
-  if (obd_.enabled() && obd_.hasCoolant() && fresh(obd_.lastUpdateMs(), now_ms)) {
+  if (obd_.enabled() && obd_.hasCoolant() && fresh(obd_.lastCoolantMs(), now_ms)) {
     state_.coolant_c = obd_.coolant();
     status_.coolant = FieldSource::Obd;
-    status_.coolant_age_ms = now_ms - obd_.lastUpdateMs();
+    status_.coolant_age_ms = now_ms - obd_.lastCoolantMs();
   }
 
   // 3) VAN:车速(高优先级);转速作为 OBD 缺失时的补充

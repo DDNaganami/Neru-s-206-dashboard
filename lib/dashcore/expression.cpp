@@ -1,12 +1,24 @@
 #include "expression.h"
 #include "vehicle_state.h"
 
+// 急加速判定阈值(km/h 每秒)。
+// 旧实现按"每帧 +25 km/h"判定,5Hz 渲染下等效 125 km/h/s,实际永不触发。
+// 现在按时间归一:206 实测 0-100 约 11s(≈9 km/h/s 均值),
+// 取 15 km/h/s ≈ 0.42g(弹射起步)作为惊喜阈值,假数据波峰也能偶尔触发。
+static const float kSurpriseAccelPerSec = 15.0f;
+
 static FaceState g_face{Face::Idle, Face::Idle, 0};
-static float prev_speed = 0;
+static float prev_speed = 0.0f;
+static uint32_t prev_now = 0;
 static uint32_t next_blink_ms = 3000;
 
 Face face_update(const VehicleState& s, uint32_t now) {
-  const float dv = s.speed_kmh - prev_speed;
+  uint32_t dt_ms = (prev_now == 0) ? 0 : (now - prev_now);
+  prev_now = now;
+  if (dt_ms > 1000) dt_ms = 1000;  // 停帧/时间回环保护
+
+  float dv_s = 0.0f;
+  if (dt_ms >= 10) dv_s = (s.speed_kmh - prev_speed) * 1000.0f / (float)dt_ms;
   prev_speed = s.speed_kmh;
 
   Face base = Face::Idle;
@@ -20,7 +32,7 @@ Face face_update(const VehicleState& s, uint32_t now) {
     base = Face::Idle;
   }
 
-  if (dv > 25.0f) {
+  if (dv_s > kSurpriseAccelPerSec) {
     g_face.face = Face::Surprise;
     g_face.base = base;
     g_face.until_ms = now + 400;

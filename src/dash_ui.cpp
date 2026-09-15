@@ -4,6 +4,7 @@
 #include "boot_anim.h"
 #include <lvgl.h>
 #include <Arduino.h>
+#include <math.h>
 
 // ============ 运行时对象 ============
 struct ScreenUi {
@@ -24,10 +25,16 @@ static bool g_boot_done_printed = false;
 static uint32_t last_ok_ms = 0;
 static uint32_t last_tick_ms = 0;
 
+// 主题尺寸换算:480 基准 → 实际分辨率(四舍五入,见 ui_theme.h 分辨率适配)
+static int32_t ts(float v480) {
+  return (int32_t)lroundf(v480 * theme_scale());
+}
+
 // ============ 屏幕与控件构建 ============
 static lv_obj_t* make_screen(lv_display_t* disp) {
   lv_display_set_default(disp);
   lv_obj_t* scr = lv_obj_create(nullptr);
+  lv_screen_load(scr);   // v9:新屏必须显式加载,否则显示的是建屏时的默认屏
   lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_style_bg_color(scr, THEME_BG_COLOR, 0);
   lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
@@ -40,7 +47,7 @@ static void build_arcs(lv_obj_t* parent, const ScreenTheme& cfg, ScreenUi& ui) {
     lv_obj_t* arc = lv_arc_create(parent);
     lv_obj_remove_style_all(arc);
     lv_obj_center(arc);
-    lv_obj_set_size(arc, a.radius * 2, a.radius * 2);
+    lv_obj_set_size(arc, ts(a.radius * 2), ts(a.radius * 2));
 
     lv_arc_set_rotation(arc, 0);
     lv_arc_set_bg_start_angle(arc, a.start_deg);
@@ -48,8 +55,8 @@ static void build_arcs(lv_obj_t* parent, const ScreenTheme& cfg, ScreenUi& ui) {
     lv_arc_set_start_angle(arc, a.start_deg);
     lv_arc_set_end_angle(arc, a.start_deg);   // 初始 0 进度
 
-    lv_obj_set_style_arc_width(arc, a.width, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(arc, a.width, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(arc, ts(a.width), LV_PART_MAIN);
+    lv_obj_set_style_arc_width(arc, ts(a.width), LV_PART_INDICATOR);
     lv_obj_set_style_arc_color(arc, a.track_color, LV_PART_MAIN);
     lv_obj_set_style_arc_opa(arc, a.track_opa, LV_PART_MAIN);
     lv_obj_set_style_arc_color(arc, a.value_color, LV_PART_INDICATOR);
@@ -65,24 +72,30 @@ static void build_arcs(lv_obj_t* parent, const ScreenTheme& cfg, ScreenUi& ui) {
 static void build_face(lv_obj_t* parent, ScreenUi& ui) {
   lv_obj_t* bg = lv_obj_create(parent);
   lv_obj_remove_style_all(bg);
+  // 关键:带子对象(眼睛/嘴)的容器默认 LV_OBJ_FLAG_SCROLLABLE,
+  // v9 会给可滚动容器开离屏层做裁剪,层的合成在本驱动下会偏移(顶带白斑即此因)。
+  lv_obj_remove_flag(bg, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_center(bg);
-  lv_obj_set_size(bg, THEME_FACE_SIZE, THEME_FACE_SIZE);
+  lv_obj_set_size(bg, ts(THEME_FACE_SIZE), ts(THEME_FACE_SIZE));
   lv_obj_set_style_bg_color(bg, FACE_BG_IDLE, 0);
   lv_obj_set_style_bg_opa(bg, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(bg, THEME_FACE_SIZE / 2, 0);
+  lv_obj_set_style_radius(bg, ts(THEME_FACE_SIZE / 2), 0);
 
   lv_obj_t* eye_l = lv_obj_create(bg);
   lv_obj_t* eye_r = lv_obj_create(bg);
-  for (lv_obj_t* e : {eye_l, eye_r}) {
+  lv_obj_t* eyes[] = {eye_l, eye_r};
+  for (lv_obj_t* e : eyes) {
     lv_obj_remove_style_all(e);
+    lv_obj_remove_flag(e, LV_OBJ_FLAG_SCROLLABLE);   // 圆角+滚动容器会走离屏层
     lv_obj_set_style_bg_color(e, FACE_INK, 0);
     lv_obj_set_style_bg_opa(e, LV_OPA_COVER, 0);
   }
-  lv_obj_set_pos(eye_l, FACE_EYE_L_X, FACE_EYE_Y);
-  lv_obj_set_pos(eye_r, FACE_EYE_R_X, FACE_EYE_Y);
+  lv_obj_set_pos(eye_l, ts(FACE_EYE_L_X), ts(FACE_EYE_Y));
+  lv_obj_set_pos(eye_r, ts(FACE_EYE_R_X), ts(FACE_EYE_Y));
 
   lv_obj_t* mouth = lv_obj_create(bg);
   lv_obj_remove_style_all(mouth);
+  lv_obj_remove_flag(mouth, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_style_bg_color(mouth, FACE_INK, 0);
 
   ui.face_bg = bg;
@@ -111,33 +124,34 @@ static void face_apply(ScreenUi& ui, Face f) {
     lv_obj_remove_flag(ui.eye_r, LV_OBJ_FLAG_HIDDEN);
     const uint8_t w = surprise ? EYE_SURPRISE : EYE_NORMAL_W;
     const uint8_t h = surprise ? EYE_SURPRISE : (narrow ? EYE_NARROW_H : EYE_NORMAL_H);
-    lv_obj_set_size(ui.eye_l, w, h);
-    lv_obj_set_size(ui.eye_r, w, h);
-    lv_obj_set_style_radius(ui.eye_l, h / 2, 0);
-    lv_obj_set_style_radius(ui.eye_r, h / 2, 0);
+    lv_obj_set_size(ui.eye_l, ts(w), ts(h));
+    lv_obj_set_size(ui.eye_r, ts(w), ts(h));
+    lv_obj_set_style_radius(ui.eye_l, ts(h / 2), 0);
+    lv_obj_set_style_radius(ui.eye_r, ts(h / 2), 0);
   }
 
   if (surprise) {
-    lv_obj_set_pos(ui.mouth, MOUTH_O_X, MOUTH_O_Y);
-    lv_obj_set_size(ui.mouth, MOUTH_O_SIZE, MOUTH_O_SIZE);
-    lv_obj_set_style_radius(ui.mouth, MOUTH_O_SIZE / 2, 0);
+    lv_obj_set_pos(ui.mouth, ts(MOUTH_O_X), ts(MOUTH_O_Y));
+    lv_obj_set_size(ui.mouth, ts(MOUTH_O_SIZE), ts(MOUTH_O_SIZE));
+    lv_obj_set_style_radius(ui.mouth, ts(MOUTH_O_SIZE / 2), 0);
     lv_obj_set_style_bg_opa(ui.mouth, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(ui.mouth, 4, 0);
+    lv_obj_set_style_border_width(ui.mouth, ts(4), 0);
     lv_obj_set_style_border_color(ui.mouth, FACE_INK, 0);
   } else {
-    lv_obj_set_pos(ui.mouth, MOUTH_LINE_X, MOUTH_LINE_Y);
-    lv_obj_set_size(ui.mouth, MOUTH_LINE_W, MOUTH_LINE_H);
-    lv_obj_set_style_radius(ui.mouth, MOUTH_LINE_H / 2, 0);
+    lv_obj_set_pos(ui.mouth, ts(MOUTH_LINE_X), ts(MOUTH_LINE_Y));
+    lv_obj_set_size(ui.mouth, ts(MOUTH_LINE_W), ts(MOUTH_LINE_H));
+    lv_obj_set_style_radius(ui.mouth, ts(MOUTH_LINE_H / 2), 0);
     lv_obj_set_style_bg_opa(ui.mouth, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(ui.mouth, 0, 0);
   }
 }
 
-// ============ 开机动画应用(每个主循环都跑,保证扫表流畅) ============
+// ============ 开机动画应用(20ms 档推进,见 dash_ui_tick 的节流) ============
 static void boot_apply(uint32_t now) {
   for (uint8_t s = 0; s < 2; ++s) {
-    lv_obj_set_style_opa(g_screens[s], g_boot.screenOpa(now), 0);
-
+    // 注意:不给屏幕对象设 opa<255 的淡入 —— LVGL 会因此给整屏渲染开离屏层,
+    // 而层缓冲从显示缓冲里切(ARGB8888),装不下整屏 → 下半屏内容回绕到顶部。
+    // 想要淡入效果时用一个不透明黑底覆盖件反向淡出,别动屏幕本身的透明度。
     ScreenUi& ui = g_ui[s];
     const float p = g_boot.arcProgress(now, s);
     for (uint8_t i = 0; i < ui.arc_count; ++i) {
@@ -147,10 +161,16 @@ static void boot_apply(uint32_t now) {
                            a.start_deg + (int32_t)(p * (a.end_deg - a.start_deg)));
     }
 
-    if (kScreens[s].show_face) {
+    if (kScreens[s].show_face && ui.face_bg) {
+      // 表情睁眼:阶段 0 透明、之后全显。只在阶段切换时 set 一次,
+      // 避免每 tick 重复 set opa 触发无谓重绘(曾导致层合成异常)。
       const uint8_t st = g_boot.faceStage(now);
-      lv_obj_set_style_opa(ui.face_bg,
-                           (st == 0) ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+      static uint8_t last_st[2] = {0xFF, 0xFF};
+      if (st != last_st[s]) {
+        last_st[s] = st;
+        lv_obj_set_style_opa(ui.face_bg,
+                             (st == 0) ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+      }
       if (st == 1) face_apply(ui, Face::Blink);
       else if (st == 2) face_apply(ui, Face::Idle);
     }
@@ -195,7 +215,14 @@ void dash_ui_tick(uint32_t now_ms) {
   last_tick_ms = now_ms;
 
   if (g_boot.active(now_ms)) {
-    boot_apply(now_ms);   // 开机动画按主循环频率刷,不受 5Hz 渲染节流
+    // 开机动画按 20ms(50Hz)档推进:扫表角度每档才 invalidate 一次。
+    // 若按主循环频率(≈1kHz)每圈都 set 角度,LvGL 的 16 条 invalid 队列会被
+    // 刷爆并 join 成全屏区域,走 tile 渲染路径,预览缓冲里出现错位残影。
+    static uint32_t last_boot_ms = 0;
+    if (now_ms - last_boot_ms >= 20) {
+      last_boot_ms = now_ms;
+      boot_apply(now_ms);
+    }
   } else if (!g_boot_done_printed) {
     g_boot_done_printed = true;
     Serial.println("boot anim done");
@@ -204,8 +231,7 @@ void dash_ui_tick(uint32_t now_ms) {
   lv_timer_handler();
 }
 
-void dash_ui_render(const ArcDashView& v) {
-  const uint32_t now = millis();
+void dash_ui_render(const ArcDashView& v, uint32_t now) {
   if (now - last_ok_ms >= 1000) {
     last_ok_ms = now;
     Serial.printf("206 dash ok  spd=%3.0f%% rpm=%3.0f%% coolant=%.0fC face=%s\n",
@@ -215,18 +241,30 @@ void dash_ui_render(const ArcDashView& v) {
 
   if (g_boot.active(now)) return;   // 开机期间由 boot_apply 接管
 
+  // 弧缓动:指数趋近,按实际经过时间算,渲染频率变化不影响手感
+  static uint32_t last_render_ms = 0;
+  float k;
+  if (last_render_ms == 0) {
+    k = 1.0f;   // 首帧直接到位
+  } else {
+    uint32_t dt = now - last_render_ms;
+    if (dt > 500) dt = 500;   // 主循环卡顿后不跳变
+    k = 1.0f - expf(-kArcSmoothPerSec * (float)dt * 0.001f);
+  }
+  last_render_ms = now;
+
   for (uint8_t s = 0; s < 2; ++s) {
     ScreenUi& ui = g_ui[s];
     for (uint8_t i = 0; i < ui.arc_count; ++i) {
       const ArcStyle& a = kScreens[s].arcs[i];
       const float target = arc_progress(a, v);
-      ui.arc_cur[i] += (target - ui.arc_cur[i]) * kArcSmooth;   // 缓动
+      ui.arc_cur[i] += (target - ui.arc_cur[i]) * k;
       lv_arc_set_end_angle(ui.arcs[i],
                            a.start_deg +
                                (int32_t)(ui.arc_cur[i] * (a.end_deg - a.start_deg)));
     }
-    if (kScreens[s].show_face) {
-      lv_obj_set_style_opa(ui.face_bg, LV_OPA_COVER, 0);
+    if (kScreens[s].show_face && ui.face_bg) {
+      // 表情的显隐/形变只在 face_apply 里按状态变化时改一次,这里不重复 set
       face_apply(ui, v.face);
     }
   }
