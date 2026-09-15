@@ -109,6 +109,24 @@ inline void setIden(Frame& f, uint16_t iden12, uint8_t high3) {
 struct CmdBits { bool ext; bool rak; bool rw; bool rtr; };
 CmdBits decodeCmd(uint8_t cmd);
 
+// ---- CRC-15:两个不同的多项式,别混用 ----
+//
+// crc15():当前**在用**的那个,多项式 0x4599。
+//   ★ 0x4599 其实是 **CAN-15** 的多项式,不是 VAN/TSS463 的。
+//     实测:它对 "123456789" 给出 0x059E,与 CAN-15 的公认校验值一致。
+//   ★ 它也**复现不出**公开抓包的 FCS(见下),所以它现在同时是
+//     "可能用错了" + "无法验证" 的状态。
+//
+// crc15_van_iso():按 Graham Auld 描述 + TSS463 手册写的那条 ——
+//   多项式 x^15+x^11+x^10+x^9+x^8+x^7+x^4+x^3+x^2+1(完整掩码 0x8F9D,
+//   寄存器 15 位故实取 0x0F9D),初值 0x7FFF,发送前取反。
+//   ★ 它同样**复现不出**那 5 帧公开抓包的 FCS,详见 test_van_wire.cpp 里
+//     test_van_iso_crc_against_public_frames 的结论 —— 那条测试把
+//     "所有 15 位多项式 + 初值/取反/左右移 + 所有 FCS 分界" 全枚举了一遍,
+//     命中数为 0。也就是说**问题不在多项式选哪个**。
+uint16_t crc15(const uint8_t* data, uint16_t len);
+uint16_t crc15_van_iso(const uint8_t* data, uint16_t len);
+
 // 帧字节解析:把 IDEN,CMD,DATA...,FCS_lo,FCS_hi 尝试解成 Frame。
 // 数据长度未知,用 FCS 反推:从最短候选长度起逐个算 CRC-15 比对。
 // 返回 true 表示有候选长度 FCS 吻合(fcs_ok=true,且记录本轮 fcs_le),

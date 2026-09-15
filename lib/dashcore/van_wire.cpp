@@ -29,6 +29,35 @@ uint16_t crc15(const uint8_t* data, uint16_t len) {
   return crc;
 }
 
+// ---- VAN / TSS463 手册那条 CRC-15（本轮只加实现，不替换 crc15()）----
+// 多项式 x^15+x^11+x^10+x^9+x^8+x^7+x^4+x^3+x^2+1
+//   完整位掩码（含 x^15）= 0x8F9D；CRC 寄存器只有 15 位（bit0..14），
+//   x^15 是隐含最高位，所以参与异或的常量 = 0x8F9D & 0x7FFF = **0x0F9D**。
+//   ★ 手算掩码踩过坑：先算成 0x7F8D（漏了 x^15 那一位），被
+//     test_van_iso_poly_mask 当场抓住。位掩码一律用表达式算。
+//   对照：sibling 的 0x4599 同样带 bit14，写法一致。
+// 初值 0x7FFF，发送前取反。
+//
+// ★ 它与 crc15() 都**复现不出**那 5 帧公开抓包的 FCS，详见
+//   test_van_wire.cpp 的 test_van_iso_crc_against_public_frames：
+//   把所有 15 位多项式 × 初值/取反/左右移 × 所有 FCS 分界全枚举了一遍，
+//   能同时打中 5 帧的组合数 = 0。也就是说问题不在"选哪条多项式"。
+static const uint16_t kCrcPolyVanIso = 0x0F9Du;
+static const uint16_t kCrcInitVanIso = 0x7FFFu;
+
+uint16_t crc15_van_iso(const uint8_t* data, uint16_t len) {
+  uint16_t crc = kCrcInitVanIso;
+  for (uint16_t i = 0; i < len; ++i) {
+    crc ^= (uint16_t)((uint16_t)data[i] << 7);   // 对齐到 15 位寄存器的次高位
+    for (uint8_t b = 0; b < 8; ++b) {
+      if (crc & 0x4000u) crc = (uint16_t)((crc << 1) ^ kCrcPolyVanIso);
+      else               crc = (uint16_t)(crc << 1);
+      crc &= 0x7FFFu;
+    }
+  }
+  return (uint16_t)(~crc & 0x7FFFu);             // 发送前取反
+}
+
 CmdBits decodeCmd(uint8_t cmd) {
   CmdBits c;
   c.ext = (cmd & kCmdExtMask) != 0;
