@@ -193,6 +193,11 @@ static float arc_progress(const ArcStyle& a, const ArcDashView& v) {
 }
 
 void dash_ui_init() {
+  // 先落默认主题:保证任何情况下主题都是可用的。
+  // main 的 setup() 会在调本函数之前尝试 theme_load() 覆盖它(读 flash 主题
+  // 分区);这里兜底是为了"单独调 dash_ui_init 也不会拿到未初始化的主题"。
+  theme_reset_to_defaults();
+
   lv_init();
   dash_display_init();
 

@@ -1,0 +1,83 @@
+{
+  "theme": {
+    "bg_color": 0x141414,
+    "face_size": 200,
+    "face_bg_idle": 0xFFFFFF,
+    "face_bg_redline": 0xFF4D4D,
+    "face_ink": 0x1A1A1A,
+
+    "coolant_min_c": 60,
+    "coolant_max_c": 130,
+
+    "face": {
+      "eye_l_x": 38,
+      "eye_r_x": 136,
+      "eye_y": 66,
+      "eye_normal_w": 26,
+      "eye_normal_h": 26,
+      "eye_surprise": 44,
+      "eye_narrow_h": 8,
+      "mouth_line_x": 75,
+      "mouth_line_y": 138,
+      "mouth_line_w": 50,
+      "mouth_line_h": 6,
+      "mouth_o_x": 80,
+      "mouth_o_y": 120,
+      "mouth_o_size": 40
+    },
+
+    "screens": [
+      {
+        "arc_count": 2,
+        "show_face": 1,
+        "arcs": [
+          {
+            "kind": 0,
+            "start_deg": 135,
+            "end_deg": 405,
+            "radius": 205,
+            "width": 24,
+            "track_color": 0x232323,
+            "track_opa": 153,
+            "value_color": 0x39C5FF
+          },
+          {
+            "kind": 2,
+            "start_deg": 145,
+            "end_deg": 330,
+            "radius": 168,
+            "width": 10,
+            "track_color": 0x232323,
+            "track_opa": 153,
+            "value_color": 0x7CFF6B
+          }
+        ]
+      },
+      {
+        "arc_count": 1,
+        "show_face": 1,
+        "arcs": [
+          {
+            "kind": 1,
+            "start_deg": 135,
+            "end_deg": 405,
+            "radius": 205,
+            "width": 24,
+            "track_color": 0x232323,
+            "track_opa": 153,
+            "value_color": 0xFF5C5C
+          }
+        ]
+      }
+    ],
+
+    "boot_fade_ms": 250,
+    "boot_sweep_start_ms": 250,
+    "boot_stagger_ms": 100,
+    "boot_sweep_rise_ms": 380,
+    "boot_sweep_hold_ms": 140,
+    "boot_sweep_fall_ms": 420,
+    "boot_face_start_ms": 1000,
+    "boot_face_blink_ms": 130
+  }
+}

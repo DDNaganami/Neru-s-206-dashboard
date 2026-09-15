@@ -9,6 +9,11 @@ void register_obd_protocol_tests(void);
 void register_obd_source_tests(void);
 void register_van_source_tests(void);
 void register_van_replay_tests(void);
+void register_van_wire_tests(void);
+void register_van_phy_wire_tests(void);
+void register_theme_store_tests(void);
+void register_image_blob_tests(void);
+void register_image_roundtrip_tests(void);
 void register_data_service_tests(void);
 void register_expression_tests(void);
 
@@ -18,6 +23,11 @@ int main(void) {
   register_obd_source_tests();
   register_van_source_tests();
   register_van_replay_tests();
+  register_van_wire_tests();
+  register_van_phy_wire_tests();
+  register_theme_store_tests();
+  register_image_blob_tests();
+  register_image_roundtrip_tests();
   register_data_service_tests();
   register_expression_tests();
   return UNITY_END();

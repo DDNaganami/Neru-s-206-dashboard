@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>206Dash 主题编辑器</title>
+<style>
+  :root{
+    --bg:#12141a; --panel:#1b1e26; --line:#2b3040; --text:#e6e9f0;
+    --dim:#98a0b3; --accent:#39C5FF; --warn:#ffcc66; --ok:#7CFF6B;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif}
+  header{padding:14px 20px;border-bottom:1px solid var(--line);
+         display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  header .hint{color:var(--dim);font-size:12px}
+  header .grow{flex:1}
+  main{display:grid;grid-template-columns:330px 1fr;gap:0;min-height:calc(100vh - 56px)}
+  .left{border-right:1px solid var(--line);overflow-y:auto;max-height:calc(100vh - 56px)}
+  .right{padding:20px;overflow-y:auto;max-height:calc(100vh - 56px)}
+  section{border-bottom:1px solid var(--line);padding:14px 16px}
+  section h2{font-size:13px;margin:0 0 10px;color:var(--accent);
+             text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+  .row{display:flex;align-items:center;gap:8px;margin:7px 0}
+  .row label{flex:0 0 118px;color:var(--dim);font-size:12px}
+  .row input[type=range]{flex:1;min-width:0}
+  .row input[type=number]{width:64px;background:#0e1016;border:1px solid var(--line);
+                          color:var(--text);border-radius:4px;padding:3px 5px}
+  .row input[type=color]{width:38px;height:24px;border:1px solid var(--line);
+                          background:#0e1016;border-radius:4px;padding:0;cursor:pointer}
+  .row .val{width:52px;text-align:right;color:var(--text);font-variant-numeric:tabular-nums;font-size:12px}
+  button{background:#262b38;color:var(--text);border:1px solid var(--line);
+         border-radius:6px;padding:7px 13px;cursor:pointer;font-size:13px}
+  button:hover{background:#303749}
+  button.primary{background:#1d4f6b;border-color:#2a6f96}
+  button.primary:hover{background:#246b91}
+  .previews{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start}
+  .screen{text-align:center}
+  .screen canvas{background:#000;border-radius:50%;display:block;
+                 box-shadow:0 6px 26px rgba(0,0,0,.55)}
+  .screen .cap{margin-top:8px;color:var(--dim);font-size:12px}
+  .anim{margin-top:22px}
+  .anim canvas{background:#000;border-radius:10px;box-shadow:0 6px 26px rgba(0,0,0,.55)}
+  .status{margin-top:14px;padding:10px 12px;border-radius:6px;background:#171a22;
+          border:1px solid var(--line);color:var(--dim);font-size:12px;white-space:pre-wrap}
+  .status.err{border-color:#7a3b3b;color:#ffb4b4}
+  .status.ok{border-color:#3b6b46;color:var(--ok)}
+  details{margin-top:10px}
+  summary{cursor:pointer;color:var(--dim);font-size:12px}
+  textarea{width:100%;height:230px;margin-top:8px;background:#0e1016;color:var(--text);
+           border:1px solid var(--line);border-radius:6px;padding:8px;
+           font:12px/1.45 Consolas,monospace;resize:vertical}
+  .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+  .kinds{display:flex;gap:6px}
+  .kinds button{padding:4px 9px;font-size:12px}
+  .kinds button.on{background:#1d4f6b;border-color:#2a6f96}
+  .note{color:var(--warn);font-size:12px;margin-top:8px}
+</style>
+</head>
+<body>
+<header>
+  <h1>206Dash 主题编辑器</h1>
+  <span class="hint">改完点「导出主题文件」，刷到设备的 theme 分区即可生效（固件不用重编译）</span>
+  <span class="grow"></span>
+  <button id="btn-default">恢复默认</button>
+  <button id="btn-import">导入主题文件</button>
+  <button id="btn-export" class="primary">导出主题文件</button>
+</header>
+
+<main>
+  <div class="left" id="controls"></div>
+  <div class="right">
+    <div class="toolbar">
+      <span class="hint" style="align-self:center">预览的是 480×480 基准画面（真屏若用 800×800 会等比放大）</span>
+    </div>
+    <div class="previews">
+      <div class="screen">
+        <canvas id="cv0" width="480" height="480"></canvas>
+        <div class="cap">左屏 · 车速 + 水温 + 表情</div>
+      </div>
+      <div class="screen">
+        <canvas id="cv1" width="480" height="480"></canvas>
+        <div class="cap">右屏 · 转速 + 表情</div>
+      </div>
+    </div>
+
+    <div class="anim">
+      <div class="toolbar" style="margin-bottom:8px">
+        <button id="btn-play">▶ 播放开机动画</button>
+        <span class="hint" style="align-self:center" id="anim-info"></span>
+      </div>
+      <canvas id="cvA" width="960" height="480"></canvas>
+      <div class="cap" style="color:var(--dim);font-size:12px;margin-top:8px">
+        开机动画：淡入 → 双屏错峰扫表 → 表情睁眼（左右并排播放）
+      </div>
+    </div>
+
+    <div id="status" class="status">就绪。</div>
+
+    <details>
+      <summary>主题 JSON（可手改，改完按「应用」）</summary>
+      <textarea id="json"></textarea>
+      <div class="toolbar" style="margin-top:8px">
+        <button id="btn-apply">应用</button>
+        <button id="btn-copy">复制</button>
+      </div>
+    </details>
+  </div>
+</main>
+
+<input type="file" id="file" accept=".json,application/json" style="display:none">
+
+<script>
+"use strict";
+
+// ============================================================
+// 主题数据模型 —— 字段名必须与 lib/themetool/theme_store.cpp 完全一致,
+// 否则导出的文件读不进去。改字段时两边一起改。
+// ============================================================
+const ARC_KIND_NAMES = ["车速", "转速", "水温"];
+
+function defaultTheme() {
+  return {
+    bg_color: 0x141414,
+    face_size: 200,
+    face_bg_idle: 0xFFFFFF,
+    face_bg_redline: 0xFF4D4D,
+    face_ink: 0x1A1A1A,
+    coolant_min_c: 60,
+    coolant_max_c: 130,
+    face: {
+      eye_l_x: 38, eye_r_x: 136, eye_y: 66,
+      eye_normal_w: 26, eye_normal_h: 26,
+      eye_surprise: 44, eye_narrow_h: 8,
+      mouth_line_x: 75, mouth_line_y: 138, mouth_line_w: 50, mouth_line_h: 6,
+      mouth_o_x: 80, mouth_o_y: 120, mouth_o_size: 40
+    },
+    screens: [
+      { arc_count: 2, show_face: 1, arcs: [
+        { kind:0, start_deg:135, end_deg:405, radius:205, width:24,
+          track_color:0x232323, track_opa:153, value_color:0x39C5FF },
+        { kind:2, start_deg:145, end_deg:330, radius:168, width:10,
+          track_color:0x232323, track_opa:153, value_color:0x7CFF6B }
+      ]},
+      { arc_count: 1, show_face: 1, arcs: [
+        { kind:1, start_deg:135, end_deg:405, radius:205, width:24,
+          track_color:0x232323, track_opa:153, value_color:0xFF5C5C }
+      ]}
+    ],
+    boot_fade_ms: 250,
+    boot_sweep_start_ms: 250,
+    boot_stagger_ms: 100,
+    boot_sweep_rise_ms: 380,
+    boot_sweep_hold_ms: 140,
+    boot_sweep_fall_ms: 420,
+    boot_face_start_ms: 1000,
+    boot_face_blink_ms: 130
+  };
+}
+
+// 深拷贝（本地用,不引第三方库）
+const clone = (o) => JSON.parse(JSON.stringify(o));
+
+function hex(n) { return "#" + (n & 0xFFFFFF).toString(16).padStart(6, "0"); }
+function unhex(s) { return parseInt(s.replace("#", ""), 16) & 0xFFFFFF; }
+
+// 预览用的模拟数值（真机上来自车速/转速/水温）
+const SIM = { speed_t: 0.55, rpm_t: 0.42, coolant_t: 0.6 };
+
+let T = defaultTheme();
+let bootT = 0;          // 开机动画播放进度(ms)
+let bootPlaying = false;
+
+// ---------------- 画圆弧（与 dash_ui.cpp 的几何一致） ----------------
+// LVGL 的 lv_arc:0°=3点钟方向、顺时针。这里用同样的约定,
+// 并把 start/end 角度画成一条带缺口的圆环。
+function degToRad(d) { return (d - 90) * Math.PI / 180; }
+
+function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, trackColor, trackOpacity, valueColor) {
+  // 轨道
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, degToRad(endDeg), degToRad(startDeg), true);
+  ctx.lineWidth = w;
+  ctx.strokeStyle = trackColor;
+  ctx.globalAlpha = Math.max(0, Math.min(1, trackOpacity));
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // 已点亮部分:从 start 起按 t01 比例
+  if (t01 > 0.0001) {
+    const span = endDeg - startDeg;
+    const cur = startDeg + span * Math.max(0, Math.min(1, t01));
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, degToRad(cur), degToRad(startDeg), true);
+    ctx.lineWidth = w;
+    ctx.strokeStyle = valueColor;
+    ctx.stroke();
+  }
+}
+
+function valueT(kind, v) {
+  if (kind === 0) return v.speed_t;      // 车速
+  if (kind === 1) return v.rpm_t;        // 转速
+  return v.coolant_t;                    // 水温
+}
+
+// ---------------- 画表情（占位形状,与 theme 的几何字段对应） ----------------
+function drawFace(ctx, cx, cy, theme, opts) {
+  const s = theme.face_size;
+  const bg = opts && opts.redline ? theme.face_bg_redline : theme.face_bg_idle;
+  const ink = theme.face_ink;
+  const eyeW = (opts && opts.surprise) ? theme.face.eye_surprise : theme.face.eye_normal_w;
+  const eyeH = (opts && opts.surprise) ? theme.face.eye_surprise
+             : ((opts && opts.narrow) ? theme.face.eye_narrow_h : theme.face.eye_normal_h);
+
+  // 脸(圆心在表情区中心)
+  const fx = cx - s / 2, fy = cy - s / 2;
+  ctx.fillStyle = bg;
+  ctx.beginPath();
+  ctx.roundRect(fx, fy, s, s, s / 2);
+  ctx.fill();
+
+  // 眼睛
+  ctx.fillStyle = ink;
+  const eyes = [
+    [fx + theme.face.eye_l_x, fy + theme.face.eye_y],
+    [fx + theme.face.eye_r_x, fy + theme.face.eye_y],
+  ];
+  for (const [ex, ey] of eyes) {
+    ctx.beginPath();
+    ctx.roundRect(ex, ey, eyeW, eyeH, Math.min(eyeH, eyeW) / 2);
+    ctx.fill();
+  }
+
+  // 嘴(惊喜时是 O,平时是横线)
+  ctx.fillStyle = ink;
+  if (opts && opts.surprise) {
+    ctx.beginPath();
+    ctx.roundRect(fx + theme.face.mouth_o_x, fy + theme.face.mouth_o_y,
+                  theme.face.mouth_o_size, theme.face.mouth_o_size,
+                  theme.face.mouth_o_size / 2);
+    ctx.fill();
+  } else {
+    ctx.beginPath();
+    ctx.roundRect(fx + theme.face.mouth_line_x, fy + theme.face.mouth_line_y,
+                  theme.face.mouth_line_w, theme.face.mouth_line_h,
+                  theme.face.mouth_line_h / 2);
+    ctx.fill();
+  }
+}
+
+// ---------------- 画一屏 ----------------
+// opts: { boot: {sweep: 0..1 覆盖弧值, fade: 0..1 透明度, showFace: bool} }
+function drawScreen(canvas, screenIdx, theme, v, opts) {
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  const scale = W / 480;                  // 基准 480
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const bg = theme.bg_color;
+  ctx.fillStyle = hex(bg);
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  if (opts && opts.fade !== undefined) ctx.globalAlpha = opts.fade;
+
+  const cx = W / 2, cy = H / 2;
+  const sc = theme.screens[screenIdx];
+
+  for (let i = 0; i < sc.arc_count && i < sc.arcs.length; i++) {
+    const a = sc.arcs[i];
+    let t = valueT(a.kind, v);
+    if (opts && opts.sweep !== undefined) t = opts.sweep;
+    drawArc(ctx, cx, cy,
+            a.radius * scale, a.width * scale,
+            a.start_deg, a.end_deg, t,
+            hex(a.track_color), a.track_opa / 255, hex(a.value_color));
+  }
+
+  if (sc.show_face && !(opts && opts.hideFace)) {
+    drawFace(ctx, cx, cy, theme, {
+      redline: v.rpm_t > 0.85,
+      surprise: opts && opts.surprise
+    });
+  }
+  ctx.restore();
+}
+
+// ---------------- 控件生成 ----------------
+const controls = document.getElementById("controls");
+
+function group(title) {
+  const s = document.createElement("section");
+  const h = document.createElement("h2");
+  h.textContent = title;
+  s.appendChild(h);
+  controls.appendChild(s);
+  return s;
+}
+
+// 滑杆 + 数字框
+function slider(parent, label, get, set, min, max, step) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const lb = document.createElement("label");
+  lb.textContent = label;
+  const r = document.createElement("input");
+  r.type = "range"; r.min = min; r.max = max; r.step = step || 1; r.value = get();
+  const n = document.createElement("input");
+  n.type = "number"; n.min = min; n.max = max; n.step = step || 1; n.value = get();
+  r.addEventListener("input", () => { set(+r.value); n.value = r.value; render(); });
+  n.addEventListener("input", () => { set(+n.value); r.value = n.value; render(); });
+  row.append(lb, r, n);
+  parent.appendChild(row);
+  return { r, n, sync: () => { r.value = get(); n.value = get(); } };
+}
+
+// 颜色选择
+function color(parent, label, get, set) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const lb = document.createElement("label");
+  lb.textContent = label;
+  const c = document.createElement("input");
+  c.type = "color"; c.value = hex(get());
+  const t = document.createElement("input");
+  t.type = "text"; t.value = hex(get()); t.style.width = "78px";
+  t.style.background = "#0e1016"; t.style.border = "1px solid var(--line)";
+  t.style.color = "var(--text)"; t.style.borderRadius = "4px"; t.style.padding = "3px 5px";
+  c.addEventListener("input", () => { set(unhex(c.value)); t.value = c.value; render(); });
+  t.addEventListener("change", () => {
+    if (/^#?[0-9a-fA-F]{6}$/.test(t.value)) {
+      const v = unhex(t.value[0] === "#" ? t.value : "#" + t.value);
+      set(v); c.value = hex(v); t.value = hex(v); render();
+    } else { t.value = hex(get()); }
+  });
+  row.append(lb, c, t);
+  parent.appendChild(row);
+  return { c, t, sync: () => { c.value = hex(get()); t.value = hex(get()); } };
+}
+
+let syncers = [];
+
+function buildControls() {
+  controls.innerHTML = "";
+  syncers = [];
+
+  // ---- 全局 ----
+  const g1 = group("全局");
+  syncers.push(color(g1, "背景色", () => T.bg_color, v => T.bg_color = v));
+  syncers.push(slider(g1, "表情大小", () => T.face_size, v => T.face_size = v, 80, 320, 2));
+  syncers.push(color(g1, "表情底色", () => T.face_bg_idle, v => T.face_bg_idle = v));
+  syncers.push(color(g1, "红区底色", () => T.face_bg_redline, v => T.face_bg_redline = v));
+  syncers.push(color(g1, "五官颜色", () => T.face_ink, v => T.face_ink = v));
+
+  // ---- 两屏的弧 ----
+  for (let si = 0; si < 2; si++) {
+    const sc = T.screens[si];
+    const g = group(si === 0 ? "左屏（车速位）" : "右屏（转速位）");
+
+    for (let ai = 0; ai < sc.arcs.length; ai++) {
+      const a = sc.arcs[ai];
+      const sub = document.createElement("div");
+      sub.style.cssText = "margin:10px 0 14px;padding:8px 10px;border:1px solid var(--line);border-radius:6px";
+      const ttl = document.createElement("div");
+      ttl.style.cssText = "color:var(--text);font-size:12px;margin-bottom:6px";
+      ttl.textContent = (ai === 0 ? "外弧" : "内弧") + " · " + ARC_KIND_NAMES[a.kind];
+      sub.appendChild(ttl);
+
+      // 弧类型（决定它跟随哪个数据）
+      const kindRow = document.createElement("div");
+      kindRow.className = "row";
+      const kl = document.createElement("label");
+      kl.textContent = "数据";
+      const kinds = document.createElement("div");
+      kinds.className = "kinds";
+      for (let k = 0; k < 3; k++) {
+        const b = document.createElement("button");
+        b.textContent = ARC_KIND_NAMES[k];
+        if (a.kind === k) b.className = "on";
+        b.addEventListener("click", () => {
+          a.kind = k; buildControls(); render();
+        });
+        kinds.appendChild(b);
+      }
+      kindRow.append(kl, kinds);
+      sub.appendChild(kindRow);
+
+      syncers.push(slider(sub, "起始角°", () => a.start_deg, v => a.start_deg = v, 0, 360, 1));
+      syncers.push(slider(sub, "结束角°", () => a.end_deg, v => a.end_deg = v, 0, 720, 1));
+      syncers.push(slider(sub, "半径", () => a.radius, v => a.radius = v, 40, 240, 1));
+      syncers.push(slider(sub, "线宽", () => a.width, v => a.width = v, 1, 60, 1));
+      syncers.push(color(sub, "点亮色", () => a.value_color, v => a.value_color = v));
+      syncers.push(color(sub, "轨道色", () => a.track_color, v => a.track_color = v));
+      syncers.push(slider(sub, "轨道透明", () => a.track_opa, v => a.track_opa = v, 0, 255, 1));
+
+      g.appendChild(sub);
+    }
+
+    // 弧数量
+    const cntRow = document.createElement("div");
+    cntRow.className = "row";
+    const cl = document.createElement("label");
+    cl.textContent = "显示弧数";
+    const cb = document.createElement("select");
+    cb.style.cssText = "background:#0e1016;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:3px 6px";
+    for (let n = 0; n <= sc.arcs.length; n++) {
+      const o = document.createElement("option");
+      o.value = n; o.textContent = n + " 条";
+      if (sc.arc_count === n) o.selected = true;
+      cb.appendChild(o);
+    }
+    cb.addEventListener("change", () => { sc.arc_count = +cb.value; render(); });
+    cntRow.append(cl, cb);
+    g.appendChild(cntRow);
+
+    // 表情开关
+    const fRow = document.createElement("div");
+    fRow.className = "row";
+    const fl = document.createElement("label");
+    fl.textContent = "显示表情";
+    const fc = document.createElement("input");
+    fc.type = "checkbox"; fc.checked = !!sc.show_face;
+    fc.addEventListener("change", () => { sc.show_face = fc.checked ? 1 : 0; render(); });
+    fRow.append(fl, fc);
+    g.appendChild(fRow);
+  }
+
+  // ---- 量程 ----
+  const g3 = group("水温量程");
+  syncers.push(slider(g3, "最低 ℃", () => T.coolant_min_c, v => T.coolant_min_c = v, 0, 120, 1));
+  syncers.push(slider(g3, "最高 ℃", () => T.coolant_max_c, v => T.coolant_max_c = v, 60, 160, 1));
+
+  // ---- 开机动画 ----
+  const g4 = group("开机动画（毫秒）");
+  syncers.push(slider(g4, "整体淡入", () => T.boot_fade_ms, v => T.boot_fade_ms = v, 0, 2000, 10));
+  syncers.push(slider(g4, "扫表开始", () => T.boot_sweep_start_ms, v => T.boot_sweep_start_ms = v, 0, 2000, 10));
+  syncers.push(slider(g4, "右屏错峰", () => T.boot_stagger_ms, v => T.boot_stagger_ms = v, 0, 1000, 10));
+  syncers.push(slider(g4, "0→满弧", () => T.boot_sweep_rise_ms, v => T.boot_sweep_rise_ms = v, 1, 3000, 10));
+  syncers.push(slider(g4, "满弧停留", () => T.boot_sweep_hold_ms, v => T.boot_sweep_hold_ms = v, 0, 2000, 10));
+  syncers.push(slider(g4, "满弧→0", () => T.boot_sweep_fall_ms, v => T.boot_sweep_fall_ms = v, 1, 3000, 10));
+  syncers.push(slider(g4, "表情睁眼", () => T.boot_face_start_ms, v => T.boot_face_start_ms = v, 0, 5000, 50));
+  syncers.push(slider(g4, "单次眨眼", () => T.boot_face_blink_ms, v => T.boot_face_blink_ms = v, 1, 1000, 10));
+}
+
+// ---------------- 开机动画的插值（与 boot_anim.cpp 同一套公式） ----------------
+function smoothstep(x) {
+  x = Math.max(0, Math.min(1, x));
+  return x * x * (3 - 2 * x);
+}
+
+function bootFade(t) {
+  if (t >= T.boot_fade_ms) return 1;
+  return T.boot_fade_ms <= 0 ? 1 : t / T.boot_fade_ms;
+}
+
+function bootSweep(screen, t) {
+  const s = T.boot_sweep_start_ms + screen * T.boot_stagger_ms;
+  if (t < s) return 0;
+  if (t < s + T.boot_sweep_rise_ms) {
+    return smoothstep((t - s) / Math.max(1, T.boot_sweep_rise_ms));
+  }
+  if (t < s + T.boot_sweep_rise_ms + T.boot_sweep_hold_ms) return 1;
+  if (t < s + T.boot_sweep_rise_ms + T.boot_sweep_hold_ms + T.boot_sweep_fall_ms) {
+    const f = t - s - T.boot_sweep_rise_ms - T.boot_sweep_hold_ms;
+    return 1 - smoothstep(f / Math.max(1, T.boot_sweep_fall_ms));
+  }
+  return 0;
+}
+
+function bootEyeOpen(t) {
+  if (t < T.boot_face_start_ms) return false;
+  // 前两次眨眼期间眼睛是闭着的,之后睁开
+  const k = Math.floor((t - T.boot_face_start_ms) / Math.max(1, T.boot_face_blink_ms));
+  return !(k % 2 === 1);
+}
+
+// ---------------- 渲染 ----------------
+function render() {
+  drawScreen(document.getElementById("cv0"), 0, T, SIM, {});
+  drawScreen(document.getElementById("cv1"), 1, T, SIM, {});
+  renderAnim();
+  document.getElementById("json").value = JSON.stringify({ theme: T }, null, 2);
+  syncers.forEach(s => s.sync && s.sync());
+}
+
+function renderAnim() {
+  const cv = document.getElementById("cvA");
+  const ctx = cv.getContext("2d");
+  const half = 480;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, cv.width, cv.height);
+
+  const info = document.getElementById("anim-info");
+  const total = T.boot_face_start_ms + 4 * T.boot_face_blink_ms;
+  info.textContent = "总时长 " + total + " ms" + (bootPlaying ? "（播放中）" : "");
+
+  for (let si = 0; si < 2; si++) {
+    const c = document.createElement("canvas");
+    c.width = half; c.height = half;
+    drawScreen(c, si, T, SIM, {
+      fade: bootFade(bootT),
+      sweep: bootSweep(si, bootT),
+      hideFace: !bootEyeOpen(bootT),
+      surprise: false
+    });
+    ctx.drawImage(c, si * half, 0);
+  }
+}
+
+// 动画循环:按真实时间推进
+let lastTick = 0;
+function loop(ts) {
+  if (!lastTick) lastTick = ts;
+  const dt = Math.min(50, ts - lastTick);
+  lastTick = ts;
+  if (bootPlaying) {
+    bootT += dt;
+    const total = T.boot_face_start_ms + 4 * T.boot_face_blink_ms;
+    if (bootT > total + 600) { bootT = 0; }      // 循环播放
+    renderAnim();
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---------------- 状态提示 ----------------
+function say(msg, cls) {
+  const el = document.getElementById("status");
+  el.textContent = msg;
+  el.className = "status" + (cls ? " " + cls : "");
+}
+
+// ---------------- 导入 / 导出 ----------------
+function exportTheme() {
+  const text = JSON.stringify({ theme: T }, null, 2);
+  const blob = new Blob([text], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "theme.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+  const bytes = new Blob([text]).size;
+  say("已导出 theme.json（" + bytes + " 字节）。\n" +
+      "刷进设备的 theme 分区即可生效，固件不用重编译。\n" +
+      (bytes > 4096
+        ? "⚠ 超过 4096 字节：设备端缓冲只有 4KB（见 theme_store.h），请精简后重试。"
+        : "大小在设备端 4KB 缓冲限制内，OK。"),
+      bytes > 4096 ? "err" : "ok");
+}
+
+document.getElementById("btn-export").addEventListener("click", exportTheme);
+
+document.getElementById("btn-import").addEventListener("click", () => {
+  document.getElementById("file").click();
+});
+
+document.getElementById("file").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    try {
+      const obj = JSON.parse(r.result);
+      const t = obj.theme || obj;
+      // 以默认值打底:缺字段不报错,与固件端"缺失即默认"的语义一致
+      T = Object.assign(defaultTheme(), t);
+      T.face = Object.assign(defaultTheme().face, t.face || {});
+      if (Array.isArray(t.screens)) {
+        for (let i = 0; i < 2; i++) {
+          if (t.screens[i]) {
+            T.screens[i] = Object.assign(defaultTheme().screens[i], t.screens[i]);
+            if (Array.isArray(t.screens[i].arcs)) {
+              T.screens[i].arcs = defaultTheme().screens[i].arcs.map(
+                (da, k) => Object.assign(da, t.screens[i].arcs[k] || {}));
+            }
+          }
+        }
+      }
+      buildControls();
+      render();
+      say("已导入 " + f.name + "。");
+    } catch (err) {
+      say("导入失败：" + err.message, "err");
+    }
+  };
+  r.readAsText(f);
+  e.target.value = "";
+});
+
+document.getElementById("btn-default").addEventListener("click", () => {
+  T = defaultTheme();
+  buildControls();
+  render();
+  say("已恢复默认主题。");
+});
+
+document.getElementById("btn-apply").addEventListener("click", () => {
+  try {
+    const obj = JSON.parse(document.getElementById("json").value);
+    const t = obj.theme || obj;
+    T = Object.assign(defaultTheme(), t);
+    T.face = Object.assign(defaultTheme().face, t.face || {});
+    if (Array.isArray(t.screens)) {
+      for (let i = 0; i < 2; i++) {
+        if (t.screens[i]) T.screens[i] = Object.assign(defaultTheme().screens[i], t.screens[i]);
+      }
+    }
+    buildControls();
+    render();
+    say("JSON 已应用。");
+  } catch (err) {
+    say("JSON 有语法错误：" + err.message, "err");
+  }
+});
+
+document.getElementById("btn-copy").addEventListener("click", async () => {
+  const ta = document.getElementById("json");
+  try {
+    await navigator.clipboard.writeText(ta.value);
+    say("主题 JSON 已复制到剪贴板。", "ok");
+  } catch {
+    ta.select(); document.execCommand("copy");
+    say("主题 JSON 已复制（兼容模式）。", "ok");
+  }
+});
+
+document.getElementById("btn-play").addEventListener("click", (e) => {
+  bootPlaying = !bootPlaying;
+  if (bootPlaying) bootT = 0;
+  e.target.textContent = bootPlaying ? "⏸ 暂停动画" : "▶ 播放开机动画";
+  renderAnim();
+});
+
+// ---------------- 启动 ----------------
+buildControls();
+render();
+say("就绪。左栏调参、右侧实时预览。\n" +
+    "满意后点右上角「导出主题文件」。");
+</script>
+</body>
+</html>

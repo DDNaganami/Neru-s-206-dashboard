@@ -1,0 +1,41 @@
+{
+  "theme": {
+    "bg_color": 0x001028,
+    "face_bg_idle": 0xFFF3C4,
+    "face_bg_redline": 0xFF2D2D,
+    "face_ink": 0x101010,
+
+    "coolant_min_c": 55,
+    "coolant_max_c": 125,
+
+    "screens": [
+      {
+        "arc_count": 2,
+        "show_face": 1,
+        "arcs": [
+          { "kind": 0, "start_deg": 135, "end_deg": 405, "radius": 200, "width": 22,
+            "track_color": 0x1B2B44, "track_opa": 200, "value_color": 0xFFA500 },
+          { "kind": 2, "start_deg": 145, "end_deg": 330, "radius": 160, "width": 9,
+            "track_color": 0x1B2B44, "track_opa": 200, "value_color": 0x00E5FF }
+        ]
+      },
+      {
+        "arc_count": 1,
+        "show_face": 1,
+        "arcs": [
+          { "kind": 1, "start_deg": 135, "end_deg": 405, "radius": 200, "width": 22,
+            "track_color": 0x1B2B44, "track_opa": 200, "value_color": 0xFF3B6B }
+        ]
+      }
+    ],
+
+    "boot_fade_ms": 200,
+    "boot_sweep_start_ms": 200,
+    "boot_stagger_ms": 120,
+    "boot_sweep_rise_ms": 300,
+    "boot_sweep_hold_ms": 120,
+    "boot_sweep_fall_ms": 350,
+    "boot_face_start_ms": 900,
+    "boot_face_blink_ms": 120
+  }
+}

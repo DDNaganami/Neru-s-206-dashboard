@@ -1,0 +1,60 @@
+# ESP32 partition table (esp32dev / ESP32-S3 N16R8)
+#
+# Layout: nvs / otadata / app0 / app1 / theme / spiffs / image / coredump,
+# tiled with no gaps from 0x9000 up to 0x364000 (3.39MB of the 4MB flash).
+# The rest is intentionally free.
+#
+# WHY THE APP SLOTS ARE 1MB, NOT 1.25MB
+#   Freeing 512KB for "image" was the whole point. The firmware is ~512KB,
+#   so 1MB per slot is still 2x headroom. CRITICAL: app0 and app1 must stay
+#   EQUAL SIZE or OTA updates fail ("not enough space for OTA").
+#
+# WHY spiffs SHRANK TO 256KB
+#   This project uses no filesystem at all. spiffs is kept only so the
+#   partition table has a spare data slot; it was previously 1.25MB of waste.
+#
+# theme partition:
+#   type=data, subtype=0x40 (undefined), located by
+#   esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x40, "theme")
+#   (see src/theme_load.cpp)
+#
+# image partition:
+#   type=data, subtype=0x41 (undefined), read-only mapped via esp_partition_mmap
+#   by esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x41, "image")
+#   (see lib/themetool/image_blob.cpp)
+#   1MB. What fits, for TWO screens each needing background + boot logo +
+#   3 expression variants (10 images total):
+#     480x480 RGB565 = 450KB each  -> only 2 images fit
+#     240x240 RGB565 = 112KB each  -> all 10 images = 1125KB, just over
+#     192x192 RGB565 =  72KB each  -> all 10 images =  720KB, fits with room
+#   So: mix sizes. Background 240x240, faces/boot logos 192x192.
+#   NOTE: frame-by-frame FULL-SCREEN boot animation does not fit and cannot:
+#   480x480 x 12 frames x 2 screens = 10.5MB. Keep the boot animation
+#   procedural (boot_anim.cpp) and overlay one image per screen.
+#
+# NOTE: coredump is written at a FIXED offset by the Arduino core in some
+#   versions. If coredumps ever fail, move it elsewhere (any free offset works).
+#
+# CRITICAL: offsets/sizes must stay in sync with
+#   - lib/themetool/theme_store.h  (THEME_MAX_BYTES <= theme size)
+#   - lib/themetool/image_blob.h   (IMAGE_PARTITION_BYTES == image size)
+#   - tools/theme-editor/image-blob-build.js (PARTITION_BYTES, same value)
+#   - tools/theme-editor/README.md (esptool write_flash offset 0x254000)
+#
+# Why separate partitions instead of baking assets into the firmware:
+#   swapping a theme or an image only reflashes a small partition -- no
+#   firmware rebuild. See the "runtime theme" notes in lib/themetool/ui_theme.h.
+#
+# NOTE: keep this file pure ASCII. PlatformIO's CSV reader decodes it with the
+# system codepage (GBK on Chinese Windows), so non-ASCII comments break the build
+# with UnicodeDecodeError; a UTF-8 BOM breaks it differently (first field empty).
+#
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x100000,
+app1,     app,  ota_1,   0x110000, 0x100000,
+theme,    data, 0x40,    0x210000, 0x4000,
+spiffs,   data, spiffs,  0x214000, 0x40000,
+image,    data, 0x41,    0x254000, 0x100000,
+coredump, data, coredump,0x354000, 0x10000,

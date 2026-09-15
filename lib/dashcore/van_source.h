@@ -12,8 +12,17 @@
 //
 // 物理层(SN65HVD230 模块 + VanBus 库,或 RMT 驱动)由外部接好,
 // 把收到的原始帧转成 VanPacket 喂给 onPacket()。
+// 线路层(SOF/4B5B/CRC-15/帧尾)由 van_wire.h 负责;van_phy.h 把两者接起来。
+//
+// 字段宽度说明:协议规范里 IDEN 是 15 位(0x000/0xFFF 保留),CMD 是 5 位
+// (EXT/RAK/RW/RTR,EXT 为保留位、应为 1)。本结构按 12 位 IDEN + 4 位 CMD
+// 承载 —— 这是公开抓包的实际读法,15 位与 12 位的换算关系尚未用真实位流
+// 确认(见 ACCEPTANCE.md 的实车必验清单)。
 struct VanPacket {
-  uint16_t iden;
+  uint16_t iden;          // 12 位有效(高 4 位保留为 0)
+  uint8_t  cmd;           // 4 位命令字段(EXT 位隐含为 1,见上)
+  uint8_t  ack;           // 1 = 总线上有接收方应答(ACK 位为 dominant)
+  uint8_t  fcs_ok;        // 1 = CRC-15 校验通过
   uint8_t  data[28];
   uint8_t  len;
   uint32_t rx_ms;

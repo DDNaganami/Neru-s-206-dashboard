@@ -4,3 +4,11 @@
 .vscode/launch.json
 .vscode/ipch
 preview/frames/
+preview/frames_demo/
+
+# 预览时临时放的主题文件与运行日志（自己的主题请另存别处）
+# 注意:注释符是 #,不是 ; —— gitignore 不认分号,写成分号那几行等于没生效
+preview/theme-broken.json
+preview/theme-trunc.json
+preview/run*.log
+preview/run*.err

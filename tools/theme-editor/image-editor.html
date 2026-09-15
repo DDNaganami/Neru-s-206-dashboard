@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>206Dash 图片编辑器</title>
+<style>
+  :root{
+    --bg:#12141a; --panel:#1b1e26; --line:#2b3040; --text:#e6e9f0;
+    --dim:#98a0b3; --accent:#39C5FF; --warn:#ffcc66; --ok:#7CFF6B; --bad:#ff8080;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif}
+  header{padding:12px 20px;border-bottom:1px solid var(--line);
+         display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  header .hint{color:var(--dim);font-size:12px}
+  header .grow{flex:1}
+  main{display:grid;grid-template-columns:400px 1fr;min-height:calc(100vh - 52px)}
+  .left{border-right:1px solid var(--line);overflow-y:auto;max-height:calc(100vh - 52px)}
+  .right{padding:18px;overflow-y:auto;max-height:calc(100vh - 52px)}
+  section{border-bottom:1px solid var(--line);padding:12px 16px}
+  section h2{font-size:13px;margin:0 0 10px;color:var(--accent);
+             text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+  button{background:#262b38;color:var(--text);border:1px solid var(--line);
+         border-radius:6px;padding:7px 13px;cursor:pointer;font-size:13px}
+  button:hover{background:#303749}
+  button.primary{background:#1d4f6b;border-color:#2a6f96}
+  button.primary:hover{background:#246b91}
+  button.tiny{padding:2px 7px;font-size:12px}
+  button.danger{border-color:#7a3b3b}
+  .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .row{display:flex;align-items:center;gap:8px;margin:6px 0}
+  .row label{flex:0 0 92px;color:var(--dim);font-size:12px}
+  select,input[type=number],input[type=text]{
+    background:#0e1016;border:1px solid var(--line);color:var(--text);
+    border-radius:4px;padding:4px 6px;font-size:12px}
+  input[type=color]{width:38px;height:24px;border:1px solid var(--line);
+    background:#0e1016;border-radius:4px;padding:0;cursor:pointer}
+  .previews{display:flex;gap:20px;flex-wrap:wrap}
+  .screen{text-align:center}
+  .screen canvas{background:#000;border-radius:50%;display:block;
+                 box-shadow:0 6px 26px rgba(0,0,0,.55)}
+  .screen .cap{margin-top:6px;color:var(--dim);font-size:12px}
+  .item{border:1px solid var(--line);border-radius:6px;padding:9px 10px;margin:8px 0;
+        background:#171a22}
+  .item .top{display:flex;align-items:center;gap:8px}
+  .item .nm{font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .item canvas{background:#0a0b0f;border:1px solid var(--line);border-radius:4px;
+               display:block;margin:8px 0 4px;max-width:100%}
+  .item .meta{color:var(--dim);font-size:11px}
+  .status{margin-top:12px;padding:10px 12px;border-radius:6px;background:#171a22;
+          border:1px solid var(--line);color:var(--dim);font-size:12px;white-space:pre-wrap}
+  .status.err{border-color:#7a3b3b;color:#ffb4b4}
+  .status.ok{border-color:#3b6b46;color:var(--ok)}
+  .budget{height:8px;background:#0e1016;border:1px solid var(--line);border-radius:4px;
+          overflow:hidden;margin-top:6px}
+  .budget i{display:block;height:100%;background:var(--ok);width:0%}
+  .budget.over i{background:var(--bad)}
+  .note{color:var(--warn);font-size:12px;margin-top:6px}
+  .drop{border:2px dashed var(--line);border-radius:8px;padding:16px;text-align:center;
+        color:var(--dim);font-size:12px;cursor:pointer}
+  .drop.hot{border-color:var(--accent);color:var(--text)}
+  code{background:#0e1016;border:1px solid var(--line);border-radius:4px;padding:1px 5px;
+       font:12px Consolas,monospace}
+  .cmd{display:flex;gap:6px;align-items:center;margin-top:6px}
+  .cmd input{flex:1;font:12px Consolas,monospace}
+</style>
+</head>
+<body>
+<header>
+  <h1>206Dash 图片编辑器</h1>
+  <span class="hint">拖图进来 → 选用途 → 导出 image.bin → 刷到 image 分区（固件不用重编译）</span>
+  <span class="grow"></span>
+  <button id="btn-add">＋ 添加图片</button>
+  <button id="btn-export" class="primary">⬇ 导出 image.bin</button>
+</header>
+
+<main>
+  <div class="left">
+    <section>
+      <h2>1 · 图片列表</h2>
+      <div class="drop" id="drop">
+        把 PNG / JPG / WebP 拖到这里<br>（或点上面的「＋ 添加图片」）
+      </div>
+      <div id="list"></div>
+      <div class="note" id="list-note" style="display:none"></div>
+    </section>
+
+    <section>
+      <h2>2 · 尺寸与配色</h2>
+      <div class="row">
+        <label>预览底色</label>
+        <input type="color" id="bg-color" value="#141414">
+        <span class="hint" style="color:var(--dim);font-size:12px">
+          与主题里的 <code>bg_color</code> 一致：图片透明度会按这个底色合成</span>
+      </div>
+      <div class="row">
+        <label>弧线预览</label>
+        <input type="checkbox" id="show-arcs" checked>
+        <span class="hint" style="color:var(--dim);font-size:12px">叠一层仪表弧，看遮挡关系</span>
+      </div>
+      <div class="row">
+        <label>表情状态</label>
+        <select id="face-state">
+          <option value="idle">常态</option>
+          <option value="redline">红区</option>
+          <option value="surprise">惊喜</option>
+        </select>
+        <span class="hint" style="color:var(--dim);font-size:12px">左右屏各取自己那一套</span>
+      </div>
+      <div class="hint" style="color:var(--dim);font-size:12px">
+        开机画面不在这里：它是程序化扫表动画（淡入 → 扫表 → 睁眼），不占图片资源。
+      </div>
+    </section>
+
+    <section>
+      <h2>3 · 刷写</h2>
+      <div class="hint" style="color:var(--dim);font-size:12px">
+        image 分区在 <code>0x3D0000</code>，大小 128 KB。
+      </div>
+      <div class="cmd">
+        <input type="text" id="cmd" readonly>
+        <button class="tiny" id="btn-copy">复制</button>
+      </div>
+      <div class="hint" style="color:var(--dim);font-size:12px;margin-top:6px">
+        端口改成你电脑上的（设备管理器里看，一般是 COM3～COM7）。
+      </div>
+      <div class="toolbar" style="margin-top:10px">
+        <button id="btn-cheader">导出 C 数组（高级）</button>
+        <button id="btn-import-bin">载入已有 bin</button>
+      </div>
+      <input type="file" id="file-bin" accept=".bin" style="display:none">
+      <div class="hint" style="color:var(--dim);font-size:12px;margin-top:6px">
+        C 数组是给"想把图直接编进固件"用的；日常换图不需要。
+      </div>
+    </section>
+
+    <section>
+      <h2>占用</h2>
+      <div id="budget-text" class="hint" style="color:var(--dim);font-size:12px">还没有图片</div>
+      <div class="budget" id="budget-bar"><i></i></div>
+    </section>
+  </div>
+
+  <div class="right">
+    <div class="hint" style="color:var(--dim);font-size:12px;margin-bottom:10px">
+      下面按 480×480（设备分辨率）合成。背景图铺在弧线下面，表情图盖在最上层。
+    </div>
+    <div class="previews">
+      <div class="screen">
+        <canvas id="cv0" width="480" height="480"></canvas>
+        <div class="cap">左屏 · 车速表（+水温）</div>
+      </div>
+      <div class="screen">
+        <canvas id="cv1" width="480" height="480"></canvas>
+        <div class="cap">右屏 · 转速表</div>
+      </div>
+    </div>
+    <div id="status" class="status">就绪。先拖一张图进来。</div>
+  </div>
+</main>
+
+<input type="file" id="file-img" accept="image/*" multiple style="display:none">
+
+<!-- 打包器:同一份代码在 Node 里跑单测,保证界面导出的 bin 和设备端一致 -->
+<script src="image-blob-build.js"></script>
+<script>
+"use strict";
+
+if (typeof ImageBlob === "undefined") {
+  document.body.innerHTML =
+    '<div style="padding:40px;color:#ffb4b4;font:15px sans-serif">' +
+    '找不到 image-blob-build.js。<br><br>' +
+    '这个页面必须和 image-blob-build.js 放在同一个目录里。' +
+    '（下载时别只保存 HTML）</div>';
+  throw new Error("image-blob-build.js missing");
+}
+
+// ============================================================
+// 状态
+// ============================================================
+// 每张图:
+//   id, img(Image 对象), name, role, order, fit, w, h
+//   w/h 是**目标分辨率**（设备上真正占多少像素）—— 直接决定占用大小
+const SHOW_W = 480, SHOW_H = 480;      // 设备分辨率（与 THEME_DISPLAY_RES 一致）
+
+let items = [];
+let nextId = 1;
+let theme = { bg: "#141414" };
+
+// 角色:与 image_blob.h 的 ImageRole 一致。
+// ★ 左右屏分开列:车速表(左)和转速表(右)用不同的表情差分。
+//   编号错位会让"右屏显示成左屏的",而且不报错,
+//   所以 C 侧有一条 test_role_ids 专门钉住这组编号。
+//   9/10 是保留编号(曾是开机图),界面里不出现。
+const ROLES = [
+  { id: ImageBlob.ROLE.Background,     label: "表盘背景（两屏通用）" },
+  { id: ImageBlob.ROLE.FaceIdle,       label: "左屏表情 · 常态" },
+  { id: ImageBlob.ROLE.FaceRedline,    label: "左屏表情 · 红区" },
+  { id: ImageBlob.ROLE.FaceSurprise,   label: "左屏表情 · 惊喜" },
+  { id: ImageBlob.ROLE.FaceIdleR,      label: "右屏表情 · 常态" },
+  { id: ImageBlob.ROLE.FaceRedlineR,   label: "右屏表情 · 红区" },
+  { id: ImageBlob.ROLE.FaceSurpriseR,  label: "右屏表情 · 惊喜" },
+  { id: ImageBlob.ROLE.BootFrame,      label: "开机动画帧（多帧，按顺序播）" }
+];
+
+const FITS = [
+  { id: "contain", label: "保持比例（居中）" },
+  { id: "cover",   label: "保持比例（铺满，裁掉多余）" },
+  { id: "stretch", label: "拉伸铺满（会变形）" }
+];
+
+// 常见尺寸：480×480 一张就 450KB，塞不进 128KB 分区，
+// 所以默认给 240×240，并在这里明确写出来，避免用户第一次就撞墙。
+const SIZE_PRESETS = [240, 320, 360, 480];
+
+// ------------------------------------------------------------
+// 图像 → 目标分辨率的 RGBA
+// 先铺底色再画图，让 canvas 自己做 alpha 合成 ——
+// 这样 PNG 的透明区域就是底色，不会出现黑边。
+// ------------------------------------------------------------
+function renderToTarget(item, tw, th) {
+  const cv = document.createElement("canvas");
+  cv.width = tw; cv.height = th;
+  const ctx = cv.getContext("2d", { willReadFrequently: true });
+  ctx.fillStyle = theme.bg;
+  ctx.fillRect(0, 0, tw, th);
+
+  const src = item.img;
+  const sw = src.naturalWidth || src.width;
+  const sh = src.naturalHeight || src.height;
+  if (!sw || !sh) return null;
+
+  if (item.fit === "stretch") {
+    ctx.drawImage(src, 0, 0, tw, th);
+  } else {
+    const scale = (item.fit === "cover")
+      ? Math.max(tw / sw, th / sh)
+      : Math.min(tw / sw, th / sh);
+    const dw = Math.round(sw * scale), dh = Math.round(sh * scale);
+    const dx = Math.round((tw - dw) / 2), dy = Math.round((th - dh) / 2);
+    if (item.fit === "cover") {
+      // 铺满模式：只取中间那部分源图，避免超出画布边缘
+      const cutW = Math.min(sw, Math.round(tw / scale));
+      const cutH = Math.min(sh, Math.round(th / scale));
+      const cutX = Math.round((sw - cutW) / 2), cutY = Math.round((sh - cutH) / 2);
+      ctx.drawImage(src, cutX, cutY, cutW, cutH,
+                    Math.round((tw - cutW * scale) / 2), Math.round((th - cutH * scale) / 2),
+                    Math.round(cutW * scale), Math.round(cutH * scale));
+    } else {
+      ctx.drawImage(src, dx, dy, dw, dh);
+    }
+  }
+  return ctx.getImageData(0, 0, tw, th).data;
+}
+
+// ------------------------------------------------------------
+// 缩略图（列表里显示）
+// ------------------------------------------------------------
+function drawThumb(cv, item) {
+  const tw = item.w, th = item.h;
+  const maxW = 340, maxH = 120;
+  const s = Math.min(maxW / tw, maxH / th, 1);
+  cv.width = Math.max(1, Math.round(tw * s));
+  cv.height = Math.max(1, Math.round(th * s));
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = "#0a0b0f";
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  const rgba = renderToTarget(item, tw, th);
+  if (!rgba) return;
+  // 用临时的同尺寸 canvas 把结果画上去（保持像素对齐，便于肉眼判断有没有糊）
+  const tmp = document.createElement("canvas");
+  tmp.width = tw; tmp.height = th;
+  tmp.getContext("2d").putImageData(new ImageData(rgba, tw, th), 0, 0);
+  ctx.imageSmoothingEnabled = s < 1;
+  ctx.drawImage(tmp, 0, 0, cv.width, cv.height);
+}
+
+// ------------------------------------------------------------
+// 列表 UI
+// ------------------------------------------------------------
+const listEl = document.getElementById("list");
+
+function buildList() {
+  listEl.innerHTML = "";
+
+  items.forEach((item, idx) => {
+    const box = document.createElement("div");
+    box.className = "item";
+
+    const top = document.createElement("div");
+    top.className = "top";
+    const nm = document.createElement("div");
+    nm.className = "nm";
+    nm.textContent = (idx + 1) + ". " + item.name;
+    nm.title = item.name;
+    const up = document.createElement("button");
+    up.className = "tiny"; up.textContent = "↑";
+    up.disabled = idx === 0;
+    up.addEventListener("click", () => { swap(idx, idx - 1); });
+    const dn = document.createElement("button");
+    dn.className = "tiny"; dn.textContent = "↓";
+    dn.disabled = idx === items.length - 1;
+    dn.addEventListener("click", () => { swap(idx, idx + 1); });
+    const del = document.createElement("button");
+    del.className = "tiny danger"; del.textContent = "✕";
+    del.addEventListener("click", () => { items.splice(idx, 1); refresh(); });
+    top.append(nm, up, dn, del);
+
+    const thumb = document.createElement("canvas");
+    drawThumb(thumb, item);
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const bpp = ImageBlob.bytesPerPixel(ImageBlob.CF.RGB565);
+    meta.textContent = "原图 " + (item.img.naturalWidth || item.img.width) + "×" +
+      (item.img.naturalHeight || item.img.height) +
+      "　输出 " + item.w + "×" + item.h + " RGB565　" +
+      (item.w * item.h * bpp) + " 字节";
+
+    // 用途
+    const roleRow = document.createElement("div");
+    roleRow.className = "row";
+    const rl = document.createElement("label");
+    rl.textContent = "用途";
+    const rs = document.createElement("select");
+    ROLES.forEach(r => {
+      const o = document.createElement("option");
+      o.value = r.id; o.textContent = r.label;
+      if (item.role === r.id) o.selected = true;
+      rs.appendChild(o);
+    });
+    rs.addEventListener("change", () => { item.role = +rs.value; refresh(); });
+    roleRow.append(rl, rs);
+
+    // 播放顺序（同角色多帧时）
+    const orderRow = document.createElement("div");
+    orderRow.className = "row";
+    const ol = document.createElement("label");
+    ol.textContent = "顺序";
+    const on = document.createElement("input");
+    on.type = "number"; on.min = 0; on.max = 65535; on.value = item.order;
+    on.style.width = "70px";
+    on.addEventListener("input", () => { item.order = +on.value || 0; refresh(); });
+    orderRow.append(ol, on);
+
+    // 缩放方式
+    const fitRow = document.createElement("div");
+    fitRow.className = "row";
+    const fl = document.createElement("label");
+    fl.textContent = "缩放";
+    const fs = document.createElement("select");
+    FITS.forEach(f => {
+      const o = document.createElement("option");
+      o.value = f.id; o.textContent = f.label;
+      if (item.fit === f.id) o.selected = true;
+      fs.appendChild(o);
+    });
+    fs.addEventListener("change", () => { item.fit = fs.value; refresh(); });
+    fitRow.append(fl, fs);
+
+    // 目标宽度（高度按原图比例）
+    const szRow = document.createElement("div");
+    szRow.className = "row";
+    const sl = document.createElement("label");
+    sl.textContent = "目标宽度";
+    const sw = document.createElement("input");
+    sw.type = "number"; sw.min = 8; sw.max = 480; sw.step = 4; sw.value = item.w;
+    sw.style.width = "70px";
+    sw.addEventListener("change", () => {
+      const v = Math.max(8, Math.min(480, +sw.value || 240));
+      setSize(item, v); refresh();
+    });
+    szRow.append(sl, sw);
+    SIZE_PRESETS.forEach(p => {
+      const b = document.createElement("button");
+      b.className = "tiny"; b.textContent = p;
+      b.addEventListener("click", () => { setSize(item, p); refresh(); });
+      szRow.appendChild(b);
+    });
+
+    box.append(top, thumb, meta, roleRow, orderRow, fitRow, szRow);
+    listEl.appendChild(box);
+  });
+
+  // 同一角色多帧时提醒播放顺序
+  const note = document.getElementById("list-note");
+  const bootCount = items.filter(i => i.role === ImageBlob.ROLE.BootFrame).length;
+  if (bootCount > 1) {
+    note.style.display = "";
+    note.textContent = "有 " + bootCount + " 张开机帧：设备会按「顺序」从小到大播放。" +
+      "单帧开机动画的时长在主题编辑器里调（boot_* 字段）。";
+  } else {
+    note.style.display = "none";
+  }
+}
+
+function swap(a, b) {
+  const t = items[a]; items[a] = items[b]; items[b] = t;
+  refresh();
+}
+
+// 按原图比例算出目标高度，取偶数（RGB565 下偶数是 4 字节对齐，刷屏更快）
+function setSize(item, w) {
+  const sw = item.img.naturalWidth || item.img.width;
+  const sh = item.img.naturalHeight || item.img.height;
+  item.w = w;
+  item.h = Math.max(2, Math.round(w * sh / sw / 2) * 2);
+}
+
+// ------------------------------------------------------------
+// 预览：按角色把图贴到 480×480 上
+// ------------------------------------------------------------
+const ARC_DEFAULT = {
+  left: [
+    { start: 135, end: 405, r: 205, w: 24, color: "#39C5FF", t: 0.55 },
+    { start: 145, end: 330, r: 168, w: 10, color: "#7CFF6B", t: 0.60 }
+  ],
+  right: [
+    { start: 135, end: 405, r: 205, w: 24, color: "#FF5C5C", t: 0.42 }
+  ]
+};
+
+function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, color) {
+  const rad = d => (d - 90) * Math.PI / 180;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, rad(endDeg), rad(startDeg), true);
+  ctx.lineWidth = w; ctx.strokeStyle = "#232323"; ctx.globalAlpha = 0.6; ctx.stroke();
+  ctx.globalAlpha = 1;
+  if (t01 > 0.001) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, rad(startDeg + (endDeg - startDeg) * t01), rad(startDeg), true);
+    ctx.lineWidth = w; ctx.strokeStyle = color; ctx.stroke();
+  }
+}
+
+// 从图片列表里取某个角色的第一张（按 order 最小）
+function pick(role) {
+  const cand = items.filter(i => i.role === role);
+  if (!cand.length) return null;
+  cand.sort((a, b) => a.order - b.order);
+  return cand[0];
+}
+
+// 按「屏 + 表情状态」取图:左右屏用的是两套不同的差分
+function pickFace(which, state) {
+  const R = ImageBlob.ROLE;
+  const map = {
+    0: { idle: R.FaceIdle,      redline: R.FaceRedline,      surprise: R.FaceSurprise },
+    1: { idle: R.FaceIdleR,     redline: R.FaceRedlineR,     surprise: R.FaceSurpriseR }
+  };
+  return pick(map[which][state]);
+}
+
+// 把一张图贴到 (cx, cy) 为中心的位置
+function blitCentered(ctx, item, cx, cy, cw, ch) {
+  const rgba = renderToTarget(item, item.w, item.h);
+  if (!rgba) return;
+  const tmp = document.createElement("canvas");
+  tmp.width = item.w; tmp.height = item.h;
+  tmp.getContext("2d").putImageData(new ImageData(rgba, item.w, item.h), 0, 0);
+  ctx.drawImage(tmp, Math.round(cx - item.w / 2), Math.round(cy - item.h / 2));
+}
+
+// 预览哪一屏:480×480 里按用途贴图
+//   背景 → 弧线 → 表情（左右屏各取自己那一套）
+// 注意:**没有"开机画面"预览** —— 开机画面是程序化扫表动画(boot_anim.cpp),
+// 不依赖任何图片资源,所以这里没必要预演。
+function drawScreen(cv, which) {
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = theme.bg;
+  ctx.fillRect(0, 0, cv.width, cv.height);
+
+  const cx = cv.width / 2, cy = cv.height / 2;
+
+  // 1. 背景图（铺在弧线下面；两屏共用一张）
+  const bgItem = pick(ImageBlob.ROLE.Background);
+  if (bgItem) blitCentered(ctx, bgItem, cx, cy, cv.width, cv.height);
+
+  // 2. 弧线
+  if (document.getElementById("show-arcs").checked) {
+    const arcs = which === 0 ? ARC_DEFAULT.left : ARC_DEFAULT.right;
+    arcs.forEach(a => drawArc(ctx, cx, cy, a.r, a.w,
+                              a.start, a.end, a.t, a.color));
+  }
+
+  // 3. 表情图（最上层，左右屏各一套）
+  const face = pickFace(which, document.getElementById("face-state").value);
+  if (face) blitCentered(ctx, face, cx, cy, cv.width, cv.height);
+}
+
+// ------------------------------------------------------------
+// 打包
+// ------------------------------------------------------------
+// 每张图现算像素（不在内存里缓存大缓冲：480×480 一份就 450KB）
+function buildPayload() {
+  return items.map(item => {
+    const rgba = renderToTarget(item, item.w, item.h);
+    if (!rgba) throw new Error("「" + item.name + "」读不出像素，请重新添加");
+    return {
+      name: safeName(item.name),
+      w: item.w, h: item.h,
+      cf: ImageBlob.CF.RGB565,
+      role: item.role,
+      order: item.order,
+      pixels: ImageBlob.rgbaToRgb565(rgba, item.w, item.h)
+    };
+  });
+}
+
+// 设备端名字是 char[24] 且只当标识用，这里去掉可能出问题的字符
+function safeName(s) {
+  const base = String(s).replace(/[^\w\u4e00-\u9fa5.\-]/g, "_");
+  // ★ 名字按字节算长度（UTF-8 下一个汉字 3 字节），设备端缓冲只有 24 字节
+  let out = "";
+  for (const ch of base) {
+    if (byteLen(out + ch) > ImageBlob.NAME_MAX - 1) break;
+    out += ch;
+  }
+  return out || "img";
+}
+
+function byteLen(s) {
+  let n = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    n += c < 0x80 ? 1 : (c < 0x800 ? 2 : 3);
+  }
+  return n;
+}
+
+function budget() {
+  if (!items.length) return { total: 0, pct: 0 };
+  try {
+    const res = ImageBlob.build(buildPayload());
+    return { total: res.totalBytes, pct: 100 * res.totalBytes / ImageBlob.PARTITION_BYTES };
+  } catch (e) {
+    return { total: -1, pct: 0, error: e.message };
+  }
+}
+
+function refresh() {
+  buildList();
+  drawScreen(document.getElementById("cv0"), 0);
+  drawScreen(document.getElementById("cv1"), 1);
+
+  const b = budget();
+  const bar = document.getElementById("budget-bar");
+  const txt = document.getElementById("budget-text");
+  bar.classList.toggle("over", b.pct > 100);
+  bar.querySelector("i").style.width = Math.min(100, Math.max(0, b.pct)) + "%";
+
+  if (!items.length) {
+    txt.textContent = "还没有图片";
+  } else if (b.total < 0) {
+    txt.textContent = "打包会失败：" + b.error;
+  } else {
+    txt.textContent = b.total + " / " + ImageBlob.PARTITION_BYTES + " 字节（" +
+      b.pct.toFixed(1) + "%）";
+  }
+
+  document.getElementById("cmd").value =
+    ImageBlob.esptoolCommand("COM3", "image.bin");
+
+  if (items.length && b.total >= 0 && b.pct > 100) {
+    say("⚠ 超了 128KB 分区：" + b.total + " 字节。\n" +
+        "把「目标宽度」改小（480→240 会小到 1/4），或减少图片数量。", "err");
+  }
+}
+
+// ------------------------------------------------------------
+// 状态提示
+// ------------------------------------------------------------
+function say(msg, cls) {
+  const el = document.getElementById("status");
+  el.textContent = msg;
+  el.className = "status" + (cls ? " " + cls : "");
+}
+
+// ------------------------------------------------------------
+// 添加图片
+// ------------------------------------------------------------
+function addFiles(files) {
+  const list = Array.from(files || []);
+  if (!list.length) return;
+  if (items.length + list.length > ImageBlob.MAX_COUNT) {
+    say("最多 " + ImageBlob.MAX_COUNT + " 张图（设备端索引表就这么大）。", "err");
+    return;
+  }
+
+  let pending = list.length;
+  list.forEach((f, k) => {
+    if (!/^image\//.test(f.type)) {
+      say("「" + f.name + "」不是图片格式，跳过了。", "err");
+      if (--pending === 0) refresh();
+      return;
+    }
+    const url = URL.createObjectURL(f);
+    const img = new Image();
+    img.onload = () => {
+      // 默认 240×240：480 一张 450KB 会直接超分区，
+      // 第一次用的人不该一上来就撞墙
+      const target = 240;
+      const sh = img.naturalHeight, sw = img.naturalWidth;
+      items.push({
+        id: nextId++,
+        img,
+        name: f.name.replace(/\.[^.]+$/, ""),
+        role: items.length === 0 ? ImageBlob.ROLE.Background : ImageBlob.ROLE.BootFrame,
+        order: 0,
+        fit: "contain",
+        w: target,
+        h: Math.max(2, Math.round(target * sh / sw / 2) * 2)
+      });
+      URL.revokeObjectURL(url);
+      if (--pending === 0) {
+        refresh();
+        say("已添加 " + list.length + " 张。默认按 240 宽输出（省分区）；" +
+            "要全屏背景就点 480，但注意一张 480×480 要 450KB，装不下 128KB 分区。");
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      say("「" + f.name + "」打不开，可能不是浏览器认得的图片格式。", "err");
+      if (--pending === 0) refresh();
+    };
+    img.src = url;
+  });
+}
+
+// ------------------------------------------------------------
+// 导出
+// ------------------------------------------------------------
+document.getElementById("btn-export").addEventListener("click", () => {
+  if (!items.length) { say("还没有图片。", "err"); return; }
+  let res;
+  try {
+    res = ImageBlob.build(buildPayload());
+  } catch (e) {
+    say("打包失败：" + e.message, "err");
+    return;
+  }
+  if (res.totalBytes > ImageBlob.PARTITION_BYTES) {
+    say("打包结果是 " + res.totalBytes + " 字节，超过 128KB 分区，刷进去会被截断。\n" +
+        "先把「目标宽度」改小再导出。", "err");
+    return;
+  }
+  download(new Blob([res.blob], { type: "application/octet-stream" }), "image.bin");
+  say("已导出 image.bin（" + res.totalBytes + " 字节，" + res.entries.length + " 张图）。\n\n" +
+      "刷进去（端口按你电脑上的改）：\n" + ImageBlob.esptoolCommand("COM3", "image.bin") + "\n\n" +
+      "注意：图片要等真屏接上、固件里接好显示代码才会出现在屏幕上。", "ok");
+});
+
+document.getElementById("btn-cheader").addEventListener("click", () => {
+  if (!items.length) { say("还没有图片。", "err"); return; }
+  let res;
+  try { res = ImageBlob.build(buildPayload()); }
+  catch (e) { say("打包失败：" + e.message, "err"); return; }
+  const text = ImageBlob.toCHeader(res.blob);
+  download(new Blob([text], { type: "text/plain" }), "image_blob.h");
+  say("已导出 image_blob.h（" + res.blob.length + " 字节的 C 数组）。\n" +
+      "这是「想把图编进固件」用的高级选项，日常换图走 image.bin 就行。", "ok");
+});
+
+function download(blob, name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+document.getElementById("btn-copy").addEventListener("click", async () => {
+  const v = document.getElementById("cmd").value;
+  try { await navigator.clipboard.writeText(v); say("刷写命令已复制。", "ok"); }
+  catch {
+    const el = document.getElementById("cmd");
+    el.select(); document.execCommand("copy");
+    say("刷写命令已复制（兼容模式）。", "ok");
+  }
+});
+
+document.getElementById("btn-add").addEventListener("click", () => {
+  document.getElementById("file-img").click();
+});
+document.getElementById("file-img").addEventListener("change", e => {
+  addFiles(e.target.files); e.target.value = "";
+});
+
+// 拖放
+const drop = document.getElementById("drop");
+drop.addEventListener("click", () => document.getElementById("file-img").click());
+["dragenter", "dragover"].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("hot"); }));
+["dragleave", "drop"].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("hot"); }));
+drop.addEventListener("drop", e => addFiles(e.dataTransfer.files));
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop", e => e.preventDefault());
+
+// 底色 / 弧线 / 表情状态
+document.getElementById("bg-color").addEventListener("input", e => {
+  theme.bg = e.target.value; refresh();
+});
+document.getElementById("show-arcs").addEventListener("change", refresh);
+document.getElementById("face-state").addEventListener("change", refresh);
+
+// 载入已有 bin（方便在已有资源上继续改）
+document.getElementById("btn-import-bin").addEventListener("click", () =>
+  document.getElementById("file-bin").click());
+document.getElementById("file-bin").addEventListener("change", e => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    say("已读取 " + f.name + "（" + r.result.byteLength + " 字节）。\n" +
+        "注意：本工具不解析已有 bin 的像素，只用于核对大小与刷写命令。", "ok");
+    document.getElementById("cmd").value = ImageBlob.esptoolCommand("COM3", f.name);
+  };
+  r.readAsArrayBuffer(f);
+});
+
+// ------------------------------------------------------------
+refresh();
+say("就绪。\n" +
+    "1) 加图片  2) 选「用途」（背景 / 开机帧 / 表情）  3) 导出 image.bin\n" +
+    "主题配色请用 tools\\theme-editor\\index.html，" +
+    "两者是分开的两个分区，可以各自单独刷。");
+</script>
+</body>
+</html>
