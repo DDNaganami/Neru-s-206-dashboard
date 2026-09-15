@@ -143,6 +143,40 @@ uint8_t BitDecoder::takeByte() {
   return b;
 }
 
+BitDecoder::Snap BitDecoder::snap() const {
+  Snap s;
+  s.phase = mPhase;
+  s.bit_count = mBitCount;
+  s.recessive_run = mRecessiveRun;
+  s.dom_run = mDomRun;
+  s.since_eod = mSinceEod;
+  s.ack_dominant = mAckDominant;
+  s.armed = mArmed;
+  s.has_level = mHasLevel;
+  s.level = mLevel;
+  s.queued = (int)mCount;
+  s.overflow = mOverflow;
+  s.need_resync = mNeedResync;
+  return s;
+}
+
+// 只负责"让解码器放下尾部残留并切到帧已结束",不关帧(关帧在 VanPhyWire::finish)
+BitDecoder::Ev BitDecoder::finish() {
+  if (mPhase != FramePhase::InFrame && !mArmed) return Ev::None;
+
+  mPhase = FramePhase::Eof;
+  // 丢弃尾部那点凑不满一个字节的半截位:它们是帧界之后的残留,
+  // 留到下一帧会变成开头多出来的一个字节。
+  mByte = 0;
+  mBitCount = 0;
+  mMask = 0x80u;
+  // ★ 必须同时松开 mArmed:pushEdge 每个槽都会按它决定 phase,
+  //   不清的话下一次 pushEdge 立刻把 phase 又推回 InFrame,
+  //   finish() 之后永远回不到 Idle(实测:断言 phase==Idle 报 Was 2)。
+  mArmed = false;
+  return Ev::EndOfFrame;
+}
+
 // 一个 TS 的采样交给 4B/5B 解码:每 5 个 TS 的第 5 个是 E-Manchester 编码位
 // (丢弃),其余 4 位按 MSB-first 装进当前字节。
 void BitDecoder::processSlot(bool level) {
@@ -195,15 +229,24 @@ BitDecoder::Ev BitDecoder::pushEdge(uint64_t ns, bool level) {
 
   // 帧间空隙:两次边沿间隔超过阈值,说明总线已进入空闲。此时**不能**把
   // 这个区间逐槽展开 —— 一个几十毫秒的空闲会变成上千个"帧内槽",
-  // 直接冲垮相位与帧尾判定。只报一次帧尾并重新对齐。
+  // 直接冲垮相位与帧尾判定。
+  //
+  // ★ 这条路径**不关帧**:它只复位解码器的相位与帧阶段,
+  //   绝不碰解析器缓冲(resync() 不动 fp_,字节是安全的)。
+  //   帧的收尾统一由 VanPhyWire::finish() 负责 —— 那里才问解析器
+  //   "手上有没有待收帧"。曾经在这里 return EndOfFrame,结果 VanPhyWire::onEdge
+  //   收到后抢先把帧收掉,而那一刻缓冲已被消费成空(实测
+  //   `finish 前: frames=1 pending=0 bytes=0`)。
   // 阈值必须远大于帧内最长连续 recessive(全 1 数据字节 = 10 槽 = 80µs)。
   if (dt_ns > mGapTimeoutNs) {
     const bool was_eof = mEofLatched;
-    resync();
+    resync();                   // 只动解码器相位,不动 fp_ 的字节
+    mPhase = FramePhase::Eof;   // 标记"这一段结束了",供 finish() 参考
     mLevel = level;
     mCurNs = ns;
-    mEofLatched = true;         // 空隙内不重复报帧尾
-    return was_eof ? Ev::None : Ev::EndOfFrame;
+    mEofLatched = true;         // 空隙内不重复报
+    (void)was_eof;
+    return Ev::None;            // ★ 不报 EndOfFrame:关帧不是这条路径的事
   }
 
   // 连续 recessive 的计数只用于 ACK 窗口识别与总线空闲判定;

@@ -29,8 +29,19 @@ class VanPhyWire : public VanPhy {
   void tick(uint32_t now_ms) override;
 
   // 喂一个电平变化。t_us = 该边沿的时间戳(µs,单调递增);
-  // level = 变化后的电平(true = recessive/高)。返回本次是否解出一帧。
+  // level = 变化后的电平(true = recessive/高)。
+  // ★ 本函数**不关帧**(不再在 EndOfFrame 时调 endFrame)—— 收尾只发生在 finish()。
   bool onEdge(uint32_t t_us, bool level);
+
+  // ★ 唯一负责关帧的入口:问解析器"手上有没有待收帧",有就 endFrame() 并报包。
+  //   真实硬件里由"总线空闲超时"驱动;测试夹具里喂完最后一帧后显式调。
+  //   返回是否真的收出一帧。
+  bool finish();
+
+  // 诊断:解码器相位/计数快照,以及"是否有待收帧"
+  van::BitDecoder::Snap snap() const { return dec_.snap(); }
+  bool framePending() const { return fp_.inFrame(); }
+  uint16_t pendingBytes() const { return fp_.pendingBytes(); }
 
   // 统计(实车调线/确认信号质量用)
   struct Stats {
@@ -58,4 +69,6 @@ class VanPhyWire : public VanPhy {
   van::FrameParser fp_;
   ByteRelay relay_{};
   Stats stats_{};
+  uint64_t last_edge_ns_ = 0;      // finish() 用它当帧结束时间
+  bool frame_started_ = false;     // 解码器报过 InFrame(诊断/测试用)
 };

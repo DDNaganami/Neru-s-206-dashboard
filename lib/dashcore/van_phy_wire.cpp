@@ -13,39 +13,60 @@ bool VanPhyWire::onEdge(uint32_t t_us, bool level) {
 
   const uint64_t t_ns = (uint64_t)t_us * 1000ull;
   relay_.now_ns = t_ns;        // 回调时用它给字节打时间戳
+  last_edge_ns_ = t_ns;        // finish() 收尾时用它当帧结束时间
 
   const van::BitDecoder::Ev ev = dec_.pushEdge(t_ns, level);
   if (dec_.overflowed()) ++stats_.frames_dropped;
 
-  // 收尾判据只有两个,都必须是**可靠**的:
-  //   1) 缓冲里已经凑出一个 FCS 校验通过的完整帧 —— 这是唯一真正可靠的
-  //      "帧已完整"信号。"8 个连续 recessive"不能当帧尾用:帧内合法数据
-  //      本身就可能带出 8 个连续 recessive(实测 8A 22 5A 这帧的帧体里
-  //      就有一段),照它收尾会在帧中途把帧截断。
-  //   2) 总线进入空闲(解码器报 EndOfFrame):此时无论缓冲里有没有完整帧,
-  //      都要收尾并复位解码器相位,好接下一帧。
-  const bool idle = (ev == van::BitDecoder::Ev::EndOfFrame);
-  if (!fp_.hasCompleteFrame() && !idle) return false;
-
-  van::Frame f;
-  const bool ok = fp_.endFrame(t_ns, &f, dec_.ackDominant());
-  if (ok) {
-    // 只有真正解析出帧才计入统计。
-    // 一帧物理帧可能触发两次收尾(先"凑出完整帧"、后"总线空闲"),
-    // 第二次缓冲已清空会失败 —— 计进去会让 frames 虚高(实测 1 帧报 2)。
-    ++stats_.frames;
-    if (f.fcs_ok) ++stats_.frames_fcs_ok;
-    if (sink_) {
-      VanPacket pkt{};
-      van::frameToPacket(f, t_us / 1000u, &pkt);
-      sink_->onPacket(pkt);
-    }
-  }
-  return ok;
+  // ★ 帧的收尾**只发生在 finish() 里**,onEdge 不再抢收。
+  //
+  // 起因(实测):onEdge 原先在 ev == EndOfFrame 时也会调 endFrame()。
+  // 而夹具在帧体之后还会发一条"收尾"边沿,那条边沿正好触发 EndOfFrame ——
+  // 于是帧在 finish() 之前就被收掉了,而且**那时解析器缓冲已经被消费成空**,
+  // 事后无论怎么改 finish() 都救不回那些字节。
+  // 症状就是 `finish 前: frames=1 pending=0 bytes=0`。
+  //
+  // 现在分工很清楚:
+  //   onEdge()  只负责喂边沿(不再关帧)
+  //   finish()  唯一负责收尾(问解析器有没有待收帧,有就 endFrame)
+  frame_started_ = (dec_.snap().phase == van::FramePhase::InFrame);
+  return false;
 }
 
 void VanPhyWire::tick(uint32_t now_ms) {
   (void)now_ms;
   // 线路层是纯数据驱动的,没有需要轮询的硬件状态。
   // 若将来改成 RMT/DMA 环形缓冲,在这里读 FIFO。
+}
+
+bool VanPhyWire::finish() {
+  // ★ 判据以**解析器**为准(手上有没有待收帧),不看解码器相位:
+  //   空闲超时那条路径会把解码器相位清成 Idle,但字节还在解析器缓冲里,
+  //   那时候问解码器会得到"没有帧",字节就白丢了。
+  if (!fp_.inFrame()) return false;
+
+  // 让解码器把尾部半截丢掉并切到"帧已结束"(不在这里判帧界,只是对齐状态)
+  dec_.finish();
+
+  van::Frame f;
+  const uint64_t t_ns = last_edge_ns_;
+  const bool ok = fp_.endFrame(t_ns, &f, dec_.ackDominant());
+  if (ok) {
+    ++stats_.frames;
+    if (f.fcs_ok) ++stats_.frames_fcs_ok;
+    if (sink_) {
+      VanPacket pkt{};
+      van::frameToPacket(f, (uint32_t)(t_ns / 1000000ull), &pkt);
+      sink_->onPacket(pkt);
+    }
+  } else {
+    ++stats_.frames_dropped;
+  }
+  // 收尾完成后回到 Idle:finish() 是"关帧"的终点,下一帧从干净状态开始。
+  // 注意必须用 markIdle() —— dec_.resync() 在这里不够:它也会清 mArmed,
+  // 而 mArmed 一清,下一次 pushEdge 里的 phase 赋值又按"未武装"回落,
+  // 结果 finish() 之后读到的 phase 仍是 Eof 而不是 Idle
+  // (实测:断言 phase==Idle 报 Was 2)。
+  dec_.markIdle();
+  return ok;
 }

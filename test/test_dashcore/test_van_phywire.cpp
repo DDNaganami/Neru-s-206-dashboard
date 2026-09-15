@@ -47,9 +47,10 @@ class CaptureSink : public VanSink {
 //   - 帧首沿不能与空闲沿同刻:Δt=0 会被钳成 1 个槽,吃掉帧的第一槽。
 //
 // 帧后**必须按槽展开一段 recessive**(tail_slots),不能只给一个边沿:
-// 解码器按"沿之间有多少个槽"推进,而 EOF 判据要数到 8 个连续 recessive 槽;
-// 若尾部只用一个长边沿表示,解码器看不到那些槽,帧永远不会收尾
-// (实测:单帧测试 frames=0,帧被憋在解析器里)。
+// 解码器按"沿之间有多少个槽"推进,EOF 判据要数到 8 个连续 recessive 槽。
+//
+// ★ 收尾统一由 phy.finish() 负责(onEdge 不再关帧,见 van_phy_wire.h)。
+//   本函数末尾只认 finish() 的返回值 —— 那正是"帧界"这条链路的证明点。
 bool feedFrame(VanPhyWire& phy, const Frame& f, uint32_t base_us) {
   uint8_t slots[512];
   const uint32_t n = encodeFrame(f, slots, sizeof(slots));
@@ -74,10 +75,8 @@ bool feedFrame(VanPhyWire& phy, const Frame& f, uint32_t base_us) {
     level = true;
     phy.onEdge(base_us + (origin_slot + n + i) * 8u, level);
   }
-  // 收尾:拉成 dominant,把最后一段区间结算出来
-  const uint32_t end_slot = origin_slot + n + tail_slots;
-  phy.onEdge(base_us + end_slot * 8u, false);
-  return true;
+  // 收尾:显式结束本帧(唯一关帧入口)。返回是否真的收出一帧。
+  return phy.finish();
 }
 
 }  // namespace
@@ -195,7 +194,90 @@ static void test_chain_feeds_van_source(void) {
   TEST_ASSERT_EQUAL_FLOAT(799.0f, src.rpm());
 }
 
-// frameToPacket 的容量截断:超过 VanPacket 容量的数据按上限截断而不是越界
+// ============================================================
+// finish():唯一关帧入口
+//
+// 起因(实测):onEdge 原先在解码器报 EndOfFrame 时也会调 endFrame(),
+// 而夹具在帧体之后还有一条"收尾"边沿会触发它 —— 于是帧在 finish() 之前
+// 就被收掉了,而且那时解析器缓冲已经被消费成空,事后怎么改 finish()
+// 都救不回那些字节。症状: `finish 前: frames=1 pending=0 bytes=0`。
+//
+// 现在分工:onEdge 只喂边沿;finish() 问解析器有没有待收帧,有才 endFrame。
+// 这条测试钉住的就是这个分工。
+// ============================================================
+static void test_finish_closes_pending_frame(void) {
+  Frame f;
+  f.ident = 0x8C4;
+  f.cmd = 0xC;
+  f.len = 3;
+  f.data[0] = 0x8A; f.data[1] = 0x22; f.data[2] = 0x5A;
+
+  uint8_t slots[512];
+  const uint32_t n = encodeFrame(f, slots, sizeof(slots));
+  TEST_ASSERT_TRUE(n > 0);
+
+  VanPhyWire phy;
+  VanSource src;
+  CaptureSink sink(&src);
+  phy.begin();
+  phy.setSink(&sink);
+
+  // 手动喂边沿(不用 feedFrame —— 它末尾会调 finish)
+  const uint32_t base_us = 1000;
+  const uint32_t origin = 1000;
+  bool level = true;
+  phy.onEdge(base_us, level);
+  for (uint32_t i = 0; i < n; ++i) {
+    const bool sl = slots[i] != 0;
+    if (sl == level) continue;
+    level = sl;
+    phy.onEdge(base_us + (origin + i) * 8u, level);
+  }
+
+  // ---- 你要求的两行证据:finish 前 ----
+  // 用一条"故意失败"的断言把数字带进测试报告(PlatformIO 吞掉 stdout,
+  // printf 看不到)。它断言的是必然成立的条件,所以不会真的让测试变红,
+  // 但报告里会留下这一行数值,方便核对。
+  char ev1[160];
+  snprintf(ev1, sizeof(ev1),
+           "finish 前: frames=%d pending=%d bytes=%u phase=%d",
+           (int)phy.stats().frames, (int)phy.framePending(),
+           (unsigned)phy.pendingBytes(), (int)phy.snap().phase);
+  TEST_ASSERT_TRUE_MESSAGE(phy.stats().frames == 0, ev1);
+
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)phy.stats().frames,
+                                "finish 前不该有帧被收掉(空闲路径还在抢收?)");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, sink.count, "finish 前不该报包");
+  TEST_ASSERT_TRUE_MESSAGE(phy.framePending(), "finish 前解析器手上应当有一帧");
+  TEST_ASSERT_TRUE_MESSAGE(phy.pendingBytes() > 0, "finish 前应有已收的整字节");
+
+  // ---- finish 后 ----
+  TEST_ASSERT_TRUE_MESSAGE(phy.finish(), "finish() 没能收尾当前帧");
+  char ev2[160];
+  snprintf(ev2, sizeof(ev2),
+           "finish 后: frames=%d pending=%d phase=%d",
+           (int)phy.stats().frames, (int)phy.framePending(),
+           (int)phy.snap().phase);
+  TEST_ASSERT_TRUE_MESSAGE(phy.stats().frames == 1, ev2);
+
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)phy.stats().frames, "finish 后应恰好 1 帧");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, sink.count, "finish 后应报出 1 个包");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)phy.stats().frames_fcs_ok, "FCS 应通过");
+  TEST_ASSERT_FALSE_MESSAGE(phy.framePending(), "finish 后不该再有挂着的帧");
+  TEST_ASSERT_EQUAL_INT_MESSAGE((int)van::FramePhase::Idle, (int)phy.snap().phase,
+                                "finish 后 phase 应回到 Idle");
+  TEST_ASSERT_EQUAL_HEX16(0x8C4, sink.last.iden);
+  TEST_ASSERT_EQUAL_HEX8(0xC, sink.last.cmd);
+  TEST_ASSERT_EQUAL_UINT8(3, sink.last.len);
+  TEST_ASSERT_EQUAL_UINT8(0x8A, sink.last.data[0]);
+  TEST_ASSERT_TRUE(sink.last.fcs_ok);
+
+  // 幂等
+  TEST_ASSERT_FALSE_MESSAGE(phy.finish(), "没有待收帧时 finish() 应返回 false");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)phy.stats().frames, "重复 finish() 不该多出帧");
+}
+
+
 static void test_frame_to_packet_truncates(void) {
   Frame f;
   f.ident = 0x824; f.cmd = 0xC;
@@ -216,6 +298,7 @@ static void test_frame_to_packet_truncates(void) {
 }
 
 void register_van_phy_wire_tests(void) {
+  RUN_TEST(test_finish_closes_pending_frame);
   RUN_TEST(test_golden_iden_cmd_through_chain);
   RUN_TEST(test_chain_consecutive_frames);
   RUN_TEST(test_chain_preserves_iden_bits);

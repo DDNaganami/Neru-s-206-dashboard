@@ -51,6 +51,10 @@ static const uint8_t kCmdRakMask   = 0x4u;       // CMD 位 2:RAK,1 = 无需应�
 static const uint8_t kCmdRwMask    = 0x2u;       // CMD 位 1:1 = 读, 0 = 写
 static const uint8_t kCmdRtrMask   = 0x1u;       // CMD 位 0:1 = 无数据(请求)
 
+// 帧阶段。引入它只为一件事:让 finish() 能表达"这一段结束了"。
+// ★ 本轮**不引入 10 TS SOF 匹配器**,SOF 的识别方式没变(仍是整字节 0x0F)。
+enum class FramePhase : uint8_t { Idle = 0, InFrame = 1, Eof = 2 };
+
 // CRC-15:x^15 + x^14 + x^10 + x^8 + x^7 + x^4 + x^3 + 1
 uint16_t crc15(const uint8_t* data, uint16_t len);
 uint16_t crc15_extend(uint16_t crc, uint8_t byte);
@@ -195,6 +199,40 @@ class BitDecoder {
   // 只读查看队列头的值(调试用)
   uint8_t peekByte() const { return mCount ? mQueue[mHead] : 0; }
 
+  // 当前帧阶段(诊断用;帧的收尾以 FrameParser 是否有待收帧为准)
+  FramePhase phase() const { return mPhase; }
+
+  // 收尾之后把阶段落回 Idle(仅供 VanPhyWire::finish 收尾用)。
+  // 单独开这个口子而不是复用 resync():resync() 会一并清掉相位对齐状态,
+  // 在这里用它反而会让 finish() 之后读到的 phase 不是 Idle。
+  void markIdle() { mPhase = FramePhase::Idle; mArmed = false; }
+
+  // 诊断快照:排查"帧为什么没收尾"时,光看返回值(Ev)不够,
+  // 需要同时看到相位与连续 recessive 计数。有了它就不用往库里插
+  // #ifdef printf 探针(上两次就因为探针编译不过白费了两轮)。
+  struct Snap {
+    FramePhase phase = FramePhase::Idle;
+    uint16_t   bit_count = 0;      // 当前字节已过的 TS 数(0..9)
+    uint16_t   recessive_run = 0;  // 连续 recessive 槽计数
+    uint8_t    dom_run = 0;        // 连续 dominant 槽数(EOD 判据)
+    uint8_t    since_eod = 0;      // EOD 之后过了几个槽(255 = 还没见到 EOD)
+    bool       ack_dominant = false;
+    bool       armed = false;      // 是否已见过 SOF(开始收字节)
+    bool       has_level = false;
+    bool       level = false;
+    int        queued = 0;
+    bool       overflow = false;
+    bool       need_resync = false;
+  };
+  Snap snap() const;
+
+  // ★ 明确结束当前帧:把"帧界"从"还有没有边沿"里解耦出来。
+  //   正在收帧 → 丢弃尾部半截位、切到 Eof、返回 Ev::EndOfFrame
+  //   不在帧内 → 返回 Ev::None(幂等)
+  //   注意:它**不关帧** —— 真正调 FrameParser::endFrame() 的是
+  //   VanPhyWire::finish()。这里只负责让解码器放下尾部残留。
+  Ev finish();
+
   // 最近一帧的 ACK 位是否为 dominant(1 = 总线上有接收方应答)。
   //
   // 协议里 ACK 是 EOD 之后的 2 个 TS,第 2 位被接收方拉成 dominant 表示应答。
@@ -221,7 +259,8 @@ class BitDecoder {
   bool     mAckDominant = false;   // ACK 窗口内是否出现 dominant
   bool     mNeedResync = false;    // 见过 EOF,下一沿前重新对齐字节相位
   bool     mArmed = false;         // 见到 SOF 后才开始把字节入队
-  bool     mEofLatched = false;    // 本次空隙已报过帧尾(避免重复报)
+  FramePhase mPhase = FramePhase::Idle;   // 帧阶段(finish() 用)
+  bool     mEofLatched = false;    // 本次空隙已报过(避免重复报)
   // 帧间空隙超时(默认 1ms = 125 槽)。必须远大于帧内最长连续 recessive
   // (全 1 数据字节是 10 槽 = 80µs),又远小于帧间空闲(实车常见 ms 级)。
   uint64_t mGapTimeoutNs = 1000000ull;
@@ -252,9 +291,15 @@ class FrameParser {
   // 合法数据误触发(实测 8A 22 5A 这帧的帧体里就有一段),不能当帧尾用。
   bool hasCompleteFrame() const;
 
-  // 通知"帧结束"(总线空闲或超时):收尾当前帧。
+  // 通知"帧结束":收尾当前帧。
   // ack_dominant 传 BitDecoder::ackDominant(),会记进 Frame::ack。
   bool endFrame(uint64_t ns, Frame* out, bool ack_dominant = false);
+
+  // 手上是否攒着一帧还没收尾(诊断/测试用)。
+  // 区分"根本没收到帧"和"收到了但没收尾" —— 这两种的修法完全不同,
+  // 只看 frames 计数分不出来。
+  bool inFrame() const { return mInFrame; }
+  uint16_t pendingBytes() const { return mCount; }
 
  private:
   bool mInFrame = false;
