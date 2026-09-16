@@ -26,12 +26,11 @@ static const float kCoolantHot  = 105.0f;    // 水温·高:过热告警
 // 取 15 km/h/s ≈ 0.42g(弹射起步)作为惊喜阈值,假数据波峰也能偶尔触发。
 static const float kSurpriseAccelPerSec = 15.0f;
 
-static FaceState g_face{Face::Idle, Face::Idle, 0};
+static FaceState g_face{Face::Idle, 0};
 static float prev_speed = 0.0f;
 static uint32_t prev_now = 0;
-static uint32_t next_blink_ms = 3000;
 
-// 稳态表情(不含眨眼/惊喜这两个瞬态)。
+// 稳态表情(不含惊喜这个瞬态)。
 // 优先级从上到下 —— 越靠上越"该被看到":
 //   红区 > 过热 > 冷车 > 运动 > 巡航 > 常态
 // 红区压过水温异常:正在拉转速时,驾驶者要看的是转速。
@@ -50,52 +49,36 @@ Face face_update(const VehicleState& s, uint32_t now) {
   prev_now = now;
   if (dt_ms > 1000) dt_ms = 1000;  // 停帧/时间回环保护
 
-  // 眨眼计时从**第一帧**开始算,而不是写死 3000 这个绝对毫秒数:
-  // 否则设备/预览如果在开机后过一会儿才开始出数据,第一帧就会立刻眨一下
-  // (看起来像"开机抽了一下")。测试里 face_reset() 之后同理。
-  if (first_frame) next_blink_ms = now + 3000;
-
   float dv_s = 0.0f;
   if (dt_ms >= 10) dv_s = (s.speed_kmh - prev_speed) * 1000.0f / (float)dt_ms;
   prev_speed = s.speed_kmh;
 
   const Face base = base_face(s);
 
+  // 惊喜:压过一切稳态,持续 400ms
   if (dv_s > kSurpriseAccelPerSec) {
     g_face.face = Face::Surprise;
-    g_face.base = base;
     g_face.until_ms = now + 400;
     return g_face.face;
   }
-
   if (now < g_face.until_ms) {
-    return g_face.face;
+    return g_face.face;      // 还在惊喜的持续期内
   }
 
-  if (base == Face::Idle && now >= next_blink_ms) {
-    g_face.face = Face::Blink;
-    g_face.base = Face::Idle;
-    g_face.until_ms = now + 120;
-    next_blink_ms = now + 3000 + (now % 2000);
-    return g_face.face;
-  }
-
+  // 稳态:每次都按当前数据现算,不缓存
   g_face.face = base;
-  g_face.base = base;
   return g_face.face;
 }
 
 void face_reset() {
-  g_face = FaceState{Face::Idle, Face::Idle, 0};
+  g_face = FaceState{Face::Idle, 0};
   prev_speed = 0.0f;
   prev_now = 0;
-  next_blink_ms = 3000;
 }
 
 const char* face_name(Face f) {
   switch (f) {
     case Face::Idle: return "idle";
-    case Face::Blink: return "blink";
     case Face::Cruise: return "cruise";
     case Face::Sport: return "sport";
     case Face::Redline: return "redline";

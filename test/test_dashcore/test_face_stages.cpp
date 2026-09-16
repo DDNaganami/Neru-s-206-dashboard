@@ -71,6 +71,35 @@ static void test_levels_differ_within_group(void) {
   }
 }
 
+// ★ 每组只能变**自己那一维**,另外两维必须固定。
+//
+// 这条是用户实际试用时抓出来的:原来"速度组"把转速也一起写成 1500/2600
+// (为了借转速凑出巡航/运动脸),结果他在阶段模拟里点"速度·中"时,
+// **转速表跟着一起动** —— 画面里两个表同时变,根本看不出这一档改了什么。
+//
+// 正确做法是让每组只动自己那一维:速度 ≥30/≥90 这两条阈值本身就够给出
+// 巡航/运动,不需要借转速。所以速度组固定 rpm=900(怠速)、水温组固定 speed=0,
+// 转速组固定 speed=0。
+static void test_stage_groups_isolate_one_dimension(void) {
+  for (uint8_t i = 0; i < kFaceStageCount; ++i) {
+    const FaceStage& st = kFaceStages[i];
+    char msg[128];
+    if (strcmp(st.group, "speed") == 0) {
+      snprintf(msg, sizeof(msg), "速度组 %s 不应改转速(转速表会跟着动)", st.level);
+      TEST_ASSERT_EQUAL_FLOAT_MESSAGE(900.0f, st.rpm, msg);
+    } else if (strcmp(st.group, "rpm") == 0) {
+      snprintf(msg, sizeof(msg), "转速组 %s 不应改速度(速度表会跟着动)", st.level);
+      TEST_ASSERT_EQUAL_FLOAT_MESSAGE(0.0f, st.speed_kmh, msg);
+    }
+    // 三组都不该把水温当作"顺带变的量" —— 水温只由水温组负责
+    if (strcmp(st.group, "coolant") != 0) {
+      snprintf(msg, sizeof(msg), "%s 组 %s 不应改水温(水温数字/内弧会跟着动)",
+               st.group, st.level);
+      TEST_ASSERT_EQUAL_FLOAT_MESSAGE(85.0f, st.coolant_c, msg);
+    }
+  }
+}
+
 // 降级链:每一行都得**从自己开始**,而且必须能一路退到 Idle(常态),
 // 否则"只导入一张常态图"的用户会遇到某些状态无图可切。
 static void test_fallback_chain(void) {
@@ -95,20 +124,20 @@ static void test_fallback_chain(void) {
 // 表里的槽位编号必须就是 Face 的枚举值(网页端按下标找角色,错一位全乱)
 static void test_slot_index_equals_face(void) {
   TEST_ASSERT_EQUAL_UINT8(0, (uint8_t)Face::Idle);
-  TEST_ASSERT_EQUAL_UINT8(1, (uint8_t)Face::Blink);
-  TEST_ASSERT_EQUAL_UINT8(2, (uint8_t)Face::Cruise);
-  TEST_ASSERT_EQUAL_UINT8(3, (uint8_t)Face::Sport);
-  TEST_ASSERT_EQUAL_UINT8(4, (uint8_t)Face::Redline);
-  TEST_ASSERT_EQUAL_UINT8(5, (uint8_t)Face::Surprise);
-  TEST_ASSERT_EQUAL_UINT8(6, (uint8_t)Face::Cold);
-  TEST_ASSERT_EQUAL_UINT8(7, (uint8_t)Face::Hot);
-  TEST_ASSERT_EQUAL_UINT8(8, (uint8_t)Face::Count);
+  TEST_ASSERT_EQUAL_UINT8(1, (uint8_t)Face::Cruise);
+  TEST_ASSERT_EQUAL_UINT8(2, (uint8_t)Face::Sport);
+  TEST_ASSERT_EQUAL_UINT8(3, (uint8_t)Face::Redline);
+  TEST_ASSERT_EQUAL_UINT8(4, (uint8_t)Face::Surprise);
+  TEST_ASSERT_EQUAL_UINT8(5, (uint8_t)Face::Cold);
+  TEST_ASSERT_EQUAL_UINT8(6, (uint8_t)Face::Hot);
+  TEST_ASSERT_EQUAL_UINT8(7, (uint8_t)Face::Count);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Count, kFaceSlotCount);
 }
 
 void register_face_stage_tests(void) {
   RUN_TEST(test_stage_table);
   RUN_TEST(test_levels_differ_within_group);
+  RUN_TEST(test_stage_groups_isolate_one_dimension);
   RUN_TEST(test_fallback_chain);
   RUN_TEST(test_slot_index_equals_face);
 }

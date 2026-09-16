@@ -70,22 +70,21 @@ static const uint16_t kImageBlobVersion = 1;
 //   改编号会让已经导出的图片全部错位,所以只修注释语义、不动数字。
 //
 // ---- 一套表情有几张? ----
-// 表情状态一共 8 个(见 lib/dashcore/expression.h 的 Face),**每个状态一张图**。
-// 最早的 3 张(常态/红区/惊喜)编号不动;另外 5 张(眨眼/巡航/运动/冷车/过热)
-// **从 11 开始接**(9/10 是保留编号,见下面 test_role_ids 的理由)——
-// 这样只导入 3 张的老做法继续能用,新状态会自动降级到最近的那张
+// 表情状态一共 7 个(见 lib/dashcore/expression.h 的 Face),**每个状态一张图**。
+// 最早的 3 张(常态/红区/惊喜)编号不动;另外 4 张(巡航/运动/冷车/过热)
+// **从 11 开始接**(9/10/11/16 都是保留编号)。
+// 于是只导入 3 张的老做法继续能用,新状态会自动降级到最近的那张
 // (降级链见 lib/dashcore/face_stages.h 的 kFaceFallback)。
 //
 //   槽位(Face 枚举顺序)  左屏(转速表)  右屏(速度表)
 //   Idle      常态            3              6
-//   Blink     眨眼           11             16
 //   Cruise    巡航           12             17
 //   Sport     运动           13             18
 //   Redline   红区            4              7
 //   Surprise  惊喜            5              8
 //   Cold      冷车           14             19
 //   Hot       过热           15             20
-//   (Background 背景 = 1;9/10 保留不用;BootFrame 2 也不再使用)
+//   (Background 背景 = 1;2 / 9 / 10 / 11 / 16 保留不用)
 // ★ 这张表由 lib/dashcore/face_stages.h 的 kFaceRoleId 复述一份,
 //   test_image_blob.cpp 会逐条比对两边 —— 数字对不上不会崩,只会"右屏
 //   显示成左屏的脸",所以必须机器校验。
@@ -98,7 +97,6 @@ enum class ImageRole : uint16_t {
   FaceIdle     = 3,   // 表情：常态
   FaceRedline  = 4,   // 表情：红区
   FaceSurprise = 5,   // 表情：惊喜
-  FaceBlink    = 11,  // 表情：眨眼(常态下的周期动作)
   FaceCruise   = 12,  // 表情：巡航
   FaceSport    = 13,  // 表情：运动
   FaceCold     = 14,  // 表情：冷车(水温低,暖机中)
@@ -108,28 +106,34 @@ enum class ImageRole : uint16_t {
   FaceIdleR     = 6,  // 表情：常态
   FaceRedlineR  = 7,  // 表情：红区
   FaceSurpriseR = 8,  // 表情：惊喜
-  FaceBlinkR    = 16, // 表情：眨眼
   FaceCruiseR   = 17, // 表情：巡航
   FaceSportR    = 18, // 表情：运动
   FaceColdR     = 19, // 表情：冷车
   FaceHotR      = 20, // 表情：过热
 
-  // ★ 9 / 10 **仍然保留、不复用**(见 test_role_ids):它们曾是左右屏的开机图。
-  //   谁手里有一份那时导出的 image.bin,复用这两个编号就会让那两张图
-  //   突然变成别的表情,而且不报错。新角色一律从 11 往上接。
+  // ★ 9 / 10 / 11 / 16 **保留、不复用**(见 test_role_ids 的理由):
+  //   9/10 曾是左右屏的开机图;11/16 曾是左右屏的"眨眼"图 ——
+  //   眨眼已从状态机里删掉(与车速/转速/水温都无关,也没法在阶段模拟里体现)。
+  //   谁手里有一份那时导出的 image.bin,复用这些编号就会让那几张图
+  //   突然变成别的表情,而且不报错。新角色一律从 11 往上接、跳过这四个。
 };
 
-// 表情角色的编号区间(3..8 与 11..20;**9/10 是保留编号,不是表情**)。
-// 所以判断"是不是表情"不能用一条区间表达式,必须跳过中间那两个洞。
-static const uint16_t kImageFaceRoleFirst = 3;
-static const uint16_t kImageFaceRoleLast  = 20;
-static const uint16_t kImageRoleReservedFirst = 9;
-static const uint16_t kImageRoleReservedLast  = 10;
-
+// 表情角色的**完整清单**。刻意写成一条条枚举而不是"区间 + 排除中间几个洞":
+// 洞会变(9/10/11/16),区间表达式每改一次都要重新想一遍边界,
+// 而这条 switch 漏了哪个编译器(GCC/Clang 的 -Wswitch)会直接报出来。
 inline bool imageRoleIsFace(ImageRole r) {
-  const uint16_t v = (uint16_t)r;
-  if (v >= kImageRoleReservedFirst && v <= kImageRoleReservedLast) return false;
-  return v >= kImageFaceRoleFirst && v <= kImageFaceRoleLast;
+  switch (r) {
+    case ImageRole::FaceIdle:     case ImageRole::FaceCruise:
+    case ImageRole::FaceSport:    case ImageRole::FaceRedline:
+    case ImageRole::FaceSurprise: case ImageRole::FaceCold:
+    case ImageRole::FaceHot:      case ImageRole::FaceIdleR:
+    case ImageRole::FaceCruiseR:  case ImageRole::FaceSportR:
+    case ImageRole::FaceRedlineR: case ImageRole::FaceSurpriseR:
+    case ImageRole::FaceColdR:    case ImageRole::FaceHotR:
+      return true;
+    default:
+      return false;
+  }
 }
 
 static const uint8_t kImageNameMax = 24;

@@ -76,9 +76,11 @@ void theme_clamp(Theme& t) {
   if (t.boot_face_blink_ms == 0)  t.boot_face_blink_ms = 130;
   if (t.boot_face_start_ms == 0)  t.boot_face_start_ms = 1000;
 
-  // 派生字段:总时长由"表情开始 + 4 次眨眼"决定。
-  // 必须在上面把 blink/start 钳到非零之后算。
-  t.boot_total_ms = t.boot_face_start_ms + 4 * t.boot_face_blink_ms;
+  // 派生字段:总时长 = 表情开始 + 一拍收尾。
+  // 必须在上面把这两个值钳到非零之后算。
+  // ★ 以前是 + 4*blink(眨眼两轮),眨眼状态删掉后就只剩"表情出现"这一个动作,
+  //   4 拍纯属白等 —— 开机期间 dash_ui_render 会早退,那段时间根本不显示真实数据。
+  t.boot_total_ms = t.boot_face_start_ms + t.boot_face_blink_ms;
 
   for (uint8_t s = 0; s < 2; ++s) {
     ScreenTheme& sc = t.screens[s];

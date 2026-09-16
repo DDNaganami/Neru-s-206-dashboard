@@ -140,7 +140,7 @@ struct Theme {
   // ------------------------------------------------------------
   ReadoutTheme readout;
 
-  // 开机动画(ms):淡入 → 双屏错峰扫表 → 表情睁眼
+  // 开机动画(ms):淡入 → 双屏错峰扫表 → 表情出现
   uint32_t boot_fade_ms;
   uint32_t boot_sweep_start_ms;
   uint32_t boot_stagger_ms;
@@ -148,6 +148,9 @@ struct Theme {
   uint32_t boot_sweep_hold_ms;
   uint32_t boot_sweep_fall_ms;
   uint32_t boot_face_start_ms;
+  // ★ 字段名保留了历史(JSON 键不能随便改,老主题文件要能继续读),
+  //   但含义已变:眨眼状态删掉后,它是"表情出现后的一拍收尾"。
+  //   总时长 = boot_face_start_ms + 这一拍(见 theme_clamp)。
   uint32_t boot_face_blink_ms;
   uint32_t boot_total_ms;      // 由上面几个推导,加载时重算
 
@@ -195,8 +198,8 @@ inline void theme_set_defaults(Theme& t) {
   t.boot_sweep_hold_ms  = 140;
   t.boot_sweep_fall_ms  = 420;
   t.boot_face_start_ms  = 1000;
-  t.boot_face_blink_ms  = 130;
-  t.boot_total_ms       = t.boot_face_start_ms + 4 * t.boot_face_blink_ms;
+  t.boot_face_blink_ms  = 130;   // 表情出现后的一拍收尾(名字是历史遗留,见字段注释)
+  t.boot_total_ms       = t.boot_face_start_ms + t.boot_face_blink_ms;
 
   // ★ 屏幕布局按**法系车**来:左 = 转速表,右 = 速度表。
   //   (标致 206 实车就是这样,别按"左车速右转速"的日德习惯改回去。)

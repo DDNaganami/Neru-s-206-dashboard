@@ -68,14 +68,17 @@ while ((m = fallbackRe.exec(stagesH)) !== null) {
   cppFallback.push([m[1], m[2], m[3], m[4]]);
 }
 
-// kFaceRoleId 行:{3, 11, 12, 13, 4, 5, 14, 15},
-const roleRe = /kFaceRoleId\[2\]\[8\]\s*=\s*\{([\s\S]*?)\};/;
+// kFaceRoleId 行:{3, 12, 13, 4, 5, 14, 15},
+// 维度写成 \[2\]\[7\] 是被解析的一部分:状态数从 8 减到 7(删掉眨眼)时,
+// 这里的数字没跟着改就会解析失败 —— 那正是想要的效果。
+const roleRe = /kFaceRoleId\[2\]\[(\d+)\]\s*=\s*\{([\s\S]*?)\};/;
 const roleBlock = roleRe.exec(stagesH);
+const cppRoleCount = roleBlock ? Number(roleBlock[1]) : 0;
 const cppRoles = [];
 if (roleBlock) {
   const rowRe = /\{([\d,\s]+)\}/g;
   let rm;
-  while ((rm = rowRe.exec(roleBlock[1])) !== null) {
+  while ((rm = rowRe.exec(roleBlock[2])) !== null) {
     cppRoles.push(rm[1].split(",").map(s => Number(s.trim())).filter(n => !isNaN(n)));
   }
 }
@@ -83,10 +86,11 @@ if (roleBlock) {
 // 解析不出来就说明 face_stages.h 的排版被改了 —— 直接失败,别静默跳过
 section("face_stages.h 可解析");
 ok(cppStages.length === 9, "解析出 9 条阶段用例(得到 " + cppStages.length + ")");
-ok(cppFallback.length === 8, "解析出 8 行降级链(得到 " + cppFallback.length + ")");
-ok(cppRoles.length === 2 && cppRoles[0].length === 8 && cppRoles[1].length === 8,
-   "解析出 2×8 的角色编号表");
-if (cppStages.length !== 9 || cppFallback.length !== 8 || cppRoles.length !== 2) {
+ok(cppFallback.length === 7, "解析出 7 行降级链(得到 " + cppFallback.length + ")");
+ok(cppRoleCount === 7, "角色编号表的维度是 [2][7](得到 [2][" + cppRoleCount + "])");
+ok(cppRoles.length === 2 && cppRoles[0].length === 7 && cppRoles[1].length === 7,
+   "解析出 2×7 的角色编号表");
+if (cppStages.length !== 9 || cppFallback.length !== 7 || cppRoles.length !== 2) {
   console.log("\n  ⚠ face_stages.h 里的表格排版被改动了。");
   console.log("    那三张表的书写格式是被本测试解析的:每行一条,");
   console.log("    用 {\"...\", \"...\", 1.0f, 2.0f, 3.0f, Face::X}, 这种写法。");
@@ -117,6 +121,22 @@ for (const g of ["rpm", "coolant", "speed"]) {
 }
 
 // ------------------------------------------------------------
+// ★ 每组只能变自己那一维 —— 用户在阶段模拟里点"速度·中"时,
+//   **转速表不能跟着动**,否则画面里两个表同时变,看不出这一档改了什么。
+//   这条与固件的 test_stage_groups_isolate_one_dimension 是同一条规则的两端。
+section("每组只变自己那一维(点速度档不该动转速表)");
+for (const st of FS_JS.STAGES) {
+  if (st.group === "speed") {
+    eq(st.rpm, 900, "速度·" + st.level + " 的转速必须是怠速 900");
+  } else if (st.group === "rpm") {
+    eq(st.speed, 0, "转速·" + st.level + " 的速度必须是 0");
+  }
+  if (st.group !== "coolant") {
+    eq(st.coolant, 85, st.group + "·" + st.level + " 的水温必须是正常值 85");
+  }
+}
+
+// ------------------------------------------------------------
 section("降级链:JS 镜像 == face_stages.h");
 eq(FS_JS.FACES.length, cppFallback.length, "链的条数 = 表情状态数");
 for (let i = 0; i < cppFallback.length; i++) {
@@ -137,13 +157,18 @@ for (let side = 0; side < 2; side++) {
   }
 }
 
-// 保留编号不能被复用(9/10 曾是开机图)
-section("保留编号 9/10 未被复用");
+// 保留编号不能被复用(9/10 曾是开机图,11/16 曾是眨眼图)
+section("保留编号 9/10/11/16 未被复用");
 const usedRoles = [];
 FS_JS.FACES.forEach(f => { usedRoles.push(f.roleL); usedRoles.push(f.roleR); });
-ok(usedRoles.indexOf(9) === -1, "9 未被复用");
-ok(usedRoles.indexOf(10) === -1, "10 未被复用");
-eq(new Set(usedRoles).size, usedRoles.length, "16 个角色编号互不重复");
+for (const reserved of [9, 10, 11, 16]) {
+  ok(usedRoles.indexOf(reserved) === -1, reserved + " 没被当成表情角色");
+  // 打包器里也不该再给它们起名字:留着名字,界面上就会冒出"能选但没人用"的用途
+  ok(ImageBlob.ROLE_NAMES[reserved] === undefined, reserved + " 在打包器里没有名字");
+  ok(ImageBlob.ROLE["Face" + reserved] === undefined, reserved + " 不是打包器的具名角色");
+}
+eq(new Set(usedRoles).size, usedRoles.length, "14 个角色编号互不重复");
+eq(usedRoles.length, 14, "7 个状态 × 2 屏 = 14 个角色");
 
 // ------------------------------------------------------------
 section("resolve():缺图时的替代品符合固件规则");
@@ -155,7 +180,7 @@ section("resolve():缺图时的替代品符合固件规则");
 
   // 只导入常态:所有状态都应落到常态
   const justIdle = only(ImageBlob.ROLE.FaceIdle);
-  for (const key of ["Idle", "Blink", "Cruise", "Sport", "Redline", "Surprise", "Cold", "Hot"]) {
+  for (const key of ["Idle", "Cruise", "Sport", "Redline", "Surprise", "Cold", "Hot"]) {
     eq(FS_JS.resolve(0, key, justIdle), ImageBlob.ROLE.FaceIdle, "只有常态图时 " + key + " → 常态");
   }
 

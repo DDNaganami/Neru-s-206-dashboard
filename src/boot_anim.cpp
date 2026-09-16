@@ -36,7 +36,5 @@ float BootAnim::arcProgress(uint32_t now_ms, uint8_t screen) const {
 
 uint8_t BootAnim::faceStage(uint32_t now_ms) const {
   const uint32_t t = now_ms - start_ms_;
-  if (t < BOOT_FACE_START_MS) return 0;   // 隐藏
-  const uint32_t k = (t - BOOT_FACE_START_MS) / BOOT_FACE_BLINK_MS;
-  return (k % 2 == 0) ? 2 : 1;            // 偶数档睁眼,奇数档眨眼
+  return (t < BOOT_FACE_START_MS) ? 0 : 1;   // 0=隐藏,1=显示(眨眼状态已删)
 }

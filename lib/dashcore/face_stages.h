@@ -21,9 +21,18 @@
 // ============================================================
 
 // ---- 1. 9 条阶段用例(转速/水温/速度 × 低中高) ----
+//
+// ★★ 每组**只能变自己那一维**,另外两维必须固定(速度组固定 rpm=900 怠速、
+//    水温组/转速组固定 speed=0)。这是产品要求,不是排版洁癖:
+//    用户在阶段模拟里点"速度·中"时,画面里**转速表不应该跟着动** ——
+//    否则他看到的是"两个表一起变",没法判断这一档到底改了什么。
+//    test_face_stages.cpp 的 test_stage_groups_isolate_one_dimension 钉住这条。
+//    曾经违反过:速度组把 rpm 写成 1500/2600(为了凑出巡航/运动脸),
+//    结果点速度档时转速弧和转速表的表情一起变 —— 用户第一眼就看出来了。
+//    其实速度≥30/≥90 这两条阈值**自己**就能给出巡航/运动,不需要借转速。
+//
 // 未被测的那两路取"正常值":速度 0、水温 85(正常运行温度)、转速 900(怠速)。
-// 瞬态(眨眼 Blink / 惊喜 Surprise)不在表里 —— 它们不是稳态,
-// 由 test_expression.cpp 单独覆盖。
+// 瞬态(惊喜 Surprise)不在表里 —— 它不是稳态,由 test_expression.cpp 单独覆盖。
 struct FaceStage {
   const char* group;      // "rpm" | "coolant" | "speed"
   const char* level;      // "low" | "mid" | "high"
@@ -41,8 +50,8 @@ static const FaceStage kFaceStages[] = {
   {"coolant", "mid", 900.0f, 0.0f, 85.0f, Face::Idle},
   {"coolant", "high", 900.0f, 0.0f, 115.0f, Face::Hot},
   {"speed", "low", 900.0f, 0.0f, 85.0f, Face::Idle},
-  {"speed", "mid", 1500.0f, 55.0f, 85.0f, Face::Cruise},
-  {"speed", "high", 2600.0f, 110.0f, 85.0f, Face::Sport},
+  {"speed", "mid", 900.0f, 55.0f, 85.0f, Face::Cruise},
+  {"speed", "high", 900.0f, 110.0f, 85.0f, Face::Sport},
 };
 static const uint8_t kFaceStageCount =
     (uint8_t)(sizeof(kFaceStages) / sizeof(kFaceStages[0]));
@@ -53,26 +62,25 @@ static const uint8_t kFaceStageCount =
 // 例:Sport 那张没导入 → 用 Cruise;Cruise 也没有 → Redline;再没有 → Idle。
 // 左屏右屏各查各的:两套差分图不能互相顶替,否则角色会串。
 #define FACE_SLOT(f) ((int8_t)(uint8_t)Face::f)
-static const int8_t kFaceFallback[8][4] = {
-  {FACE_SLOT(Idle),     FACE_SLOT(Blink),   FACE_SLOT(Cruise),  FACE_SLOT(Sport)},
-  {FACE_SLOT(Blink),    FACE_SLOT(Idle),    FACE_SLOT(Cruise),  FACE_SLOT(Sport)},
-  {FACE_SLOT(Cruise),   FACE_SLOT(Idle),    FACE_SLOT(Sport),   FACE_SLOT(Blink)},
-  {FACE_SLOT(Sport),    FACE_SLOT(Cruise),  FACE_SLOT(Redline), FACE_SLOT(Idle)},
-  {FACE_SLOT(Redline),  FACE_SLOT(Sport),   FACE_SLOT(Surprise), FACE_SLOT(Idle)},
-  {FACE_SLOT(Surprise), FACE_SLOT(Redline), FACE_SLOT(Sport),   FACE_SLOT(Idle)},
-  {FACE_SLOT(Cold),     FACE_SLOT(Idle),    FACE_SLOT(Cruise),  FACE_SLOT(Blink)},
-  {FACE_SLOT(Hot),      FACE_SLOT(Surprise), FACE_SLOT(Redline), FACE_SLOT(Idle)},
+static const int8_t kFaceFallback[7][4] = {
+  {FACE_SLOT(Idle),     FACE_SLOT(Cruise),   FACE_SLOT(Sport),    FACE_SLOT(Redline)},
+  {FACE_SLOT(Cruise),   FACE_SLOT(Idle),     FACE_SLOT(Sport),    FACE_SLOT(Redline)},
+  {FACE_SLOT(Sport),    FACE_SLOT(Cruise),   FACE_SLOT(Redline),  FACE_SLOT(Idle)},
+  {FACE_SLOT(Redline),  FACE_SLOT(Sport),    FACE_SLOT(Surprise), FACE_SLOT(Idle)},
+  {FACE_SLOT(Surprise), FACE_SLOT(Redline),  FACE_SLOT(Sport),    FACE_SLOT(Idle)},
+  {FACE_SLOT(Cold),     FACE_SLOT(Idle),     FACE_SLOT(Cruise),   FACE_SLOT(Sport)},
+  {FACE_SLOT(Hot),      FACE_SLOT(Surprise), FACE_SLOT(Redline),  FACE_SLOT(Idle)},
 };
 #undef FACE_SLOT
-static const uint8_t kFaceSlotCount = 8;
+static const uint8_t kFaceSlotCount = 7;
 
 // ---- 3. 表情槽位 → 图片角色编号 ----
 // 下标 [屏][槽位]:屏 0 = 左(转速表),屏 1 = 右(速度表);槽位见上面的一行一状态。
 // ★ 这些数必须与 lib/themetool/image_blob.h 的 ImageRole 完全一致 ——
 //   错了不会崩,只会"右屏显示左屏的脸",所以由
 //   test_image_blob.cpp → test_face_role_ids_match_stages 逐条比对。
-// 新状态从 11 开始编号:9/10 是保留编号(见 image_blob.h 的说明),不复用。
-static const uint16_t kFaceRoleId[2][8] = {
-  {3, 11, 12, 13, 4, 5, 14, 15},   // 左屏:Idle Blink Cruise Sport Redline Surprise Cold Hot
-  {6, 16, 17, 18, 7, 8, 19, 20},   // 右屏:同上
+// 编号从 11 开始接(不是 9):9/10/11/16 都是保留编号,不复用。
+static const uint16_t kFaceRoleId[2][7] = {
+  {3, 12, 13, 4, 5, 14, 15},    // 左屏:Idle Cruise Sport Redline Surprise Cold Hot
+  {6, 17, 18, 7, 8, 19, 20},    // 右屏:同上
 };

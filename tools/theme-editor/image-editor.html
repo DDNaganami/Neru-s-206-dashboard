@@ -124,7 +124,7 @@
         <span class="hint" style="color:var(--dim);font-size:12px">默认跟随阶段</span>
       </div>
       <div class="hint" style="color:var(--dim);font-size:12px">
-        开机画面不在这里：它是程序化扫表动画（淡入 → 扫表 → 睁眼），不占图片资源。
+        开机画面不在这里：它是程序化扫表动画（淡入 → 扫表 → 显形），不占图片资源。
       </div>
     </section>
 
@@ -236,12 +236,11 @@ let theme = { bg: "#141414" };
 // ★ 左右屏分开列(法系车:左=转速表,右=速度表),两表用不同的表情差分。
 //   编号错位会让"右屏显示成左屏的",而且不报错,
 //   所以 C 侧有一条 test_role_ids 专门钉住这组编号。
-// ★ 一套表情是 **8 张**(状态见 face-stages.js 的 FACES),不是 3 张:
-//   另外 5 个状态(眨眼/巡航/运动/冷车/过热)接在 11..20 上。
-//   只导入 3 张也能用 —— 缺的那几个状态会自动降级到最接近的那张
-//   (降级链见 face-stages.js 的 FALLBACK,与固件 face_stages.h 同源)。
-// ★ 9/10 是保留编号(曾是开机图),界面里不出现、也不复用。
-//   开机画面已确认走程序化扫表动画,所以 "开机动画帧" 这个用途也去掉了。
+// ★ 一套表情是 **7 个状态各一张**(状态见 face-stages.js 的 FACES)。
+//   只导入 3 张(常态/红区/惊喜)也能用 —— 缺的那几个状态会自动降级到
+//   最接近的那张(降级链见 face-stages.js 的 FALLBACK,与固件同源)。
+// ★ 保留编号 2/9/10/11/16 不列出来、也不复用:9/10 曾是开机图,
+//   11/16 曾是"眨眼"图(眨眼状态已删除)。开机画面是程序化扫表动画,不占图片。
 const ROLES = [
   { id: ImageBlob.ROLE.Background,     label: "表盘背景（两屏通用）" },
   { id: ImageBlob.ROLE.FaceIdle,       label: "左屏表情 · 常态" },
@@ -249,7 +248,6 @@ const ROLES = [
   { id: ImageBlob.ROLE.FaceSport,      label: "左屏表情 · 运动" },
   { id: ImageBlob.ROLE.FaceRedline,    label: "左屏表情 · 红区" },
   { id: ImageBlob.ROLE.FaceSurprise,   label: "左屏表情 · 惊喜" },
-  { id: ImageBlob.ROLE.FaceBlink,      label: "左屏表情 · 眨眼" },
   { id: ImageBlob.ROLE.FaceCold,       label: "左屏表情 · 冷车（水温低）" },
   { id: ImageBlob.ROLE.FaceHot,        label: "左屏表情 · 过热（水温高）" },
   { id: ImageBlob.ROLE.FaceIdleR,      label: "右屏表情 · 常态" },
@@ -257,7 +255,6 @@ const ROLES = [
   { id: ImageBlob.ROLE.FaceSportR,     label: "右屏表情 · 运动" },
   { id: ImageBlob.ROLE.FaceRedlineR,   label: "右屏表情 · 红区" },
   { id: ImageBlob.ROLE.FaceSurpriseR,  label: "右屏表情 · 惊喜" },
-  { id: ImageBlob.ROLE.FaceBlinkR,     label: "右屏表情 · 眨眼" },
   { id: ImageBlob.ROLE.FaceColdR,      label: "右屏表情 · 冷车（水温低）" },
   { id: ImageBlob.ROLE.FaceHotR,       label: "右屏表情 · 过热（水温高）" }
 ];
@@ -600,7 +597,7 @@ function drawScreen(cv, which, stage, faceKeyOverride) {
 //
 // 这是"表情导入"最需要的一块:图导进来之后,用户真正想知道的是
 //   "低转速/中转速/高转速、水温高低、速度高低,屏幕上分别长什么样"。
-// 以前只能在脑子里把 8 张图跟 8 个状态对一遍,现在直接摆出来。
+// 以前只能在脑子里把 7 张图跟 7 个状态对一遍,现在直接摆出来。
 // ------------------------------------------------------------
 const ARC_KIND_SPEED = 0, ARC_KIND_RPM = 1, ARC_KIND_COOLANT = 2;
 // 与固件一致:水温弧的进度按主题量程 60..130 换算(这里是默认量程)
@@ -668,7 +665,7 @@ function buildStageGrid() {
     note.textContent = "左屏还有 " + n + " 个状态没导入图片 —— 它们会退到最接近的那一张" +
       "（表格里橙色的那几格）。这是设计行为:缺图不会让画面空掉。";
   } else {
-    note.textContent = "左屏 8 个状态都有图了 —— 每一步表情变化都会换成对应的那张。";
+    note.textContent = "左屏 7 个状态都有图了 —— 每一步表情变化都会换成对应的那张。";
   }
 }
 
@@ -771,8 +768,8 @@ function refresh(rebuildGrid = true) {
 // 阶段 / 表情状态 两个下拉框
 // ------------------------------------------------------------
 // 阶段:9 档,来自 face-stages.js(与固件同源)。
-// 表情状态:8 个状态,默认"跟随阶段";选具体某个状态可以单独检查那张图,
-//   因为 Blink / Surprise 这两个瞬态**不对应任何阶段**,不给入口就没法预览。
+// 表情状态:7 个状态,默认"跟随阶段";选具体某个状态可以单独检查那张图,
+//   因为 Surprise 是**瞬态、不对应任何阶段**,不给入口就没法预览。
 function buildStageSelects() {
   const sel = document.getElementById("stage");
   sel.innerHTML = "";

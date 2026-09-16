@@ -14,9 +14,9 @@ static VehicleState mk(float speed, float rpm, float coolant = 85.0f) {
 }
 
 // 注意:face_update 是带静态状态的状态机,用例按顺序执行、速度平缓过渡
-// (每步 Δv ≤ 15,即 ≤ 15 km/h/s,不触发惊喜),只验证基础表情与眨眼。
-// 眨眼计时从第一帧算起(第一帧 + 3000ms),所以这里第一帧取 t=1000、
-// 眨眼落在 t=4000 —— 这个偏移是刻意的,见 expression.cpp 里的说明。
+// (每步 Δv ≤ 15,即 ≤ 15 km/h/s,不触发惊喜)。
+// 眨眼状态已删除,所以这里看到的全是稳态 —— 时刻取多少都不影响结果
+// (不再有"每 3 秒眨一下"这种与数据无关的动作)。
 void test_face_base_states(void) {
   face_reset();
   uint32_t t = 1000;
@@ -24,10 +24,6 @@ void test_face_base_states(void) {
   t += 1000;
   TEST_ASSERT_TRUE(face_update(mk(12, 1400), t) == Face::Idle);
   t += 1000;
-  TEST_ASSERT_TRUE(face_update(mk(24, 2000), t) == Face::Idle);
-  t += 1000;
-  TEST_ASSERT_TRUE(face_update(mk(24, 2000), t) == Face::Blink);  // 第一帧后 3 秒眨一次
-  t += 200;
   TEST_ASSERT_TRUE(face_update(mk(24, 2000), t) == Face::Idle);
   t += 1000;
   TEST_ASSERT_TRUE(face_update(mk(36, 2600), t) == Face::Cruise);
@@ -44,9 +40,22 @@ void test_face_base_states(void) {
   t += 1000;
   TEST_ASSERT_TRUE(face_update(mk(90, 6500), t) == Face::Redline);
   t += 1000;
-  TEST_ASSERT_TRUE(face_update(mk(10, 900), t) == Face::Blink);  // 回到怠速再眨一次
-  t += 200;
-  TEST_ASSERT_TRUE(face_update(mk(10, 900), t) == Face::Idle);
+  TEST_ASSERT_TRUE(face_update(mk(10, 900), t) == Face::Idle);   // 回到怠速
+  t += 30000;                                                     // 时间跳很久
+  TEST_ASSERT_TRUE(face_update(mk(10, 900), t) == Face::Idle);   // 仍然是常态
+}
+
+// ★ 时间流逝**不应该**改变表情:眨眼状态删掉之后,
+//   稳态只由"转速/速度/水温"决定,与走了多少毫秒无关。
+//   这条同时防止有人再把"定时器驱动的表情"加回来。
+static void test_face_is_time_independent_when_idle(void) {
+  face_reset();
+  VehicleState s = mk(0, 900);
+  uint32_t t = 1000;
+  for (int i = 0; i < 40; ++i) {          // 40 帧、每帧 500ms = 20 秒
+    if (face_update(s, t) != Face::Idle) TEST_FAIL_MESSAGE("怠速稳态不该随时间变化");
+    t += 500;
+  }
 }
 
 // 转速单独就能把表情推到巡航/运动(以前只看速度,怠速轰油门屏幕毫无反应)。
@@ -143,6 +152,7 @@ void test_face_reset_clears_memory(void) {
 
 void register_expression_tests(void) {
   RUN_TEST(test_face_base_states);
+  RUN_TEST(test_face_is_time_independent_when_idle);
   RUN_TEST(test_rpm_alone_drives_face);
   RUN_TEST(test_coolant_drives_face);
   RUN_TEST(test_redline_beats_coolant);

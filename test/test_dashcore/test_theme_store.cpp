@@ -49,8 +49,8 @@ static void test_parse_full_theme(void) {
   // lv_color_to_u32 返回 XRGB8888(alpha 恒为 0xFF),所以只比低 24 位
   TEST_ASSERT_EQUAL_HEX32(0x00FF00,
                           lv_color_to_u32(t.screens[0].arcs[0].value_color) & 0xFFFFFFu);
-  // 派生字段:必须由"表情开始 + 4 次眨眼"算出来
-  TEST_ASSERT_EQUAL_UINT32(t.boot_face_start_ms + 4 * t.boot_face_blink_ms,
+  // 派生字段:总时长 = 表情开始 + 一拍收尾(眨眼状态删掉后不再是 4 拍)
+  TEST_ASSERT_EQUAL_UINT32(t.boot_face_start_ms + t.boot_face_blink_ms,
                            t.boot_total_ms);
 }
 

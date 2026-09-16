@@ -134,16 +134,14 @@ static void test_role_ids(void) {
   TEST_ASSERT_EQUAL_UINT16(6, (uint16_t)ImageRole::FaceIdleR);
   TEST_ASSERT_EQUAL_UINT16(7, (uint16_t)ImageRole::FaceRedlineR);
   TEST_ASSERT_EQUAL_UINT16(8, (uint16_t)ImageRole::FaceSurpriseR);
-  // ★ 9/10 是**保留编号**(曾是左右屏开机图,已去掉:开机画面走程序化扫表动画)。
-  //   一旦有人把新角色塞进 9/10,别人已经导出的 image.bin 会突然变成另一个
-  //   角色,而且不报错。所以新角色从 11 开始 —— 下面这 10 个就是后加的 5 个
-  //   状态(眨眼/巡航/运动/冷车/过热),左右各一套。
-  TEST_ASSERT_EQUAL_UINT16(11, (uint16_t)ImageRole::FaceBlink);
+  // ★ 9/10/11/16 是**保留编号**,一律不复用:
+  //   9/10 曾是左右屏的开机图;11/16 曾是左右屏的"眨眼"图(眨眼状态已删除)。
+  //   一旦有人把新角色塞进这几个号,别人已经导出的 image.bin 会突然变成另一个
+  //   角色,而且不报错。所以新角色从 11 往上接、跳过这四个。
   TEST_ASSERT_EQUAL_UINT16(12, (uint16_t)ImageRole::FaceCruise);
   TEST_ASSERT_EQUAL_UINT16(13, (uint16_t)ImageRole::FaceSport);
   TEST_ASSERT_EQUAL_UINT16(14, (uint16_t)ImageRole::FaceCold);
   TEST_ASSERT_EQUAL_UINT16(15, (uint16_t)ImageRole::FaceHot);
-  TEST_ASSERT_EQUAL_UINT16(16, (uint16_t)ImageRole::FaceBlinkR);
   TEST_ASSERT_EQUAL_UINT16(17, (uint16_t)ImageRole::FaceCruiseR);
   TEST_ASSERT_EQUAL_UINT16(18, (uint16_t)ImageRole::FaceSportR);
   TEST_ASSERT_EQUAL_UINT16(19, (uint16_t)ImageRole::FaceColdR);
@@ -153,15 +151,16 @@ static void test_role_ids(void) {
   TEST_ASSERT_TRUE(ImageRole::FaceIdle != ImageRole::FaceIdleR);
   TEST_ASSERT_TRUE(ImageRole::FaceRedline != ImageRole::FaceRedlineR);
   TEST_ASSERT_TRUE(ImageRole::FaceSurprise != ImageRole::FaceSurpriseR);
-  TEST_ASSERT_TRUE(ImageRole::FaceBlink != ImageRole::FaceBlinkR);
   TEST_ASSERT_TRUE(ImageRole::FaceCruise != ImageRole::FaceCruiseR);
   TEST_ASSERT_TRUE(ImageRole::FaceSport != ImageRole::FaceSportR);
   TEST_ASSERT_TRUE(ImageRole::FaceCold != ImageRole::FaceColdR);
   TEST_ASSERT_TRUE(ImageRole::FaceHot != ImageRole::FaceHotR);
 
-  // 保留编号不属于任何角色:imageRoleIsFace 必须把 9/10 排除掉
+  // 保留编号不属于任何角色:imageRoleIsFace 必须把它们排除掉
   TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)9));
   TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)10));
+  TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)11));    // 曾是"左屏眨眼"
+  TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)16));    // 曾是"右屏眨眼"
   TEST_ASSERT_FALSE(imageRoleIsFace(ImageRole::Background));
   TEST_ASSERT_FALSE(imageRoleIsFace(ImageRole::BootFrame));
   TEST_ASSERT_TRUE(imageRoleIsFace(ImageRole::FaceIdle));
@@ -468,19 +467,18 @@ static void test_face_role_side_mapping(void) {
 // "右屏显示左屏的脸"或"巡航显示成红区",而且完全不会报错、也不崩。
 // 所以这里不靠注释,靠断言。
 static void test_face_role_ids_match_stages(void) {
-  struct { int slot; ImageRole L, R; } kExpect[8] = {
+  struct { int slot; ImageRole L, R; } kExpect[7] = {
     {0, ImageRole::FaceIdle,     ImageRole::FaceIdleR},      // Idle
-    {1, ImageRole::FaceBlink,    ImageRole::FaceBlinkR},     // Blink
-    {2, ImageRole::FaceCruise,   ImageRole::FaceCruiseR},    // Cruise
-    {3, ImageRole::FaceSport,    ImageRole::FaceSportR},     // Sport
-    {4, ImageRole::FaceRedline,  ImageRole::FaceRedlineR},   // Redline
-    {5, ImageRole::FaceSurprise, ImageRole::FaceSurpriseR},  // Surprise
-    {6, ImageRole::FaceCold,     ImageRole::FaceColdR},      // Cold
-    {7, ImageRole::FaceHot,      ImageRole::FaceHotR},       // Hot
+    {1, ImageRole::FaceCruise,   ImageRole::FaceCruiseR},    // Cruise
+    {2, ImageRole::FaceSport,    ImageRole::FaceSportR},     // Sport
+    {3, ImageRole::FaceRedline,  ImageRole::FaceRedlineR},   // Redline
+    {4, ImageRole::FaceSurprise, ImageRole::FaceSurpriseR},  // Surprise
+    {5, ImageRole::FaceCold,     ImageRole::FaceColdR},      // Cold
+    {6, ImageRole::FaceHot,      ImageRole::FaceHotR},       // Hot
   };
   // 槽位顺序就是 Face 的枚举顺序,表长必须等于状态数
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Count, kFaceSlotCount);
-  for (int i = 0; i < 8; ++i) {
+  for (int i = 0; i < 7; ++i) {
     TEST_ASSERT_EQUAL_INT(i, kExpect[i].slot);
     TEST_ASSERT_EQUAL_UINT16((uint16_t)kExpect[i].L, kFaceRoleId[0][i]);
     TEST_ASSERT_EQUAL_UINT16((uint16_t)kExpect[i].R, kFaceRoleId[1][i]);
@@ -489,7 +487,7 @@ static void test_face_role_ids_match_stages(void) {
       TEST_ASSERT_TRUE(kFaceRoleId[0][i] != kFaceRoleId[0][j]);
       TEST_ASSERT_TRUE(kFaceRoleId[1][i] != kFaceRoleId[1][j]);
     }
-    // 这些角色必须真的是"表情"(不能被写进保留区 9/10)
+    // 这些角色必须真的是"表情"(不能被写进保留区 9/10/11/16)
     TEST_ASSERT_TRUE(imageRoleIsFace((ImageRole)kFaceRoleId[0][i]));
     TEST_ASSERT_TRUE(imageRoleIsFace((ImageRole)kFaceRoleId[1][i]));
   }

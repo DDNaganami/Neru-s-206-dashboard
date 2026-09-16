@@ -181,27 +181,23 @@ static void face_apply(ScreenUi& ui, Face f) {
   //   注意 early return 必须在 last_face 更新之后 —— 否则每次都会重复判定。
   if (face_apply_image(ui.idx, f)) return;
 
-  const bool blink = (f == Face::Blink);
+  // 程序化占位表情:7 个状态里它只能表达"眯眼/睁大眼/张嘴/红底"这几种差别
+  // (冷车与过热在占位表情上分不出来 —— 那两张的差别只有导入图片后才存在)。
   const bool surprise = (f == Face::Surprise);
   const bool narrow =
       (f == Face::Cruise || f == Face::Sport || f == Face::Redline);
+  const bool alarm = (f == Face::Redline || f == Face::Hot);
 
-  lv_obj_set_style_bg_color(ui.face_bg,
-                            (f == Face::Redline) ? FACE_BG_REDLINE : FACE_BG_IDLE, 0);
+  lv_obj_set_style_bg_color(ui.face_bg, alarm ? FACE_BG_REDLINE : FACE_BG_IDLE, 0);
 
-  if (blink) {
-    lv_obj_add_flag(ui.eye_l, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(ui.eye_r, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_remove_flag(ui.eye_l, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(ui.eye_r, LV_OBJ_FLAG_HIDDEN);
-    const uint8_t w = surprise ? EYE_SURPRISE : EYE_NORMAL_W;
-    const uint8_t h = surprise ? EYE_SURPRISE : (narrow ? EYE_NARROW_H : EYE_NORMAL_H);
-    lv_obj_set_size(ui.eye_l, ts(w), ts(h));
-    lv_obj_set_size(ui.eye_r, ts(w), ts(h));
-    lv_obj_set_style_radius(ui.eye_l, ts(h / 2), 0);
-    lv_obj_set_style_radius(ui.eye_r, ts(h / 2), 0);
-  }
+  lv_obj_remove_flag(ui.eye_l, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_remove_flag(ui.eye_r, LV_OBJ_FLAG_HIDDEN);
+  const uint8_t w = surprise ? EYE_SURPRISE : EYE_NORMAL_W;
+  const uint8_t h = surprise ? EYE_SURPRISE : (narrow ? EYE_NARROW_H : EYE_NORMAL_H);
+  lv_obj_set_size(ui.eye_l, ts(w), ts(h));
+  lv_obj_set_size(ui.eye_r, ts(w), ts(h));
+  lv_obj_set_style_radius(ui.eye_l, ts(h / 2), 0);
+  lv_obj_set_style_radius(ui.eye_r, ts(h / 2), 0);
 
   if (surprise) {
     lv_obj_set_pos(ui.mouth, ts(MOUTH_O_X), ts(MOUTH_O_Y));
@@ -344,20 +340,20 @@ static void boot_apply(uint32_t now) {
     }
 
     if (kScreens[s].show_face && (ui.face_bg || g_face_img[s])) {
-      // 表情睁眼:阶段 0 透明、之后全显。只在阶段切换时 set 一次,
+      // 表情出现:阶段 0 透明、之后全显。只在阶段切换时 set 一次,
       // 避免每 tick 重复 set opa 触发无谓重绘(曾导致层合成异常)。
+      // (眨眼状态已删除,所以这里不再有"闭眼/睁眼"来回切,只剩一次显形。)
       const uint8_t st = g_boot.faceStage(now);
       static uint8_t last_st[2] = {0xFF, 0xFF};
       if (st != last_st[s]) {
         last_st[s] = st;
         const lv_opa_t opa = (st == 0) ? LV_OPA_TRANSP : LV_OPA_COVER;
         if (ui.face_bg) lv_obj_set_style_opa(ui.face_bg, opa, 0);
-        // ★ 有图片表情时淡入要作用在图片上 —— 否则"睁眼"这个开机动作
+        // ★ 有图片表情时淡入要作用在图片上 —— 否则"显形"这个开机动作
         //   在有图的情况下会完全消失(程序化那层被藏起来了)。
         if (g_face_img[s]) lv_obj_set_style_opa(g_face_img[s], opa, 0);
       }
-      if (st == 1) face_apply(ui, Face::Blink);
-      else if (st == 2) face_apply(ui, Face::Idle);
+      if (st >= 1) face_apply(ui, Face::Idle);
     }
   }
 }

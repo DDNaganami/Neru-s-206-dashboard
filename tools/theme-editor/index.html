@@ -96,7 +96,7 @@
       </div>
       <canvas id="cvA" width="960" height="480"></canvas>
       <div class="cap" style="color:var(--dim);font-size:12px;margin-top:8px">
-        开机动画：淡入 → 双屏错峰扫表 → 表情睁眼（左右并排播放）
+        开机动画：淡入 → 双屏错峰扫表 → 表情显形（左右并排播放）
       </div>
     </div>
 
@@ -118,6 +118,10 @@
 <!-- 表情阶段表:与 lib/dashcore/face_stages.h 同源(由 test-face-stages.js 对账)。
      阶段下拉框、以及"这一档该显示哪张表情"都来自它,不在这里重抄一遍。 -->
 <script src="face-stages.js"></script>
+<!-- 主题文件方言解析:固件接受 0xRRGGBB 颜色,而 JSON.parse 不认识 0x
+     (参考文件 theme-default.json 全是这种写法)——
+     少了这一层就是"固件读得进去、编辑器导入报语法错"。见 theme-json.js 的说明。 -->
+<script src="theme-json.js"></script>
 <script>
 "use strict";
 
@@ -125,9 +129,17 @@ if (typeof FaceStages === "undefined") {
   document.body.innerHTML =
     '<div style="padding:40px;color:#ffb4b4;font:15px sans-serif">' +
     '找不到 face-stages.js。<br><br>' +
-    '这个页面必须和 face-stages.js、image-blob-build.js 放在同一个目录里。' +
+    '这个页面必须和 face-stages.js、theme-json.js 放在同一个目录里。' +
     '（下载时别只保存 HTML）</div>';
   throw new Error("face-stages.js missing");
+}
+if (typeof ThemeJson === "undefined") {
+  document.body.innerHTML =
+    '<div style="padding:40px;color:#ffb4b4;font:15px sans-serif">' +
+    '找不到 theme-json.js。<br><br>' +
+    '这个页面必须和 face-stages.js、theme-json.js 放在同一个目录里。' +
+    '（下载时别只保存 HTML）</div>';
+  throw new Error("theme-json.js missing");
 }
 
 // ============================================================
@@ -267,19 +279,18 @@ function valueT(kind, v) {
 }
 
 // ---------------- 画表情（占位形状,与 theme 的几何字段对应） ----------------
-// ★ 这是**程序化占位表情**,不是导入的表情图。8 个状态里它只能表达"眯眼/
+// ★ 这是**程序化占位表情**,不是导入的表情图。7 个状态里它只能表达"眯眼/
 //   睁大眼/张嘴/红底"这几种差别,冷车和过热在占位表情上分不出来 ——
 //   那两张的差别只有导入图片后才存在。要看导入后的效果请去「表情导入」页。
 function faceShapeOpts(faceKey) {
   switch (faceKey) {
-    case "Blink":    return { blink: true };
     case "Cruise":   return { narrow: true };
     case "Sport":    return { narrow: true };
     case "Redline":  return { narrow: true, redline: true };
     case "Surprise": return { surprise: true };
     case "Cold":     return { narrow: true };
     case "Hot":      return { narrow: true, redline: true };   // 过热按告警色
-    default:         return {};
+    default:         return {};                                // Idle:常态脸
   }
 }
 
@@ -298,18 +309,16 @@ function drawFace(ctx, cx, cy, theme, opts) {
   ctx.roundRect(fx, fy, s, s, s / 2);
   ctx.fill();
 
-  // 眼睛(眨眼 = 藏起来)
-  if (!(opts && opts.blink)) {
-    ctx.fillStyle = ink;
-    const eyes = [
-      [fx + theme.face.eye_l_x, fy + theme.face.eye_y],
-      [fx + theme.face.eye_r_x, fy + theme.face.eye_y],
-    ];
-    for (const [ex, ey] of eyes) {
-      ctx.beginPath();
-      ctx.roundRect(ex, ey, eyeW, eyeH, Math.min(eyeH, eyeW) / 2);
-      ctx.fill();
-    }
+  // 眼睛
+  ctx.fillStyle = ink;
+  const eyes = [
+    [fx + theme.face.eye_l_x, fy + theme.face.eye_y],
+    [fx + theme.face.eye_r_x, fy + theme.face.eye_y],
+  ];
+  for (const [ex, ey] of eyes) {
+    ctx.beginPath();
+    ctx.roundRect(ex, ey, eyeW, eyeH, Math.min(eyeH, eyeW) / 2);
+    ctx.fill();
   }
 
   // 嘴(惊喜时是 O,平时是横线)
@@ -404,7 +413,7 @@ function drawScreen(canvas, screenIdx, theme, v, opts) {
 
   if (sc.show_face && !(opts && opts.hideFace)) {
     const shape = faceShapeOpts((opts && opts.faceKey) || SIM.face);
-    // 开机动画期间用眨眼/睁眼覆盖阶段表情(与固件 boot_apply 一致)
+    // 开机动画期间固定用常态脸覆盖阶段表情(与固件 boot_apply 一致)
     if (opts && opts.surprise) shape.surprise = true;
     drawFace(ctx, cx, cy, theme, shape);
   }
@@ -625,8 +634,9 @@ function buildControls() {
   syncers.push(slider(g4, "0→满弧", () => T.boot_sweep_rise_ms, v => T.boot_sweep_rise_ms = v, 1, 3000, 10));
   syncers.push(slider(g4, "满弧停留", () => T.boot_sweep_hold_ms, v => T.boot_sweep_hold_ms = v, 0, 2000, 10));
   syncers.push(slider(g4, "满弧→0", () => T.boot_sweep_fall_ms, v => T.boot_sweep_fall_ms = v, 1, 3000, 10));
-  syncers.push(slider(g4, "表情睁眼", () => T.boot_face_start_ms, v => T.boot_face_start_ms = v, 0, 5000, 50));
-  syncers.push(slider(g4, "单次眨眼", () => T.boot_face_blink_ms, v => T.boot_face_blink_ms = v, 1, 1000, 10));
+  syncers.push(slider(g4, "表情显形", () => T.boot_face_start_ms, v => T.boot_face_start_ms = v, 0, 5000, 50));
+  // 字段名是历史遗留(JSON 键不能随便改):眨眼状态删掉后,它是"表情出现后的一拍收尾"
+  syncers.push(slider(g4, "收尾时长", () => T.boot_face_blink_ms, v => T.boot_face_blink_ms = v, 1, 1000, 10));
 }
 
 // ---------------- 开机动画的插值（与 boot_anim.cpp 同一套公式） ----------------
@@ -654,11 +664,9 @@ function bootSweep(screen, t) {
   return 0;
 }
 
-function bootEyeOpen(t) {
-  if (t < T.boot_face_start_ms) return false;
-  // 前两次眨眼期间眼睛是闭着的,之后睁开
-  const k = Math.floor((t - T.boot_face_start_ms) / Math.max(1, T.boot_face_blink_ms));
-  return !(k % 2 === 1);
+// 表情是否已经显形(开机动画里只有"隐藏 → 显示"两档;眨眼状态已删除)
+function bootFaceShown(t) {
+  return t >= T.boot_face_start_ms;
 }
 
 // ---------------- 阶段预览(下拉框) ----------------
@@ -711,7 +719,7 @@ function renderAnim() {
   ctx.clearRect(0, 0, cv.width, cv.height);
 
   const info = document.getElementById("anim-info");
-  const total = T.boot_face_start_ms + 4 * T.boot_face_blink_ms;
+  const total = bootTotal();
   info.textContent = "总时长 " + total + " ms" + (bootPlaying ? "（播放中）" : "");
 
   for (let si = 0; si < 2; si++) {
@@ -720,13 +728,19 @@ function renderAnim() {
     drawScreen(c, si, T, SIM, {
       fade: bootFade(bootT),
       sweep: bootSweep(si, bootT),
-      hideFace: !bootEyeOpen(bootT),
-      faceKey: bootEyeOpen(bootT) ? "Idle" : "Blink",   // 与固件 boot_apply 的取脸一致
-      hideReadout: bootT < T.boot_face_start_ms + 4 * T.boot_face_blink_ms,  // 扫表时数字栏是空的
+      hideFace: !bootFaceShown(bootT),
+      faceKey: "Idle",                    // 显形后就是常态脸(与固件 boot_apply 一致)
+      hideReadout: bootT < total,         // 扫表时数字栏是空的
       surprise: false
     });
     ctx.drawImage(c, si * half, 0);
   }
+}
+
+// 开机动画总时长 —— 与固件 theme_clamp() 的推导保持一致:
+// 表情开始 + 一拍收尾(以前是 +4 拍眨眼,眨眼状态删掉后只剩一个"显形"动作)
+function bootTotal() {
+  return T.boot_face_start_ms + T.boot_face_blink_ms;
 }
 
 // 动画循环:按真实时间推进
@@ -737,8 +751,7 @@ function loop(ts) {
   lastTick = ts;
   if (bootPlaying) {
     bootT += dt;
-    const total = T.boot_face_start_ms + 4 * T.boot_face_blink_ms;
-    if (bootT > total + 600) { bootT = 0; }      // 循环播放
+    if (bootT > bootTotal() + 600) { bootT = 0; }      // 循环播放
     renderAnim();
   }
   requestAnimationFrame(loop);
@@ -782,8 +795,11 @@ document.getElementById("file").addEventListener("change", (e) => {
   const r = new FileReader();
   r.onload = () => {
     try {
-      const obj = JSON.parse(r.result);
-      const t = obj.theme || obj;
+      // ★ 用 ThemeJson 而不是裸 JSON.parse:主题文件里的颜色按 0xRRGGBB 写
+      //   (固件接受这种写法,参考文件 theme-default.json 全是它),
+      //   直接 JSON.parse 会报一句和颜色毫无关系的语法错。
+      const obj = ThemeJson.parseThemeJson(r.result);
+      const t = ThemeJson.themeObject(obj);
       // 以默认值打底:缺字段不报错,与固件端"缺失即默认"的语义一致
       T = Object.assign(defaultTheme(), t);
       T.face = Object.assign(defaultTheme().face, t.face || {});
@@ -819,8 +835,9 @@ document.getElementById("btn-default").addEventListener("click", () => {
 
 document.getElementById("btn-apply").addEventListener("click", () => {
   try {
-    const obj = JSON.parse(document.getElementById("json").value);
-    const t = obj.theme || obj;
+    // 同"导入文件":允许 0xRRGGBB 的写法(固件也接受)
+    const obj = ThemeJson.parseThemeJson(document.getElementById("json").value);
+    const t = ThemeJson.themeObject(obj);
     T = Object.assign(defaultTheme(), t);
     T.face = Object.assign(defaultTheme().face, t.face || {});
     T.readout = Object.assign(defaultTheme().readout, t.readout || {});
