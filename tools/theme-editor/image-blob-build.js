@@ -58,18 +58,20 @@
   //   左右屏开机图、左右屏眨眼图、左右屏冷车/过热图)。
   //   复用会让别人已导出的 image.bin 里那几张图突然变成别的表情,而且不报错。
   //   **新角色从 21 开始接。**
+  // ★ 8 号当年是"惊喜"(急加速瞬态),现在语义是**超速**(>130 km/h)——
+  //   只改名不改号,已导出的 image.bin 不受影响。见 image_blob.h。
   var ROLE = {
     Background: 1,
     // 左屏(转速表)
     FaceIdle: 3, FaceRedline: 4, FaceCruise: 12, FaceSport: 13,
     // 右屏(速度表)
-    FaceIdleR: 6, FaceSurpriseR: 8, FaceCruiseR: 17, FaceSportR: 18
+    FaceIdleR: 6, FaceOverspeedR: 8, FaceCruiseR: 17, FaceSportR: 18
   };
   var ROLE_NAMES = {
     1: "表盘背景",
     3: "左屏表情·常态", 4: "左屏表情·红区",
     12: "左屏表情·巡航", 13: "左屏表情·运动",
-    6: "右屏表情·常态", 8: "右屏表情·惊喜",
+    6: "右屏表情·常态", 8: "右屏表情·超速",
     17: "右屏表情·巡航", 18: "右屏表情·运动"
   };
 

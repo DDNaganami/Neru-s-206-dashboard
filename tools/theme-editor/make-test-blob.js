@@ -75,7 +75,7 @@ function mk(name, role, order, rgba, w, h, alpha) {
 //   · RGB565 量化后要基本不变(所以用 8 位能整除到 5/6 位的值:0/128/255)
 //   · 不要用背景标记的品红(255,0,255),否则和"表情透明"分不清
 // 左屏(转速表):常态红 / 巡航黄 / 运动绿 / 红区青
-// 右屏(速度表):常态浅蓝 / 巡航橙 / 运动紫 / 惊喜白
+// 右屏(速度表):常态浅蓝 / 巡航橙 / 运动紫 / 超速白
 const LEFT_FACES = [
   { name: "L-idle",    role: IB.ROLE.FaceIdle,    rgb: [255, 0, 0] },
   { name: "L-cruise",  role: IB.ROLE.FaceCruise,  rgb: [255, 255, 0] },
@@ -86,7 +86,7 @@ const RIGHT_FACES = [
   { name: "R-idle",     role: IB.ROLE.FaceIdleR,     rgb: [0, 128, 255] },
   { name: "R-cruise",   role: IB.ROLE.FaceCruiseR,   rgb: [255, 128, 0] },
   { name: "R-sport",    role: IB.ROLE.FaceSportR,    rgb: [128, 0, 255] },
-  { name: "R-surprise", role: IB.ROLE.FaceSurpriseR, rgb: [255, 255, 255] }
+  { name: "R-overspeed", role: IB.ROLE.FaceOverspeedR, rgb: [255, 255, 255] }
 ];
 
 const items = [mk("testbg", IB.ROLE.Background, 0, makeBackground(), BG, BG, false)]

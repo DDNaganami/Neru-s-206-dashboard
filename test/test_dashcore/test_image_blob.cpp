@@ -133,9 +133,10 @@ static void test_role_ids(void) {
   TEST_ASSERT_EQUAL_UINT16(4, (uint16_t)ImageRole::FaceRedline);
   TEST_ASSERT_EQUAL_UINT16(12, (uint16_t)ImageRole::FaceCruise);
   TEST_ASSERT_EQUAL_UINT16(13, (uint16_t)ImageRole::FaceSport);
-  // 右屏(速度表):常态 / 惊喜 / 巡航 / 运动
+  // 右屏(速度表):常态 / 超速 / 巡航 / 运动
+  // ★ 超速这张的角色号 8 沿用当年的"惊喜"(只改名不改号,已导出的 image.bin 不受影响)
   TEST_ASSERT_EQUAL_UINT16(6, (uint16_t)ImageRole::FaceIdleR);
-  TEST_ASSERT_EQUAL_UINT16(8, (uint16_t)ImageRole::FaceSurpriseR);
+  TEST_ASSERT_EQUAL_UINT16(8, (uint16_t)ImageRole::FaceOverspeedR);
   TEST_ASSERT_EQUAL_UINT16(17, (uint16_t)ImageRole::FaceCruiseR);
   TEST_ASSERT_EQUAL_UINT16(18, (uint16_t)ImageRole::FaceSportR);
 
@@ -452,13 +453,13 @@ static void test_face_role_side_mapping(void) {
 // "右屏显示左屏的脸"或"巡航显示成红区",而且完全不会报错、也不崩。
 // 所以这里不靠注释,靠断言。
 static void test_face_role_ids_match_stages(void) {
-  // 槽位顺序 = Face 枚举顺序:Idle Cruise Sport Redline Surprise
+  // 槽位顺序 = Face 枚举顺序:Idle Cruise Sport Redline Overspeed
   struct { int slot; ImageRole L, R; } kExpect[5] = {
-    {0, ImageRole::FaceIdle,     ImageRole::FaceIdleR},      // Idle
-    {1, ImageRole::FaceCruise,   ImageRole::FaceCruiseR},    // Cruise
-    {2, ImageRole::FaceSport,    ImageRole::FaceSportR},     // Sport
-    {3, ImageRole::FaceRedline,  (ImageRole)0},              // Redline:只有左屏有
-    {4, (ImageRole)0,            ImageRole::FaceSurpriseR},  // Surprise:只有右屏有
+    {0, ImageRole::FaceIdle,     ImageRole::FaceIdleR},       // Idle
+    {1, ImageRole::FaceCruise,   ImageRole::FaceCruiseR},     // Cruise
+    {2, ImageRole::FaceSport,    ImageRole::FaceSportR},      // Sport
+    {3, ImageRole::FaceRedline,  (ImageRole)0},               // Redline:只有左屏有
+    {4, (ImageRole)0,            ImageRole::FaceOverspeedR},  // Overspeed:只有右屏有
   };
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Count, kFaceSlotCount);
   for (int i = 0; i < 5; ++i) {

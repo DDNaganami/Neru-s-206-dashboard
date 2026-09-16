@@ -285,7 +285,7 @@ let theme = { bg: "#141414" };
 // 角色:与 image_blob.h 的 ImageRole 一致。
 // ★ 左右屏分开列(法系车:左=转速表,右=速度表),**两屏的状态不一样**:
 //     左屏(转速表,只看转速):常态 / 巡航 / 运动 / 红区
-//     右屏(速度表,只看车速):常态 / 巡航 / 运动 / 惊喜
+//     右屏(速度表,只看车速):常态 / 巡航 / 运动 / 超速(>130 km/h)
 //   一共 8 张 —— 正好是 1MB 分区能装下的规模(240×240 一张 169KB)。
 //   编号错位会让"右屏显示成左屏的",而且不报错,
 //   所以 C 侧有一条 test_role_ids 专门钉住这组编号。
@@ -301,7 +301,7 @@ const ROLES = [
   { id: ImageBlob.ROLE.FaceIdleR,      label: "右屏(速度表) · 常态" },
   { id: ImageBlob.ROLE.FaceCruiseR,    label: "右屏(速度表) · 巡航" },
   { id: ImageBlob.ROLE.FaceSportR,     label: "右屏(速度表) · 运动" },
-  { id: ImageBlob.ROLE.FaceSurpriseR,  label: "右屏(速度表) · 惊喜" }
+  { id: ImageBlob.ROLE.FaceOverspeedR, label: "右屏(速度表) · 超速" }
 ];
 
 const FITS = [
@@ -1149,8 +1149,10 @@ function refresh(rebuildGrid = true) {
 // 阶段:来自 face-stages.js(与固件同源)。
 // 表情状态:**每屏各一个**下拉 —— 这就是"独立出表情选项":
 //   左屏只列它自己那 4 个状态(常态/巡航/运动/红区),
-//   右屏只列它自己那 4 个(常态/巡航/运动/惊喜),默认"跟随阶段"。
-//   想单独检查某一张图(比如右屏的"惊喜"是瞬态、不对应任何阶段)就选它。
+//   右屏只列它自己那 4 个(常态/巡航/运动/超速),默认"跟随阶段"。
+//   想单独检查某一张图(比如右屏的"超速"那张)就选它。
+//   ★ 4 个状态对应 4 条阶段用例,所以每个状态都能被点出来 ——
+//     旧的"惊喜"是瞬态、表里没有它,用户试用时发现"这个档选不出来"。
 function buildStageSelects() {
   const sel = document.getElementById("stage");
   sel.innerHTML = "";

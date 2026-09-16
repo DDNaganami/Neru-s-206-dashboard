@@ -72,7 +72,7 @@ static const uint16_t kImageBlobVersion = 1;
 // ---- 一套表情有几张? ----
 // **每屏 4 张，一共 8 张**（见 lib/dashcore/face_stages.h）：
 //   左屏(转速表)：常态 / 巡航 / 运动 / 红区   ← 只看转速
-//   右屏(速度表)：常态 / 巡航 / 运动 / 惊喜   ← 只看车速(+急加速瞬态)
+//   右屏(速度表)：常态 / 巡航 / 运动 / 超速   ← 只看车速(>130 km/h)
 // 两屏**各自独立**：转速表的表情不会被车速影响，反之亦然；
 // 水温两个表都不参与（只驱动弧与数字）。
 //
@@ -81,7 +81,13 @@ static const uint16_t kImageBlobVersion = 1;
 //   Cruise    巡航           12             17
 //   Sport     运动           13             18
 //   Redline   红区            4             —(不用)
-//   Surprise  惊喜           —(不用)         8
+//   Overspeed 超速           —(不用)         8
+//
+// ★ 右屏第 4 张原本叫"惊喜"(急加速瞬态)，2026 年改成**超速**(>130 km/h)。
+//   **只改名，角色号仍是 8** —— 已经导出的 image.bin 里那张图会自然变成
+//   "超速"那张，不需要重新导出(如果那张图画的是"惊喜"的表情，
+//   用户可能想重画，但不会错位、不会报错)。
+//   改名原因见 expression.cpp 顶部:瞬态在实车上到不了、在模拟器里选不出来。
 //   (Background 背景 = 1)
 //
 // 为什么从 14 张降到 8 张:1MB 的 image 分区装不下 14 张表情 + 背景
@@ -103,14 +109,14 @@ enum class ImageRole : uint16_t {
   FaceSport    = 13,  // 表情：运动(>=3500)
 
   // ---- 右屏(速度表) ----
-  FaceIdleR     = 6,  // 表情：常态(低速)
-  FaceSurpriseR = 8,  // 表情：惊喜(急加速,瞬态)
-  FaceCruiseR   = 17, // 表情：巡航(>=30)
-  FaceSportR    = 18, // 表情：运动(>=90)
+  FaceIdleR      = 6,   // 表情：常态(低速)
+  FaceOverspeedR = 8,   // 表情：超速(>130 km/h) —— 号 8 沿用(当年是"惊喜")
+  FaceCruiseR    = 17,  // 表情：巡航(>=30)
+  FaceSportR     = 18,  // 表情：运动(>=90)
 
   // ★ 以下是**保留编号,一律不复用**(见 test_role_ids):
   //   2        当年的"开机帧"(开机画面已改成程序化扫表)
-  //   5        左屏"惊喜"(惊喜现在只属于右屏)
+  //   5        左屏"惊喜"(第 4 档现在两屏各一个:左红区 / 右超速)
   //   7        右屏"红区"(红区现在只属于左屏)
   //   9 / 10   当年的左右屏开机图
   //   11 / 16  当年的左右屏"眨眼"图(眨眼状态已删除)
@@ -127,7 +133,7 @@ inline bool imageRoleIsFace(ImageRole r) {
     case ImageRole::FaceIdle:     case ImageRole::FaceCruise:
     case ImageRole::FaceSport:    case ImageRole::FaceRedline:
     case ImageRole::FaceIdleR:    case ImageRole::FaceCruiseR:
-    case ImageRole::FaceSportR:   case ImageRole::FaceSurpriseR:
+    case ImageRole::FaceSportR:   case ImageRole::FaceOverspeedR:
       return true;
     default:
       return false;

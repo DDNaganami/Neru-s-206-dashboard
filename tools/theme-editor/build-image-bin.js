@@ -60,20 +60,26 @@ function makePattern(kind, w, h) {
 }
 
 // 角色名 → 编号(与 image_blob.h 的 ImageRole 一致)
-// 左右屏各一套表情:车速表(左)和转速表(右)的差分图不同。
-// (9/10 是保留编号,见 image_blob.h —— 开机图已去掉,开机走程序化扫表)
+// ★ 这里只列**当前存在**的角色。当年那些已删除的角色(开机帧 boot、
+//   左屏惊喜 face_surprise、右屏红区 face_redline_r)对应编号是**保留号**,
+//   一律不复用 —— 所以它们既不在这里、也不该出现在任何 spec 里:
+//   传进来会直接报"不认识的角色",而不是悄悄生成一个编号为 undefined 的项
+//   (那会生成一个能通过字节校验、但角色是垃圾的 blob)。
 const ROLE_ID = {
   background: IB.ROLE.Background,
-  boot: IB.ROLE.BootFrame,
-  bootframe: IB.ROLE.BootFrame,
-  // 左屏(车速表)
+  // 左屏(转速表)
   face_idle: IB.ROLE.FaceIdle,
+  face_cruise: IB.ROLE.FaceCruise,
+  face_sport: IB.ROLE.FaceSport,
   face_redline: IB.ROLE.FaceRedline,
-  face_surprise: IB.ROLE.FaceSurprise,
-  // 右屏(转速表)
+  // 右屏(速度表)
   face_idle_r: IB.ROLE.FaceIdleR,
-  face_redline_r: IB.ROLE.FaceRedlineR,
-  face_surprise_r: IB.ROLE.FaceSurpriseR
+  face_cruise_r: IB.ROLE.FaceCruiseR,
+  face_sport_r: IB.ROLE.FaceSportR,
+  // 超速(第 4 档,当年叫"惊喜")。旧名保留成别名:编号没变(都是 8),
+  // 老 spec.json 里的 face_surprise_r 仍然能打包,只是语义变成"超速"。
+  face_overspeed_r: IB.ROLE.FaceOverspeedR,
+  face_surprise_r: IB.ROLE.FaceOverspeedR
 };
 
 function roleId(v) {

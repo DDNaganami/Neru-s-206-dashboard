@@ -16,9 +16,9 @@
 #include "face_stages.h"
 #include "expression.h"
 
-// 一条用例的判定:必须**先清状态机记忆**,否则上一条用例的速度会串成
-// "急加速"(face_update 用相邻两次调用的速度差判定惊喜),用例之间就会互相污染。
-// now 取 1000:固定值即可 —— 稳态只由数据决定,与时刻无关(有单测钉住)。
+// 一条用例的判定:必须**先清状态机记忆** —— 否则上一条用例停在 140 km/h
+// 会把超速迟滞位留给下一条(第 4 条速度用例就是 140),用例之间互相污染。
+// now 取 1000:固定值即可 —— 表情只由数据决定,与时刻无关(有单测钉住)。
 static FaceSet run_stage(const FaceStage& st) {
   face_reset();
   VehicleState s;
@@ -29,8 +29,11 @@ static FaceSet run_stage(const FaceStage& st) {
 }
 
 // 10 条阶段用例逐条对账(左右两屏都比)
+// ★ 条数变了要改这里:4 转速 + 4 车速 + 3 水温 = 11。
+//   (车速从 3 条变 4 条,是"惊喜"改成"超速"时补的 —— 原来第 4 档是瞬态,
+//    列不进表,用户试用时发现"这个档选不出来"。)
 static void test_stage_table(void) {
-  TEST_ASSERT_EQUAL_UINT8(10, kFaceStageCount);
+  TEST_ASSERT_EQUAL_UINT8(11, kFaceStageCount);
   for (uint8_t i = 0; i < kFaceStageCount; ++i) {
     const FaceStage& st = kFaceStages[i];
     const FaceSet got = run_stage(st);
@@ -178,7 +181,7 @@ static void test_slot_index_equals_face(void) {
   TEST_ASSERT_EQUAL_UINT8(1, (uint8_t)Face::Cruise);
   TEST_ASSERT_EQUAL_UINT8(2, (uint8_t)Face::Sport);
   TEST_ASSERT_EQUAL_UINT8(3, (uint8_t)Face::Redline);
-  TEST_ASSERT_EQUAL_UINT8(4, (uint8_t)Face::Surprise);
+  TEST_ASSERT_EQUAL_UINT8(4, (uint8_t)Face::Overspeed);
   TEST_ASSERT_EQUAL_UINT8(5, (uint8_t)Face::Count);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Count, kFaceSlotCount);
 }

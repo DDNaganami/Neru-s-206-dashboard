@@ -94,13 +94,13 @@ $specPath = Join-Path $outDir "spec.json"
 $spec = @'
 {
   "images": [
-    { "pattern": "ramp",   "w": 8,  "h": 4, "role": "background",     "order": 0, "name": "grad" },
-    { "pattern": "checker","w": 8,  "h": 8, "role": "boot",           "order": 0, "name": "boot0" },
-    { "pattern": "solid",  "w": 4,  "h": 4, "role": "boot",           "order": 1, "name": "boot1" },
-    { "pattern": "checker","w": 16, "h": 2, "role": "face_idle",      "order": 0, "name": "faceL" },
-    { "pattern": "ramp",   "w": 6,  "h": 6, "role": "face_surprise",  "order": 0, "name": "wowL", "stride_pad": 2 },
-    { "pattern": "checker","w": 12, "h": 6, "role": "face_idle_r",    "order": 0, "name": "faceR" },
-    { "pattern": "solid",  "w": 8,  "h": 8, "role": "face_redline_r", "order": 0, "name": "redR" }
+    { "pattern": "ramp",   "w": 8,  "h": 4, "role": "background",      "order": 0, "name": "grad" },
+    { "pattern": "checker","w": 8,  "h": 8, "role": "face_idle",       "order": 0, "name": "idleL" },
+    { "pattern": "solid",  "w": 4,  "h": 4, "role": "face_cruise",     "order": 1, "name": "cruiseL" },
+    { "pattern": "checker","w": 16, "h": 2, "role": "face_idle",       "order": 2, "name": "idleL2" },
+    { "pattern": "ramp",   "w": 6,  "h": 6, "role": "face_overspeed_r", "order": 0, "name": "overR", "stride_pad": 2 },
+    { "pattern": "checker","w": 12, "h": 6, "role": "face_idle_r",     "order": 0, "name": "idleR" },
+    { "pattern": "solid",  "w": 8,  "h": 8, "role": "face_sport_r",    "order": 0, "name": "sportR" }
   ]
 }
 '@

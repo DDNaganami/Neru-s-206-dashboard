@@ -56,7 +56,7 @@ static int8_t g_face_slot[2] = {-1, -1};    // 当前正显示哪一张(-1 = 还
 // 槽位 → 角色。角色编号表在 face_stages.h(kFaceRoleId),
 // 那里复述了 image_blob.h 的 ImageRole —— 由宿主机测试逐条比对,
 // 所以"刷进去的表情左右颠倒"这种错不会悄悄发生。
-// ★ 0 表示"这屏用不到这个状态"(左屏没有惊喜、右屏没有红区),
+// ★ 0 表示"这屏用不到这个状态"(左屏没有超速、右屏没有红区),
 //   调用方必须把它当"没有图"处理,不能拿去 image_dsc_for_role()。
 static ImageRole faceRole(uint8_t screen, uint8_t slot) {
   return (ImageRole)kFaceRoleId[screen][slot];
@@ -208,7 +208,8 @@ static void face_apply(ScreenUi& ui, Face f) {
 
   // 程序化占位表情:5 个状态里它只能表达"眯眼/睁大眼/张嘴/红底"这几种差别
   // (导入了图片就用图片,这一段只在完全没刷表情图时露脸)。
-  const bool surprise = (f == Face::Surprise);
+  // 第 4 档(原来的"惊喜"、现在是"超速")用大圆眼 + O 形嘴,正好也是"报警"的样子。
+  const bool alarmed = (f == Face::Overspeed);
   const bool narrow =
       (f == Face::Cruise || f == Face::Sport || f == Face::Redline);
   const bool alarm = (f == Face::Redline);
@@ -217,14 +218,14 @@ static void face_apply(ScreenUi& ui, Face f) {
 
   lv_obj_remove_flag(ui.eye_l, LV_OBJ_FLAG_HIDDEN);
   lv_obj_remove_flag(ui.eye_r, LV_OBJ_FLAG_HIDDEN);
-  const uint8_t w = surprise ? EYE_SURPRISE : EYE_NORMAL_W;
-  const uint8_t h = surprise ? EYE_SURPRISE : (narrow ? EYE_NARROW_H : EYE_NORMAL_H);
+  const uint8_t w = alarmed ? EYE_SURPRISE : EYE_NORMAL_W;
+  const uint8_t h = alarmed ? EYE_SURPRISE : (narrow ? EYE_NARROW_H : EYE_NORMAL_H);
   lv_obj_set_size(ui.eye_l, ts(w), ts(h));
   lv_obj_set_size(ui.eye_r, ts(w), ts(h));
   lv_obj_set_style_radius(ui.eye_l, ts(h / 2), 0);
   lv_obj_set_style_radius(ui.eye_r, ts(h / 2), 0);
 
-  if (surprise) {
+  if (alarmed) {
     lv_obj_set_pos(ui.mouth, ts(MOUTH_O_X), ts(MOUTH_O_Y));
     lv_obj_set_size(ui.mouth, ts(MOUTH_O_SIZE), ts(MOUTH_O_SIZE));
     lv_obj_set_style_radius(ui.mouth, ts(MOUTH_O_SIZE / 2), 0);

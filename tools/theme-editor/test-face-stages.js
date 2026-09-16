@@ -106,7 +106,7 @@ const cppRightStates = parseStateList("kFaceRightStates");
 
 // 解析不出来就说明 face_stages.h 的排版被改了 —— 直接失败,别静默跳过
 section("face_stages.h 可解析");
-ok(cppStages.length === 10, "解析出 10 条阶段用例(得到 " + cppStages.length + ")");
+ok(cppStages.length === 11, "解析出 11 条阶段用例(得到 " + cppStages.length + ")");
 ok(cppFallback.length === 5, "解析出 5 行降级链(得到 " + cppFallback.length + ")");
 ok(cppRoleDims[0] === 2 && cppRoleDims[1] === 5,
    "角色编号表的维度是 [2][5](得到 [" + cppRoleDims.join("][") + "])");
@@ -114,7 +114,7 @@ ok(cppRoles.length === 2 && cppRoles[0].length === 5 && cppRoles[1].length === 5
    "解析出 2×5 的角色编号表");
 ok(!!cppLeftStates && cppLeftStates.length === 4, "解析出左屏状态表(4 个)");
 ok(!!cppRightStates && cppRightStates.length === 4, "解析出右屏状态表(4 个)");
-if (cppStages.length !== 10 || cppFallback.length !== 5 || cppRoles.length !== 2 ||
+if (cppStages.length !== 11 || cppFallback.length !== 5 || cppRoles.length !== 2 ||
     !cppLeftStates || !cppRightStates) {
   console.log("\n  ⚠ face_stages.h 里的表格排版被改动了。");
   console.log("    那几张表的书写格式是被本测试解析的:每行一条,");
@@ -138,7 +138,7 @@ for (let i = 0; i < 2; i++) {
   eq(FS_JS.SCREENS[i].states.length, 4, (i === 0 ? "左屏" : "右屏") + " 4 个状态");
   // 该屏不该有的状态:kFaceRoleId 必须是 0
   for (let slot = 0; slot < 5; slot++) {
-    const key = ["Idle", "Cruise", "Sport", "Redline", "Surprise"][slot];
+    const key = ["Idle", "Cruise", "Sport", "Redline", "Overspeed"][slot];
     const has = js.indexOf(key) >= 0;
     if (has) continue;
     eq(cppRoles[i][slot], 0, (i === 0 ? "左屏" : "右屏") + " 不该有的 " + key + " 角色号");
@@ -146,13 +146,13 @@ for (let i = 0; i < 2; i++) {
 }
 
 // 两屏状态集合必须**不一样**(这正是"每屏一套"的意义);相同的话说明有人抄错了
-section("两屏状态集合确实不同(左有红区、右有惊喜)");
+section("两屏状态集合确实不同(左有红区、右有超速)");
 {
   const L = FS_JS.SCREENS[0].states.map(s => s.key);
   const R = FS_JS.SCREENS[1].states.map(s => s.key);
   ok(L.indexOf("Redline") >= 0, "左屏有红区");
-  ok(L.indexOf("Surprise") < 0, "左屏没有惊喜");
-  ok(R.indexOf("Surprise") >= 0, "右屏有惊喜");
+  ok(L.indexOf("Overspeed") < 0, "左屏没有超速");
+  ok(R.indexOf("Overspeed") >= 0, "右屏有超速");
   ok(R.indexOf("Redline") < 0, "右屏没有红区");
   // 所有用到的角色编号必须互不重复(左右也不能撞)
   const all = FS_JS.SCREENS.reduce((a, s) => a.concat(s.states.map(x => x.role)), []);
@@ -161,7 +161,7 @@ section("两屏状态集合确实不同(左有红区、右有惊喜)");
 }
 
 // ------------------------------------------------------------
-section("10 条阶段用例:JS 镜像 == face_stages.h");
+section("11 条阶段用例:JS 镜像 == face_stages.h");
 eq(FS_JS.STAGES.length, cppStages.length, "条数");
 for (let i = 0; i < cppStages.length; i++) {
   const c = cppStages[i], j = FS_JS.STAGES[i];
@@ -182,8 +182,21 @@ for (const g of ["rpm", "speed", "coolant"]) {
   eq(rows[0].level, "low", g + " 第一档是 low");
 }
 eq(FS_JS.stagesOf("rpm").length, 4, "转速组 4 档(含红区)");
-eq(FS_JS.stagesOf("speed").length, 3, "车速组 3 档");
+eq(FS_JS.stagesOf("speed").length, 4, "车速组 4 档(含超速)");
 eq(FS_JS.stagesOf("coolant").length, 3, "水温组 3 档");
+// ★ 每屏 4 个状态 → 表里就该有 4 条:每个状态都能被"点"出来。
+//   (当年右屏第 4 档是"急加速惊喜",它不是按车速分档的,所以表里没有它 ——
+//    用户试用时问"这个档选不出来是做什么用的",改成超速后就补齐了。)
+eq(FS_JS.stagesOf("speed").length, FS_JS.SCREENS[1].states.length,
+   "车速组的档数 == 右屏状态数(每个状态都点得出来)");
+eq(FS_JS.stagesOf("rpm").length, FS_JS.SCREENS[0].states.length,
+   "转速组的档数 == 左屏状态数");
+{
+  const over = FS_JS.stagesOf("speed").filter(s => s.level === "over")[0];
+  ok(!!over, "车速组有超速那一档");
+  ok(over.speed > 130, "超速档的车速 " + over.speed + " 要真的超过阈值 130");
+  eq(over.right, "Overspeed", "超速档的右屏期望是超速脸");
+}
 eq(FS_JS.group("coolant").faces, false, "水温组声明为不影响表情");
 
 // ------------------------------------------------------------
@@ -248,12 +261,12 @@ for (const spec of [{ g: "rpm", side: "left" }, { g: "speed", side: "right" }]) 
 // ------------------------------------------------------------
 section("降级链:JS 镜像 == face_stages.h");
 {
-  // 两屏状态的并集 = 5 个(Idle/Cruise/Sport/Redline/Surprise),每个一行链
+  // 两屏状态的并集 = 5 个(Idle/Cruise/Sport/Redline/Overspeed),每个一行链
   const union = new Set();
   FS_JS.SCREENS.forEach(s => s.states.forEach(x => union.add(x.key)));
   eq(union.size, 5, "两屏状态并集是 5 个");
   eq(cppFallback.length, union.size, "链的行数 = 状态并集大小");
-  const keys = ["Idle", "Cruise", "Sport", "Redline", "Surprise"];
+  const keys = ["Idle", "Cruise", "Sport", "Redline", "Overspeed"];
   for (let i = 0; i < cppFallback.length; i++) {
     eq((FS_JS.FALLBACK[keys[i]] || []).join(","), cppFallback[i].join(","),
        "状态 " + keys[i] + " 的降级链");
@@ -264,7 +277,7 @@ section("角色编号:JS 镜像 == face_stages.h == image-blob-build.js");
 for (let side = 0; side < 2; side++) {
   for (const st of FS_JS.SCREENS[side].states) {
     const js = st.role;
-    const slot = ["Idle", "Cruise", "Sport", "Redline", "Surprise"].indexOf(st.key);
+    const slot = ["Idle", "Cruise", "Sport", "Redline", "Overspeed"].indexOf(st.key);
     eq(js, cppRoles[side][slot], "第 " + side + " 屏 " + st.key + " 角色号(face_stages.h)");
     eq(js, ImageBlob.ROLE["Face" + st.key + (side === 1 ? "R" : "")],
        "第 " + side + " 屏 " + st.key + " 角色号(image-blob-build.js)");
@@ -301,9 +314,9 @@ section("resolve():缺图时的替代品符合固件规则");
   const red = only(ImageBlob.ROLE.FaceIdle, ImageBlob.ROLE.FaceRedline);
   eq(FS_JS.resolve("left", "Sport", red), ImageBlob.ROLE.FaceRedline, "运动缺图 → 红区");
 
-  // 右屏的惊喜缺图:退到运动
+  // 右屏的超速缺图:退到运动
   const rSport = only(ImageBlob.ROLE.FaceIdleR, ImageBlob.ROLE.FaceSportR);
-  eq(FS_JS.resolve("right", "Surprise", rSport), ImageBlob.ROLE.FaceSportR, "惊喜缺图 → 运动");
+  eq(FS_JS.resolve("right", "Overspeed", rSport), ImageBlob.ROLE.FaceSportR, "超速缺图 → 运动");
 
   // 兜底:只导入"左屏红区"一张时,别的状态也用它(有图就用)
   const redOnly = only(ImageBlob.ROLE.FaceRedline);

@@ -133,7 +133,11 @@ struct Theme {
   // 五官几何(480 基准)
   uint8_t eye_l_x, eye_r_x, eye_y;
   uint8_t eye_normal_w, eye_normal_h;
-  uint8_t eye_surprise;     // 惊喜:大圆眼
+  // ★ eye_surprise 这个**键名是历史遗留**:第 4 槽位当年叫"惊喜",现在是
+  //   "超速"(>130 km/h),外形仍是"大圆眼 + O 形嘴"的报警样子。
+  //   键名不改 —— theme.json 是用户手里的文件,改键名会让已导出的主题
+  //   静默丢掉这个字段(theme_store 对不认识的键是"跳过"而不是报错)。
+  uint8_t eye_surprise;     // 第 4 槽位(超速):大圆眼
   uint8_t eye_narrow_h;     // 巡航/运动/红区:眯眼
   uint8_t mouth_line_x, mouth_line_y, mouth_line_w, mouth_line_h;
   uint8_t mouth_o_x, mouth_o_y, mouth_o_size;

@@ -12,8 +12,8 @@
 
 struct BothFaces { Face left; Face right; };
 
-// 单帧判定:先清记忆(否则上一条用例的速度会串成"急加速"),
-// 再喂一帧。now 取固定值 —— 表情是纯数据驱动的,时刻取多少都不该有影响。
+// 单帧判定:先清记忆(超速迟滞位),再喂一帧。
+// now 取固定值 —— 表情是纯数据驱动的,时刻取多少都不该有影响。
 static BothFaces at(float speed, float rpm, float coolant = 85.0f) {
   face_reset();
   VehicleState s;
@@ -22,6 +22,15 @@ static BothFaces at(float speed, float rpm, float coolant = 85.0f) {
   s.coolant_c = coolant;
   const FaceSet fs = face_update(s, 1000);
   return BothFaces{fs.left, fs.right};
+}
+
+// **不重置**记忆的连续喂帧 —— 迟滞测试必须连着喂(重置就把迟滞位清了)。
+static Face right_of(float speed, uint32_t t) {
+  VehicleState s;
+  s.speed_kmh = speed;
+  s.rpm = kRpmIdleNominal;
+  s.coolant_c = 85;
+  return face_update(s, t).right;
 }
 
 // ---------------- 左屏:只看转速 ----------------
@@ -62,7 +71,8 @@ void test_right_follows_speed_only(void) {
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise, (uint8_t)at(30.0f, 900).right);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise, (uint8_t)at(89.9f, 900).right);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport,  (uint8_t)at(90.0f, 900).right);
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport,  (uint8_t)at(kSpeedMax, 900).right);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport,  (uint8_t)at(130.0f, 900).right);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Overspeed, (uint8_t)at(kSpeedMax, 900).right);
 
   // ★ 转速从怠速扫到上限,右屏必须一直是常态(车速不变就不许动)
   for (float r = kRpmIdleNominal; r <= kRpmMax; r += 250.0f) {
@@ -117,7 +127,7 @@ void test_two_screens_can_differ(void) {
 }
 
 // ---------------- 两个"专属"状态 ----------------
-// 红区只属于左屏、惊喜只属于右屏 —— 这是 face_stages.h 里 kFaceRoleId
+// 红区只属于左屏、超速只属于右屏 —— 这是 face_stages.h 里 kFaceRoleId
 // 那一行 0 的依据,所以必须成立。
 void test_redline_left_only_exhaustive(void) {
   for (float r = 0.0f; r <= kRpmMax; r += 50.0f) {
@@ -127,38 +137,68 @@ void test_redline_left_only_exhaustive(void) {
   }
 }
 
-void test_surprise_right_only(void) {
+void test_overspeed_right_only_exhaustive(void) {
+  for (float v = 0.0f; v <= kSpeedMax; v += 5.0f) {
+    const BothFaces f = at(v, kRpmIdleNominal);
+    TEST_ASSERT_TRUE_MESSAGE((uint8_t)f.left != (uint8_t)Face::Overspeed,
+                             "左屏(转速表)不该出现超速");
+  }
+}
+
+// 超速档的边界:用户定的是"**大于** 130 km/h"。
+// 130.0 不算、130.1 就算 —— 顺手把"阈值写成了 >= 还是 >"钉住。
+void test_overspeed_threshold(void) {
   face_reset();
-  // 怠速 → 200ms 内 +30 km/h = 150 km/h/s → 惊喜
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport, (uint8_t)at(129.9f, kRpmIdleNominal).right);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport, (uint8_t)at(130.0f, kRpmIdleNominal).right);
+  face_reset();   // 迟滞:上一条留在 130 时不构成"已经超速"
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Overspeed,
+                          (uint8_t)at(130.1f, kRpmIdleNominal).right);
+  // 满量程也该是超速(210 km/h 在表盘刻度上)
+  face_reset();
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Overspeed, (uint8_t)at(kSpeedMax, 900).right);
+}
+
+// 超速是**稳态**:停在 140 上,时间过去多久都还是超速(与旧的"400ms 瞬态"相反)。
+void test_overspeed_is_a_level_not_a_transient(void) {
+  face_reset();
+  VehicleState s; s.speed_kmh = 140; s.rpm = kRpmIdleNominal; s.coolant_c = 85;
+  for (uint32_t t = 1000; t <= 5000; t += 250) {
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Overspeed, (uint8_t)face_update(s, t).right);
+  }
+  // 掉到 131 还是超速(仍在迟滞区上方),掉到 126 才退出
+  VehicleState a = s; a.speed_kmh = 131;
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Overspeed, (uint8_t)face_update(a, 6000).right);
+  VehicleState b = s; b.speed_kmh = 126;
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport, (uint8_t)face_update(b, 6100).right);
+}
+
+// 迟滞:127..130 这段"回退区"里保持上一状态,避免定速巡航压线时脸来回跳。
+//   从下面上来(130.5 → 128)仍是超速;从上面掉下来停下(200 → 129)也是超速;
+//   但**没超速过**的时候,129 不该判成超速。
+void test_overspeed_hysteresis(void) {
+  // ① 没进过超速:129 是运动
+  face_reset();
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport, (uint8_t)right_of(129.0f, 1000));
+  // ② 进过超速后掉到 128:保持超速(迟滞区 127..130 内不改判)
+  face_reset();
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Overspeed, (uint8_t)right_of(140.0f, 2000));
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Overspeed, (uint8_t)right_of(128.0f, 2100));
+  // ③ 掉到 127 及以下:退出,回运动
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport, (uint8_t)right_of(127.0f, 2200));
+}
+
+// 一次"猛加速"不该改变任何东西 —— 这是旧"惊喜"档被删掉的原因,
+// 留一条测试防止有人按加速度把瞬态加回来。
+void test_acceleration_does_not_change_face(void) {
+  face_reset();
   VehicleState a; a.speed_kmh = 10; a.rpm = kRpmIdleNominal; a.coolant_c = 85;
   face_update(a, 1000);
+  // 200ms 内 +30 km/h = 150 km/h/s(旧实现会在这里亮"惊喜")
   VehicleState b; b.speed_kmh = 40; b.rpm = 4200; b.coolant_c = 85;
   const FaceSet fs = face_update(b, 1200);
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Surprise, (uint8_t)fs.right);
-  // ★ 左屏不受影响:惊喜是"车速的瞬态",而且左屏仍按当前转速给脸
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport, (uint8_t)fs.left);
-}
-
-void test_gentle_accel_no_surprise(void) {
-  face_reset();
-  VehicleState a; a.speed_kmh = 40; a.rpm = 2200; a.coolant_c = 85;
-  face_update(a, 1000);
-  // 200ms 内 +1 km/h = 5 km/h/s → 不触发
-  VehicleState b; b.speed_kmh = 41; b.rpm = 2250; b.coolant_c = 85;
-  const FaceSet fs = face_update(b, 1200);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise, (uint8_t)fs.right);
-}
-
-void test_surprise_expires(void) {
-  face_reset();
-  VehicleState a; a.speed_kmh = 10; a.rpm = 900; a.coolant_c = 85;
-  face_update(a, 1000);
-  VehicleState b; b.speed_kmh = 40; b.rpm = 900; b.coolant_c = 85;
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Surprise, (uint8_t)face_update(b, 1200).right);
-  // 持续期内
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Surprise, (uint8_t)face_update(b, 1400).right);
-  // 400ms 到期后回落到稳态(40 km/h → 巡航)
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise, (uint8_t)face_update(b, 1700).right);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport, (uint8_t)fs.left);
 }
 
 // ---------------- 稳态与时间无关 ----------------
@@ -189,17 +229,20 @@ void test_face_ignores_gear(void) {
   TEST_ASSERT_EQUAL_UINT8((uint8_t)fa.right, (uint8_t)fb.right);
 }
 
-// face_reset 必须真的清掉记忆:否则"换数据源"时,新旧源之间的速度差
-// 会被当成急加速,开机就是一张惊喜脸。
+// face_reset 必须真的清掉记忆(超速迟滞位):
+// 否则"换数据源"时,上一个源还停在 140 km/h 会让新源在 127..130 之间
+// 继续报超速 —— 明明已经慢下来,超速脸还挂着。
 void test_face_reset_clears_memory(void) {
   face_reset();
-  VehicleState fast; fast.speed_kmh = 100; fast.rpm = 6000; fast.coolant_c = 85;
-  face_update(fast, 5000);                  // 让内部记住"上次 100 km/h"
+  // 进过超速(140),再掉到 128:迟滞让它保持超速
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Overspeed, (uint8_t)right_of(140.0f, 5000));
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Overspeed, (uint8_t)right_of(128.0f, 5100));
+  // 清掉记忆后同样的 128 就该是运动
   face_reset();
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport, (uint8_t)right_of(128.0f, 5200));
+  // 左屏不受影响(转速 900 = 常态)
   VehicleState slow; slow.speed_kmh = 0; slow.rpm = 900; slow.coolant_c = 85;
-  const FaceSet fs = face_update(slow, 6000);
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle, (uint8_t)fs.right);   // 不是惊喜
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle, (uint8_t)fs.left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle, (uint8_t)face_update(slow, 5300).left);
 }
 
 // 名称表:代码里用到名字的地方(串口日志)必须覆盖所有状态
@@ -208,7 +251,7 @@ void test_face_names(void) {
   TEST_ASSERT_EQUAL_STRING("cruise", face_name(Face::Cruise));
   TEST_ASSERT_EQUAL_STRING("sport", face_name(Face::Sport));
   TEST_ASSERT_EQUAL_STRING("redline", face_name(Face::Redline));
-  TEST_ASSERT_EQUAL_STRING("surprise", face_name(Face::Surprise));
+  TEST_ASSERT_EQUAL_STRING("overspeed", face_name(Face::Overspeed));
 }
 
 void register_expression_tests(void) {
@@ -217,9 +260,11 @@ void register_expression_tests(void) {
   RUN_TEST(test_coolant_never_affects_faces);
   RUN_TEST(test_two_screens_can_differ);
   RUN_TEST(test_redline_left_only_exhaustive);
-  RUN_TEST(test_surprise_right_only);
-  RUN_TEST(test_gentle_accel_no_surprise);
-  RUN_TEST(test_surprise_expires);
+  RUN_TEST(test_overspeed_right_only_exhaustive);
+  RUN_TEST(test_overspeed_threshold);
+  RUN_TEST(test_overspeed_is_a_level_not_a_transient);
+  RUN_TEST(test_overspeed_hysteresis);
+  RUN_TEST(test_acceleration_does_not_change_face);
   RUN_TEST(test_time_independent);
   RUN_TEST(test_face_ignores_gear);
   RUN_TEST(test_face_reset_clears_memory);

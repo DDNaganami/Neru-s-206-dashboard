@@ -55,7 +55,7 @@ const char* roleName(uint32_t role) {
     case ImageRole::FaceCruise:    return "左屏表情·巡航";
     case ImageRole::FaceSport:     return "左屏表情·运动";
     case ImageRole::FaceIdleR:     return "右屏表情·常态";
-    case ImageRole::FaceSurpriseR: return "右屏表情·惊喜";
+    case ImageRole::FaceOverspeedR: return "右屏表情·超速";
     case ImageRole::FaceCruiseR:   return "右屏表情·巡航";
     case ImageRole::FaceSportR:    return "右屏表情·运动";
   }

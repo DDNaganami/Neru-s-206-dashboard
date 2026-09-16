@@ -6,7 +6,7 @@
 // 表情阶段表 —— 固件与编辑器共用的**唯一事实来源**
 //
 // 这个文件回答四个问题:
-//   1. "转速低/中/高/红区"和"速度低/中/高"这些阶段,
+//   1. "转速低/中/高/红区"和"速度低/中/高/超速"这些阶段,
 //      **左右两屏各自**该显示哪张表情?(kFaceStages)
 //   2. 每屏实际会产生哪几个状态?(kFaceLeftStates / kFaceRightStates)
 //   3. 某个状态没有导入图片时,退到哪张?(kFaceFallback)
@@ -39,10 +39,13 @@
 // 未被测的那两路取"正常值":车速 0、水温 85(正常运行温度)、转速 900(怠速)。
 // **转速组的四档直接用实车地标**:点火怠速 900 / 稳定巡航 2000 /
 // 运动 4200 / 表盘上限 6000 —— 这样"表里那一行"就是"车上真会出现的那一格"。
-// 瞬态(惊喜 Surprise)不在表里 —— 它不是稳态,由 test_expression.cpp 单独覆盖。
+// 车速组的四档是 0 / 55 / 110 / 140:分别落在 常态/巡航/运动/超速 四档里。
+// ★ 四档 + 四档 = 8 条:每屏 4 个状态,每个状态都有一条能被点的用例
+//   (原来的"惊喜"是瞬态、列不进表,用户试用时发现"选不出来" —— 改成
+//   超速之后就补上了这一条,见 expression.cpp 顶部的说明)。
 struct FaceStage {
   const char* group;      // "rpm" | "speed" | "coolant"
-  const char* level;      // "low" | "mid" | "high" | "redline"
+  const char* level;      // "low" | "mid" | "high" | "redline" | "over"
   float rpm;
   float speed_kmh;
   float coolant_c;
@@ -58,9 +61,11 @@ static const FaceStage kFaceStages[] = {
   {"rpm", "high", 4200.0f, 0.0f, 85.0f, Face::Sport, Face::Idle},
   {"rpm", "redline", 6000.0f, 0.0f, 85.0f, Face::Redline, Face::Idle},
   // 车速:只驱动右屏;左屏恒为常态(转速一直是怠速)
+  // 140 而不是 131:超速那条要离阈值有距离,免得"阈值一改用例就擦边"
   {"speed", "low", 900.0f, 0.0f, 85.0f, Face::Idle, Face::Idle},
   {"speed", "mid", 900.0f, 55.0f, 85.0f, Face::Idle, Face::Cruise},
   {"speed", "high", 900.0f, 110.0f, 85.0f, Face::Idle, Face::Sport},
+  {"speed", "over", 900.0f, 140.0f, 85.0f, Face::Idle, Face::Overspeed},
   // 水温:两屏表情都不动,只影响水温弧与水温数字
   {"coolant", "low", 900.0f, 0.0f, 60.0f, Face::Idle, Face::Idle},
   {"coolant", "mid", 900.0f, 0.0f, 85.0f, Face::Idle, Face::Idle},
@@ -70,13 +75,13 @@ static const uint8_t kFaceStageCount =
     (uint8_t)(sizeof(kFaceStages) / sizeof(kFaceStages[0]));
 
 // ---- 2. 每屏实际会产生哪些状态 ----
-// 这是"每屏一套独立表情"的**声明**:左屏只可能有这四个(没有惊喜),
+// 这是"每屏一套独立表情"的**声明**:左屏只可能有这四个(没有超速),
 // 右屏只可能有这四个(没有红区)。
 // 测试会断言:列在这里的状态在 kFaceRoleId 里必须有角色号,
 // 没列出来的必须是 0(不用)—— 两处一旦不一致就是"某个状态永远显示不出来"
 // 或者"某张图永远不会被用",都不会报错,所以必须机器校验。
 static const Face kFaceLeftStates[]  = {Face::Idle, Face::Cruise, Face::Sport, Face::Redline};
-static const Face kFaceRightStates[] = {Face::Idle, Face::Cruise, Face::Sport, Face::Surprise};
+static const Face kFaceRightStates[] = {Face::Idle, Face::Cruise, Face::Sport, Face::Overspeed};
 static const uint8_t kFaceStatesPerScreen = 4;
 
 // ---- 3. 缺图降级链 ----
@@ -84,28 +89,31 @@ static const uint8_t kFaceStatesPerScreen = 4;
 // 按顺序找第一张"这屏已经导入"的图。
 // 例:Sport 那张没导入 → 用 Cruise;Cruise 也没有 → Idle。
 // 左屏右屏各查各的:两套差分图不能互相顶替,否则角色会串。
-// 链里出现"这屏用不到的状态"(比如左屏链里的 Surprise)也没有副作用 ——
+// 链里出现"这屏用不到的状态"(比如左屏链里的 Overspeed)也没有副作用 ——
 // 那个槽位在这屏没有角色号,g_face_ok 恒为 false,会被直接跳过。
 #define FACE_SLOT(f) ((int8_t)(uint8_t)Face::f)
 static const int8_t kFaceFallback[5][4] = {
-  {FACE_SLOT(Idle),     FACE_SLOT(Cruise),  FACE_SLOT(Sport),    FACE_SLOT(Redline)},
-  {FACE_SLOT(Cruise),   FACE_SLOT(Idle),    FACE_SLOT(Sport),    FACE_SLOT(Redline)},
-  {FACE_SLOT(Sport),    FACE_SLOT(Cruise),  FACE_SLOT(Redline),  FACE_SLOT(Idle)},
-  {FACE_SLOT(Redline),  FACE_SLOT(Sport),   FACE_SLOT(Cruise),   FACE_SLOT(Idle)},
-  {FACE_SLOT(Surprise), FACE_SLOT(Sport),   FACE_SLOT(Cruise),   FACE_SLOT(Idle)},
+  {FACE_SLOT(Idle),      FACE_SLOT(Cruise),  FACE_SLOT(Sport),    FACE_SLOT(Redline)},
+  {FACE_SLOT(Cruise),    FACE_SLOT(Idle),    FACE_SLOT(Sport),    FACE_SLOT(Redline)},
+  {FACE_SLOT(Sport),     FACE_SLOT(Cruise),  FACE_SLOT(Redline),  FACE_SLOT(Idle)},
+  {FACE_SLOT(Redline),   FACE_SLOT(Sport),   FACE_SLOT(Cruise),   FACE_SLOT(Idle)},
+  // 超速缺图 → 退到运动(最接近的"开得快"),再一路退到常态
+  {FACE_SLOT(Overspeed), FACE_SLOT(Sport),   FACE_SLOT(Cruise),   FACE_SLOT(Idle)},
 };
 #undef FACE_SLOT
 static const uint8_t kFaceSlotCount = 5;
 
 // ---- 4. 表情槽位 → 图片角色编号 ----
 // 下标 [屏][槽位]:屏 0 = 左(转速表),屏 1 = 右(速度表)。
-// **0 = 这屏用不到这个状态**(左屏没有惊喜、右屏没有红区)。
+// **0 = 这屏用不到这个状态**(左屏没有超速、右屏没有红区)。
 // ★ 这些数必须与 lib/themetool/image_blob.h 的 ImageRole 完全一致 ——
 //   错了不会崩,只会"右屏显示左屏的脸",所以由
 //   test_image_blob.cpp → test_face_role_ids_match_stages 逐条比对。
+// ★ 槽位 4 = 超速,角色号 8 —— 这个号当年是"惊喜",**改名不改号**,
+//   已经导出的 image.bin 不受影响(见 image_blob.h 的保留编号说明)。
 static const uint16_t kFaceRoleId[2][5] = {
-  // 左屏(转速表):Idle Cruise Sport Redline Surprise(不用)
+  // 左屏(转速表):Idle Cruise Sport Redline Overspeed(不用)
   {3, 12, 13, 4, 0},
-  // 右屏(速度表):Idle Cruise Sport Redline(不用) Surprise
+  // 右屏(速度表):Idle Cruise Sport Redline(不用) Overspeed
   {6, 17, 18, 0, 8},
 };

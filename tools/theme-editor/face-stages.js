@@ -13,7 +13,7 @@
  *
  * ★ 两屏是**各自独立**的:
  *     左屏(转速表)只看转速 —— 常态/巡航/运动/红区
- *     右屏(速度表)只看车速 —— 常态/巡航/运动/惊喜
+ *     右屏(速度表)只看车速 —— 常态/巡航/运动/超速
  *   水温两个表都不参与(只驱动水温弧与水温数字)。
  *   所以"某阶段该显示什么"必须按屏分别回答,这也是这里用
  *   SCREENS[].states 而不是一张全局状态表的原因。
@@ -33,7 +33,7 @@
 
   // ---- 两屏各自的 4 个状态(**顺序 = 该屏档位从低到高**) ----
   // 角色编号与 image_blob.h 的 ImageRole 一致(由 test-face-stages.js 对账)。
-  // ★ 两屏的状态集合**不一样**:左屏有"红区"没有"惊喜",右屏反过来。
+  // ★ 两屏的状态集合**不一样**:左屏有"红区"没有"超速",右屏反过来。
   //   哪一屏有哪些状态由固件状态机决定(expression.cpp),这里只是声明。
   var SCREENS = [
     {
@@ -50,10 +50,11 @@
       key: "right", idx: 1, short: "右", label: "右屏 · 速度表",
       gauge: "speed", unit: "km/h", gaugeLabel: "车速",
       states: [
-        { key: "Idle",     label: "常态", role: 6  },
-        { key: "Cruise",   label: "巡航", role: 17 },
-        { key: "Sport",    label: "运动", role: 18 },
-        { key: "Surprise", label: "惊喜", role: 8  }
+        { key: "Idle",      label: "常态", role: 6  },
+        { key: "Cruise",    label: "巡航", role: 17 },
+        { key: "Sport",     label: "运动", role: 18 },
+        // 第 4 档:>130 km/h。角色号 8 沿用(当年是"惊喜"),改名不改号。
+        { key: "Overspeed", label: "超速", role: 8  }
       ]
     }
   ];
@@ -84,11 +85,11 @@
   // 链里出现"这一屏没有的状态"没有副作用:roleFor 会返回 null,
   // resolve 会直接跳过它(与固件侧 g_face_ok 恒为 false 同理)。
   var FALLBACK = {
-    Idle:     ["Idle", "Cruise", "Sport", "Redline"],
-    Cruise:   ["Cruise", "Idle", "Sport", "Redline"],
-    Sport:    ["Sport", "Cruise", "Redline", "Idle"],
-    Redline:  ["Redline", "Sport", "Cruise", "Idle"],
-    Surprise: ["Surprise", "Sport", "Cruise", "Idle"]
+    Idle:      ["Idle", "Cruise", "Sport", "Redline"],
+    Cruise:    ["Cruise", "Idle", "Sport", "Redline"],
+    Sport:     ["Sport", "Cruise", "Redline", "Idle"],
+    Redline:   ["Redline", "Sport", "Cruise", "Idle"],
+    Overspeed: ["Overspeed", "Sport", "Cruise", "Idle"]
   };
 
   // 该状态该用哪张图 —— 与固件 dash_ui.cpp 的 faceResolve() 同一套规则。
@@ -120,6 +121,10 @@
   //
   // 转速四档用的是**实车地标**(用户实测:点火怠速 900 / 稳定巡航 2000 /
   // 表盘上限 6000;运动取中间 4200)—— 所以表里那一行就是车上真会出现的那一格。
+  // 车速四档 0 / 55 / 110 / 140:分别落在 常态/巡航/运动/超速。
+  // ★ 每屏 4 个状态、表里就 4 条 —— 每个状态都能被"点"出来。
+  //   (当年右屏第 4 档是"急加速惊喜",它不是按车速分档的,所以表里没有它,
+  //    用户试用时发现"这个档选不出来" —— 改成超速后就补齐了。)
   var STAGES = [
     // 转速:只驱动左屏;右屏恒为常态(车速一直是 0)
     { group: "rpm", level: "low",     rpm: 900,  speed: 0,   coolant: 85,  left: "Idle",    right: "Idle" },
@@ -127,9 +132,10 @@
     { group: "rpm", level: "high",    rpm: 4200, speed: 0,   coolant: 85,  left: "Sport",   right: "Idle" },
     { group: "rpm", level: "redline", rpm: 6000, speed: 0,   coolant: 85,  left: "Redline", right: "Idle" },
     // 车速:只驱动右屏;左屏恒为常态(转速一直是怠速)
-    { group: "speed", level: "low",  rpm: 900, speed: 0,   coolant: 85, left: "Idle", right: "Idle"   },
-    { group: "speed", level: "mid",  rpm: 900, speed: 55,  coolant: 85, left: "Idle", right: "Cruise" },
-    { group: "speed", level: "high", rpm: 900, speed: 110, coolant: 85, left: "Idle", right: "Sport"  },
+    { group: "speed", level: "low",  rpm: 900, speed: 0,   coolant: 85, left: "Idle", right: "Idle"      },
+    { group: "speed", level: "mid",  rpm: 900, speed: 55,  coolant: 85, left: "Idle", right: "Cruise"    },
+    { group: "speed", level: "high", rpm: 900, speed: 110, coolant: 85, left: "Idle", right: "Sport"     },
+    { group: "speed", level: "over", rpm: 900, speed: 140, coolant: 85, left: "Idle", right: "Overspeed" },
     // 水温:两屏表情都不动,只影响水温弧与水温数字
     { group: "coolant", level: "low",  rpm: 900, speed: 0, coolant: 60,  left: "Idle", right: "Idle" },
     { group: "coolant", level: "mid",  rpm: 900, speed: 0, coolant: 85,  left: "Idle", right: "Idle" },
@@ -149,7 +155,7 @@
     { key: "rpm",     label: "转速", unit: "rpm",  faces: true,
       levels: { low: "低", mid: "中", high: "高", redline: "红区" } },
     { key: "speed",   label: "车速", unit: "km/h", faces: true,
-      levels: { low: "低", mid: "中", high: "高" } },
+      levels: { low: "低", mid: "中", high: "高", over: "超速" } },
     { key: "coolant", label: "水温", unit: "°C",   faces: false,
       levels: { low: "低", mid: "中", high: "高" } }
   ];

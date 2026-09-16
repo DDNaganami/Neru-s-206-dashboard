@@ -61,7 +61,7 @@ const BG   = { r: 0x00, g: 0x00, b: 0x62 };
 const MARK = { r: 0xff, g: 0x00, b: 0xff };          // 品红标记(背景里画的)
 
 // ★ 8 个状态各一个颜色,和 make-test-blob.js 写进去的一一对应。
-//   **两屏的状态集合不一样**(左有红区、右有惊喜),所以两张表分开放 ——
+//   **两屏的状态集合不一样**(左有红区、右有超速),所以两张表分开放 ——
 //   这也正是"每屏一套独立表情"要验的东西:
 //   看左屏时如果读到右屏的颜色,说明左右串了。
 const FACE_L = {
@@ -74,7 +74,7 @@ const FACE_R = {
   idle:     { r: 0x00, g: 0x80, b: 0xff },          // 右屏·常态 = 浅蓝
   cruise:   { r: 0xff, g: 0x80, b: 0x00 },          // 右屏·巡航 = 橙
   sport:    { r: 0x80, g: 0x00, b: 0xff },          // 右屏·运动 = 紫
-  surprise: { r: 0xff, g: 0xff, b: 0xff }           // 右屏·惊喜 = 白
+  overspeed: { r: 0xff, g: 0xff, b: 0xff }         // 右屏·超速 = 白(号 8,当年是"惊喜")
 };
 // 弧线色(主题默认):转速弧(左屏**外**弧)点亮 #FF5C5C、轨道 #232323,轨道 opa=153/255。
 // ★ 这里是"参考值"不是判定:采样点落在弧的**轨道**上(值没涨到那儿),
@@ -174,7 +174,7 @@ function main() {
   // 开机扫表期间**不该有**:dash_ui_render 在开机期间会早退,
   // 所以标签一直是空文本 —— 这正是想要的效果,也在这里钉住。
   const readoutShown = (process.argv[6] || "yes") !== "no";
-  if (!path) { console.error("用法: check-preview-frame.js <bmp> [idle|redline|surprise] [yes|no] [left|right] [yes|no]"); process.exit(2); }
+  if (!path) { console.error("用法: check-preview-frame.js <bmp> [idle|cruise|sport|redline|overspeed] [yes|no] [left|right] [yes|no]"); process.exit(2); }
 
   const table = (side === "right") ? FACE_R : FACE_L;
   const face = table[which];

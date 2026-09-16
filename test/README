@@ -8,7 +8,9 @@
 - test_obd_source：假串口驱动初始化/轮询状态机、坏帧钳制
 - test_van_source：VAN 帧解析、钳制、configureSpeedFrame
 - test_data_service：多源优先级、3 秒超时回退、按字段独立回退
-- test_expression：基础表情、眨眼、急加速惊喜（时间归一阈值）
+- test_expression：基础表情、超速档（阈值/迟滞/复位）、每屏独立、水温不参与
+- test_face_stages：阶段表 ↔ 状态机 ↔ 角色编号三方对账（表里 11 条用例）
+- test_theme_store / test_image_blob / test_image_roundtrip：主题 JSON 与图片镜像
 - arduino_shim/Arduino.h：Arduino API 最小桩，仅测试构建用
 
 跑法（和固件构建一样要纯 ASCII 路径，见 ARCHITECTURE.md 构建注意）：

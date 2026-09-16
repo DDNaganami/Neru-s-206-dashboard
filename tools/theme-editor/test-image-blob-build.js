@@ -58,7 +58,7 @@ eq(IB.ROLE.FaceCruise, 12, "左屏·巡航");
 eq(IB.ROLE.FaceSport, 13, "左屏·运动");
 // 右屏(速度表):常态 / 惊喜 / 巡航 / 运动
 eq(IB.ROLE.FaceIdleR, 6, "右屏·常态");
-eq(IB.ROLE.FaceSurpriseR, 8, "右屏·惊喜");
+eq(IB.ROLE.FaceOverspeedR, 8, "右屏·超速(号 8 沿用当年的'惊喜')");
 eq(IB.ROLE.FaceCruiseR, 17, "右屏·巡航");
 eq(IB.ROLE.FaceSportR, 18, "右屏·运动");
 // ★ 保留编号一律不服复用(2=开机帧、5=左屏惊喜、7=右屏红区、9/10=开机图、

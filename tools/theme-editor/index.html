@@ -307,15 +307,18 @@ function valueT(kind, v) {
 // ★ 这是**程序化占位表情**,不是导入的表情图。状态里它只能表达"眯眼/睁大眼/
 //   张嘴/红底"这几种差别 —— 要看导入的表情图在各阶段长什么样,
 //   请去「表情导入」页的「表情阶段模拟」。
-// ★ 两屏的状态集合不一样(左:常态/巡航/运动/红区;右:常态/巡航/运动/惊喜),
+// ★ 两屏的状态集合不一样(左:常态/巡航/运动/红区;右:常态/巡航/运动/超速),
 //   所以这里按状态名给形状,两边都能用。
+// ★ 第 4 档当年的名字是"惊喜",现在是"超速"(>130 km/h),外形不变
+//   (大圆眼 + O 形嘴 = 报警的样子)。主题里的键名仍叫 eye_surprise ——
+//   那是 theme.json 的格式,改名会让用户手里的主题静默丢字段,所以不改。
 function faceShapeOpts(faceKey) {
   switch (faceKey) {
-    case "Cruise":   return { narrow: true };
-    case "Sport":    return { narrow: true };
-    case "Redline":  return { narrow: true, redline: true };
-    case "Surprise": return { surprise: true };
-    default:         return {};                                // Idle:常态脸
+    case "Cruise":    return { narrow: true };
+    case "Sport":     return { narrow: true };
+    case "Redline":   return { narrow: true, redline: true };
+    case "Overspeed": return { alarmed: true };
+    default:          return {};                                // Idle:常态脸
   }
 }
 
@@ -323,8 +326,8 @@ function drawFace(ctx, cx, cy, theme, opts) {
   const s = theme.face_size;
   const bg = opts && opts.redline ? theme.face_bg_redline : theme.face_bg_idle;
   const ink = theme.face_ink;
-  const eyeW = (opts && opts.surprise) ? theme.face.eye_surprise : theme.face.eye_normal_w;
-  const eyeH = (opts && opts.surprise) ? theme.face.eye_surprise
+  const eyeW = (opts && opts.alarmed) ? theme.face.eye_surprise : theme.face.eye_normal_w;
+  const eyeH = (opts && opts.alarmed) ? theme.face.eye_surprise
              : ((opts && opts.narrow) ? theme.face.eye_narrow_h : theme.face.eye_normal_h);
 
   // 脸(圆心在表情区中心)
@@ -346,9 +349,9 @@ function drawFace(ctx, cx, cy, theme, opts) {
     ctx.fill();
   }
 
-  // 嘴(惊喜时是 O,平时是横线)
+  // 嘴(第 4 档"超速"时是 O 形,平时是横线)
   ctx.fillStyle = ink;
-  if (opts && opts.surprise) {
+  if (opts && opts.alarmed) {
     ctx.beginPath();
     ctx.roundRect(fx + theme.face.mouth_o_x, fy + theme.face.mouth_o_y,
                   theme.face.mouth_o_size, theme.face.mouth_o_size,
@@ -443,7 +446,7 @@ function drawScreen(canvas, screenIdx, theme, v, opts) {
     const auto = (screenIdx === 0) ? SIM.faceL : SIM.faceR;
     const shape = faceShapeOpts((opts && opts.faceKey) || auto);
     // 开机动画期间固定用常态脸覆盖阶段表情(与固件 boot_apply 一致)
-    if (opts && opts.surprise) shape.surprise = true;
+    if (opts && opts.alarmed) shape.alarmed = true;
     drawFace(ctx, cx, cy, theme, shape);
   }
 
@@ -842,7 +845,7 @@ function renderAnim() {
       hideFace: !bootFaceShown(bootT),
       faceKey: "Idle",                    // 显形后就是常态脸(与固件 boot_apply 一致)
       hideReadout: bootT < total,         // 扫表时数字栏是空的
-      surprise: false
+      alarmed: false
     });
     ctx.drawImage(c, si * half, 0);
   }
