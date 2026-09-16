@@ -186,6 +186,101 @@ static void test_screen_gauge_mapping(void) {
 
 // 屏 ↔ 表情图片角色的对应在 test_image_blob.cpp 里(那里才有 ImageRole)。
 
+// ============================================================
+// 数字读数(转速/速度大数字 + 单位 + 水温)
+//
+// 为什么值得测:这些值**只影响观感,错了不会崩** —— 但恰恰是这种字段
+// 最容易"解析写漏了、界面上调半天没反应"。所以逐字段对一遍。
+// ============================================================
+static void test_parse_readout(void) {
+  const char* json = R"({"theme":{
+    "readout": {
+      "digit_color": 0x00FF88,
+      "unit_color": 0x112233,
+      "coolant_color": 0xFF00FF,
+      "digit_font": 1,
+      "unit_font": 0,
+      "digit_cy": 50,
+      "unit_cy": 90,
+      "coolant_cy": 400,
+      "show_units": 0,
+      "show_coolant": 0
+    }}})";
+  Theme t;
+  TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+  TEST_ASSERT_EQUAL_HEX32(0x00FF88, t.readout.digit_color);
+  TEST_ASSERT_EQUAL_HEX32(0x112233, t.readout.unit_color);
+  TEST_ASSERT_EQUAL_HEX32(0xFF00FF, t.readout.coolant_color);
+  TEST_ASSERT_EQUAL_UINT8(1, t.readout.digit_font);
+  TEST_ASSERT_EQUAL_UINT8(0, t.readout.unit_font);
+  TEST_ASSERT_EQUAL_INT(50, t.readout.digit_cy);
+  TEST_ASSERT_EQUAL_INT(90, t.readout.unit_cy);
+  TEST_ASSERT_EQUAL_INT(400, t.readout.coolant_cy);
+  TEST_ASSERT_EQUAL_UINT8(0, t.readout.show_units);
+  TEST_ASSERT_EQUAL_UINT8(0, t.readout.show_coolant);
+}
+
+// 缺 readout → 整体继承默认值(老主题文件必须继续能用)
+static void test_parse_readout_missing_keeps_defaults(void) {
+  Theme def;
+  theme_set_defaults(def);
+
+  const char* json = R"({"theme":{"bg_color": 0x101010}})";
+  Theme t;
+  TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+  TEST_ASSERT_EQUAL_HEX32(def.readout.digit_color, t.readout.digit_color);
+  TEST_ASSERT_EQUAL_INT(def.readout.digit_cy, t.readout.digit_cy);
+  TEST_ASSERT_EQUAL_INT(def.readout.unit_cy, t.readout.unit_cy);
+  TEST_ASSERT_EQUAL_INT(def.readout.coolant_cy, t.readout.coolant_cy);
+  TEST_ASSERT_EQUAL_UINT8(def.readout.show_units, t.readout.show_units);
+  TEST_ASSERT_EQUAL_UINT8(def.readout.show_coolant, t.readout.show_coolant);
+
+  // 只写一半 → 写了的生效、没写的继承
+  const char* half = R"({"theme":{"readout":{"digit_cy": 40}}})";
+  TEST_ASSERT_TRUE(theme_parse_json(half, (uint32_t)strlen(half), t));
+  TEST_ASSERT_EQUAL_INT(40, t.readout.digit_cy);
+  TEST_ASSERT_EQUAL_INT(def.readout.unit_cy, t.readout.unit_cy);
+}
+
+// 越界必须被钳制:字号只认 0/1(别的值会让 readout_font 返回空指针),
+// 位置钳在表盘内(挪到屏幕外就成了"读数不见了"这种查半天的怪事)。
+static void test_clamp_readout(void) {
+  const char* json = R"({"theme":{"readout":{
+     "digit_font": 7, "unit_font": 9,
+     "digit_cy": -100, "unit_cy": 9999, "coolant_cy": -5,
+     "show_units": 42, "show_coolant": 7 }}})";
+  Theme t;
+  TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+  TEST_ASSERT_TRUE(t.readout.digit_font <= 1);
+  TEST_ASSERT_TRUE(t.readout.unit_font <= 1);
+  TEST_ASSERT_TRUE(t.readout.digit_cy >= 10 && t.readout.digit_cy <= 115);
+  TEST_ASSERT_TRUE(t.readout.unit_cy >= 10 && t.readout.unit_cy <= 119);
+  TEST_ASSERT_TRUE(t.readout.coolant_cy >= 200 && t.readout.coolant_cy <= 470);
+  TEST_ASSERT_EQUAL_UINT8(1, t.readout.show_units);     // 开关一律归一到 0/1
+  TEST_ASSERT_EQUAL_UINT8(1, t.readout.show_coolant);
+}
+
+// 默认读数的位置必须落在"弧带下沿到表情顶边"这段空档里 ——
+// 弧带占 23..47(半径 193..217),表情从 120 开始,所以数字和单位
+// 都必须待在 47..120 之间,否则会骑在弧上或被表情压住。
+// 这条是几何契约:改默认位置时它会告诉你越界了。
+static void test_readout_defaults_fit_gap(void) {
+  Theme d;
+  theme_set_defaults(d);
+  // 48 号数字高约 50 → 占 [cy-25, cy+25];18 号约 20 → 占 [cy-10, cy+10]
+  const int32_t digit_top = d.readout.digit_cy - 25;
+  const int32_t digit_bottom = d.readout.digit_cy + 25;
+  const int32_t unit_top = d.readout.unit_cy - 10;
+  const int32_t unit_bottom = d.readout.unit_cy + 10;
+  TEST_ASSERT_TRUE_MESSAGE(digit_top >= 47, "数字会骑到弧带上");
+  TEST_ASSERT_TRUE_MESSAGE(unit_bottom <= 120, "单位会被表情图压住");
+  TEST_ASSERT_TRUE_MESSAGE(digit_bottom <= unit_bottom, "数字必须在单位上方");
+  TEST_ASSERT_TRUE_MESSAGE(unit_top - digit_bottom <= 20, "数字和单位之间空太多");
+  // 水温读数在表盘底部:要在圆心以下,又不能跑到屏幕外
+  TEST_ASSERT_TRUE(d.readout.coolant_cy > 240);
+  TEST_ASSERT_TRUE(d.readout.coolant_cy < 430);
+}
+
 void register_theme_store_tests(void) {
   RUN_TEST(test_parse_full_theme);
   RUN_TEST(test_parse_partial_keeps_defaults);
@@ -195,4 +290,8 @@ void register_theme_store_tests(void) {
   RUN_TEST(test_parse_garbage_is_safe);
   RUN_TEST(test_screen_gauge_mapping);
   RUN_TEST(test_defaults_are_valid);
+  RUN_TEST(test_parse_readout);
+  RUN_TEST(test_parse_readout_missing_keeps_defaults);
+  RUN_TEST(test_clamp_readout);
+  RUN_TEST(test_readout_defaults_fit_gap);
 }

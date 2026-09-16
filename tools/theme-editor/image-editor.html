@@ -65,6 +65,20 @@
        font:12px Consolas,monospace}
   .cmd{display:flex;gap:6px;align-items:center;margin-top:6px}
   .cmd input{flex:1;font:12px Consolas,monospace}
+  .stages{margin-top:22px;border-top:1px solid var(--line);padding-top:14px}
+  .stages h2{font-size:13px;margin:0;color:var(--accent);text-transform:uppercase;
+             letter-spacing:.06em;font-weight:600}
+  .h2line{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+  .stage-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+              gap:10px;margin-top:10px;max-width:760px}
+  .stage-cell{background:#0e1016;border:1px solid var(--line);border-radius:8px;
+              padding:8px;cursor:pointer;text-align:center}
+  .stage-cell.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  .stage-cell canvas{width:100%;height:auto;border-radius:50%;display:block;background:#000}
+  .stage-cell .t{font-size:12px;margin-top:6px;color:var(--text)}
+  .stage-cell .r{font-size:11px;color:var(--dim);margin-top:2px}
+  .stage-cell .miss{color:var(--warn)}
+  .stage-cell .none{color:#ff9c9c}
 </style>
 </head>
 <body>
@@ -101,13 +115,13 @@
         <span class="hint" style="color:var(--dim);font-size:12px">叠一层仪表弧，看遮挡关系</span>
       </div>
       <div class="row">
+        <label>阶段</label>
+        <select id="stage"></select>
+      </div>
+      <div class="row">
         <label>表情状态</label>
-        <select id="face-state">
-          <option value="idle">常态</option>
-          <option value="redline">红区</option>
-          <option value="surprise">惊喜</option>
-        </select>
-        <span class="hint" style="color:var(--dim);font-size:12px">左右屏各取自己那一套</span>
+        <select id="face-state"></select>
+        <span class="hint" style="color:var(--dim);font-size:12px">默认跟随阶段</span>
       </div>
       <div class="hint" style="color:var(--dim);font-size:12px">
         开机画面不在这里：它是程序化扫表动画（淡入 → 扫表 → 睁眼），不占图片资源。
@@ -157,6 +171,24 @@
         <div class="cap">右屏 · 速度表</div>
       </div>
     </div>
+
+    <!-- ============================================================
+         阶段模拟:9 档(转速/水温/速度 × 低中高)下表情会怎么变
+         阶段表来自 face-stages.js(与固件 lib/dashcore/face_stages.h 同源,
+         由 test-face-stages.js 逐字段对账),所以这排小图说的就是真车上
+         会发生的事 —— 而不是网页自己编的一套。
+         ============================================================ -->
+    <div class="stages">
+      <div class="h2line">
+        <h2>表情阶段模拟（低 / 中 / 高）</h2>
+        <span class="hint" style="color:var(--dim);font-size:12px">
+          点一格 = 用它当预览阶段；格子下方写的是"该用哪张图"，缺图会显示降级到哪张
+        </span>
+      </div>
+      <div id="stage-grid" class="stage-grid"></div>
+      <div class="hint" id="stage-note" style="color:var(--dim);font-size:12px;margin-top:8px"></div>
+    </div>
+
     <div id="status" class="status">就绪。先拖一张图进来。</div>
   </div>
 </main>
@@ -165,6 +197,9 @@
 
 <!-- 打包器:同一份代码在 Node 里跑单测,保证界面导出的 bin 和设备端一致 -->
 <script src="image-blob-build.js"></script>
+<!-- 表情阶段表:与固件 lib/dashcore/face_stages.h 同源(由 test-face-stages.js 对账)。
+     阶段模拟、缺图降级、"哪些角色算表情"都问它,不在这里重抄一遍。 -->
+<script src="face-stages.js"></script>
 <script>
 "use strict";
 
@@ -175,6 +210,14 @@ if (typeof ImageBlob === "undefined") {
     '这个页面必须和 image-blob-build.js 放在同一个目录里。' +
     '（下载时别只保存 HTML）</div>';
   throw new Error("image-blob-build.js missing");
+}
+if (typeof FaceStages === "undefined") {
+  document.body.innerHTML =
+    '<div style="padding:40px;color:#ffb4b4;font:15px sans-serif">' +
+    '找不到 face-stages.js。<br><br>' +
+    '这个页面必须和 face-stages.js、image-blob-build.js 放在同一个目录里。' +
+    '（下载时别只保存 HTML）</div>';
+  throw new Error("face-stages.js missing");
 }
 
 // ============================================================
@@ -193,16 +236,30 @@ let theme = { bg: "#141414" };
 // ★ 左右屏分开列(法系车:左=转速表,右=速度表),两表用不同的表情差分。
 //   编号错位会让"右屏显示成左屏的",而且不报错,
 //   所以 C 侧有一条 test_role_ids 专门钉住这组编号。
-//   9/10 是保留编号(曾是开机图),界面里不出现。
+// ★ 一套表情是 **8 张**(状态见 face-stages.js 的 FACES),不是 3 张:
+//   另外 5 个状态(眨眼/巡航/运动/冷车/过热)接在 11..20 上。
+//   只导入 3 张也能用 —— 缺的那几个状态会自动降级到最接近的那张
+//   (降级链见 face-stages.js 的 FALLBACK,与固件 face_stages.h 同源)。
+// ★ 9/10 是保留编号(曾是开机图),界面里不出现、也不复用。
+//   开机画面已确认走程序化扫表动画,所以 "开机动画帧" 这个用途也去掉了。
 const ROLES = [
   { id: ImageBlob.ROLE.Background,     label: "表盘背景（两屏通用）" },
   { id: ImageBlob.ROLE.FaceIdle,       label: "左屏表情 · 常态" },
+  { id: ImageBlob.ROLE.FaceCruise,     label: "左屏表情 · 巡航" },
+  { id: ImageBlob.ROLE.FaceSport,      label: "左屏表情 · 运动" },
   { id: ImageBlob.ROLE.FaceRedline,    label: "左屏表情 · 红区" },
   { id: ImageBlob.ROLE.FaceSurprise,   label: "左屏表情 · 惊喜" },
+  { id: ImageBlob.ROLE.FaceBlink,      label: "左屏表情 · 眨眼" },
+  { id: ImageBlob.ROLE.FaceCold,       label: "左屏表情 · 冷车（水温低）" },
+  { id: ImageBlob.ROLE.FaceHot,        label: "左屏表情 · 过热（水温高）" },
   { id: ImageBlob.ROLE.FaceIdleR,      label: "右屏表情 · 常态" },
+  { id: ImageBlob.ROLE.FaceCruiseR,    label: "右屏表情 · 巡航" },
+  { id: ImageBlob.ROLE.FaceSportR,     label: "右屏表情 · 运动" },
   { id: ImageBlob.ROLE.FaceRedlineR,   label: "右屏表情 · 红区" },
   { id: ImageBlob.ROLE.FaceSurpriseR,  label: "右屏表情 · 惊喜" },
-  { id: ImageBlob.ROLE.BootFrame,      label: "开机动画帧（多帧，按顺序播）" }
+  { id: ImageBlob.ROLE.FaceBlinkR,     label: "右屏表情 · 眨眼" },
+  { id: ImageBlob.ROLE.FaceColdR,      label: "右屏表情 · 冷车（水温低）" },
+  { id: ImageBlob.ROLE.FaceHotR,       label: "右屏表情 · 过热（水温高）" }
 ];
 
 const FITS = [
@@ -218,11 +275,16 @@ const SIZE_PRESETS = [240, 320, 360, 480];
 // 哪些角色要保留透明通道
 //   表情 = 叠在弧线上面,必须能透出底下的东西 → RGB565A8
 //   背景 = 铺在最底层,透不透明没意义 → RGB565(省 1/3 空间)
-//   开机帧(当前不用)按不透明处理
+// ★ "哪些算表情"不再手写一串比较 —— 直接问 face-stages.js(与固件同源),
+//   以后加状态不需要回来改这里(改了也容易漏,漏了不会报错,只会黑边)。
+const FACE_ROLES = (function () {
+  const s = new Set();
+  FaceStages.FACES.forEach(f => { s.add(f.roleL); s.add(f.roleR); });
+  return s;
+})();
+
 function wantAlpha(role) {
-  const R = ImageBlob.ROLE;
-  return role === R.FaceIdle || role === R.FaceRedline || role === R.FaceSurprise ||
-         role === R.FaceIdleR || role === R.FaceRedlineR || role === R.FaceSurpriseR;
+  return FACE_ROLES.has(role);
 }
 
 // 这个角色用什么颜色格式
@@ -473,14 +535,21 @@ function pick(role) {
   return cand[0];
 }
 
-// 按「屏 + 表情状态」取图:左右屏用的是两套不同的差分
-function pickFace(which, state) {
-  const R = ImageBlob.ROLE;
-  const map = {
-    0: { idle: R.FaceIdle,      redline: R.FaceRedline,      surprise: R.FaceSurprise },
-    1: { idle: R.FaceIdleR,     redline: R.FaceRedlineR,     surprise: R.FaceSurpriseR }
-  };
-  return pick(map[which][state]);
+// 这个角色"导入了没有" —— resolve() 用它走降级链
+function hasRole(role) {
+  return items.some(i => i.role === role);
+}
+
+// 按「屏 + 表情状态」取图。
+// ★ 这里**不自己写映射**,而是调 face-stages.js 的 resolve() ——
+//   它与固件 dash_ui.cpp 的 faceResolve() 是同一套降级链。
+//   于是预览里"运动缺图 → 用巡航那张"这句话,和真车上的行为一致。
+function pickFaceResolved(which, faceKey) {
+  const role = FaceStages.resolve(which, faceKey, hasRole);
+  if (role === null) return { item: null, role: null, fallbackFrom: null };
+  const item = pick(role);
+  const want = FaceStages.roleFor(which, faceKey);
+  return { item: item, role: role, fallbackFrom: (role !== want) ? want : null };
 }
 
 // 把一张图贴到 (cx, cy) 为中心的位置。
@@ -497,10 +566,10 @@ function blitCentered(ctx, item, cx, cy, cw, ch) {
 }
 
 // 预览哪一屏:480×480 里按用途贴图
-//   背景 → 弧线 → 表情（左右屏各取自己那一套）
+//   背景 → 弧线 → 表情（左右屏各取自己那一套,缺图按降级链退）
 // 注意:**没有"开机画面"预览** —— 开机画面是程序化扫表动画(boot_anim.cpp),
 // 不依赖任何图片资源,所以这里没必要预演。
-function drawScreen(cv, which) {
+function drawScreen(cv, which, stage, faceKeyOverride) {
   const ctx = cv.getContext("2d");
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = theme.bg;
@@ -512,16 +581,95 @@ function drawScreen(cv, which) {
   const bgItem = pick(ImageBlob.ROLE.Background);
   if (bgItem) blitCentered(ctx, bgItem, cx, cy, cv.width, cv.height);
 
-  // 2. 弧线
+  // 2. 弧线（进度按当前阶段算:转速看转速、左屏内弧看水温、右屏看速度）
   if (document.getElementById("show-arcs").checked) {
     const arcs = which === 0 ? ARC_DEFAULT.left : ARC_DEFAULT.right;
-    arcs.forEach(a => drawArc(ctx, cx, cy, a.r, a.w,
-                              a.start, a.end, a.t, a.color));
+    const kinds = which === 0 ? [ARC_KIND_RPM, ARC_KIND_COOLANT] : [ARC_KIND_SPEED];
+    arcs.forEach((a, i) => drawArc(ctx, cx, cy, a.r, a.w, a.start, a.end,
+                                   stageT(kinds[i], stage), a.color));
   }
 
   // 3. 表情图（最上层，左右屏各一套）
-  const face = pickFace(which, document.getElementById("face-state").value);
-  if (face) blitCentered(ctx, face, cx, cy, cv.width, cv.height);
+  const faceKey = faceKeyOverride || stage.face;
+  const r = pickFaceResolved(which, faceKey);
+  if (r.item) blitCentered(ctx, r.item, cx, cy, cv.width, cv.height);
+}
+
+// ------------------------------------------------------------
+// 阶段模拟:9 档 × (左右屏) 的小图 + "该用哪张图"的文字
+//
+// 这是"表情导入"最需要的一块:图导进来之后,用户真正想知道的是
+//   "低转速/中转速/高转速、水温高低、速度高低,屏幕上分别长什么样"。
+// 以前只能在脑子里把 8 张图跟 8 个状态对一遍,现在直接摆出来。
+// ------------------------------------------------------------
+const ARC_KIND_SPEED = 0, ARC_KIND_RPM = 1, ARC_KIND_COOLANT = 2;
+// 与固件一致:水温弧的进度按主题量程 60..130 换算(这里是默认量程)
+const COOLANT_LO = 60, COOLANT_HI = 130;
+
+function stageT(kind, st) {
+  if (kind === ARC_KIND_SPEED) return clamp01(st.speed / 210);
+  if (kind === ARC_KIND_RPM) return clamp01(st.rpm / 7000);
+  return clamp01((st.coolant - COOLANT_LO) / (COOLANT_HI - COOLANT_LO));
+}
+function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+
+let curStage = 0;                 // 当前阶段(STAGES 的下标)
+let stageFaceOverride = "";       // 表情状态下拉的覆盖值("" = 跟随阶段)
+
+function roleName(role) {
+  return ImageBlob.ROLE_NAMES[role] || ("角色 " + role);
+}
+
+// 一格小图:左屏表盘 + 阶段标签 + "该用哪张图"
+function buildStageGrid() {
+  const grid = document.getElementById("stage-grid");
+  grid.innerHTML = "";
+
+  FaceStages.STAGES.forEach((st, i) => {
+    const g = FaceStages.GROUPS.filter(x => x.key === st.group)[0];
+    const cell = document.createElement("div");
+    cell.className = "stage-cell" + (i === curStage ? " on" : "");
+
+    const cv = document.createElement("canvas");
+    cv.width = 240; cv.height = 240;      // 小图,画起来便宜
+
+    const t = document.createElement("div");
+    t.className = "t";
+    t.textContent = g.label + " · " + g.levels[st.level] + " → " + FaceStages.face(st.face).label;
+
+    const r = document.createElement("div");
+    r.className = "r";
+    const want = FaceStages.roleFor(0, st.face);
+    const got = FaceStages.resolve(0, st.face, hasRole);
+    if (got === null) {
+      r.className = "r none";
+      r.textContent = "左屏没导入任何表情图 → 占位表情";
+    } else if (got !== want) {
+      r.className = "r miss";
+      r.textContent = "缺「" + roleName(want) + "」→ 退到「" + roleName(got) + "」";
+    } else {
+      r.textContent = "用「" + roleName(got) + "」";
+    }
+
+    cell.append(cv, t, r);
+    cell.addEventListener("click", () => { curStage = i; refresh(false); });
+    grid.appendChild(cell);
+
+    // 小图:把 480 的画布缩到 240 —— 直接按 240 画(坐标系按 cv.width 走)
+    drawScreen(cv, 0, st, stageFaceOverride || null);
+  });
+
+  const note = document.getElementById("stage-note");
+  const n = FaceStages.FACES.filter(f => !hasRole(f.roleL)).length;
+  if (items.length === 0) {
+    note.textContent = "还没有图片:九格画的都是程序化占位表情。导入一张" +
+      "「左屏表情 · 常态」就能让九格全部有脸（其余状态自动降级到它）。";
+  } else if (n > 0) {
+    note.textContent = "左屏还有 " + n + " 个状态没导入图片 —— 它们会退到最接近的那一张" +
+      "（表格里橙色的那几格）。这是设计行为:缺图不会让画面空掉。";
+  } else {
+    note.textContent = "左屏 8 个状态都有图了 —— 每一步表情变化都会换成对应的那张。";
+  }
 }
 
 // ------------------------------------------------------------
@@ -582,10 +730,14 @@ function budget() {
   }
 }
 
-function refresh() {
+function refresh(rebuildGrid = true) {
   buildList();
-  drawScreen(document.getElementById("cv0"), 0);
-  drawScreen(document.getElementById("cv1"), 1);
+  const stage = FaceStages.STAGES[curStage] || FaceStages.STAGES[0];
+  drawScreen(document.getElementById("cv0"), 0, stage, stageFaceOverride || null);
+  drawScreen(document.getElementById("cv1"), 1, stage, stageFaceOverride || null);
+  if (rebuildGrid) buildStageGrid();
+  else syncStageGridHighlight();
+  updateStageLabel();
 
   const b = budget();
   const bar = document.getElementById("budget-bar");
@@ -616,6 +768,70 @@ function refresh() {
 }
 
 // ------------------------------------------------------------
+// 阶段 / 表情状态 两个下拉框
+// ------------------------------------------------------------
+// 阶段:9 档,来自 face-stages.js(与固件同源)。
+// 表情状态:8 个状态,默认"跟随阶段";选具体某个状态可以单独检查那张图,
+//   因为 Blink / Surprise 这两个瞬态**不对应任何阶段**,不给入口就没法预览。
+function buildStageSelects() {
+  const sel = document.getElementById("stage");
+  sel.innerHTML = "";
+  FaceStages.STAGES.forEach((st, i) => {
+    const g = FaceStages.GROUPS.filter(x => x.key === st.group)[0];
+    const o = document.createElement("option");
+    o.value = String(i);
+    o.textContent = g.label + " · " + g.levels[st.level] + "（" +
+                    FaceStages.stageValueText(st) + "）→ " + FaceStages.face(st.face).label;
+    sel.appendChild(o);
+  });
+  sel.value = String(curStage);
+  sel.addEventListener("change", () => { curStage = +sel.value; refresh(); });
+
+  const fs = document.getElementById("face-state");
+  fs.innerHTML = "";
+  const auto = document.createElement("option");
+  auto.value = ""; auto.textContent = "跟随阶段";
+  fs.appendChild(auto);
+  FaceStages.FACES.forEach(f => {
+    const o = document.createElement("option");
+    o.value = f.key;
+    o.textContent = f.label + "（" + f.key + "）";
+    fs.appendChild(o);
+  });
+  fs.value = stageFaceOverride;
+  fs.addEventListener("change", () => { stageFaceOverride = fs.value; refresh(false); });
+}
+
+// 只更新高亮与信息行(不重画 9 格 —— 点格子时重画整排会闪)
+function syncStageGridHighlight() {
+  const cells = document.querySelectorAll("#stage-grid .stage-cell");
+  cells.forEach((c, i) => c.classList.toggle("on", i === curStage));
+}
+
+function updateStageLabel() {
+  const st = FaceStages.STAGES[curStage];
+  if (!st) return;
+  const g = FaceStages.GROUPS.filter(x => x.key === st.group)[0];
+  const key = stageFaceOverride || st.face;
+  const f = FaceStages.face(key);
+  const sel = document.getElementById("stage");
+  if (sel) sel.value = String(curStage);
+
+  const parts = [];
+  for (const side of [0, 1]) {
+    const want = FaceStages.roleFor(side, key);
+    const got = FaceStages.resolve(side, key, hasRole);
+    const sideName = side === 0 ? "左屏(转速表)" : "右屏(速度表)";
+    if (got === null) parts.push(sideName + "：无图 → 占位表情");
+    else if (got !== want) parts.push(sideName + "：缺「" + roleName(want) + "」→ 退到「" + roleName(got) + "」");
+    else parts.push(sideName + "：「" + roleName(got) + "」");
+  }
+  say(g.label + " · " + g.levels[st.level] + "（" + FaceStages.stageValueText(st) + "）" +
+      " → " + f.label + "\n" + parts.join("\n") +
+      (stageFaceOverride ? "\n（表情状态被手动指定为「" + f.label + "」，不跟随阶段）" : ""));
+}
+
+// ------------------------------------------------------------
 // 状态提示
 // ------------------------------------------------------------
 function say(msg, cls) {
@@ -627,6 +843,19 @@ function say(msg, cls) {
 // ------------------------------------------------------------
 // 添加图片
 // ------------------------------------------------------------
+// 新图默认用途:按"最该先有的那几张"依次填 ——
+//   第 1 张 → 背景;第 2 张 → 左屏·常态;第 3 张 → 右屏·常态;
+//   之后 → 左屏·常态(反正缺图会降级,先塞个合法的用途,用户再改)
+// ★ 以前默认给"开机帧",而开机画面已确认不做逐帧,那个用途现在连下拉框里
+//   都没有了 —— 默认给一个选不到的用途,等于让人一进来就拿到非法配置。
+function defaultRoleForNewItem() {
+  const n = items.filter(i => i.role === ImageBlob.ROLE.Background).length;
+  if (n === 0) return ImageBlob.ROLE.Background;
+  if (!hasRole(ImageBlob.ROLE.FaceIdle)) return ImageBlob.ROLE.FaceIdle;
+  if (!hasRole(ImageBlob.ROLE.FaceIdleR)) return ImageBlob.ROLE.FaceIdleR;
+  return ImageBlob.ROLE.FaceIdle;
+}
+
 function addFiles(files) {
   const list = Array.from(files || []);
   if (!list.length) return;
@@ -653,7 +882,7 @@ function addFiles(files) {
         id: nextId++,
         img,
         name: f.name.replace(/\.[^.]+$/, ""),
-        role: items.length === 0 ? ImageBlob.ROLE.Background : ImageBlob.ROLE.BootFrame,
+        role: defaultRoleForNewItem(),
         order: 0,
         fit: "contain",
         w: target,
@@ -663,7 +892,8 @@ function addFiles(files) {
       if (--pending === 0) {
         refresh();
         say("已添加 " + list.length + " 张。默认按 240 宽输出（省分区）；" +
-            "要全屏背景就点 480，但注意一张 480×480 要 450KB，再放表情图就超 1MB 分区了。");
+            "要全屏背景就点 480，但注意一张 480×480 要 450KB，" +
+            "再加 8 张表情图就超 1MB 分区了。");
       }
     };
     img.onerror = () => {
@@ -750,8 +980,7 @@ window.addEventListener("drop", e => e.preventDefault());
 document.getElementById("bg-color").addEventListener("input", e => {
   theme.bg = e.target.value; refresh();
 });
-document.getElementById("show-arcs").addEventListener("change", refresh);
-document.getElementById("face-state").addEventListener("change", refresh);
+document.getElementById("show-arcs").addEventListener("change", () => refresh(false));
 
 // 载入已有 bin（方便在已有资源上继续改）
 document.getElementById("btn-import-bin").addEventListener("click", () =>
@@ -770,9 +999,11 @@ document.getElementById("file-bin").addEventListener("change", e => {
 });
 
 // ------------------------------------------------------------
+buildStageSelects();
 refresh();
 say("就绪。\n" +
-    "1) 加图片  2) 选「用途」（背景 / 开机帧 / 表情）  3) 导出 image.bin\n" +
+    "1) 加图片  2) 选「用途」（背景 / 表情）  3) 导出 image.bin\n" +
+    "右下「表情阶段模拟」可以逐档看低/中/高转速、水温、速度下会显示哪张表情。\n" +
     "主题配色请用 tools\\theme-editor\\index.html，" +
     "两者是分开的两个分区，可以各自单独刷。");
 </script>

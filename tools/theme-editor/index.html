@@ -73,7 +73,11 @@
   <div class="right">
     <div class="toolbar">
       <span class="hint" style="align-self:center">预览的是 480×480 基准画面（真屏若用 800×800 会等比放大）</span>
+      <span class="grow" style="flex:1"></span>
+      <span class="hint" style="align-self:center">阶段预览</span>
+      <select id="stage" style="background:#0e1016;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px"></select>
     </div>
+    <div class="hint" id="stage-info" style="color:var(--dim);font-size:12px;margin:-6px 0 12px"></div>
     <div class="previews">
       <div class="screen">
         <canvas id="cv0" width="480" height="480"></canvas>
@@ -111,8 +115,20 @@
 
 <input type="file" id="file" accept=".json,application/json" style="display:none">
 
+<!-- 表情阶段表:与 lib/dashcore/face_stages.h 同源(由 test-face-stages.js 对账)。
+     阶段下拉框、以及"这一档该显示哪张表情"都来自它,不在这里重抄一遍。 -->
+<script src="face-stages.js"></script>
 <script>
 "use strict";
+
+if (typeof FaceStages === "undefined") {
+  document.body.innerHTML =
+    '<div style="padding:40px;color:#ffb4b4;font:15px sans-serif">' +
+    '找不到 face-stages.js。<br><br>' +
+    '这个页面必须和 face-stages.js、image-blob-build.js 放在同一个目录里。' +
+    '（下载时别只保存 HTML）</div>';
+  throw new Error("face-stages.js missing");
+}
 
 // ============================================================
 // 主题数据模型 —— 字段名必须与 lib/themetool/theme_store.cpp 完全一致,
@@ -135,6 +151,22 @@ function defaultTheme() {
       eye_surprise: 44, eye_narrow_h: 8,
       mouth_line_x: 75, mouth_line_y: 138, mouth_line_w: 50, mouth_line_h: 6,
       mouth_o_x: 80, mouth_o_y: 120, mouth_o_size: 40
+    },
+    // ★ 数字读数(转速/速度大数字 + 单位 + 水温数字)。
+    //   字段名必须与 lib/themetool/theme_store.cpp 的 "readout" 分支一致。
+    //   位置是 480 基准的**中心 y**:数字在表盘正上方、单位紧跟其下、
+    //   水温在表盘底部。干净可用的竖直区间是 47..120(上边是弧带、下边是表情)。
+    readout: {
+      digit_color: 0xFFFFFF,
+      unit_color: 0x9AA0A6,
+      coolant_color: 0x7CFF6B,
+      digit_font: 0,      // 0 = 48 号,1 = 18 号
+      unit_font: 1,
+      digit_cy: 72,
+      unit_cy: 107,
+      coolant_cy: 384,
+      show_units: 1,
+      show_coolant: 1
     },
     // ★ 左 = 转速表(带水温),右 = 速度表 —— 法系车(标致 206 实车)布局。
     //   别按"左车速右转速"的日德习惯改回去。
@@ -167,8 +199,35 @@ const clone = (o) => JSON.parse(JSON.stringify(o));
 function hex(n) { return "#" + (n & 0xFFFFFF).toString(16).padStart(6, "0"); }
 function unhex(s) { return parseInt(s.replace("#", ""), 16) & 0xFFFFFF; }
 
-// 预览用的模拟数值（真机上来自车速/转速/水温）
-const SIM = { speed_t: 0.55, rpm_t: 0.42, coolant_t: 0.6 };
+// 预览用的模拟数值（真机上来自车速/转速/水温）。
+// 既要有画弧用的百分比,也要有**读数用的原值** —— 数字显示的是原值,
+// 拿百分比反算会多一次舍入,和固件对不上。
+const SIM_MAX = { speed: 210, rpm: 7000, coolant: 130 };
+const SIM = {
+  speed_t: 0.55, rpm_t: 0.42, coolant_t: 0.6,
+  speed: 115, rpm: 2900, coolant: 88,
+  face: "Idle"
+};
+
+// 把一路数据的原值换算成弧的百分比(与固件 arc_progress 同一套)
+function simFromStage(st) {
+  SIM.rpm = st.rpm;
+  SIM.speed = st.speed;
+  SIM.coolant = st.coolant;
+  SIM.rpm_t = Math.max(0, Math.min(1, st.rpm / SIM_MAX.rpm));
+  SIM.speed_t = Math.max(0, Math.min(1, st.speed / SIM_MAX.speed));
+  const lo = T.coolant_min_c, hi = T.coolant_max_c;
+  SIM.coolant_t = Math.max(0, Math.min(1, (st.coolant - lo) / Math.max(1, hi - lo)));
+  SIM.face = st.face;
+}
+
+// 读数格式化 —— 必须与固件 dash_ui.cpp 的 readout_value()/unit_text() 一致:
+//   速度 = 四舍五入到 1 km/h;转速 = 四舍五入到 10 rpm;水温 = 四舍五入到 1 ℃
+function readoutText(kind) {
+  if (kind === 0) return { val: String(Math.round(SIM.speed)), unit: "km/h" };
+  if (kind === 1) return { val: String(Math.round(SIM.rpm / 10) * 10), unit: "rpm" };
+  return { val: String(Math.round(SIM.coolant)), unit: "°C" };
+}
 
 let T = defaultTheme();
 let bootT = 0;          // 开机动画播放进度(ms)
@@ -208,6 +267,22 @@ function valueT(kind, v) {
 }
 
 // ---------------- 画表情（占位形状,与 theme 的几何字段对应） ----------------
+// ★ 这是**程序化占位表情**,不是导入的表情图。8 个状态里它只能表达"眯眼/
+//   睁大眼/张嘴/红底"这几种差别,冷车和过热在占位表情上分不出来 ——
+//   那两张的差别只有导入图片后才存在。要看导入后的效果请去「表情导入」页。
+function faceShapeOpts(faceKey) {
+  switch (faceKey) {
+    case "Blink":    return { blink: true };
+    case "Cruise":   return { narrow: true };
+    case "Sport":    return { narrow: true };
+    case "Redline":  return { narrow: true, redline: true };
+    case "Surprise": return { surprise: true };
+    case "Cold":     return { narrow: true };
+    case "Hot":      return { narrow: true, redline: true };   // 过热按告警色
+    default:         return {};
+  }
+}
+
 function drawFace(ctx, cx, cy, theme, opts) {
   const s = theme.face_size;
   const bg = opts && opts.redline ? theme.face_bg_redline : theme.face_bg_idle;
@@ -223,16 +298,18 @@ function drawFace(ctx, cx, cy, theme, opts) {
   ctx.roundRect(fx, fy, s, s, s / 2);
   ctx.fill();
 
-  // 眼睛
-  ctx.fillStyle = ink;
-  const eyes = [
-    [fx + theme.face.eye_l_x, fy + theme.face.eye_y],
-    [fx + theme.face.eye_r_x, fy + theme.face.eye_y],
-  ];
-  for (const [ex, ey] of eyes) {
-    ctx.beginPath();
-    ctx.roundRect(ex, ey, eyeW, eyeH, Math.min(eyeH, eyeW) / 2);
-    ctx.fill();
+  // 眼睛(眨眼 = 藏起来)
+  if (!(opts && opts.blink)) {
+    ctx.fillStyle = ink;
+    const eyes = [
+      [fx + theme.face.eye_l_x, fy + theme.face.eye_y],
+      [fx + theme.face.eye_r_x, fy + theme.face.eye_y],
+    ];
+    for (const [ex, ey] of eyes) {
+      ctx.beginPath();
+      ctx.roundRect(ex, ey, eyeW, eyeH, Math.min(eyeH, eyeW) / 2);
+      ctx.fill();
+    }
   }
 
   // 嘴(惊喜时是 O,平时是横线)
@@ -249,6 +326,50 @@ function drawFace(ctx, cx, cy, theme, opts) {
                   theme.face.mouth_line_w, theme.face.mouth_line_h,
                   theme.face.mouth_line_h / 2);
     ctx.fill();
+  }
+}
+
+// ---------------- 画数字读数(与固件 dash_ui.cpp 的排版一致) ----------------
+// 固件用的是 LVGL 内置 Montserrat,这里的字体是近似替代 —— 位置和字号
+// 可信,字宽只是近似(所以别拿这个预览去卡像素,要卡像素用 pcpreview)。
+// 定宽 + 居中文字:数字从 "8" 变到 "8000" 时不会左右挪 —— 与固件一致。
+const READOUT_FONT_PX = [48, 18];      // 与 ui_theme.cpp 的 readout_font() 对应
+function readoutFontPx(which) { return READOUT_FONT_PX[which] || READOUT_FONT_PX[0]; }
+
+function drawReadoutLabel(ctx, W, cy480, text, fontPx, colorHex) {
+  const scale = W / 480;
+  ctx.save();
+  ctx.font = fontPx * scale + "px 'Segoe UI','Microsoft YaHei',sans-serif";
+  ctx.fillStyle = colorHex;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, W / 2, cy480 * scale);
+  ctx.restore();
+}
+
+// 这一屏的大数字跟哪一路?与固件 primary_kind() 同一条规则:
+// 取第一条"不是水温"的弧;只有水温弧时就用第一条。
+function primaryKind(sc) {
+  for (let i = 0; i < sc.arc_count && i < sc.arcs.length; i++) {
+    if (sc.arcs[i].kind !== 2) return sc.arcs[i].kind;
+  }
+  return (sc.arc_count > 0 && sc.arcs.length > 0) ? sc.arcs[0].kind : 0;
+}
+
+function drawReadout(ctx, W, theme, sc) {
+  const r = theme.readout;
+  if (!r) return;
+  const kind = primaryKind(sc);
+  const t = readoutText(kind);
+  drawReadoutLabel(ctx, W, r.digit_cy, t.val, readoutFontPx(r.digit_font), hex(r.digit_color));
+  if (r.show_units) {
+    drawReadoutLabel(ctx, W, r.unit_cy, t.unit, readoutFontPx(r.unit_font), hex(r.unit_color));
+  }
+  // 水温数字:该屏真有水温弧、而且是"副读数"(大数字不是水温)时才画
+  const hasCoolant = sc.arcs.some((a, i) => i < sc.arc_count && a.kind === 2);
+  if (r.show_coolant && kind !== 2 && hasCoolant) {
+    drawReadoutLabel(ctx, W, r.coolant_cy, Math.round(SIM.coolant) + "°C",
+                     readoutFontPx(r.unit_font), hex(r.coolant_color));
   }
 }
 
@@ -282,11 +403,14 @@ function drawScreen(canvas, screenIdx, theme, v, opts) {
   }
 
   if (sc.show_face && !(opts && opts.hideFace)) {
-    drawFace(ctx, cx, cy, theme, {
-      redline: v.rpm_t > 0.85,
-      surprise: opts && opts.surprise
-    });
+    const shape = faceShapeOpts((opts && opts.faceKey) || SIM.face);
+    // 开机动画期间用眨眼/睁眼覆盖阶段表情(与固件 boot_apply 一致)
+    if (opts && opts.surprise) shape.surprise = true;
+    drawFace(ctx, cx, cy, theme, shape);
   }
+
+  // 数字读数画在最上层(固件里的创建顺序也是最后)
+  if (!(opts && opts.hideReadout)) drawReadout(ctx, W, theme, sc);
   ctx.restore();
 }
 
@@ -344,6 +468,42 @@ function color(parent, label, get, set) {
 }
 
 let syncers = [];
+
+// 下拉选择(枚举型字段:字号这类"只有几个合法值"的)
+function select(parent, label, get, set, options) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const lb = document.createElement("label");
+  lb.textContent = label;
+  const s = document.createElement("select");
+  s.style.cssText = "background:#0e1016;color:var(--text);border:1px solid var(--line);" +
+                    "border-radius:4px;padding:3px 6px;flex:1";
+  options.forEach(o => {
+    const op = document.createElement("option");
+    op.value = o.v; op.textContent = o.t;
+    s.appendChild(op);
+  });
+  s.value = String(get());
+  s.addEventListener("change", () => { set(+s.value); render(); });
+  row.append(lb, s);
+  parent.appendChild(row);
+  return { sync: () => { s.value = String(get()); } };
+}
+
+// 开关(0/1)
+function check(parent, label, get, set) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const lb = document.createElement("label");
+  lb.textContent = label;
+  const c = document.createElement("input");
+  c.type = "checkbox";
+  c.checked = !!get();
+  c.addEventListener("change", () => { set(c.checked ? 1 : 0); render(); });
+  row.append(lb, c);
+  parent.appendChild(row);
+  return { sync: () => { c.checked = !!get(); } };
+}
 
 function buildControls() {
   controls.innerHTML = "";
@@ -435,6 +595,28 @@ function buildControls() {
   syncers.push(slider(g3, "最低 ℃", () => T.coolant_min_c, v => T.coolant_min_c = v, 0, 120, 1));
   syncers.push(slider(g3, "最高 ℃", () => T.coolant_max_c, v => T.coolant_max_c = v, 60, 160, 1));
 
+  // ---- 数字读数 ----
+  const g5 = group("数字读数（转速/速度/水温）");
+  const r = T.readout;
+  syncers.push(color(g5, "数字颜色", () => r.digit_color, v => r.digit_color = v));
+  syncers.push(color(g5, "单位颜色", () => r.unit_color, v => r.unit_color = v));
+  syncers.push(color(g5, "水温颜色", () => r.coolant_color, v => r.coolant_color = v));
+  syncers.push(select(g5, "数字字号", () => r.digit_font, v => r.digit_font = v,
+                      [{ v: 0, t: "48 号（大）" }, { v: 1, t: "18 号（小）" }]));
+  syncers.push(select(g5, "单位字号", () => r.unit_font, v => r.unit_font = v,
+                      [{ v: 0, t: "48 号（大）" }, { v: 1, t: "18 号（小）" }]));
+  syncers.push(slider(g5, "数字中心 y", () => r.digit_cy, v => r.digit_cy = v, 10, 115, 1));
+  syncers.push(slider(g5, "单位中心 y", () => r.unit_cy, v => r.unit_cy = v, 10, 119, 1));
+  syncers.push(slider(g5, "水温中心 y", () => r.coolant_cy, v => r.coolant_cy = v, 200, 470, 1));
+  syncers.push(check(g5, "显示单位", () => r.show_units, v => r.show_units = v));
+  syncers.push(check(g5, "显示水温数字", () => r.show_coolant, v => r.show_coolant = v));
+  const note = document.createElement("div");
+  note.className = "note";
+  note.textContent =
+    "竖排可用区间是 47..120（上面是弧带、下面是表情图 240×240）。" +
+    "数字往 47 以下挪就会骑在弧上，单位超过 120 会被表情压住。";
+  g5.appendChild(note);
+
   // ---- 开机动画 ----
   const g4 = group("开机动画（毫秒）");
   syncers.push(slider(g4, "整体淡入", () => T.boot_fade_ms, v => T.boot_fade_ms = v, 0, 2000, 10));
@@ -479,12 +661,45 @@ function bootEyeOpen(t) {
   return !(k % 2 === 1);
 }
 
+// ---------------- 阶段预览(下拉框) ----------------
+// 选项直接来自 face-stages.js(与固件 face_stages.h 同源),所以
+// "低/中/高转速该显示哪张脸"这句话在预览和真车上说的是同一件事。
+function buildStageSelect() {
+  const sel = document.getElementById("stage");
+  sel.innerHTML = "";
+  FaceStages.STAGES.forEach((st, i) => {
+    const g = FaceStages.GROUPS.filter(x => x.key === st.group)[0];
+    const o = document.createElement("option");
+    o.value = String(i);
+    o.textContent = g.label + " · " + g.levels[st.level] + "（" +
+                    FaceStages.stageValueText(st) + "）→ " +
+                    FaceStages.face(st.face).label;
+    sel.appendChild(o);
+  });
+  sel.addEventListener("change", () => {
+    simFromStage(FaceStages.STAGES[+sel.value]);
+    render();
+  });
+}
+
+function updateStageInfo() {
+  const el = document.getElementById("stage-info");
+  const st = FaceStages.STAGES.find(s => s.face === SIM.face);
+  const f = FaceStages.face(SIM.face);
+  el.textContent =
+    "当前阶段表情：" + f.label + "（" + SIM.face + "）" +
+    " · 左屏用图角色 " + f.roleL + " / 右屏 " + f.roleR +
+    "，缺图时按降级链退到常态。导入图片请用「表情导入」页。";
+  if (st) el.textContent += " 水温 " + st.coolant + " ℃、转速 " + st.rpm + " rpm。";
+}
+
 // ---------------- 渲染 ----------------
 function render() {
   drawScreen(document.getElementById("cv0"), 0, T, SIM, {});
   drawScreen(document.getElementById("cv1"), 1, T, SIM, {});
   renderAnim();
   document.getElementById("json").value = JSON.stringify({ theme: T }, null, 2);
+  updateStageInfo();
   syncers.forEach(s => s.sync && s.sync());
 }
 
@@ -506,6 +721,8 @@ function renderAnim() {
       fade: bootFade(bootT),
       sweep: bootSweep(si, bootT),
       hideFace: !bootEyeOpen(bootT),
+      faceKey: bootEyeOpen(bootT) ? "Idle" : "Blink",   // 与固件 boot_apply 的取脸一致
+      hideReadout: bootT < T.boot_face_start_ms + 4 * T.boot_face_blink_ms,  // 扫表时数字栏是空的
       surprise: false
     });
     ctx.drawImage(c, si * half, 0);
@@ -570,6 +787,7 @@ document.getElementById("file").addEventListener("change", (e) => {
       // 以默认值打底:缺字段不报错,与固件端"缺失即默认"的语义一致
       T = Object.assign(defaultTheme(), t);
       T.face = Object.assign(defaultTheme().face, t.face || {});
+      T.readout = Object.assign(defaultTheme().readout, t.readout || {});
       if (Array.isArray(t.screens)) {
         for (let i = 0; i < 2; i++) {
           if (t.screens[i]) {
@@ -605,6 +823,7 @@ document.getElementById("btn-apply").addEventListener("click", () => {
     const t = obj.theme || obj;
     T = Object.assign(defaultTheme(), t);
     T.face = Object.assign(defaultTheme().face, t.face || {});
+    T.readout = Object.assign(defaultTheme().readout, t.readout || {});
     if (Array.isArray(t.screens)) {
       for (let i = 0; i < 2; i++) {
         if (t.screens[i]) T.screens[i] = Object.assign(defaultTheme().screens[i], t.screens[i]);
@@ -638,8 +857,11 @@ document.getElementById("btn-play").addEventListener("click", (e) => {
 
 // ---------------- 启动 ----------------
 buildControls();
+buildStageSelect();
+simFromStage(FaceStages.STAGES[0]);   // 默认停在"转速 · 低"(怠速常态)
 render();
 say("就绪。左栏调参、右侧实时预览。\n" +
+    "右上角「阶段预览」可切到低/中/高转速、水温、速度,看各档的表情与读数。\n" +
     "满意后点右上角「导出主题文件」。");
 </script>
 </body>

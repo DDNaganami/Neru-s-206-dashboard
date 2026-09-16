@@ -76,6 +76,59 @@ const ARC_TRACK_OVER_BG = {
 
 const BG_OFF = 120, FACE_OFF = 190, TOL = 12;
 
+// ------------------------------------------------------------
+// 数字读数(转速/速度大数字 + 单位 + 水温数字)
+//
+// 为什么按"整条带里数亮点"而不是采某一个像素:
+//   文本的笔画落在哪个像素,取决于字体点阵与量化 —— 采一个点会非常脆,
+//   换个字号或改一个字就红。而"这一带里有没有画出足够多的字色像素"
+//   既能证明"读出来了",又不会因为字形细节误报。
+// 期望颜色来自主题默认值(ui_theme.h 的 theme_set_defaults):
+//   数字 0xFFFFFF(白)、单位 0x9AA0A6(灰)、水温 0x7CFF6B(绿)
+// ------------------------------------------------------------
+const READOUT_DIGIT   = { r: 0xFF, g: 0xFF, b: 0xFF };
+const READOUT_UNIT    = { r: 0x9A, g: 0xA0, b: 0xA6 };
+const READOUT_COOLANT = { r: 0x7C, g: 0xFF, b: 0x6B };
+
+// 在矩形带里数"接近某颜色"的像素
+function countNear(img, x0, y0, x1, y1, want, tol) {
+  let n = 0;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      if (dist(img.px(x, y), want) <= tol) n++;
+    }
+  }
+  return n;
+}
+
+// 在矩形带里求"接近某颜色"的像素的外接框 —— 用来验证**字形画在哪、多宽**。
+// 只看"有没有亮点"是不够的:LVGL 的 lv_label_create() 默认文本是 "Text",
+// 忘了清空时那一带同样是白的(这个坑真踩过,见 make_readout_label 的注释)。
+// 有了外接框就能区分:数字/单位的外框应该落在主题给的带里,且宽度有限。
+function inkBox(img, x0, y0, x1, y1, want, tol) {
+  let minX = 1e9, maxX = -1, minY = 1e9, maxY = -1, n = 0;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      if (dist(img.px(x, y), want) <= tol) {
+        n++;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  return n ? { n, minX, maxX, minY, maxY, w: maxX - minX + 1, h: maxY - minY + 1 }
+           : { n: 0, minX: -1, maxX: -1, minY: -1, maxY: -1, w: 0, h: 0 };
+}
+
+// 读数带(480 基准,与 ui_theme.h 的默认位置对应):
+//   数字中心 y=72(48 号 → 约 47..97)、单位中心 y=107(18 号 → 约 97..117)、
+//   水温中心 y=384。x 取中间一段,避开弧带(半径 193..217 那一圈)。
+const BAND_DIGIT   = { x0: 150, y0: 48, x1: 330, y1: 96 };
+const BAND_UNIT    = { x0: 190, y0: 96, x1: 290, y1: 120 };
+const BAND_COOLANT = { x0: 190, y0: 370, x1: 290, y1: 400 };
+
 function main() {
   const path = process.argv[2];
   const which = (process.argv[3] || "idle").toLowerCase();
@@ -85,7 +138,11 @@ function main() {
   // 第 5 个参数:哪一屏(默认从左文件名判断 l_/r_)
   let side = process.argv[5];
   if (!side) side = /(^|[\\/])r_/.test(path) ? "right" : "left";
-  if (!path) { console.error("用法: check-preview-frame.js <bmp> [idle|redline|surprise] [yes|no] [left|right]"); process.exit(2); }
+  // 第 6 个参数:这一帧该不该有数字读数。
+  // 开机扫表期间**不该有**:dash_ui_render 在开机期间会早退,
+  // 所以标签一直是空文本 —— 这正是想要的效果,也在这里钉住。
+  const readoutShown = (process.argv[6] || "yes") !== "no";
+  if (!path) { console.error("用法: check-preview-frame.js <bmp> [idle|redline|surprise] [yes|no] [left|right] [yes|no]"); process.exit(2); }
 
   const table = (side === "right") ? FACE_R : FACE;
   const face = table[which];
@@ -96,6 +153,19 @@ function main() {
   const add = (name, x, y, expect, tol) => {
     const got = img.px(x, y);
     checks.push({ name, x, y, got, expect, ok: dist(got, expect) <= (tol === undefined ? TOL : tol) });
+  };
+  // 整带统计式断言
+  const addBand = (name, band, want, tol, minCount, maxCount) => {
+    const n = countNear(img, band.x0, band.y0, band.x1, band.y1, want, tol);
+    const ok = (minCount === undefined || n >= minCount) &&
+               (maxCount === undefined || n <= maxCount);
+    checks.push({
+      name, x: band.x0, y: band.y0,
+      got: { r: n, g: n, b: n }, expect: { r: minCount, g: maxCount, b: 0 },
+      ok, text: "带内命中 " + n + " 像素（要求 " +
+                (minCount === undefined ? "-" : "≥" + minCount) + "~" +
+                (maxCount === undefined ? "-" : "≤" + maxCount) + "）"
+    });
   };
 
   // --- 1. 背景在"没被弧线和表情盖住"的地方露出来 ---
@@ -139,14 +209,72 @@ function main() {
   // 且落在表情的透明边(220..260 是不透明的,这里在外侧)
   add("表情透明边(应透出背景)", 295, 205, BG);
 
+  // --- 5. 数字读数(转速/速度大数字 + 单位 + 水温) ---
+  // 左屏大数字跟的是转速(左=转速表),右屏跟车速;两边都是 48 号白字。
+  // 阈值给得宽松:粗体数字的笔画覆盖率远高于 40 像素,而"完全没画出来"
+  // 时带内白色像素是 0(背景是暗蓝、弧是暗色),两者不会混淆。
+  if (readoutShown) {
+    addBand("大数字带(白字已画出)", BAND_DIGIT, READOUT_DIGIT, 0x40, 40);
+    addBand("单位带(灰字已画出)", BAND_UNIT, READOUT_UNIT, 0x30, 8);
+
+    // 字号/位置契约:48 号数字的墨迹该落在 47..97 那 50 像素里,
+    // 18 号单位落在 97..117 那 20 像素里(ui_theme.h 的默认位置)。
+    // 顺带把"默认文本 Text"这类错误挡在门外:它的墨迹位置对不上。
+    const dBox = inkBox(img, 60, 20, 420, 130, READOUT_DIGIT, 0x40);
+    checks.push({
+      name: "大数字墨迹范围(48 号,47..97)", x: dBox.minX, y: dBox.minY,
+      got: { r: dBox.w, g: dBox.h, b: dBox.n },
+      expect: { r: 0, g: 0, b: 0 },
+      ok: dBox.n > 0 && dBox.minY >= 45 && dBox.maxY <= 99 &&
+          dBox.w > 30 && dBox.w < 300,
+      text: "外框 x[" + dBox.minX + ".." + dBox.maxX + "] y[" + dBox.minY + ".." + dBox.maxY +
+            "] 宽" + dBox.w + " 高" + dBox.h + " 命中" + dBox.n
+    });
+    const uBox = inkBox(img, 60, 90, 420, 125, READOUT_UNIT, 0x30);
+    checks.push({
+      name: "单位墨迹范围(18 号,97..117)", x: uBox.minX, y: uBox.minY,
+      got: { r: uBox.w, g: uBox.h, b: uBox.n },
+      expect: { r: 0, g: 0, b: 0 },
+      ok: uBox.n > 0 && uBox.minY >= 90 && uBox.maxY <= 119,
+      text: "外框 x[" + uBox.minX + ".." + uBox.maxX + "] y[" + uBox.minY + ".." + uBox.maxY +
+            "] 宽" + uBox.w + " 高" + uBox.h + " 命中" + uBox.n
+    });
+
+    if (side === "left") {
+      // 水温数字只在**转速表(左屏)**上 —— 这条同时钉住了"水温在哪一屏"
+      addBand("水温带(绿字已画出)", BAND_COOLANT, READOUT_COOLANT, 0x40, 8);
+      const cBox = inkBox(img, 180, 350, 300, 420, READOUT_COOLANT, 0x40);
+      checks.push({
+        name: "水温墨迹范围(表盘底部)", x: cBox.minX, y: cBox.minY,
+        got: { r: cBox.w, g: cBox.h, b: cBox.n },
+        expect: { r: 0, g: 0, b: 0 },
+        ok: cBox.n > 0 && cBox.minY >= 365 && cBox.maxY <= 405,
+        text: "外框 x[" + cBox.minX + ".." + cBox.maxX + "] y[" + cBox.minY + ".." + cBox.maxY +
+              "] 宽" + cBox.w + " 高" + cBox.h + " 命中" + cBox.n
+      });
+    } else {
+      // 右屏(速度表)没有水温弧,就不该有水温数字
+      addBand("右屏不该有水温数字", BAND_COOLANT, READOUT_COOLANT, 0x40, undefined, 0);
+    }
+  } else {
+    // 开机扫表期间:数字栏必须是空的(标签还是空文本)
+    addBand("开机期间不该有数字", BAND_DIGIT, READOUT_DIGIT, 0x40, undefined, 0);
+    addBand("开机期间不该有单位", BAND_UNIT, READOUT_UNIT, 0x30, undefined, 0);
+  }
+
   let fail = 0;
   console.log("=== " + path + "  (" + (side === "right" ? "右屏" : "左屏") +
               ", 期望表情: " + which +
-              ", 表情可见: " + (faceVisible ? "是" : "否") + ")  " + img.w + "x" + img.h + " ===");
+              ", 表情可见: " + (faceVisible ? "是" : "否") +
+              ", 读数: " + (readoutShown ? "应有" : "不应有") + ")  " + img.w + "x" + img.h + " ===");
   for (const c of checks) {
     if (!c.ok) fail++;
-    console.log("  " + (c.ok ? "OK  " : "FAIL") + " " + c.name.padEnd(26) +
-                " @(" + c.x + "," + c.y + ")  实测 " + hex(c.got) + "  期望 " + hex(c.expect));
+    if (c.text) {
+      console.log("  " + (c.ok ? "OK  " : "FAIL") + " " + c.name.padEnd(26) + " " + c.text);
+    } else {
+      console.log("  " + (c.ok ? "OK  " : "FAIL") + " " + c.name.padEnd(26) +
+                  " @(" + c.x + "," + c.y + ")  实测 " + hex(c.got) + "  期望 " + hex(c.expect));
+    }
   }
   console.log(fail === 0 ? "\n全部通过 (" + checks.length + " 项)"
                          : "\n失败 " + fail + " / " + checks.length);

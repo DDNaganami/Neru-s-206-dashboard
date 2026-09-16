@@ -16,6 +16,7 @@ void register_image_blob_tests(void);
 void register_image_roundtrip_tests(void);
 void register_data_service_tests(void);
 void register_expression_tests(void);
+void register_face_stage_tests(void);
 
 int main(void) {
   UNITY_BEGIN();
@@ -30,5 +31,6 @@ int main(void) {
   register_image_roundtrip_tests();
   register_data_service_tests();
   register_expression_tests();
+  register_face_stage_tests();
   return UNITY_END();
 }

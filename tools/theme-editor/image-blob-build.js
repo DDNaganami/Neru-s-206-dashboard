@@ -46,18 +46,32 @@
 
   // 图片角色(与 image_blob.h 的 ImageRole 一致)
   // 左右屏各一套表情:车速表和转速表的表情差分不同,所以按「屏 × 状态」命名。
+  // ★ 左右屏的含义按**法系车**(标致 206 实车)来:**左屏 = 转速表,右屏 = 速度表**。
+  //   别按"左车速右转速"的日德习惯理解(装反了不会报错,只会画错表)。
   // ★ 9/10 是保留编号(曾是"开机图",已去掉 —— 开机画面走程序化扫表动画)。
-  //   不回收它们,以后要加角色直接接着用,不必动已有图片的编号。
+  //   不回收它们,新角色从 11 开始接,已有图片的编号不必动。
+  //
+  // 一套表情 8 张(状态见 lib/dashcore/expression.h 的 Face),顺序就是槽位顺序:
+  //   Idle 常态 / Blink 眨眼 / Cruise 巡航 / Sport 运动 /
+  //   Redline 红区 / Surprise 惊喜 / Cold 冷车 / Hot 过热
   var ROLE = {
     Background: 1,
     BootFrame: 2,
-    FaceIdle: 3, FaceRedline: 4, FaceSurprise: 5,          // 左屏(车速表)
-    FaceIdleR: 6, FaceRedlineR: 7, FaceSurpriseR: 8        // 右屏(转速表)
+    // 左屏(转速表)
+    FaceIdle: 3, FaceRedline: 4, FaceSurprise: 5,
+    FaceBlink: 11, FaceCruise: 12, FaceSport: 13, FaceCold: 14, FaceHot: 15,
+    // 右屏(速度表)
+    FaceIdleR: 6, FaceRedlineR: 7, FaceSurpriseR: 8,
+    FaceBlinkR: 16, FaceCruiseR: 17, FaceSportR: 18, FaceColdR: 19, FaceHotR: 20
   };
   var ROLE_NAMES = {
     1: "表盘背景", 2: "开机动画帧",
     3: "左屏表情·常态", 4: "左屏表情·红区", 5: "左屏表情·惊喜",
-    6: "右屏表情·常态", 7: "右屏表情·红区", 8: "右屏表情·惊喜"
+    6: "右屏表情·常态", 7: "右屏表情·红区", 8: "右屏表情·惊喜",
+    11: "左屏表情·眨眼", 12: "左屏表情·巡航", 13: "左屏表情·运动",
+    14: "左屏表情·冷车", 15: "左屏表情·过热",
+    16: "右屏表情·眨眼", 17: "右屏表情·巡航", 18: "右屏表情·运动",
+    19: "右屏表情·冷车", 20: "右屏表情·过热"
   };
 
   function bytesPerPixel(cf) {

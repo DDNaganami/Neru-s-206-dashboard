@@ -10,6 +10,12 @@ struct ArcDashView {
   uint8_t center_mode;
   float center_phase;
   Face face;
+
+  // 原始值(数字读数用)。
+  // ★ 不要用 speed_t * kSpeedMax 反算:那是**百分比**,越界时被钳到 0/1,
+  //   而且反算会多一次舍入。读数要显示的就是表里的原值。
+  float speed_kmh;
+  float rpm;
 };
 
 inline ArcDashView make_view(const VehicleState& s, uint32_t now_ms) {
@@ -23,6 +29,8 @@ inline ArcDashView make_view(const VehicleState& s, uint32_t now_ms) {
 
   v.coolant_c = s.coolant_c;
   v.fuel_pct = s.fuel_pct;
+  v.speed_kmh = s.speed_kmh;
+  v.rpm = s.rpm;
   v.center_mode = 1;
   v.center_phase = (now_ms % 2000) / 2000.0f;
   v.face = face_update(s, now_ms);

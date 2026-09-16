@@ -68,21 +68,69 @@ static const uint16_t kImageBlobVersion = 1;
 //
 //   编号沿用不变(3/4/5 = 左屏=转速表,6/7/8 = 右屏=速度表)——
 //   改编号会让已经导出的图片全部错位,所以只修注释语义、不动数字。
+//
+// ---- 一套表情有几张? ----
+// 表情状态一共 8 个(见 lib/dashcore/expression.h 的 Face),**每个状态一张图**。
+// 最早的 3 张(常态/红区/惊喜)编号不动;另外 5 张(眨眼/巡航/运动/冷车/过热)
+// **从 11 开始接**(9/10 是保留编号,见下面 test_role_ids 的理由)——
+// 这样只导入 3 张的老做法继续能用,新状态会自动降级到最近的那张
+// (降级链见 lib/dashcore/face_stages.h 的 kFaceFallback)。
+//
+//   槽位(Face 枚举顺序)  左屏(转速表)  右屏(速度表)
+//   Idle      常态            3              6
+//   Blink     眨眼           11             16
+//   Cruise    巡航           12             17
+//   Sport     运动           13             18
+//   Redline   红区            4              7
+//   Surprise  惊喜            5              8
+//   Cold      冷车           14             19
+//   Hot       过热           15             20
+//   (Background 背景 = 1;9/10 保留不用;BootFrame 2 也不再使用)
+// ★ 这张表由 lib/dashcore/face_stages.h 的 kFaceRoleId 复述一份,
+//   test_image_blob.cpp 会逐条比对两边 —— 数字对不上不会崩,只会"右屏
+//   显示成左屏的脸",所以必须机器校验。
 enum class ImageRole : uint16_t {
-  // ---- 左屏(转速表,带水温表) ----
+  // ---- 两屏共用 ----
   Background   = 1,   // 表盘背景图（衬在圆弧下面,两屏共用一张）
   BootFrame    = 2,   // 开机动画的一帧（**已确认不做逐帧**,保留编号不用）
+
+  // ---- 左屏(转速表,带水温表) ----
   FaceIdle     = 3,   // 表情：常态
   FaceRedline  = 4,   // 表情：红区
   FaceSurprise = 5,   // 表情：惊喜
+  FaceBlink    = 11,  // 表情：眨眼(常态下的周期动作)
+  FaceCruise   = 12,  // 表情：巡航
+  FaceSport    = 13,  // 表情：运动
+  FaceCold     = 14,  // 表情：冷车(水温低,暖机中)
+  FaceHot      = 15,  // 表情：过热(水温高)
 
   // ---- 右屏(速度表) ----
   FaceIdleR     = 6,  // 表情：常态
   FaceRedlineR  = 7,  // 表情：红区
   FaceSurpriseR = 8,  // 表情：惊喜
+  FaceBlinkR    = 16, // 表情：眨眼
+  FaceCruiseR   = 17, // 表情：巡航
+  FaceSportR    = 18, // 表情：运动
+  FaceColdR     = 19, // 表情：冷车
+  FaceHotR      = 20, // 表情：过热
 
-  // 9 / 10 保留(曾是开机图,见下面的说明)
+  // ★ 9 / 10 **仍然保留、不复用**(见 test_role_ids):它们曾是左右屏的开机图。
+  //   谁手里有一份那时导出的 image.bin,复用这两个编号就会让那两张图
+  //   突然变成别的表情,而且不报错。新角色一律从 11 往上接。
 };
+
+// 表情角色的编号区间(3..8 与 11..20;**9/10 是保留编号,不是表情**)。
+// 所以判断"是不是表情"不能用一条区间表达式,必须跳过中间那两个洞。
+static const uint16_t kImageFaceRoleFirst = 3;
+static const uint16_t kImageFaceRoleLast  = 20;
+static const uint16_t kImageRoleReservedFirst = 9;
+static const uint16_t kImageRoleReservedLast  = 10;
+
+inline bool imageRoleIsFace(ImageRole r) {
+  const uint16_t v = (uint16_t)r;
+  if (v >= kImageRoleReservedFirst && v <= kImageRoleReservedLast) return false;
+  return v >= kImageFaceRoleFirst && v <= kImageFaceRoleLast;
+}
 
 static const uint8_t kImageNameMax = 24;
 static const uint8_t kImageMaxCount = 32;

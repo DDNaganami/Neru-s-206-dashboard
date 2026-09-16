@@ -95,18 +95,49 @@
   mmap 的 handle 存成 static 且永不 unmap：一旦被回收，那块虚拟地址会被
   别的映射复用，LVGL 就会读到别人的数据。
   空分区（全 0xFF）和任何坏镜像都**拒收并降级**，同样是"资源出问题不能让固件崩"。
+  角色编号：1 = 背景，2 = 开机帧（不用），**9/10 是保留编号不复用**，
+  3/4/5 = 左屏常态/红区/惊喜，6/7/8 = 右屏常态/红区/惊喜，
+  **11..15 = 左屏眨眼/巡航/运动/冷车/过热，16..20 = 右屏同五张**。
+  新角色从 11 开始接：老用户手里的 image.bin 里 9/10 可能是当年的开机帧，
+  复用它们会让那两张图突然变成别的表情，而且不报错。
+  表情图用 RGB565A8（带 alpha 平面，能叠在弧上），背景用 RGB565。
+  存储预算：一张 240×240 表情 RGB565A8 = 169KB，一张 480×480 背景 RGB565 = 450KB ——
+  1MB 的 image 分区装不下"两屏各 8 张 + 全屏背景"（≈3.7MB），
+  所以**一张都没有也能跑**是设计前提，装多少算多少。
+  换 S3（16MB flash）时把 image 分区放大到 4MB 以上即可，分区表在 partitions.csv。
 - ui_theme.h 原先把颜色/几何写死在编译期；现在这些宏转发到运行时指针，
   `theme_clamp()` 统一钳制值域（越界值不会画到屏外或触发 LVGL 断言）
 - 分辨率适配：所有尺寸按 480×480 基准书写，渲染统一乘 theme_scale()；
   换屏只改 THEME_DISPLAY_RES 一行（3.4" 圆屏 800×800 → 填 800），
   **这一项仍是编译期**（不是运行时），因为缓冲区大小要静态分配；
   桩驱动的显示宽高也读这个常量，两处永远一致
-- 表情由 expression.cpp 状态机驱动（idle/blink/cruise/sport/redline/surprise）；
-  只读车速/转速，不依赖挡位（挡位留原表不进屏）
+- 表情由 face_stages.h + expression.cpp 状态机驱动，一共 **8 个状态**：
+  常态 Idle / 眨眼 Blink / 巡航 Cruise / 运动 Sport / 红区 Redline /
+  惊喜 Surprise / 冷车 Cold / 过热 Hot。
+  **每个状态一张可导入的差分图**（左屏 8 张 + 右屏 8 张，见下）
+- 三路数据各有"低/中/高"，表情按优先级取最该被看到的那个：
+  红区(转速≥6000) > 过热(水温≥105) > 冷车(水温<70) > 运动(速度≥90 或转速≥4500)
+  > 巡航(速度≥30 或转速≥2500) > 常态；惊喜(急加速)与眨眼是**瞬态**，压在稳态之上。
+  阈值集中在 expression.cpp 顶部，**不改挡位**（挡位留原表不进屏）
 - 急加速惊喜阈值按时间归一：>15 km/h/s（≈0.42g）触发，与渲染帧率无关
-- 占位表情为形状组合，换角色图时替换 face_apply() 为 lv_image 加载图片
-  （**这一步还没做**：图片的格式/解析/加载/单测/编辑器都已完成，
-  但图层结构和真屏渲染没动 —— 唯一验收方式是看真屏，见 ACCEPTANCE.md）
+- **表盘数字读数**（转速/速度大数字 + 单位 + 水温数字）：
+  · 大数字放表盘正上方（48 号），单位紧跟其下（18 号），水温数字在**转速表底部**
+  · 大数字跟哪一路**由弧决定**（该屏第一条非水温弧），不看屏幕序号 ——
+    以后把水温弧挪屏、或加第三条弧，读数自动跟着走
+  · 格式写死在固件里：速度取整到 1 km/h、转速取整到 10 rpm、水温取整到 1 ℃；
+    可调的是颜色/字号/位置/开关（主题里的 `readout` 段）
+  · 竖直可用区间只有 47..120（上面是弧带 23..47，下面是 240×240 表情图），
+    所以默认位置是 digit_cy=72 / unit_cy=107 —— 这条由单测
+    test_readout_defaults_fit_gap 与预览帧的墨迹外框共同钉住
+  · 开机扫表期间数字栏是**空的**（标签以空文本创建，读数只在实际渲染时写入）；
+    刻意不做淡入：给对象设 opa<255 会让 LVGL 开离屏层，这个驱动上会错位
+- 表情/背景图片：dash_ui 里按"背景图(最底) → 弧 → 表情图 → 读数"的创建顺序叠层；
+  **缺图有降级链**（face_stages.h 的 kFaceFallback）：只导入常态一张也能跑，
+  运动缺图退巡航、惊喜缺图退红区…… 一张都没有才回落到程序化占位表情。
+  左右屏各查各的：两套差分图不能互相顶替，否则角色会串
+- dash_ui.cpp 的 faceResolve() 是固件端唯一的"状态→图片"解析入口，
+  网页端 face-stages.js 的 resolve() 是它的镜像，两边由
+  tools/theme-editor/test-face-stages.js 解析 face_stages.h 逐字段对账
 - dash_display.h/.cpp：显示驱动接口，当前为无屏桩（DASH_DISPLAY_STUB=1）；
   非桩分支是 #error——只删宏会编译失败，防止上电黑屏；屏到货后
   先锁分辨率、写实驱动、换 S3+PSRAM，最后才删宏
@@ -136,20 +167,44 @@
 - 已验证：项目 + Core 放纯 ASCII 路径（C:\Users\Public\206dash）编译通过
 - 本机 PlatformIO Core 装在工作区 .pio-pylibs（pip --target），用
   python -m platformio 调用，PLATFORMIO_CORE_DIR 指向 ASCII 路径的 .pio-core
+- **`-I include` 不能省**（esp32dev 的 build_flags）：LVGL 找 lv_conf.h 靠的是
+  包含路径（`LV_CONF_INCLUDE_SIMPLE` → `#include "lv_conf.h"`）。少了这一条，
+  `include/lv_conf.h` 根本不会被读，一切走 LVGL 内部默认值 ——
+  而且**不报错**：14 号字体恰好是 LVGL 的默认值，看起来像"生效了"，
+  直到要开 18/48 号字体时才炸出 `lv_font_montserrat_48 was not declared`。
+  加上之后 RAM 反而从 37.5% 降到 32.7%（lv_conf.h 里 LV_MEM_SIZE=48KB
+  比 LVGL 默认的 64KB 小），Flash 从 51.3% 升到 62.6%（两套字体点阵）。
 
 测试（宿主机，不烧板）：
-- test/test_dashcore/ 为 native 单元测试（Unity，当前 64 例），覆盖 OBD 文本解析、
-  OBD 状态机（假串口）、VAN 解析与钳制、VAN 线路层（4B5B/CRC-15/帧字节契约/
-  空闲不入队）、**VanPhyWire 整链**（边沿→包→车速/转速）、15 位 IDEN 与回放语法、
-  主题 JSON 解析与钳制、图片镜像解析（坏镜像必须被拒 + 头部字节布局钉死）、
-  多源回退、表情状态机
+- test/test_dashcore/ 为 native 单元测试（Unity，当前 86 例，2 例需环境变量否则跳过），
+  覆盖 OBD 文本解析、OBD 状态机（假串口）、VAN 解析与钳制、VAN 线路层
+  （4B5B/CRC-15/帧字节契约/空闲不入队）、**VanPhyWire 整链**（边沿→包→车速/转速）、
+  15 位 IDEN 与回放语法、主题 JSON 解析与钳制（含数字读数那一段）、
+  图片镜像解析（坏镜像必须被拒 + 头部字节布局钉死 + 角色编号与表情槽位对账）、
+  多源回退、表情状态机（8 状态 + 三路数据的分档与优先级）、
+  **表情阶段表**（低/中/高 × 转速/水温/速度 = 9 条，逐条断言 face_update 的输出，
+  并检查降级链一定能退到常态）
 - 跑法（纯 ASCII 路径下，env 变量同上）：
     python -m platformio test -e native
+- **网页端与固件的一致性**（两套 JS 镜像，Node 里跑）：
+    node tools/theme-editor/test-face-stages.js     # 解析 face_stages.h 逐字段对账
+    node tools/theme-editor/test-image-blob-build.js
+    node tools/theme-editor/syntax-check-pages.js   # 两个编辑器页面的内联脚本语法
+  test-face-stages.js 的存在理由：表情导入页的"阶段模拟"是用户刷图前**唯一**
+  能看到的证据；网页那份表和固件那份不一致，预览就是在骗人。
 - **跨语言格式核对**（图片镜像由 JS 生成、C 读取，编译期看不出不一致）：
     pwsh tools/theme-editor/test-image-roundtrip.ps1
   它用 JS 打一个镜像并生成可读的 manifest，再让固件解析器读同一个文件、
   逐字段逐字节对账（C 侧用例见 test_image_roundtrip.cpp，未设环境变量时自动跳过）。
   这个核对实测抓出过两个真 bug，都是"编译通过、肉眼看不出来"的类型。
+- **像素级验收**（真屏到货前唯一的"证据"）：
+    # ASCII 路径下，先造测试图，再带 IMAGE_BLOB 跑预览
+    node tools/theme-editor/make-test-blob.js <ascii>\test-image.bin
+    $env:IMAGE_BLOB='<ascii>\test-image.bin'; .\.pio\build\pcpreview\program.exe
+    node tools/theme-editor/check-preview-frame.js preview\frames\l_0100.bmp redline yes left yes
+  check-preview-frame.js 除了背景/弧/表情图层与透明通道，还核对**读数**：
+  数字/单位/水温三处墨迹的**外接框**（能区分"画的是数字"和"忘了清空的
+  LVGL 默认文本 Text"）、右屏不该有水温数字、开机期间数字栏必须为空。
 - 本机没有宿主机 gcc：装了便携 zig（pip ziglang，见 .tools\pyzig），
   并用 .tools\zigbin 里的 gcc/g++/cc/c++ 转发桩调用 zig cc/c++
   （源码 .tools\zigwrap.c）。跑测试前把 zigbin 加进 PATH。

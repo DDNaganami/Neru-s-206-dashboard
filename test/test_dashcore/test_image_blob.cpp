@@ -10,6 +10,10 @@
 #include <stddef.h>
 #include <string.h>
 #include "image_blob.h"
+// dashcore 的表情槽位表:本文件要把它与 ImageRole 逐条对账
+// (见 test_face_role_ids_match_stages)。测试跨模块引用是故意的 ——
+// 这两张表分居两层,"对不上"只有在这里才能被发现。
+#include "face_stages.h"
 
 // 构造一个镜像的最小工具。像素用固定模式填充,便于校验解出的位置对不对。
 namespace {
@@ -131,15 +135,38 @@ static void test_role_ids(void) {
   TEST_ASSERT_EQUAL_UINT16(7, (uint16_t)ImageRole::FaceRedlineR);
   TEST_ASSERT_EQUAL_UINT16(8, (uint16_t)ImageRole::FaceSurpriseR);
   // ★ 9/10 是**保留编号**(曾是左右屏开机图,已去掉:开机画面走程序化扫表动画)。
-  //   这里故意断言它们"没有被复用" —— 一旦有人把新角色塞进 9/10,
-  //   别人已经导出的 image.bin 会突然变成另一个角色,而且不报错。
-  //   真要加角色请从 11 开始。
-  TEST_ASSERT_EQUAL_UINT16(8, (uint16_t)ImageRole::FaceSurpriseR);
+  //   一旦有人把新角色塞进 9/10,别人已经导出的 image.bin 会突然变成另一个
+  //   角色,而且不报错。所以新角色从 11 开始 —— 下面这 10 个就是后加的 5 个
+  //   状态(眨眼/巡航/运动/冷车/过热),左右各一套。
+  TEST_ASSERT_EQUAL_UINT16(11, (uint16_t)ImageRole::FaceBlink);
+  TEST_ASSERT_EQUAL_UINT16(12, (uint16_t)ImageRole::FaceCruise);
+  TEST_ASSERT_EQUAL_UINT16(13, (uint16_t)ImageRole::FaceSport);
+  TEST_ASSERT_EQUAL_UINT16(14, (uint16_t)ImageRole::FaceCold);
+  TEST_ASSERT_EQUAL_UINT16(15, (uint16_t)ImageRole::FaceHot);
+  TEST_ASSERT_EQUAL_UINT16(16, (uint16_t)ImageRole::FaceBlinkR);
+  TEST_ASSERT_EQUAL_UINT16(17, (uint16_t)ImageRole::FaceCruiseR);
+  TEST_ASSERT_EQUAL_UINT16(18, (uint16_t)ImageRole::FaceSportR);
+  TEST_ASSERT_EQUAL_UINT16(19, (uint16_t)ImageRole::FaceColdR);
+  TEST_ASSERT_EQUAL_UINT16(20, (uint16_t)ImageRole::FaceHotR);
 
   // 左屏和右屏的角色必须互不相同(复制粘贴最容易犯的错)
   TEST_ASSERT_TRUE(ImageRole::FaceIdle != ImageRole::FaceIdleR);
   TEST_ASSERT_TRUE(ImageRole::FaceRedline != ImageRole::FaceRedlineR);
   TEST_ASSERT_TRUE(ImageRole::FaceSurprise != ImageRole::FaceSurpriseR);
+  TEST_ASSERT_TRUE(ImageRole::FaceBlink != ImageRole::FaceBlinkR);
+  TEST_ASSERT_TRUE(ImageRole::FaceCruise != ImageRole::FaceCruiseR);
+  TEST_ASSERT_TRUE(ImageRole::FaceSport != ImageRole::FaceSportR);
+  TEST_ASSERT_TRUE(ImageRole::FaceCold != ImageRole::FaceColdR);
+  TEST_ASSERT_TRUE(ImageRole::FaceHot != ImageRole::FaceHotR);
+
+  // 保留编号不属于任何角色:imageRoleIsFace 必须把 9/10 排除掉
+  TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)9));
+  TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)10));
+  TEST_ASSERT_FALSE(imageRoleIsFace(ImageRole::Background));
+  TEST_ASSERT_FALSE(imageRoleIsFace(ImageRole::BootFrame));
+  TEST_ASSERT_TRUE(imageRoleIsFace(ImageRole::FaceIdle));
+  TEST_ASSERT_TRUE(imageRoleIsFace(ImageRole::FaceHotR));
+  TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)21));
 }
 
 }  // namespace
@@ -435,11 +462,45 @@ static void test_face_role_side_mapping(void) {
   TEST_ASSERT_EQUAL_UINT16(1, (uint16_t)ImageRole::Background);
 }
 
+// face_stages.h 的 kFaceRoleId 与 image_blob.h 的 ImageRole **逐条比对**。
+//
+// 这两份表说的是同一件事(dash_ui 用第一份去取第二份的图):错一位就会
+// "右屏显示左屏的脸"或"巡航显示成红区",而且完全不会报错、也不崩。
+// 所以这里不靠注释,靠断言。
+static void test_face_role_ids_match_stages(void) {
+  struct { int slot; ImageRole L, R; } kExpect[8] = {
+    {0, ImageRole::FaceIdle,     ImageRole::FaceIdleR},      // Idle
+    {1, ImageRole::FaceBlink,    ImageRole::FaceBlinkR},     // Blink
+    {2, ImageRole::FaceCruise,   ImageRole::FaceCruiseR},    // Cruise
+    {3, ImageRole::FaceSport,    ImageRole::FaceSportR},     // Sport
+    {4, ImageRole::FaceRedline,  ImageRole::FaceRedlineR},   // Redline
+    {5, ImageRole::FaceSurprise, ImageRole::FaceSurpriseR},  // Surprise
+    {6, ImageRole::FaceCold,     ImageRole::FaceColdR},      // Cold
+    {7, ImageRole::FaceHot,      ImageRole::FaceHotR},       // Hot
+  };
+  // 槽位顺序就是 Face 的枚举顺序,表长必须等于状态数
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Count, kFaceSlotCount);
+  for (int i = 0; i < 8; ++i) {
+    TEST_ASSERT_EQUAL_INT(i, kExpect[i].slot);
+    TEST_ASSERT_EQUAL_UINT16((uint16_t)kExpect[i].L, kFaceRoleId[0][i]);
+    TEST_ASSERT_EQUAL_UINT16((uint16_t)kExpect[i].R, kFaceRoleId[1][i]);
+    // 同一屏里不能有两个状态共用一个角色编号(否则切状态时画面不变)
+    for (int j = 0; j < i; ++j) {
+      TEST_ASSERT_TRUE(kFaceRoleId[0][i] != kFaceRoleId[0][j]);
+      TEST_ASSERT_TRUE(kFaceRoleId[1][i] != kFaceRoleId[1][j]);
+    }
+    // 这些角色必须真的是"表情"(不能被写进保留区 9/10)
+    TEST_ASSERT_TRUE(imageRoleIsFace((ImageRole)kFaceRoleId[0][i]));
+    TEST_ASSERT_TRUE(imageRoleIsFace((ImageRole)kFaceRoleId[1][i]));
+  }
+}
+
 void register_image_blob_tests(void) {
   RUN_TEST(test_layout_sane);
   RUN_TEST(test_entry_field_offsets);
   RUN_TEST(test_role_ids);
   RUN_TEST(test_face_role_side_mapping);
+  RUN_TEST(test_face_role_ids_match_stages);
   RUN_TEST(test_rgb565a8_size_includes_alpha_plane);
   RUN_TEST(test_parse_accepts_rgb565a8);
   RUN_TEST(test_parse_ok_and_get);

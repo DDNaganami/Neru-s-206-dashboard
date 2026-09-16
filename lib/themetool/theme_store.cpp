@@ -260,6 +260,22 @@ bool theme_parse_json(const char* json, uint32_t len, Theme& t) {
       });
       return true;
     }
+    if (keyIs(k, klen, "readout")) {
+      s.object([&](const char* rk, size_t rkl) -> bool {
+        if (keyIs(rk, rkl, "digit_color"))   { if (s.uintVal(&u)) t.readout.digit_color = u; return true; }
+        if (keyIs(rk, rkl, "unit_color"))    { if (s.uintVal(&u)) t.readout.unit_color = u; return true; }
+        if (keyIs(rk, rkl, "coolant_color")) { if (s.uintVal(&u)) t.readout.coolant_color = u; return true; }
+        if (keyIs(rk, rkl, "digit_font"))    { if (s.number(&d)) t.readout.digit_font = (uint8_t)d; return true; }
+        if (keyIs(rk, rkl, "unit_font"))     { if (s.number(&d)) t.readout.unit_font = (uint8_t)d; return true; }
+        if (keyIs(rk, rkl, "digit_cy"))      { if (s.number(&d)) t.readout.digit_cy = (int32_t)d; return true; }
+        if (keyIs(rk, rkl, "unit_cy"))       { if (s.number(&d)) t.readout.unit_cy = (int32_t)d; return true; }
+        if (keyIs(rk, rkl, "coolant_cy"))    { if (s.number(&d)) t.readout.coolant_cy = (int32_t)d; return true; }
+        if (keyIs(rk, rkl, "show_units"))    { if (s.uintVal(&u)) t.readout.show_units = (uint8_t)(u ? 1 : 0); return true; }
+        if (keyIs(rk, rkl, "show_coolant"))  { if (s.uintVal(&u)) t.readout.show_coolant = (uint8_t)(u ? 1 : 0); return true; }
+        return false;
+      });
+      return true;
+    }
     if (keyIs(k, klen, "screens")) {
       if (!s.eat('[')) return true;
       uint8_t si = 0;

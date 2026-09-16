@@ -55,6 +55,56 @@ struct ScreenTheme {
   uint8_t  show_face;
 };
 
+// ============================================================
+// 数字读数(转速/速度/水温)的样式与位置
+//
+// 为什么单独一个结构体而不是塞进 ScreenTheme:
+//   两个表的读数**布局一样**(都在正上方),只是数据源和单位不同;
+//   水温只有转速表有。放全局一份比每屏复制一遍更不容易写歪。
+//
+// 位置都是 **480 基准**坐标,乘 theme_scale() 后使用;圆心在 (240,240)。
+// 竖直排布(480 基准):
+//   弧带最高点 y=23
+//   弧带下沿   y=47  ← 数字从这里往下才是干净的(弧带宽 24,半径 193..217)
+//   数字中心   y = digit_cy
+//   单位中心   y = unit_cy
+//   表情顶边   y=120 ← 再往下会被表情压到
+// 所以默认取 digit_cy=72(48 号数字高约 50,占 47..97)、unit_cy=107(18 号约占 97..117):
+// 整块落在 47..120 里,既压不到弧带也碰不到表情。
+// ★ 不要为了"更靠上"把 digit_cy 往前挪 —— 再往上就是弧带,数字会骑在弧上。
+// ============================================================
+struct ReadoutTheme {
+  uint32_t digit_color;     // 大数字颜色(转速/速度共用)
+  uint32_t unit_color;      // 单位文字颜色(km/h / rpm)
+  uint32_t coolant_color;   // 水温数字颜色
+
+  uint8_t  digit_font;      // 0 = 48 号,1 = 18 号(见 readout_font())
+  uint8_t  unit_font;       // 0 = 48 号,1 = 18 号
+
+  int16_t  digit_cy;        // 大数字中心 y(480 基准;两屏共用)
+  int16_t  unit_cy;         // 单位中心 y
+  int16_t  coolant_cy;      // 水温数字中心 y(左屏底部)
+
+  uint8_t  show_units;      // 0 = 只显示数字不显示单位
+  uint8_t  show_coolant;    // 0 = 不显示水温数字
+};
+
+// 字体选择:0 = 48 号(大),1 = 18 号(小)。
+// 用编号而不是直接存指针,是为了让主题能存进 JSON(指针没法序列化)。
+const lv_font_t* readout_font(uint8_t which);
+
+// 存档:数字读数的转发宏(与其它主题字段同一套用法)
+#define READOUT_DIGIT_COLOR   (g_theme.readout.digit_color)
+#define READOUT_UNIT_COLOR    (g_theme.readout.unit_color)
+#define READOUT_COOLANT_COLOR (g_theme.readout.coolant_color)
+#define READOUT_DIGIT_FONT    readout_font(g_theme.readout.digit_font)
+#define READOUT_UNIT_FONT     readout_font(g_theme.readout.unit_font)
+#define READOUT_DIGIT_CY      (g_theme.readout.digit_cy)
+#define READOUT_UNIT_CY       (g_theme.readout.unit_cy)
+#define READOUT_COOLANT_CY    (g_theme.readout.coolant_cy)
+#define READOUT_SHOW_UNITS    (g_theme.readout.show_units)
+#define READOUT_SHOW_COOLANT  (g_theme.readout.show_coolant)
+
 // ---- 主题数据（全部运行时可改） ----
 // 字段顺序即序列化顺序,改动要在 theme_store.cpp 里同步（并升版本号）。
 struct Theme {
@@ -75,6 +125,20 @@ struct Theme {
 
   // 量程
   float coolant_min_c, coolant_max_c;
+
+  // ------------------------------------------------------------
+  // 数字读数(转速/速度数字 + 单位 + 水温)
+  //
+  // 布局按实车(法系:左=转速表,右=速度表)与使用习惯定死:
+  //   · 转速/速度的**大数字**放表盘正上方(y = 弧带最高点 23 到表情顶边 120 之间)
+  //   · 单位(km/h、rpm)紧跟数字下方
+  //   · 水温数字放**转速表(左屏)底部**
+  //   中央 240×240 留给表情图。
+  //
+  // 位置按 **480 基准**书写,渲染时乘 theme_scale()(与弧/表情同一套规矩)。
+  // 这些值可调,但要注意上方可用高度只有约 97 像素 —— 字号加大就会压到弧或表情。
+  // ------------------------------------------------------------
+  ReadoutTheme readout;
 
   // 开机动画(ms):淡入 → 双屏错峰扫表 → 表情睁眼
   uint32_t boot_fade_ms;
@@ -111,6 +175,18 @@ inline void theme_set_defaults(Theme& t) {
 
   t.coolant_min_c = 60.0f;
   t.coolant_max_c = 130.0f;
+
+  // 数字读数。位置见 ReadoutTheme 的说明:干净可用的是 47..120 那 73 像素。
+  t.readout.digit_color   = 0xFFFFFF;   // 白
+  t.readout.unit_color    = 0x9AA0A6;   // 灰(单位不该抢数字的注意力)
+  t.readout.coolant_color = 0x7CFF6B;   // 与水温弧同色,一眼能对上
+  t.readout.digit_font    = 0;          // 48 号
+  t.readout.unit_font     = 1;          // 18 号
+  t.readout.digit_cy      = 72;         // 48 号数字高约 50 → 占 47..97(紧贴弧带下沿)
+  t.readout.unit_cy       = 107;        // 18 号高约 20 → 占 97..117(紧贴表情顶边)
+  t.readout.coolant_cy    = 384;        // 表盘底部(弧带在那里是空的,居中放得下)
+  t.readout.show_units    = 1;
+  t.readout.show_coolant  = 1;
 
   t.boot_fade_ms        = 250;
   t.boot_sweep_start_ms = 250;

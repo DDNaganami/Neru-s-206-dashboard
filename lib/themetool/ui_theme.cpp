@@ -1,4 +1,16 @@
 #include "ui_theme.h"
+#include <lvgl.h>
+
+// 数字读数用哪号字体。
+// 用编号而不是指针:指针没法存进 JSON,而主题要从 flash 的 JSON 加载。
+// 打开的字号见 include/lv_conf.h(48 / 18 / 14)。
+const lv_font_t* readout_font(uint8_t which) {
+  switch (which) {
+    case 0: return &lv_font_montserrat_48;
+    case 1: return &lv_font_montserrat_18;
+    default: return &lv_font_montserrat_18;
+  }
+}
 
 // 默认主题:const 放 flash(.rodata),不占 DRAM。
 // 函数内 static 保证只初始化一份,且首次使用时才初始化。
@@ -82,6 +94,20 @@ void theme_clamp(Theme& t) {
       if (a.end_deg <= a.start_deg) a.end_deg = a.start_deg + 1;
     }
   }
+
+  // 数字读数:钳住字号编号与位置。
+  // 位置越界不会崩,但会把数字画到屏外或糊在弧上 —— 所以挡在合理区间内。
+  if (t.readout.digit_font > 1) t.readout.digit_font = 0;
+  if (t.readout.unit_font  > 1) t.readout.unit_font  = 1;
+  // 竖直位置:0..480 之内;数字中心别低到 120 以下(那里是表情区)
+  if (t.readout.digit_cy < 10)  t.readout.digit_cy = 10;
+  if (t.readout.digit_cy > 115) t.readout.digit_cy = 115;
+  if (t.readout.unit_cy  < 10)  t.readout.unit_cy  = 10;
+  if (t.readout.unit_cy  > 119) t.readout.unit_cy  = 119;
+  if (t.readout.coolant_cy < 200) t.readout.coolant_cy = 200;
+  if (t.readout.coolant_cy > 470) t.readout.coolant_cy = 470;
+  t.readout.show_units   = t.readout.show_units ? 1 : 0;
+  t.readout.show_coolant = t.readout.show_coolant ? 1 : 0;
 }
 
 // theme_after_load 已并入 theme_parse_json(它直接对传进来的对象调 theme_clamp)。

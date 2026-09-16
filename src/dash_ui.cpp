@@ -3,9 +3,14 @@
 #include "ui_theme.h"
 #include "boot_anim.h"
 #include "image_load.h"     // 图片资源(背景图 / 表情图)
+#include "face_stages.h"    // 表情槽位 → 图片角色 / 缺图降级链
 #include <lvgl.h>
 #include <Arduino.h>
 #include <math.h>
+
+// 表情槽位下标 = (uint8_t)Face —— 两者必须一样长,否则数组会越界
+static_assert((uint8_t)Face::Count == kFaceSlotCount,
+              "Face 枚举与 kFaceSlotCount 不一致:改枚举要同步 face_stages.h");
 
 // ============ 运行时对象 ============
 struct ScreenUi {
@@ -18,6 +23,15 @@ struct ScreenUi {
   lv_obj_t* eye_r = nullptr;
   lv_obj_t* mouth = nullptr;
   Face last_face = Face::Count;     // 首帧强制全量应用
+
+  // 数字读数(转速/速度大数字 + 单位 + 水温)
+  lv_obj_t* digit_lbl = nullptr;
+  lv_obj_t* unit_lbl = nullptr;
+  lv_obj_t* coolant_lbl = nullptr;
+  bool unit_set = false;                 // 单位文本写过没有(见 readout_apply)
+  ArcKind digit_kind = ArcKind::Speed;   // 大数字跟的是哪条弧(建屏时定)
+  int32_t digit_val = INT32_MIN;         // 上次显示的值:不变就不 set_text
+  int32_t coolant_val = INT32_MIN;
 };
 
 static ScreenUi g_ui[2];
@@ -29,37 +43,42 @@ static uint32_t last_tick_ms = 0;
 
 // ============ 图片资源 ============
 // lv_image_dsc_t 必须由我们持有 —— LVGL 会一直引用它(set_src 不复制)。
-// 每屏一张背景 + 三种表情状态,所以是 2 组。
+// 每屏一张背景 + 每个表情状态一张,所以是 [2][8]。
+// 下标 = (uint8_t)Face(见 expression.h:枚举顺序就是槽位顺序)。
 static lv_image_dsc_t g_bg_dsc[2];
-static lv_image_dsc_t g_face_dsc[2][3];      // [屏][0=常态 1=红区 2=惊喜]
+static lv_image_dsc_t g_face_dsc[2][kFaceSlotCount];
 static bool g_bg_ok[2] = {false, false};
-static bool g_face_ok[2][3] = {{false, false, false}, {false, false, false}};
+static bool g_face_ok[2][kFaceSlotCount] = {};
 static lv_obj_t* g_bg_img[2] = {nullptr, nullptr};
 static lv_obj_t* g_face_img[2] = {nullptr, nullptr};
+static int8_t g_face_slot[2] = {-1, -1};    // 当前正显示哪一张(-1 = 还没显示过图片)
 
-// 表情状态 → 角色。
-// ★ 按**法系车**布局:左屏(0) = 转速表,右屏(1) = 速度表。
-//   所以"不带 R 后缀"的那组角色给左屏,"带 R"的给右屏 ——
-//   这里的映射决定了刷进去的表情图会不会左右颠倒。
-static ImageRole faceRole(uint8_t screen, int state) {
-  if (screen == 0) {                 // 左屏 = 转速表
-    return (state == 0) ? ImageRole::FaceIdle
-         : (state == 1) ? ImageRole::FaceRedline
-                        : ImageRole::FaceSurprise;
-  }
-  return (state == 0) ? ImageRole::FaceIdleR      // 右屏 = 速度表
-       : (state == 1) ? ImageRole::FaceRedlineR
-                      : ImageRole::FaceSurpriseR;
+// 槽位 → 角色。角色编号表在 face_stages.h(kFaceRoleId),
+// 那里复述了 image_blob.h 的 ImageRole —— 由宿主机测试逐条比对,
+// 所以"刷进去的表情左右颠倒"这种错不会悄悄发生。
+static ImageRole faceRole(uint8_t screen, uint8_t slot) {
+  return (ImageRole)kFaceRoleId[screen][slot];
 }
 
-// 当前该显示哪一种表情。ExpressionState 与 Face 的映射沿用现有逻辑,
-// 这里只做"状态 → 数组下标"的换算。
-static int faceStateIndex(Face f) {
-  switch (f) {
-    case Face::Redline:  return 1;
-    case Face::Surprise: return 2;
-    default:             return 0;
+// 该状态该用哪张图:**按降级链找第一张"这屏导入过"的**。
+// 返回槽位下标;这张屏一张表情图都没有 → 返回 -1(交给程序化表情)。
+//
+// 为什么要降级链:一套 8 张图没人会一次凑齐。只导入 3 张(常态/红区/惊喜)时,
+// 巡航/运动/冷车/过热都应该落到常态那张,而不是"图片消失、变回占位圆脸"。
+static int faceResolve(uint8_t screen, Face f) {
+  const uint8_t slot = (uint8_t)f;
+  if (slot >= kFaceSlotCount) return -1;
+  const int8_t* chain = kFaceFallback[slot];
+  for (uint8_t i = 0; i < 4; ++i) {
+    const int8_t s = chain[i];
+    if (s >= 0 && s < (int8_t)kFaceSlotCount && g_face_ok[screen][s]) return s;
   }
+  // 兜底:链里一条都没有(比如只导入了"冷车"一张),有图就用 ——
+  // 图片摆在那儿却去画占位表情,才是最差的结果。
+  for (uint8_t s = 0; s < kFaceSlotCount; ++s) {
+    if (g_face_ok[screen][s]) return s;
+  }
+  return -1;
 }
 
 // 主题尺寸换算:480 基准 → 实际分辨率(四舍五入,见 ui_theme.h 分辨率适配)
@@ -141,24 +160,16 @@ static void build_face(lv_obj_t* parent, ScreenUi& ui) {
   ui.mouth = mouth;
 }
 
-// 表情状态 → 图片槽位下标。
-// Blink / Cruise / Sport 都归到"常态"那张图 —— 逐帧眨眼动画不做(已确认),
-// 所以这几种状态共用同一张脸,只有红区/惊喜才换图。
-static int faceSlot(Face f) {
-  switch (f) {
-    case Face::Redline:  return 1;
-    case Face::Surprise: return 2;
-    default:             return 0;   // Idle / Blink / Cruise / Sport
-  }
-}
-
 // 有图片表情时,只切图、不碰程序化形状。
 // 返回 true 表示这次由图片接管了。
 static bool face_apply_image(uint8_t screen, Face f) {
   if (g_face_img[screen] == nullptr) return false;
-  const int slot = faceSlot(f);
-  if (!g_face_ok[screen][slot]) return false;      // 这个状态没有图
-  lv_image_set_src(g_face_img[screen], &g_face_dsc[screen][slot]);
+  const int slot = faceResolve(screen, f);
+  if (slot < 0) return false;                      // 这屏一张表情图都没有
+  if (slot != g_face_slot[screen]) {               // 同一张图不重复 set_src
+    g_face_slot[screen] = (int8_t)slot;
+    lv_image_set_src(g_face_img[screen], &g_face_dsc[screen][slot]);
+  }
   return true;
 }
 
@@ -205,6 +216,115 @@ static void face_apply(ScreenUi& ui, Face f) {
     lv_obj_set_style_radius(ui.mouth, ts(MOUTH_LINE_H / 2), 0);
     lv_obj_set_style_bg_opa(ui.mouth, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(ui.mouth, 0, 0);
+  }
+}
+
+// ============ 数字读数(转速/速度大数字 + 单位 + 水温) ============
+// 位置、颜色、字体全部来自主题(ReadoutTheme);这里只管"取哪一路数据、
+// 排成什么文字"。格式化规则刻意写死在固件里而不放进主题 —— 改格式等于改代码,
+// 塞进主题只会让主题文件变成半个程序。
+//
+// 大数字显示哪一路?—— **由弧决定**,不看屏幕序号:
+//   取该屏第一条"不是水温"的弧。这样以后把水温弧挪屏、或加第三条弧,
+//   读数都自动跟着走,不需要同步改这里。
+
+static bool screen_has_kind(const ScreenTheme& cfg, ArcKind k) {
+  for (uint8_t i = 0; i < cfg.arc_count && i < kMaxArcs; ++i) {
+    if (cfg.arcs[i].kind == k) return true;
+  }
+  return false;
+}
+
+static ArcKind primary_kind(const ScreenTheme& cfg) {
+  for (uint8_t i = 0; i < cfg.arc_count && i < kMaxArcs; ++i) {
+    if (cfg.arcs[i].kind != ArcKind::Coolant) return cfg.arcs[i].kind;
+  }
+  return (cfg.arc_count > 0) ? cfg.arcs[0].kind : ArcKind::Speed;
+}
+
+static const char* unit_text(ArcKind k) {
+  switch (k) {
+    case ArcKind::Speed: return "km/h";
+    case ArcKind::Rpm:   return "rpm";
+    default:             return "";
+  }
+}
+
+// 显示值。转速取到 10 位:OBD 的转速本身就在几十转上下抖,个位纯噪声。
+static int32_t readout_value(ArcKind k, const ArcDashView& v) {
+  switch (k) {
+    case ArcKind::Speed: return (int32_t)lroundf(v.speed_kmh);
+    case ArcKind::Rpm:   return (int32_t)(lroundf(v.rpm / 10.0f) * 10.0f);
+    default:             return (int32_t)lroundf(v.coolant_c);
+  }
+}
+
+// 读数用标签:定宽 + 文字居中,所以文本从"8"变到"8000"也不会左右挪位。
+static lv_obj_t* make_readout_label(lv_obj_t* parent, const lv_font_t* font,
+                                    lv_color_t color, int32_t cy480) {
+  lv_obj_t* l = lv_label_create(parent);
+  lv_obj_remove_style_all(l);          // 只要文字:清掉内边距,免得隐形边框压住弧
+  lv_obj_set_width(l, LV_PCT(100));
+  lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_font(l, font, 0);
+  lv_obj_set_style_text_color(l, color, 0);
+  lv_obj_align(l, LV_ALIGN_CENTER, 0, ts(cy480 - 240));   // cy 按 480 基准给
+  // ★ 必须显式清空:lv_label_create() 建出来的标签**默认文本是 "Text"**,
+  //   不清的话开机扫表期间表盘上会明晃晃写着两个 "Text"(实测在预览帧里抓到)。
+  lv_label_set_text(l, "");
+  return l;
+}
+
+static void build_readout(lv_obj_t* parent, const ScreenTheme& cfg, ScreenUi& ui) {
+  const ArcKind pk = primary_kind(cfg);
+  ui.digit_kind = pk;
+
+  ui.digit_lbl = make_readout_label(parent, READOUT_DIGIT_FONT,
+                                    lv_color_hex(READOUT_DIGIT_COLOR), READOUT_DIGIT_CY);
+  if (READOUT_SHOW_UNITS) {
+    // ★ 单位文本**故意留到第一次 readout_apply 才写**(见下面的 unit_set):
+    //   建屏时写上,开机扫表那一段就会孤零零挂着个 "rpm" —— 数字出场前
+    //   先出来一个单位,看起来像残影。
+    ui.unit_lbl = make_readout_label(parent, READOUT_UNIT_FONT,
+                                     lv_color_hex(READOUT_UNIT_COLOR), READOUT_UNIT_CY);
+  }
+
+  // 水温数字:该屏真的有水温弧、主题也允许,才建。
+  // 若这屏唯一那条弧就是水温(大数字已经在显示水温了),就别在底下重复一遍。
+  if (READOUT_SHOW_COOLANT && pk != ArcKind::Coolant &&
+      screen_has_kind(cfg, ArcKind::Coolant)) {
+    ui.coolant_lbl = make_readout_label(parent, READOUT_UNIT_FONT,
+                                        lv_color_hex(READOUT_COOLANT_COLOR),
+                                        READOUT_COOLANT_CY);
+  }
+  // ★ 标签一律以空文本创建:开机动画期间 dash_ui_render 会早退,
+  //   于是"扫表时数字栏是空的",扫完第一帧才出现 —— 这正是想要的效果。
+  //   刻意不做淡入:LVGL 给对象设 opa<255 会开离屏层,这个驱动上会错位(见 boot_apply)。
+}
+
+static void readout_apply(ScreenUi& ui, const ArcDashView& v) {
+  // 单位:只取决于弧种类,所以只需要写一次 —— 但必须等到"读数该出现的时刻"
+  // (开机扫表期间 dash_ui_render 会早退,所以这一句自然就推迟到扫表之后)。
+  if (ui.unit_lbl && !ui.unit_set) {
+    ui.unit_set = true;
+    lv_label_set_text(ui.unit_lbl, unit_text(ui.digit_kind));
+  }
+  if (ui.digit_lbl) {
+    const int32_t dv = readout_value(ui.digit_kind, v);
+    if (dv != ui.digit_val) {          // 只有真的变了才碰 LVGL:读数每秒都在刷,
+      ui.digit_val = dv;               // 无脑 set_text 会把 16 条 invalid 队列刷爆
+      lv_label_set_text_fmt(ui.digit_lbl, "%d", (int)dv);
+      // 文本长度变了 self size 就变,重 align 一次最稳(定宽 + 居中其实已够)
+      lv_obj_align(ui.digit_lbl, LV_ALIGN_CENTER, 0, ts(READOUT_DIGIT_CY - 240));
+    }
+  }
+  if (ui.coolant_lbl) {
+    const int32_t cv = (int32_t)lroundf(v.coolant_c);
+    if (cv != ui.coolant_val) {
+      ui.coolant_val = cv;
+      lv_label_set_text_fmt(ui.coolant_lbl, "%d\xC2\xB0""C", (int)cv);   // 88°C
+      lv_obj_align(ui.coolant_lbl, LV_ALIGN_CENTER, 0, ts(READOUT_COOLANT_CY - 240));
+    }
   }
 }
 
@@ -274,8 +394,8 @@ void dash_ui_init() {
   // 图片资源:先探测每个角色有没有图(没刷图片时全部 false,走降级路径)
   for (uint8_t s = 0; s < 2; ++s) {
     g_bg_ok[s] = image_dsc_for_role(ImageRole::Background, &g_bg_dsc[s]);
-    for (int st = 0; st < 3; ++st) {
-      g_face_ok[s][st] = image_dsc_for_role(faceRole(s, st), &g_face_dsc[s][st]);
+    for (uint8_t slot = 0; slot < kFaceSlotCount; ++slot) {
+      g_face_ok[s][slot] = image_dsc_for_role(faceRole(s, slot), &g_face_dsc[s][slot]);
     }
   }
 
@@ -297,7 +417,7 @@ void dash_ui_init() {
   //   与"没有主题就用默认主题"是同一个原则:资源缺失不能让界面空掉。
   for (uint8_t s = 0; s < 2; ++s) {
     bool any = false;
-    for (int st = 0; st < 3; ++st) any = any || g_face_ok[s][st];
+    for (uint8_t i = 0; i < kFaceSlotCount; ++i) any = any || g_face_ok[s][i];
     if (!any) continue;
 
     if (g_face_img[s] == nullptr) {
@@ -306,8 +426,15 @@ void dash_ui_init() {
     }
     // 有图就把程序化表情藏起来(不能删 —— face_apply 还会去访问那几个对象)
     if (g_ui[s].face_bg) lv_obj_add_flag(g_ui[s].face_bg, LV_OBJ_FLAG_HIDDEN);
-    // 先摆常态那张,后续 face_apply 按状态切换
-    lv_image_set_src(g_face_img[s], &g_face_dsc[s][0]);
+    // 先摆"常态该用的那张"(可能降级到别的槽),后续 face_apply 按状态切换
+    const int slot = faceResolve(s, Face::Idle);
+    g_face_slot[s] = (int8_t)slot;
+    lv_image_set_src(g_face_img[s], &g_face_dsc[s][slot]);
+  }
+
+  // 数字读数最后建:创建顺序就是图层顺序,读数要压在弧和表情之上。
+  for (uint8_t s = 0; s < 2; ++s) {
+    build_readout(g_screens[s], kScreens[s], g_ui[s]);
   }
 
   g_boot.start(millis());
@@ -371,5 +498,6 @@ void dash_ui_render(const ArcDashView& v, uint32_t now) {
       // 表情的显隐/形变只在 face_apply 里按状态变化时改一次,这里不重复 set
       face_apply(ui, v.face);
     }
+    readout_apply(ui, v);
   }
 }

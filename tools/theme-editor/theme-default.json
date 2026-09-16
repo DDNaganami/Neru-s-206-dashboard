@@ -26,20 +26,33 @@
       "mouth_o_size": 40
     },
 
+    "readout": {
+      "digit_color": 0xFFFFFF,
+      "unit_color": 0x9AA0A6,
+      "coolant_color": 0x7CFF6B,
+      "digit_font": 0,
+      "unit_font": 1,
+      "digit_cy": 72,
+      "unit_cy": 107,
+      "coolant_cy": 384,
+      "show_units": 1,
+      "show_coolant": 1
+    },
+
     "screens": [
       {
         "arc_count": 2,
         "show_face": 1,
         "arcs": [
           {
-            "kind": 0,
+            "kind": 1,
             "start_deg": 135,
             "end_deg": 405,
             "radius": 205,
             "width": 24,
             "track_color": 0x232323,
             "track_opa": 153,
-            "value_color": 0x39C5FF
+            "value_color": 0xFF5C5C
           },
           {
             "kind": 2,
@@ -58,14 +71,14 @@
         "show_face": 1,
         "arcs": [
           {
-            "kind": 1,
+            "kind": 0,
             "start_deg": 135,
             "end_deg": 405,
             "radius": 205,
             "width": 24,
             "track_color": 0x232323,
             "track_opa": 153,
-            "value_color": 0xFF5C5C
+            "value_color": 0x39C5FF
           }
         ]
       }
