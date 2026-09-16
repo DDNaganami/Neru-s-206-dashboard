@@ -22,12 +22,14 @@
 #   type=data, subtype=0x41 (undefined), read-only mapped via esp_partition_mmap
 #   by esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x41, "image")
 #   (see lib/themetool/image_blob.cpp)
-#   1MB. What fits, for TWO screens each needing background + boot logo +
-#   3 expression variants (10 images total):
-#     480x480 RGB565 = 450KB each  -> only 2 images fit
-#     240x240 RGB565 = 112KB each  -> all 10 images = 1125KB, just over
-#     192x192 RGB565 =  72KB each  -> all 10 images =  720KB, fits with room
-#   So: mix sizes. Background 240x240, faces/boot logos 192x192.
+#   1MB. What fits, for TWO screens with 4 expression faces each + one shared
+#   background (9 images total; faces are RGB565A8 = 3 bytes/px so they carry
+#   transparency, the background is RGB565 = 2 bytes/px):
+#     face 240x240 RGB565A8 = 169KB  -> 8 faces + 240 background = 1465KB, over
+#     face 192x192 RGB565A8 = 108KB  -> 8 faces + 192 background =  936KB, fits
+#     face 160x160 RGB565A8 =  75KB  -> 8 faces + 160 background =  650KB, roomy
+#   So: 192x192 is the smallest size that still fits a COMPLETE set at 1MB.
+#   Fewer images always work (missing states fall back to the nearest one).
 #   NOTE: frame-by-frame FULL-SCREEN boot animation does not fit and cannot:
 #   480x480 x 12 frames x 2 screens = 10.5MB. Keep the boot animation
 #   procedural (boot_anim.cpp) and overlay one image per screen.

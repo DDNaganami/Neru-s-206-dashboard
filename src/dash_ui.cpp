@@ -14,7 +14,7 @@ static_assert((uint8_t)Face::Count == kFaceSlotCount,
 
 // ============ 运行时对象 ============
 struct ScreenUi {
-  uint8_t idx = 0;                  // 这是第几屏(0=左/车速,1=右/转速);图片按屏取
+  uint8_t idx = 0;                  // 这是第几屏(0=左/转速表,1=右/速度表);图片按屏取
   lv_obj_t* arcs[kMaxArcs];
   uint8_t arc_count = 0;
   float arc_cur[kMaxArcs];          // 弧当前值(缓动用),开机扫表后从这里平滑过渡

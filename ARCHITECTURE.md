@@ -246,7 +246,10 @@
     # ASCII 路径下，先造测试图，再带 IMAGE_BLOB 跑预览
     node tools/theme-editor/make-test-blob.js <ascii>\test-image.bin
     $env:IMAGE_BLOB='<ascii>\test-image.bin'; .\.pio\build\pcpreview\program.exe
-    node tools/theme-editor/check-preview-frame.js preview\frames\l_0100.bmp redline yes left yes
+    node tools/theme-editor/check-preview-frame.js preview\frames\l_0140.bmp redline yes left yes
+    node tools/theme-editor/check-preview-frame.js preview\frames\r_0140.bmp idle yes right yes
+  （帧号别随手改：假数据是波形，先扫一遍两屏表情序列再挑**平台段**的帧 ——
+   140 帧两侧都稳定，100 帧左屏已经是 cruise 了。）
   check-preview-frame.js 除了背景/弧/表情图层与透明通道，还核对**读数**：
   数字/单位/水温三处墨迹的**外接框**（能区分"画的是数字"和"忘了清空的
   LVGL 默认文本 Text"）、右屏不该有水温数字、开机期间数字栏必须为空。

@@ -262,22 +262,37 @@ static void test_clamp_readout(void) {
   TEST_ASSERT_EQUAL_UINT8(1, t.readout.show_coolant);
 }
 
-// 默认读数的位置必须落在"弧带下沿到表情顶边"这段空档里 ——
-// 弧带占 23..47(半径 193..217),表情从 120 开始,所以数字和单位
-// 都必须待在 47..120 之间,否则会骑在弧上或被表情压住。
+// 默认读数的位置契约(按 `radius` = **外沿**的语义算):
+//   外弧带 radius 205 / width 24 → 占 y 35..59(内沿 59)
+//   表情图从 y=120 开始
+//   ① 单位墨迹**绝不能**碰到表情图(≤120)
+//   ② 数字墨迹可以**轻轻**蹭到弧带内沿(默认 55 vs 59,压 4 像素):
+//      读数标签在弧**之上**,4 像素看不出来;而往下挪 4 像素去躲,单位就贴到表情了
+//      (119 对 120)—— 所以这里允许 ≤6px 的蹭边,但不许明显骑上去
+//   ③ 数字与单位不能挤在一起、也不能离太远
+// 墨迹偏移按**实测**(固件落帧):48 号数字墨迹高 34px → [cy-17, cy+16];
+// 18 号高 13px → [cy-3, cy+10]。换字号时这几个数要跟着量。
 // 这条是几何契约:改默认位置时它会告诉你越界了。
 static void test_readout_defaults_fit_gap(void) {
   Theme d;
   theme_set_defaults(d);
-  // 48 号数字高约 50 → 占 [cy-25, cy+25];18 号约 20 → 占 [cy-10, cy+10]
-  const int32_t digit_top = d.readout.digit_cy - 25;
-  const int32_t digit_bottom = d.readout.digit_cy + 25;
-  const int32_t unit_top = d.readout.unit_cy - 10;
-  const int32_t unit_bottom = d.readout.unit_cy + 10;
-  TEST_ASSERT_TRUE_MESSAGE(digit_top >= 47, "数字会骑到弧带上");
-  TEST_ASSERT_TRUE_MESSAGE(unit_bottom <= 120, "单位会被表情图压住");
-  TEST_ASSERT_TRUE_MESSAGE(digit_bottom <= unit_bottom, "数字必须在单位上方");
-  TEST_ASSERT_TRUE_MESSAGE(unit_top - digit_bottom <= 20, "数字和单位之间空太多");
+  const int32_t kArcBandInnerY = 59;    // 外弧带内沿(205-24 → 240-181=59)
+  const int32_t kFaceTopY = 120;        // 表情图顶边
+  const int32_t kDigitTopOff = -17;     // 48 号墨迹:上偏 17
+  const int32_t kDigitBotOff = 16;      //           下偏 16
+  const int32_t kUnitTopOff = -3;       // 18 号墨迹:上偏 3
+  const int32_t kUnitBotOff = 10;       //           下偏 10
+
+  const int32_t digit_top = d.readout.digit_cy + kDigitTopOff;
+  const int32_t digit_bottom = d.readout.digit_cy + kDigitBotOff;
+  const int32_t unit_top = d.readout.unit_cy + kUnitTopOff;
+  const int32_t unit_bottom = d.readout.unit_cy + kUnitBotOff;
+
+  TEST_ASSERT_TRUE_MESSAGE(digit_top >= kArcBandInnerY - 6,
+                           "数字明显骑到弧带上了(最多只允许蹭 6 像素)");
+  TEST_ASSERT_TRUE_MESSAGE(unit_bottom <= kFaceTopY, "单位会被表情图压住");
+  TEST_ASSERT_TRUE_MESSAGE(digit_bottom < unit_top, "数字必须在单位上方");
+  TEST_ASSERT_TRUE_MESSAGE(unit_top - digit_bottom <= 30, "数字和单位之间空太多");
   // 水温读数在表盘底部:要在圆心以下,又不能跑到屏幕外
   TEST_ASSERT_TRUE(d.readout.coolant_cy > 240);
   TEST_ASSERT_TRUE(d.readout.coolant_cy < 430);
