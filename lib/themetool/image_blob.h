@@ -98,9 +98,9 @@ enum class ImageRole : uint16_t {
 
   // ---- 左屏(转速表) ----
   FaceIdle     = 3,   // 表情：常态(低转)
-  FaceRedline  = 4,   // 表情：红区(>=6000)
-  FaceCruise   = 12,  // 表情：巡航(>=2500)
-  FaceSport    = 13,  // 表情：运动(>=4500)
+  FaceRedline  = 4,   // 表情：红区(>=5000,上限 6000 之前 1000)
+  FaceCruise   = 12,  // 表情：巡航(>=1800)
+  FaceSport    = 13,  // 表情：运动(>=3500)
 
   // ---- 右屏(速度表) ----
   FaceIdleR     = 6,  // 表情：常态(低速)
