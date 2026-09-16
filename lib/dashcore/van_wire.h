@@ -45,14 +45,33 @@ static const uint8_t  kDataMax     = 224u;       // 协议允许的数据上限
 static const uint8_t  kDataDefault = 40u;
 
 // SOF / CMD 位定义
-static const uint8_t kSofByte      = 0x0Fu;      // SOF 前 8 个 TS:0000 1111
+// ------------------------------------------------------------
+// SOF:**固定的 10 TS 同步图案**,不是 4B5B 数据字节
+// ------------------------------------------------------------
+// 规范(Graham Auld,本文件一直在引的那份):SOF = 10 TS,0000111101。
+//
+// ★ 这是一个反复踩过的概念坑,写在这里免得再犯:
+//   SOF **不走 4B5B**。它是"裸"的 10 个槽,后面才开始对
+//   IDEN/CMD/DATA/FCS 做 4B5B 编码。所以:
+//     · 不能用 putByte(0x0F) 生成它 —— putByte 把 0x0F 当数据位、
+//       插进两个编码位,得到 0000111111(第 9 槽成了 1),
+//       与规范 0000111101 差在第 9 槽 → matcher 永远对不上,
+//       滑窗冻在 sofBits=9(实测症状)。
+//     · 也不能拿"折 10 槽 == 0x0F"当 SOF 正确的证据 —— 折 4B5B 时
+//       第 5/10 槽是被丢掉的编码位,折回 0x0F 只说明"数据位还是那个字节"。
+//       真正按规范 0000111101 折(同样丢第 5/10 位)得到的是 0x0E。
+//     · kSofByte = 0x0F 只是"前 8 个裸槽 = 00001111",不是折叠结果。
+//
+// 编码器与 matcher **共用下面这两个常数**。
+static const uint16_t kSofPattern = 0x003Du;     // 0000111101(MSB 先写)
+static const uint8_t  kSofSlots   = 10u;
+static const uint8_t  kSofByte    = 0x0Fu;       // 仅指"前 8 个裸槽 = 00001111"
 static const uint8_t kCmdExtMask   = 0x8u;       // CMD 位 3:EXT,保留,应为 1
 static const uint8_t kCmdRakMask   = 0x4u;       // CMD 位 2:RAK,1 = 无需应答
 static const uint8_t kCmdRwMask    = 0x2u;       // CMD 位 1:1 = 读, 0 = 写
 static const uint8_t kCmdRtrMask   = 0x1u;       // CMD 位 0:1 = 无数据(请求)
 
-// 帧阶段。引入它只为一件事:让 finish() 能表达"这一段结束了"。
-// ★ 本轮**不引入 10 TS SOF 匹配器**,SOF 的识别方式没变(仍是整字节 0x0F)。
+// 帧阶段。
 enum class FramePhase : uint8_t { Idle = 0, InFrame = 1, Eof = 2 };
 
 // CRC-15:x^15 + x^14 + x^10 + x^8 + x^7 + x^4 + x^3 + 1
@@ -147,6 +166,18 @@ bool parseFrameBytes(const uint8_t* bytes, uint16_t n, Frame* out);
 class ByteSink {
 public:
   virtual ~ByteSink() = default;
+
+  // ★ SOF 命中时**先**调这个,再调 onByte()。
+  //
+  // 为什么必须有它:pushEdge 一次只能回一个 Ev,而**一次边沿里会先出现
+  // SOF、紧接着吐出 IDEN 字节**(SOF 之后紧跟的槽会立刻凑出第一个字节)。
+  // 靠"边沿返回后再判断 phase"必然丢一头 —— 要么解析器没武装就丢字节,
+  // 要么漏掉帧起点。有了这个回调,帧起点与数据字节走**同一条时序**:
+  //   onFrameStart() → onByte(IDEN 低字节) → onByte(其余…)
+  // 调用保证:此时 SOF 的 10 槽已收完、相位已清零、
+  // 本沿里**还没有**任何数据字节被吐出。
+  virtual void onFrameStart() {}
+
   virtual void onByte(uint8_t b) = 0;
 };
 
@@ -207,6 +238,9 @@ class BitDecoder {
   // 在这里用它反而会让 finish() 之后读到的 phase 不是 Idle。
   void markIdle() { mPhase = FramePhase::Idle; mArmed = false; }
 
+  // SOF 匹配进度(诊断/测试用)
+  uint8_t sofBits() const { return mSofBits; }
+
   // 诊断快照:排查"帧为什么没收尾"时,光看返回值(Ev)不够,
   // 需要同时看到相位与连续 recessive 计数。有了它就不用往库里插
   // #ifdef printf 探针(上两次就因为探针编译不过白费了两轮)。
@@ -246,6 +280,8 @@ class BitDecoder {
  private:
   static const uint8_t kQueueMax = 40;   // 与 kDataDefault 对齐,避免长空闲段溢出
   void processSlot(bool level);
+  // SOF 槽级匹配:命中时先 onFrameStart() 再返回 true(清相位、armed、InFrame)
+  bool sofFeed(bool level);
 
   uint64_t mCurNs    = 0;
   bool     mHasLevel = false;
@@ -260,6 +296,8 @@ class BitDecoder {
   bool     mNeedResync = false;    // 见过 EOF,下一沿前重新对齐字节相位
   bool     mArmed = false;         // 见到 SOF 后才开始把字节入队
   FramePhase mPhase = FramePhase::Idle;   // 帧阶段(finish() 用)
+  uint8_t  mSofBits = 0;           // SOF 匹配器已收的槽数(0..kSofSlots)
+  uint16_t mSofAcc = 0;            // SOF 匹配器移位寄存器(低位是最后收到的槽)
   bool     mEofLatched = false;    // 本次空隙已报过(避免重复报)
   // 帧间空隙超时(默认 1ms = 125 槽)。必须远大于帧内最长连续 recessive
   // (全 1 数据字节是 10 槽 = 80µs),又远小于帧间空闲(实车常见 ms 级)。
@@ -283,7 +321,14 @@ class FrameParser {
  public:
   void reset();
 
-  // 喂一个解码出的字节;返回 true 表示 out 是一帧(可能 fcs_ok=false)
+  // ★ 明确声明"新的一帧从这里开始"。
+  //   帧起点由 BitDecoder 匹配到 10 槽 SOF 后经 ByteSink::onFrameStart()
+  //   回调过来(VanPhyWire 的 relay 接的);解析器**不再**靠
+  //   "首字节 == 0x0F"猜起点 —— 那条判据既与规范 SOF 不符,
+  //   也会把帧内数据里的 0x0F 误判成新帧。
+  void beginFrame(uint64_t ns);
+
+  // 喂一个解码出的字节;只有 beginFrame() 之后才会被收下
   bool pushByte(uint8_t b, uint64_t ns, Frame* out);
 
   // 缓冲里是否已经凑出一个**FCS 校验通过**的完整帧。

@@ -37,7 +37,7 @@ using namespace van;
 // 返回字节数,bytes[0] = SOF。
 static uint8_t foldSlots(const uint8_t* slots, uint32_t n, uint8_t* bytes, uint8_t cap) {
   uint8_t nb = 0;
-  for (uint32_t i = 0; i + 10 <= n && nb < cap; i += 10) {
+  for (uint32_t i = kSofSlots; i + 10 <= n && nb < cap; i += 10) {
     uint8_t hi4 = 0, lo4 = 0;
     for (uint8_t k = 0; k < 4; ++k) {
       if (slots[i + k]) hi4 |= (uint8_t)(1u << (7 - k));
@@ -46,6 +46,19 @@ static uint8_t foldSlots(const uint8_t* slots, uint32_t n, uint8_t* bytes, uint8
     bytes[nb++] = (uint8_t)(hi4 | (lo4 >> 4));
   }
   return nb;
+}
+
+// 把 SOF 那 kSofSlots 个槽按 4B5B 折一下(仅用于"确认它不是数据字节")。
+// ★ 规范图案 0000111101 折出来是 **0x0E**,不是 0x0F ——
+//   0x0F 只是前 8 个裸槽的巧合。别再拿 0x0F 当 SOF 正确的证据。
+static uint8_t foldSofByte(const uint8_t* slots, uint32_t n) {
+  if (n < kSofSlots) return 0xFF;
+  uint8_t hi4 = 0, lo4 = 0;
+  for (uint8_t k = 0; k < 4; ++k) {
+    if (slots[k]) hi4 |= (uint8_t)(1u << (7 - k));
+    if (slots[5 + k]) lo4 |= (uint8_t)(1u << (7 - k));
+  }
+  return (uint8_t)(hi4 | (lo4 >> 4));
 }
 
 // ---------- CRC-15 基本性质 ----------
@@ -97,21 +110,27 @@ static void test_crc15_selfconsistent(void) {
 
   uint8_t bytes[16];
   const uint8_t nb = foldSlots(slots, n, bytes, sizeof(bytes));
-  // 逻辑帧 = 1(SOF) + 2(IDEN/CMD) + 3(data) + 2(FCS) = 8 字节;
+  // 逻辑帧 = IDEN/CMD(2) + 数据(3) + FCS(2) = 7 字节(SOF 已被 foldSlots 跳过);
   // 帧尾补齐的槽可能多出半个字节
-  TEST_ASSERT_TRUE(nb >= 8);
+  TEST_ASSERT_TRUE(nb >= 7);
 
-  // bytes[0]=SOF, bytes[1]=IDENlo, bytes[2]=IDENhi|CMD, 之后是数据与 FCS
-  TEST_ASSERT_EQUAL_HEX8(0x0F, bytes[0]);
-  TEST_ASSERT_EQUAL_HEX8(0xC4, bytes[1]);
-  TEST_ASSERT_EQUAL_HEX8(0xC8, bytes[2]);   // 以编码器实际产出为准(见固定向量)
-  TEST_ASSERT_EQUAL_HEX8(0x8A, bytes[3]);
-  TEST_ASSERT_EQUAL_HEX8(0x22, bytes[4]);
-  TEST_ASSERT_EQUAL_HEX8(0x5A, bytes[5]);
+  // SOF 单独校验:它是 kSofSlots 个裸槽,不进字节流。
+  // ★ 按规范 0000111101 折 4B5B(丢第 5/10 位)得到的是 **0x0E**,不是 0x0F。
+  //   0x0F 只是"前 8 个裸槽"这个巧合,别再拿它当 SOF 的证据。
+  TEST_ASSERT_EQUAL_HEX8(0x0E, foldSofByte(slots, n));
+  TEST_ASSERT_EQUAL_HEX8(0xC4, bytes[0]);   // IDEN 0x8C4 的低字节
+  TEST_ASSERT_EQUAL_HEX8(0xC8, bytes[1]);   // IDENhi|CMD(以编码器实际产出为准)
+  TEST_ASSERT_EQUAL_HEX8(0x8A, bytes[2]);
+  TEST_ASSERT_EQUAL_HEX8(0x22, bytes[3]);
+  TEST_ASSERT_EQUAL_HEX8(0x5A, bytes[4]);
 
-  // 解析输入 = 从 IDENlo 到最后一个 FCS 字节(nb 可能含 1 个帧尾填充字节)
+  // 解析输入 = 从 IDENlo 到最后一个 FCS 字节。
+  // 长度**按逻辑帧算**(IDEN/CMD 2 + 数据 + FCS 2),不要用 nb 推 ——
+  // 帧尾补齐的槽会多出填充字节,用 nb 推会把填充当数据(nb-2 正好少一个)。
+  const uint16_t logical = (uint16_t)(2 + f.len + 2);
+  TEST_ASSERT_TRUE(nb >= logical);
   Frame out;
-  const bool ok = parseFrameBytes(&bytes[1], (uint16_t)(nb - 2), &out);
+  const bool ok = parseFrameBytes(&bytes[0], logical, &out);
   TEST_ASSERT_TRUE_MESSAGE(ok, "自洽性失败:编码器写的 FCS 自己解析不回来");
   TEST_ASSERT_TRUE(out.fcs_ok);
   TEST_ASSERT_EQUAL_HEX16(0x8C4, out.ident);
@@ -134,15 +153,16 @@ static void test_parse_frame_bytes_iden_cmd(void) {
 
   uint8_t bytes[32];
   const uint8_t nb = foldSlots(slots, n, bytes, sizeof(bytes));
-  TEST_ASSERT_TRUE(nb >= 12);
+  // IDEN(1) + CMD(1) + 数据(7) + FCS(2) = 11(SOF 已被 foldSlots 跳过)
+  TEST_ASSERT_TRUE(nb >= 11);
 
-  // bytes[0]=SOF, bytes[1]=IDENlo, bytes[2]=IDENhi|CMD, bytes[3..]=DATA/FCS
-  TEST_ASSERT_EQUAL_HEX8(0x0F, bytes[0]);
-  TEST_ASSERT_EQUAL_HEX8(0x24, bytes[1]);   // IDEN 0x824 的低字节
-  TEST_ASSERT_EQUAL_HEX8(0xC8, bytes[2]);   // 以编码器实际产出为准
+  // SOF 是 10 个裸槽,折 4B5B 得 0x0E(不是 0x0F);它不进字节流
+  TEST_ASSERT_EQUAL_HEX8(0x0E, foldSofByte(slots, n));
+  TEST_ASSERT_EQUAL_HEX8(0x24, bytes[0]);   // IDEN 0x824 的低字节
+  TEST_ASSERT_EQUAL_HEX8(0xC8, bytes[1]);   // IDENhi|CMD,以编码器实际产出为准
 
   Frame out;
-  const bool ok = parseFrameBytes(&bytes[1], (uint16_t)(nb - 2), &out);
+  const bool ok = parseFrameBytes(&bytes[0], (uint16_t)(nb - 1), &out);
   TEST_ASSERT_TRUE_MESSAGE(ok, "FCS 反推失败:CRC 覆盖范围或字节序不对");
   TEST_ASSERT_EQUAL_HEX16(0x824, out.ident);
   TEST_ASSERT_EQUAL_HEX8(0xC, out.cmd);
@@ -166,17 +186,18 @@ static void test_fcs_placement(void) {
   const uint32_t n = encodeFrame(f, slots, sizeof(slots));
   uint8_t bytes[32];
   const uint8_t nb = foldSlots(slots, n, bytes, sizeof(bytes));
-  TEST_ASSERT_TRUE(nb >= 12);
+  TEST_ASSERT_TRUE(nb >= 11);
 
-  // 期望的 CRC 覆盖范围:bytes[1..9] = IDENlo,IDENhi/CMD,7 字节数据
-  const uint16_t calc = crc15(&bytes[1], 9);
+  // 期望的 CRC 覆盖范围:bytes[0..8] = IDENlo,IDENhi/CMD,7 字节数据
+  // (SOF 已被 foldSlots 跳过,下标整体少 1)
+  const uint16_t calc = crc15(&bytes[0], 9);
 
-  // 末尾两字节(bytes[10], bytes[11])必须是 calc 的某种字节序
-  const uint16_t le = (uint16_t)((bytes[11] << 8) | bytes[10]);   // 低字节先发
-  const uint16_t be = (uint16_t)((bytes[10] << 8) | bytes[11]);   // 高字节先发
+  // 末尾两字节(bytes[9], bytes[10])必须是 calc 的某种字节序
+  const uint16_t le = (uint16_t)((bytes[10] << 8) | bytes[9]);    // 低字节先发
+  const uint16_t be = (uint16_t)((bytes[9] << 8) | bytes[10]);    // 高字节先发
   char msg[96];
-  snprintf(msg, sizeof(msg), "calc=0x%04X le=0x%04X be=0x%04X (bytes[10..11]=%02X %02X)",
-           calc, le, be, bytes[10], bytes[11]);
+  snprintf(msg, sizeof(msg), "calc=0x%04X le=0x%04X be=0x%04X (bytes[9..10]=%02X %02X)",
+           calc, le, be, bytes[9], bytes[10]);
   TEST_ASSERT_TRUE_MESSAGE(calc == le || calc == be, msg);
 }
 
@@ -196,21 +217,23 @@ static void test_known_bit_vector(void) {
 
   uint8_t bytes[32];
   const uint8_t nb = foldSlots(slots, n, bytes, sizeof(bytes));
-  TEST_ASSERT_TRUE(nb >= 12);
+  TEST_ASSERT_TRUE(nb >= 11);
 
-  // 1) SOF 必须是 0x0F
-  TEST_ASSERT_EQUAL_HEX8(0x0F, bytes[0]);
+  // 1) SOF 是 kSofSlots 个裸槽:折 4B5B 得 0x0E(不是 0x0F),
+  //    而且它**不进字节流** —— bytes[0] 已经是 IDENlo
+  TEST_ASSERT_EQUAL_HEX8(0x0E, foldSofByte(slots, n));
+  TEST_ASSERT_NOT_EQUAL_MESSAGE(kSofByte, bytes[0], "首字节不该再是 SOF 字节");
   // 2) IDEN 字段必须能还原(不管高 4 位落在哪个半字节,往返是对的)
-  TEST_ASSERT_EQUAL_HEX16(f.ident, idenFromBytes(bytes[1], bytes[2]));
-  TEST_ASSERT_EQUAL_HEX8(f.cmd, cmdFromByte2(bytes[2]));
+  TEST_ASSERT_EQUAL_HEX16(f.ident, idenFromBytes(bytes[0], bytes[1]));
+  TEST_ASSERT_EQUAL_HEX8(f.cmd, cmdFromByte2(bytes[1]));
   // 3) 数据区必须一字不差
-  for (uint8_t i = 0; i < 7; ++i) TEST_ASSERT_EQUAL_HEX8(d[i], bytes[3 + i]);
+  for (uint8_t i = 0; i < 7; ++i) TEST_ASSERT_EQUAL_HEX8(d[i], bytes[2 + i]);
   // 4) 帧尾两字节必须能被解析器当作 FCS 接受(顺序自适应)。
   //    注意长度只能取到 FCS 高字节为止:编码器在 EOD 后还补了 recessive 槽,
   //    折字节时会多出填充字节,若把它也传进去,解析器会把填充当 FCS
   //    (曾因传 nb-1 而不是 nb-2 导致"自己写的帧自己不认")。
   Frame out;
-  TEST_ASSERT_TRUE_MESSAGE(parseFrameBytes(&bytes[1], (uint16_t)(nb - 2), &out),
+  TEST_ASSERT_TRUE_MESSAGE(parseFrameBytes(&bytes[0], (uint16_t)(nb - 1), &out),
                            "编码器产出的帧不通过自己的 FCS 校验");
   TEST_ASSERT_TRUE(out.fcs_ok);
 }
@@ -246,12 +269,6 @@ static void test_recessive_run_bound(void) {
 
 // 帧解析器必须在 endFrame 后清空缓冲(曾因不清 mCount 导致第二帧永久失败)
 static void test_consecutive_frames_at_parser_level(void) {
-  // ★ SOF 不再是数据字节,这条暂时停用。
-  //   foldSlots() 现在跳过 12 槽(10 TS 图案 + 2 额外槽)的 SOF,
-  //   bytes[0] 变成 IDEN 低字节(0x24)而不是 0x0F。
-  //   下一轮把 SOF 切到 10 TS 时按新的帧起点约定重写。
-  TEST_IGNORE_MESSAGE("SOF 不再是数据字节:帧起点改由 BitDecoder 告知,见注释");
-
   Frame f1;
   f1.ident = 0x824; f1.cmd = 0xC; f1.len = 2;
   f1.data[0] = 0x11; f1.data[1] = 0x22;
@@ -260,17 +277,25 @@ static void test_consecutive_frames_at_parser_level(void) {
   const uint32_t n = encodeFrame(f1, slots, sizeof(slots));
   uint8_t bytes[32];
   const uint8_t nb = foldSlots(slots, n, bytes, sizeof(bytes));
-  // 逻辑帧长度 = SOF(1) + IDEN/CMD(2) + 数据(len) + FCS(2),由数据长度推导,
-  // 不手数。末尾可能多出的填充字节不能喂进来,否则会把 FCS 顶掉。
-  const uint8_t logical = (uint8_t)(5 + f1.len);
+  // 逻辑帧 = IDEN/CMD(2) + 数据(len) + FCS(2)。SOF 已被 foldSlots 跳过,
+  // 不计入;末尾多出的填充字节也不能喂进来,否则会把 FCS 顶掉。
+  const uint8_t logical = (uint8_t)(4 + f1.len);
   TEST_ASSERT_TRUE(nb >= logical);
-  TEST_ASSERT_EQUAL_HEX8(0x0F, bytes[0]);
+  // ★ SOF 不再是数据字节:bytes[0] 是 IDEN 低字节。
+  //   单独确认 SOF 那 10 槽折 4B5B 是 0x0E(规范图案的折叠值,不是 0x0F)。
+  TEST_ASSERT_EQUAL_HEX8(0x0E, foldSofByte(slots, n));
+  TEST_ASSERT_EQUAL_HEX8(idenByte1(f1.ident), bytes[0]);
+  TEST_ASSERT_NOT_EQUAL_MESSAGE(kSofByte, bytes[0], "首字节不该再是 SOF 字节");
 
   FrameParser fp;
   Frame got;
 
   // 连喂两遍同样的字节流,两遍都必须解出同一帧
   for (int round = 0; round < 2; ++round) {
+    // ★ 帧起点必须显式声明:解析器**不再**靠"首字节 == 0x0F"猜。
+    //   真实链路上这一步由 BitDecoder 匹配到 SOF 后经 onFrameStart() 触发
+    //   (见 test_van_phywire 的 test_sof_then_bytes_order)。
+    fp.beginFrame(0);
     for (uint8_t i = 0; i < logical; ++i) {
       fp.pushByte(bytes[i], 0, &got);
     }
@@ -286,9 +311,6 @@ static void test_consecutive_frames_at_parser_level(void) {
 
 // 坏数据不得被当成有效帧(FCS 必须挡住)
 static void test_corrupted_frame_rejected(void) {
-  // ★ 同 test_consecutive_frames_at_parser_level:SOF 不再是数据字节。
-  TEST_IGNORE_MESSAGE("SOF 不再是数据字节:见 test_consecutive_frames_at_parser_level 的注释");
-
   Frame f;
   f.ident = 0x824;
   f.cmd = 0xC;
@@ -299,16 +321,22 @@ static void test_corrupted_frame_rejected(void) {
   const uint32_t n = encodeFrame(f, slots, sizeof(slots));
   uint8_t bytes[32];
   const uint8_t nb = foldSlots(slots, n, bytes, sizeof(bytes));
-  TEST_ASSERT_TRUE(nb >= 8);
-  TEST_ASSERT_EQUAL_HEX8(0x0F, bytes[0]);
+  // IDEN(1) + CMD(1) + 数据(3) + FCS(2) = 7
+  TEST_ASSERT_TRUE(nb >= 7);
+  TEST_ASSERT_EQUAL_HEX8(0x0E, foldSofByte(slots, n));
+  TEST_ASSERT_EQUAL_HEX8(idenByte1(f.ident), bytes[0]);
+  TEST_ASSERT_NOT_EQUAL_MESSAGE(kSofByte, bytes[0], "首字节不该再是 SOF 字节");
 
-  // 翻转一个数据字节(改动数据但不改 FCS)
+  // 翻转一个数据字节(改动数据但不改 FCS)。
+  // 下标 2 = 数据区第 1 字节(bytes[0]=IDENlo, bytes[1]=IDENhi|CMD)
+  const uint16_t logical = (uint16_t)(2 + f.len + 2);
+  TEST_ASSERT_TRUE(nb >= logical);
   uint8_t bad[32];
   memcpy(bad, bytes, nb);
-  bad[3] ^= 0x01;
+  bad[2] ^= 0x01;
 
   Frame out;
-  const bool ok = parseFrameBytes(&bad[1], (uint16_t)(nb - 2), &out);
+  const bool ok = parseFrameBytes(&bad[0], logical, &out);
   // 要么 FCS 反推失败,要么反推出一个与原数据不同的"长度/内容"
   if (ok) {
     const bool same = (out.len == 3) && (out.data[0] == f.data[0]) &&
@@ -351,7 +379,62 @@ static void test_bit_decoder_idle_produces_no_bytes(void) {
   TEST_ASSERT_FALSE(bd3.overflowed());
 }
 
+// ============================================================
+// SOF 的头 16 槽 —— 显式比特串断言
+//
+// 为什么必须"写死比特串"而不是"折字节比 0x0F":
+//   SOF 是**固定的 10 TS 同步图案**,不走 4B5B。
+//   折 4B5B 时第 5/10 槽是被丢掉的编码位,折回 0x0F 只说明
+//   "数据位还是那个字节",跟这 10 个槽是不是规范图案**无关** ——
+//   这个混淆让我前面误判了两轮:putByte(0x0F) 产出 0000111111,
+//   折回来同样是 0x0F,但第 9 槽是 1,matcher 永远对不上。
+//
+// 固定向量:ident = 0x824 → idenByte1 = 0x24
+//   SOF 裸槽      : 0000111101
+//   putByte(0x24) : 0010 1 0100 1 = 0010101001
+//   头 16 槽      : 0000111101 001010
+//                   ^^^^规范 SOF^^^^ ^^IDEN 开头
+// ============================================================
+static void test_sof_first_16_slots(void) {
+  TEST_ASSERT_EQUAL_HEX16(0x003Du, kSofPattern);   // 0000111101
+  TEST_ASSERT_EQUAL_UINT8(10u, kSofSlots);
+
+  Frame f;
+  f.ident = 0x824;
+  f.cmd = 0xC;
+  f.len = 1;
+  f.data[0] = 0x55;
+
+  uint8_t slots[512];
+  const uint32_t n = encodeFrame(f, slots, sizeof(slots));
+  TEST_ASSERT_TRUE(n >= 16);
+
+  // 拼成字符串逐字符比 —— 报告里能直接看出哪一位不对
+  char got[32];
+  for (int i = 0; i < 16; ++i) got[i] = slots[i] ? '1' : '0';
+  got[16] = '\0';
+  const char* want = "0000111101001010";
+  char msg[96];
+  snprintf(msg, sizeof(msg), "头 16 槽 = %s,期望 %s", got, want);
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(want, got, msg);
+
+  // SOF 那 10 槽单独再断言(第 9 槽必须是 0 —— 这正是与 putByte 的关键差别)
+  char sofGot[16];
+  for (int i = 0; i < 10; ++i) sofGot[i] = slots[i] ? '1' : '0';
+  sofGot[10] = '\0';
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("0000111101", sofGot, "SOF 10 槽必须是 0000111101");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, slots[8], "SOF 第 9 槽(0-based 8)必须是 0");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, slots[9], "SOF 第 10 槽(0-based 9)必须是 1");
+
+  // 紧跟的 IDENlo 字节:按 4B5B 折回来应是 0x24
+  uint8_t b = 0;
+  for (uint8_t k = 0; k < 4; ++k) if (slots[10 + k]) b |= (uint8_t)(1u << (7 - k));
+  for (uint8_t k = 0; k < 4; ++k) if (slots[15 + k]) b |= (uint8_t)(1u << (3 - k));
+  TEST_ASSERT_EQUAL_HEX8(idenByte1(f.ident), b);
+}
+
 void register_van_wire_tests(void) {
+  RUN_TEST(test_sof_first_16_slots);
   RUN_TEST(test_crc15_deterministic);
   RUN_TEST(test_iden_byte_layout);
   RUN_TEST(test_crc15_selfconsistent);

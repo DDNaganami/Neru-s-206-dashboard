@@ -13,6 +13,7 @@ bool VanPhyWire::onEdge(uint32_t t_us, bool level) {
 
   const uint64_t t_ns = (uint64_t)t_us * 1000ull;
   relay_.now_ns = t_ns;        // 回调时用它给字节打时间戳
+  relay_.started = false;      // 本沿是否收到 onFrameStart(诊断用)
   last_edge_ns_ = t_ns;        // finish() 收尾时用它当帧结束时间
 
   const van::BitDecoder::Ev ev = dec_.pushEdge(t_ns, level);
@@ -27,9 +28,10 @@ bool VanPhyWire::onEdge(uint32_t t_us, bool level) {
   // 症状就是 `finish 前: frames=1 pending=0 bytes=0`。
   //
   // 现在分工很清楚:
-  //   onEdge()  只负责喂边沿(不再关帧)
-  //   finish()  唯一负责收尾(问解析器有没有待收帧,有就 endFrame)
-  frame_started_ = (dec_.snap().phase == van::FramePhase::InFrame);
+  //   onEdge()  只喂边沿(不关帧、不武装解析器)
+  //   relay     在 SOF 命中时 onFrameStart() → beginFrame();字节仅在已武装时收
+  //   finish()  唯一负责收尾
+  frame_started_ = relay_.started;
   return false;
 }
 

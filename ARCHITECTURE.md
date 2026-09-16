@@ -55,10 +55,19 @@
   206 实车 IDEN、ACK 位对帧尾判据的影响
 - van_phy_wire.h/.cpp：线路层接到 VanPhy 上的边缘解码器（**整链已回归**）。
   硬件侧只需在 RO 脚电平变化时调 `onEdge(t_us, level)`,不碰任何寄存器。
-  收尾判据只有两个可靠的:① 缓冲里凑出一个 **FCS 校验通过**的完整帧
-  ② 总线进入空闲(超时)。**不要**用"8 个连续 recessive"当帧尾 ——
-  帧内合法数据本身就会带出 8 个连续 recessive(实测 8A 22 5A 这帧就有),
-  照它收尾会在帧中途把帧截断。
+  **职责三分（改这里之前先看完这条）**：
+  ① 帧起点：`BitDecoder` 匹配到 SOF 的 10 个裸槽后，经
+     `ByteSink::onFrameStart()` 回调 → relay 调 `FrameParser::beginFrame()`。
+     必须是回调而不是"边沿返回后再判断"：SOF 命中与后续数据字节可能落在
+     **同一次 `pushEdge`** 里，返回时字节早吐出去了。
+  ② 帧尾：**只有 `finish()` 能关帧**。`onEdge()` 一律不准调 `endFrame()` ——
+     边沿路径抢收会在缓冲已被消费成空之后把帧收掉，字节再也救不回来
+     （实测症状 `finish 前: frames=1 pending=0 bytes=0`）。
+     `finish()` 以 `FrameParser::inFrame()` 为准，不看解码器相位。
+  ③ SOF 是**固定 10 TS 同步图案 `0000111101`**，不是 4B5B 数据字节：
+     编码器写裸槽（`putSof()`），解码器按同一常数滑窗匹配。
+     别用 `putByte(0x0F)` 生成它（会得到 `0000111111`，差第 9 槽），
+     也别拿"折 10 槽 == 0x0F"当它正确的证据 —— 按规范折出来是 **0x0E**。
 - van_phy.h 的 VanSink/VanSourceSink:物理层只依赖 VanSink 接口,
   数据源用 VanSourceSink 转一层(main.cpp 已接)。
 - sim_source：无硬件时的默认假数据源

@@ -118,6 +118,9 @@ void BitDecoder::reset() {
   mAckDominant = false;
   mNeedResync = false;
   mArmed = false;
+  mPhase = FramePhase::Idle;
+  mSofBits = 0;
+  mSofAcc = 0;
   mEofLatched = false;
   mHead = 0;
   mCount = 0;
@@ -132,6 +135,9 @@ void BitDecoder::resync() {
   mDomRun = 0;
   mSinceEod = 0xFFu;
   mArmed = false;      // 等下一个 SOF 才重新开始解字节
+  mPhase = FramePhase::Idle;
+  mSofBits = 0;
+  mSofAcc = 0;
   mOverflow = false;
 }
 
@@ -186,24 +192,16 @@ void BitDecoder::processSlot(bool level) {
     mMask = (uint8_t)(mMask >> 1);
   } else if (mBitCount == 9) {
     // 本字节的第 2 个编码位:字节完成。
-    // 未武装(总线空闲/等 SOF)时只认 SOF 字节,其余丢弃 —— 空闲段会解出
-    // 成百上千个无意义字节,若都留下会冲爆队列。
-    const bool is_sof = (mByte == kSofByte);
-    const bool accept = mArmed || is_sof;
-    if (accept) {
-      if (is_sof && !mArmed) {
-        mArmed = true;
-        mOverflow = false;         // 新帧开始,清掉上一段空闲的溢出标记
-      }
-      if (mSink) {
-        mSink->onByte(mByte);      // 直接回调:一个区间内的字节一个不丢
-      } else if (mCount < kQueueMax) {
-        const uint8_t tail = (uint8_t)((mHead + mCount) % kQueueMax);
-        mQueue[tail] = mByte;
-        ++mCount;
-      } else {
-        mOverflow = true;
-      }
+    // ★ SOF 不再从这里走(它由 sofFeed 在槽层面匹配,且不进字节流)。
+    //   所以能到这里的都是真正的数据字节。
+    if (mSink) {
+      mSink->onByte(mByte);      // 直接回调:一个区间内的字节一个不丢
+    } else if (mCount < kQueueMax) {
+      const uint8_t tail = (uint8_t)((mHead + mCount) % kQueueMax);
+      mQueue[tail] = mByte;
+      ++mCount;
+    } else {
+      mOverflow = true;
     }
     mByte = 0;
     mBitCount = 0;
@@ -211,6 +209,40 @@ void BitDecoder::processSlot(bool level) {
     return;                                        // 不 ++,下一槽即新字节的 bit0
   }
   ++mBitCount;
+}
+
+// ---------------- SOF:固定的 10 个裸槽 ----------------
+// 图案 = kSofPattern(0000111101),MSB 先到。**不走 4B5B**,没有编码位。
+// 命中后:
+//   1) **先** onFrameStart() —— 必须在任何 onByte 之前,因为 SOF 命中与
+//      后续数据字节可能落在同一个边沿区间里(等边沿返回就晚了)
+//   2) 清相位(那 10 槽不算进任何字节)
+//   3) mArmed = true + InFrame
+//   4) SOF 本身不进字节队列
+bool BitDecoder::sofFeed(bool level) {
+  mSofAcc = (uint16_t)(((mSofAcc << 1) | (level ? 1u : 0u)) & 0x3FFu);
+  ++mSofBits;
+
+  if (mSofBits < kSofSlots) return false;
+  if ((mSofAcc & 0x3FFu) != kSofPattern) {
+    // 不是 SOF:保留低 kSofSlots-1 位继续滑窗(丢掉最老的一位),
+    // 不整段清零 —— 真 SOF 与错误起点重叠时会被漏掉。
+    mSofBits = (uint8_t)(kSofSlots - 1u);
+    return false;
+  }
+
+  // ---- 命中 ----
+  if (mSink) mSink->onFrameStart();   // ★ 先通知,此刻本沿还没有数据字节
+
+  mSofBits = 0;
+  mSofAcc = 0;
+  mByte = 0;
+  mBitCount = 0;
+  mMask = 0x80u;
+  mArmed = true;
+  mPhase = FramePhase::InFrame;
+  mOverflow = false;
+  return true;
 }
 
 BitDecoder::Ev BitDecoder::pushEdge(uint64_t ns, bool level) {
@@ -246,7 +278,11 @@ BitDecoder::Ev BitDecoder::pushEdge(uint64_t ns, bool level) {
     mCurNs = ns;
     mEofLatched = true;         // 空隙内不重复报
     (void)was_eof;
-    return Ev::None;            // ★ 不报 EndOfFrame:关帧不是这条路径的事
+    // ★ 不 return:这一段空闲的槽不用展开,但**这一沿的起始槽必须处理** ——
+    //   长空闲之后的第一条边沿往往正是 SOF 的起点。早先直接 return,
+    //   等于把 SOF 的第一个槽吃掉,matcher 永远对不上图案
+    //   (实测:onFrameStart=0 / 整链 frames=0)。
+    //   resync() 已经把相位清零,所以下面按 slots 正常推进即可。
   }
 
   // 连续 recessive 的计数只用于 ACK 窗口识别与总线空闲判定;
@@ -274,7 +310,11 @@ BitDecoder::Ev BitDecoder::pushEdge(uint64_t ns, bool level) {
       }
       mRecessiveRun = 0;
     }
-    processSlot(prev_level);
+    // 帧内就解数据字节;不在帧内就走 SOF 槽级匹配。
+    // sofFeed 命中时会先 onFrameStart() 再置 InFrame ——
+    // 本沿剩下的槽因此会在"已武装"状态下被解成数据字节,顺序天然正确。
+    if (mPhase == FramePhase::InFrame) processSlot(prev_level);
+    else                               sofFeed(prev_level);
   }
 
   mLevel = level;
@@ -290,13 +330,19 @@ void FrameParser::reset() {
   mFrame = Frame();
 }
 
+void FrameParser::beginFrame(uint64_t ns) {
+  mInFrame = true;
+  mCount = 0;
+  mStartNs = ns;
+  mFrame = Frame();
+}
+
 bool FrameParser::pushByte(uint8_t b, uint64_t ns, Frame* out) {
   (void)out;
   if (!mInFrame) {
-    if (b != kSofByte) return false;    // 没对齐,继续等 SOF
-    mInFrame = true;
-    mCount = 0;
-    mStartNs = ns;
+    // 没在帧内就丢弃:帧起点必须由 beginFrame() 明确告知,这里不猜。
+    (void)b;
+    (void)ns;
     return false;
   }
   if (mCount < sizeof(mBuf)) mBuf[mCount] = b;
@@ -390,6 +436,19 @@ struct SlotWriter {
       putSlot(true, false);   // E-Manchester 编码位,恒为 recessive
     }
   }
+
+  // ★ 写 SOF 的 10 个**裸**槽(不走 4B5B,所以没有编码位)。
+  //   MSB 先写:kSofPattern 的 bit(kSofSlots-1) 是线上第一个槽。
+  //   规范图案 0000111101 拆开是:4 个 dominant(0000)、4 个 recessive(1111)、
+  //   再 1 个 recessive、最后 1 个 dominant —— 最后那个 dominant 是
+  //   "帧真正开始"的标记,也是 matcher 用来确认对齐的那一位。
+  //   ★ 不要退回 putByte(kSofByte):那会把 0x0F 当数据位插编码位,
+  //     第 9 槽变成 1(0000111111),matcher 永远对不上。
+  void putSof() {
+    for (int8_t b = (int8_t)kSofSlots - 1; b >= 0; --b) {
+      putSlot(((kSofPattern >> b) & 1u) != 0, false);
+    }
+  }
 };
 
 }  // namespace
@@ -400,8 +459,10 @@ uint32_t encodeFrame(const Frame& f, uint8_t* slots, uint32_t slots_cap) {
 
   SlotWriter w(slots, slots_cap);
 
-  // 帧结构:SOF → IDENlo → (IDENhi|CMD) → DATA → FCS → EOD 违约 → ACK → EOF
-  w.putByte(kSofByte);
+  // 帧结构:SOF(10 个裸槽) → IDENlo → (IDENhi|CMD) → DATA → FCS → EOD 违约 → ACK → EOF
+  // ★ SOF 不是 4B5B 字节:走 putSof() 写规范图案 0000111101。
+  //   (曾经用 putByte(kSofByte),产出 0000111111,与规范差第 9 槽。)
+  w.putSof();
   w.putByte(idenByte1(f.ident));
   w.putByte(idenByte2(f.ident, f.cmd));
 

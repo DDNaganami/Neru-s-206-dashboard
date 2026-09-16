@@ -30,7 +30,9 @@ class VanPhyWire : public VanPhy {
 
   // 喂一个电平变化。t_us = 该边沿的时间戳(µs,单调递增);
   // level = 变化后的电平(true = recessive/高)。
-  // ★ 本函数**不关帧**(不再在 EndOfFrame 时调 endFrame)—— 收尾只发生在 finish()。
+  // ★ 本函数**不关帧**,也**不负责武装解析器**:
+  //   前者只在 finish();后者由 relay 的 onFrameStart() 在 SOF 命中那一刻完成
+  //   (SOF 与后续字节可能同在一次 pushEdge 里,边沿返回后再判断就晚了)。
   bool onEdge(uint32_t t_us, bool level);
 
   // ★ 唯一负责关帧的入口:问解析器"手上有没有待收帧",有就 endFrame() 并报包。
@@ -54,15 +56,25 @@ class VanPhyWire : public VanPhy {
   void resetStats() { stats_ = Stats(); }
 
  private:
-  // 把 BitDecoder 回调的字节直接转交给 FrameParser。
+  // 把 BitDecoder 的回调转交给 FrameParser。
   // 时间戳用"当前边沿"近似(帧内相邻字节的时间差远小于 rx_ms 精度)。
+  //
+  // ★ onFrameStart() 是这套接线的关键:SOF 命中与后续数据字节可能落在
+  //   同一次 pushEdge 里,所以"武装解析器"必须发生在**字节之前**,
+  //   而不是等边沿返回后由 onEdge 判断(那样必然丢一头)。
   class ByteRelay : public van::ByteSink {
    public:
+    void onFrameStart() override {
+      if (fp) fp->beginFrame(now_ns);
+      started = true;
+    }
     void onByte(uint8_t b) override {
-      if (fp) fp->pushByte(b, now_ns, nullptr);
+      // 只在已武装时才收:SOF 之前的总线噪声不进解析器。
+      if (fp && fp->inFrame()) fp->pushByte(b, now_ns, nullptr);
     }
     van::FrameParser* fp = nullptr;
     uint64_t now_ns = 0;
+    bool started = false;          // 本帧是否已收到 onFrameStart(诊断用)
   };
 
   van::BitDecoder dec_;
