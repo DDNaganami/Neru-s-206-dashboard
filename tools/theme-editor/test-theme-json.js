@@ -118,6 +118,38 @@ section("两个编辑器共用同一份配色(localStorage)");
      "图片编辑器里用了颜色选择器");
   ok(/exportThemeJson/.test(imgSrc2), "图片编辑器里有导出函数");
 
+  // 存的形态:记录里必须**连基线一起存** —— 只存 theme 会让"改了固件默认值
+  // 但用户刷新后看不到"这种事发生(用户实测撞到:水温弧 145→330 改成 0→180)。
+  for (const [name, src] of [["主题编辑器", idxSrc], ["图片编辑器", imgSrc2]]) {
+    ok(/v:\s*2\s*,\s*base:/.test(src), name + " 的记录要带 v:2 与 base(基线)");
+    ok(/theme:\s*(T|gTheme)\b/.test(src), name + " 的记录要带 theme");
+    ok(/ThemeJson\.mergeDefaults/.test(src), name + " 要用三方合并读回记录");
+    ok(/THEME_KEY_V1/.test(src), name + " 要能迁移旧记录(备份键)");
+  }
+
+  // ★ 把用户的 bug 完整演一遍:用**真实的 ARC_FALLBACK**(从页面里解析出来的)
+  //   当作"当前默认值",拿旧默认值(水温弧 145→330)当基线,
+  //   用户只改过转速弧颜色 → 重新打开页面时水温弧必须跟着新默认值走。
+  {
+    const fbBlock2 = /const ARC_FALLBACK\s*=\s*\{([\s\S]*?)\n\};/.exec(imgSrc2);
+    // 这段是 JS 对象字面量(键没引号、颜色是 0x…),不是 JSON —— 用 Function 求值。
+    // 先去掉行注释,免得注释里的内容影响解析。
+    const nowDefaults = new Function(
+      "return {" + fbBlock2[1].replace(/\/\/[^\n]*/g, "") + "};")();
+    const oldDefaults = JSON.parse(JSON.stringify(nowDefaults));
+    oldDefaults.screens[0].arcs[1].start_deg = 145;   // 改动前的水温弧
+    oldDefaults.screens[0].arcs[1].end_deg = 330;
+    const usersTheme = JSON.parse(JSON.stringify(oldDefaults));
+    usersTheme.screens[0].arcs[0].value_color = 0x00FF00;   // 用户只改了这一个
+
+    const rec = { v: 2, base: oldDefaults, theme: usersTheme };
+    const reloaded = TJ.mergeDefaults(rec.base, rec.theme, nowDefaults);
+    eq(reloaded.screens[0].arcs[1].start_deg, nowDefaults.screens[0].arcs[1].start_deg,
+       "水温弧起点跟着新默认值（用户没碰过它）");
+    eq(reloaded.screens[0].arcs[1].end_deg, 180, "水温弧终点 = 180（上方开口）");
+    eq(reloaded.screens[0].arcs[0].value_color, 0x00FF00, "用户改过的颜色没丢");
+  }
+
   // 存的形态:B 页写的是**裸主题对象**,A 页用 themeObject 读(带 theme 外壳也认)。
   // 走一遍真实的往返,确认字段不丢。
   const t0 = TJ.themeObject(TJ.parseThemeJson(
@@ -128,6 +160,62 @@ section("两个编辑器共用同一份配色(localStorage)");
   eq(back.screens.length, t0.screens.length, "往返后屏数");
   eq(back.screens[0].arcs[1].value_color, t0.screens[0].arcs[1].value_color, "往返后水温弧点亮色");
   eq(back.screens[1].arcs[0].radius, t0.screens[1].arcs[0].radius, "往返后车速弧半径");
+}
+
+// ------------------------------------------------------------
+// ★ 三方合并:让"本机记住的配色"不再挡住新的默认值
+//
+// 这是用户实际撞到的 bug:"水温弧我刷新后没发现改变啊" ——
+// 编辑器把整份配色记在本机,固件默认值改了(水温弧 145→330 改成 0→180),
+// 记录里的旧值把它盖住了。这不是固件的问题,是"存了整份"的问题。
+// 现在存记录时连**基线**一起存,读回来逐字段三方比对。
+section("三方合并 / 差异:改了默认值之后,用户没碰过的字段要跟着更新");
+{
+  // D1 = 旧默认值(水温弧 145→330), D2 = 新默认值(0→180)
+  const D1 = { bg_color: 0x141414, screens: [
+    { arcs: [ { kind: 1, value_color: 0xFF5C5C }, { kind: 2, start_deg: 145, end_deg: 330 } ] },
+    { arcs: [ { kind: 0, value_color: 0x39C5FF } ] }
+  ] };
+  const D2 = JSON.parse(JSON.stringify(D1));
+  D2.screens[0].arcs[1].start_deg = 0;
+  D2.screens[0].arcs[1].end_deg = 180;
+
+  // 用户改过一个颜色(转速弧),其它都是当时的默认值
+  const OURS = JSON.parse(JSON.stringify(D1));
+  OURS.screens[0].arcs[0].value_color = 0x00FF00;
+
+  // 记录 = {base: D1, theme: OURS};读到新默认值 D2 时:
+  const merged = TJ.mergeDefaults(D1, OURS, D2);
+  eq(merged.screens[0].arcs[1].start_deg, 0, "用户没碰过的水温弧起点 → 跟新默认值");
+  eq(merged.screens[0].arcs[1].end_deg, 180, "用户没碰过的水温弧终点 → 跟新默认值");
+  eq(merged.screens[0].arcs[0].value_color, 0x00FF00, "用户改过的颜色 → 保留");
+  eq(merged.bg_color, D2.bg_color, "没碰过的其他字段 → 默认值");
+
+  // 没有基线时保守:一律保留用户的值(宁可留着旧的,也不能悄悄改用户的)
+  eq(TJ.mergeDefaults(undefined, OURS, D2).screens[0].arcs[1].start_deg, 145,
+     "没有基线时保留用户的值");
+
+  // 差异只记"改过的叶子",不是整份
+  const patch = TJ.diffDeep(D1, OURS);
+  eq(Object.keys(patch).length, 1, "差异只有一处顶层键(screens)");
+  eq(Object.keys(patch.screens).length, 1, "差异只涉及第 0 屏");
+  eq(JSON.stringify(patch.screens[0]),
+     JSON.stringify({ arcs: { 0: { value_color: 0x00FF00 } } }),
+     "差异精确到叶子:只记下序号 0 那张弧的颜色");
+
+  // 数组的差异必须是**数字键对象**而不是稀疏数组 —— 稀疏数组经 JSON 会变成
+  // null,读回来会把默认值清掉(这就是 diffDeep 不用 hole 的原因)
+  const round = JSON.parse(JSON.stringify(patch));
+  eq(round.screens[0].arcs[0].value_color, 0x00FF00, "差异经 JSON 往返不丢");
+  eq(round.screens[0].arcs[1], undefined, "没改的下标不出现在差异里(不写 null)");
+  const applied = TJ.applyPatch(D2, round);
+  eq(applied.screens[0].arcs[1].end_deg, 180, "把差异贴回新默认值 → 仍是新的");
+  eq(applied.screens[0].arcs[0].value_color, 0x00FF00, "把差异贴回新默认值 → 用户的颜色还在");
+
+  // 完全相同 → 没有差异(存的就是空记录,不会把默认值钉死)
+  eq(TJ.diffDeep(D1, D1), undefined, "没有改动时没有差异");
+  eq(TJ.deepEqual(TJ.applyPatch(D2, TJ.diffDeep(D1, OURS) || {}), merged), true,
+     "applyPatch(base, diff) 与 mergeDefaults 结果一致");
 }
 
 // ------------------------------------------------------------

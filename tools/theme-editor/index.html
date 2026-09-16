@@ -746,33 +746,57 @@ function updateStageInfo() {
 //   对着表情图调色的）。为了让"两处都能改"不等于"两个事实来源"，
 //   两页共用同一个 localStorage 键：谁改都写这里，另一页打开/刷新就读到它。
 //   顺带也解决了"改了半天、刷新一下全没了"。
+//
+// ★★ 记录里**连基线一起存**：{v:2, base:<存那一刻的固件默认值>, theme:<用户的>}。
+//   只存 theme 会踩一个坑(用户实测撞到):固件默认值改了(水温弧 145→330 改成
+//   0→180),记录里的旧值把它盖住 —— 刷新后"什么都没变",还以为是固件的问题。
+//   有了基线就能三方比对:用户没碰过的字段跟着新默认值走,碰过的保留。
 const THEME_KEY = "206dash.theme";
+const THEME_KEY_V1 = "206dash.theme.v1";   // 旧记录(整份主题、没有基线)的备份位
 
 function saveThemeToLocal() {
-  try { localStorage.setItem(THEME_KEY, JSON.stringify(T)); } catch { /* 隐私模式忽略 */ }
+  try {
+    localStorage.setItem(THEME_KEY, JSON.stringify({
+      v: 2, base: defaultTheme(), theme: T
+    }));
+  } catch { /* 隐私模式忽略 */ }
 }
 
 // 读回来时用与导入文件**同一条合并路径**：缺字段继承默认值
+function mergeIntoTheme(t, base) {
+  // base 有值时做三方合并(用户没改过的字段跟当前默认值),否则按老规矩"用户优先"
+  T = base ? ThemeJson.mergeDefaults(base, t, defaultTheme()) : Object.assign(defaultTheme(), t);
+  if (!base) T.face = Object.assign(defaultTheme().face, t.face || {});
+  if (!base) T.readout = Object.assign(defaultTheme().readout, t.readout || {});
+  if (!base && Array.isArray(t.screens)) {
+    for (let i = 0; i < 2; i++) {
+      if (!t.screens[i]) continue;
+      T.screens[i] = Object.assign(defaultTheme().screens[i], t.screens[i]);
+      if (Array.isArray(t.screens[i].arcs)) {
+        T.screens[i].arcs = defaultTheme().screens[i].arcs.map(
+          (da, k) => Object.assign(da, t.screens[i].arcs[k] || {}));
+      }
+    }
+  }
+}
+
+// 返回 true = 载入了本机配色;返回字符串 "legacy" = 有旧记录但无法判断哪些是
+// 用户改的(已备份并忽略,让新默认值能生效)
 function loadThemeFromLocal() {
   let text = null;
   try { text = localStorage.getItem(THEME_KEY); } catch { return false; }
   if (!text) return false;
   try {
-    const t = ThemeJson.themeObject(ThemeJson.parseThemeJson(text));
-    T = Object.assign(defaultTheme(), t);
-    T.face = Object.assign(defaultTheme().face, t.face || {});
-    T.readout = Object.assign(defaultTheme().readout, t.readout || {});
-    if (Array.isArray(t.screens)) {
-      for (let i = 0; i < 2; i++) {
-        if (!t.screens[i]) continue;
-        T.screens[i] = Object.assign(defaultTheme().screens[i], t.screens[i]);
-        if (Array.isArray(t.screens[i].arcs)) {
-          T.screens[i].arcs = defaultTheme().screens[i].arcs.map(
-            (da, k) => Object.assign(da, t.screens[i].arcs[k] || {}));
-        }
-      }
+    const rec = ThemeJson.parseThemeJson(text);
+    if (rec && rec.v === 2 && rec.theme) {
+      mergeIntoTheme(rec.theme, rec.base || null);
+      return true;
     }
-    return true;
+    // 旧记录(整份主题、没有基线):留着它就会挡住新的默认值。
+    // 备份一份再忽略 —— 用户若要旧配色,备份还在;否则默认值立刻生效。
+    try { localStorage.setItem(THEME_KEY_V1, text); } catch { /* ignore */ }
+    try { localStorage.removeItem(THEME_KEY); } catch { /* ignore */ }
+    return "legacy";
   } catch { return false; }
 }
 
@@ -960,9 +984,13 @@ render();
 say("就绪。左栏调参、右侧实时预览。\n" +
     "右上角「阶段预览」可切到转速/车速/水温各档,看两屏各自的表情与读数。\n" +
     "满意后点右上角「导出主题文件」。\n" +
-    (hadSaved
+    (hadSaved === true
       ? "（已载入本机记住的配色 —— 这一份与「图片导入」页共用，两边改都算数。）"
-      : "（弧的配色在「图片导入」页也能直接改，两页共用同一份。）"));
+      : hadSaved === "legacy"
+        ? "（本机有一份旧格式的配色记录，它会把新的默认值挡住，已备份到 " +
+          THEME_KEY_V1 + " 并忽略 —— 现在的预览是当前默认值。\n" +
+          " 如果你之前改过配色，重新调一次即可；从现在起会连基线一起记，不会再挡住默认值。）"
+        : "（弧的配色在「图片导入」页也能直接改，两页共用同一份。）"));
 </script>
 </body>
 </html>

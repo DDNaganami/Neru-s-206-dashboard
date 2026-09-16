@@ -561,6 +561,7 @@ function setSize(item, w) {
 //   改完再导出，那就还是完整的。
 // ------------------------------------------------------------
 const THEME_KEY = "206dash.theme";      // 与主题编辑器共用同一个键
+const THEME_KEY_V1 = "206dash.theme.v1"; // 旧记录(整份主题、没有基线)的备份位
 
 function cloneTheme(o) { return JSON.parse(JSON.stringify(o)); }
 function hexOf(n) { return "#" + (n & 0xFFFFFF).toString(16).padStart(6, "0").toUpperCase(); }
@@ -591,6 +592,10 @@ const SCREEN_LABEL = ["左屏(转速表)", "右屏(速度表)"];
 // 当前主题对象(整份保留:读进来是什么样就什么样，只改本页管的字段) + 来源说明
 let gTheme = cloneTheme(ARC_FALLBACK);
 let gThemeSource = "固件默认主题（没改过）";
+// 记录里的**基线**(= 存那一刻的固件默认值)。
+// 它让"用户没碰过的字段"在固件默认值改动后跟着更新 —— 否则旧记录会把新默认值挡住，
+// 用户刷新后看到"什么都没变"（实测踩过:水温弧从 145→330 改成 0→180 时）。
+let gThemeBase = null;
 
 // 底色跟着主题走:预览按它合成透明度
 function themeBgHex() {
@@ -598,8 +603,16 @@ function themeBgHex() {
 }
 
 // 写回本机(两页共用的那一份)。存储不可用(隐私模式)时静默跳过，不影响使用。
+//
+// ★ 记录格式 {v:2, base, theme}:base 是**存的那一刻的固件默认值**。
+//   本页只知道"自己管的那部分"默认值(ARC_FALLBACK)，base 里其它字段原样带着走 ——
+//   那是主题编辑器存进去的，不能丢。
 function saveTheme() {
-  try { localStorage.setItem(THEME_KEY, JSON.stringify(gTheme)); } catch { /* ignore */ }
+  try {
+    localStorage.setItem(THEME_KEY, JSON.stringify({
+      v: 2, base: gThemeBase, theme: gTheme
+    }));
+  } catch { /* ignore */ }
 }
 
 function applyThemeObject(t) {
@@ -623,6 +636,9 @@ function loadThemeText(text, sourceName) {
   try {
     const t = ThemeJson.themeObject(ThemeJson.parseThemeJson(text));
     if (!applyThemeObject(t)) throw new Error("主题对象是空的");
+    // 从文件读进来的算"用户明确给的整份":基线也对齐到它，
+    // 免得读进来的值在下次刷新时被默认值"改回去"
+    gThemeBase = ThemeJson.mergeDefaults(gThemeBase || {}, gThemeBase || {}, t);
     gThemeSource = "theme.json：" + (sourceName || "已读入");
     saveTheme();
     applyThemeToUi();
@@ -635,14 +651,30 @@ function loadThemeText(text, sourceName) {
   }
 }
 
-// 启动时先看本机有没有存过 —— 可能是主题编辑器写的，也可能是本页上次改的
+// 启动时先看本机有没有存过 —— 可能是主题编辑器写的，也可能是本页上次改的。
+// 返回 true = 载入了本机配色；"legacy" = 有旧记录但没有基线(已备份并忽略)
 function restoreSavedTheme() {
   let text = null;
   try { text = localStorage.getItem(THEME_KEY); } catch { return false; }
   if (!text) return false;
   try {
-    const t = ThemeJson.themeObject(ThemeJson.parseThemeJson(text));
-    applyThemeObject(t);
+    const rec = ThemeJson.parseThemeJson(text);
+    if (!rec || rec.v !== 2 || !rec.theme) {
+      // 旧记录(整份主题、没有基线):留着它就会挡住新的默认值。
+      // 备份一份再忽略 —— 这样"改了默认值但用户看不到"的坑不会再出现。
+      try { localStorage.setItem(THEME_KEY_V1, text); } catch { /* ignore */ }
+      try { localStorage.removeItem(THEME_KEY); } catch { /* ignore */ }
+      return "legacy";
+    }
+    gThemeBase = rec.base || null;
+    // ★ 三方合并:本页知道的字段(底色 + 三条弧)里，"用户没改过的"跟着当前默认值走;
+    //   其它字段原样保留(它们来自主题编辑器)
+    const merged = gThemeBase
+      ? ThemeJson.mergeDefaults(gThemeBase, rec.theme, ARC_FALLBACK)
+      : rec.theme;
+    applyThemeObject(merged);
+    // 基线也推进到"当前的默认值"(只更新本页知道的那部分)
+    gThemeBase = ThemeJson.mergeDefaults(gThemeBase || {}, gThemeBase || {}, ARC_FALLBACK);
     gThemeSource = "本机记住的配色（本页或主题编辑器改的）";
     return true;
   } catch { return false; }
@@ -1354,13 +1386,18 @@ document.getElementById("file-bin").addEventListener("change", e => {
 buildStageSelects();
 // 仪表配色:本机存过就用那一份(可能是本页改的,也可能是主题编辑器改的),
 // 否则用固件默认值
-restoreSavedTheme();
+const hadSavedTheme = restoreSavedTheme();
 applyThemeToUi();
 say("就绪。\n" +
     "1) 加图片  2) 选「用途」（背景 / 表情）  3) 导出 image.bin\n" +
     "左上「仪表配色」可以直接改三条弧的颜色，改完点「导出 theme.json」刷到 theme 分区。\n" +
     "（配色和图片是两个分区，要各刷一次；两页共用同一份配色，不会互相覆盖。）\n" +
-    "右下「表情阶段模拟」可以逐档看转速/车速/水温各档下会显示哪张表情。");
+    "右下「表情阶段模拟」可以逐档看转速/车速/水温各档下会显示哪张表情。" +
+    (hadSavedTheme === "legacy"
+      ? "\n\n※ 本机有一份旧格式的配色记录，它会把新的默认值挡住，已备份到 " + THEME_KEY_V1 +
+        " 并忽略 ——\n   现在的预览是**当前默认值**（比如水温弧已经改成「上方开口」）。" +
+        "如果你之前改过配色，重新调一次即可；\n   从现在起记录里会连基线一起存，改默认值不会再被旧记录挡住。"
+      : ""));
 </script>
 </body>
 </html>
