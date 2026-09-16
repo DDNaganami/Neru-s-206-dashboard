@@ -360,10 +360,70 @@ static void test_header_byte_layout(void) {
   TEST_ASSERT_EQUAL_HEX8(0x56, b[7]);   // h 高字节
 }
 
+// ★ 带透明通道的格式(RGB565A8):它的**总字节数不等于 strideBytes()*h**。
+//
+// 这条踩过一次真坑:RGBA→RGB565A8 打包出来是 3 字节/像素
+// (2 字节色 + 1 字节 alpha 平面),而校验当时用 strideBytes()*h 算,
+// 得到 2 字节/像素 → 把完全合法的镜像**拒收**了
+// (实测症状:打包器写 30000 字节,校验按 20000 算,报"尺寸不合法",
+//  而 blob 本身没有任何问题)。
+// 所以 packedBytes() 必须把追加的 A8 平面算进去,这里钉住它。
+static void test_rgb565a8_size_includes_alpha_plane(void) {
+  ImageView v;
+  v.w = 100;
+  v.h = 100;
+  v.cf = LV_COLOR_FORMAT_RGB565A8;
+  v.stride_pad = 0;
+
+  // 颜色平面每行 200 字节(2B/px),A8 平面每行 100 字节
+  TEST_ASSERT_EQUAL_UINT32(200, v.strideBytes());
+  // 总大小 = 颜色平面 20000 + A8 平面 10000 = 30000
+  TEST_ASSERT_EQUAL_UINT32(30000, v.packedBytes());
+  // imageBytes() 与 packedBytes() 同义(旧调用点也拿到正确值)
+  TEST_ASSERT_EQUAL_UINT32(30000, v.imageBytes());
+  // 每像素字节数仍是 2(只管颜色平面)—— 别把它改成 3,
+  // 否则 strideBytes() 会算成 300,行宽就错了
+  TEST_ASSERT_EQUAL_UINT8(2, ImageView::cfBytesPerPixel(LV_COLOR_FORMAT_RGB565A8));
+
+  // 对照:普通 RGB565 两个函数必须一致(没有追加平面)
+  ImageView p;
+  p.w = 100; p.h = 100; p.cf = LV_COLOR_FORMAT_RGB565; p.stride_pad = 0;
+  TEST_ASSERT_EQUAL_UINT32(p.strideBytes() * p.h, p.packedBytes());
+  TEST_ASSERT_EQUAL_UINT32(20000, p.packedBytes());
+}
+
+// 解析器必须**接受** RGB565A8(按含 alpha 平面的尺寸校验)
+static void test_parse_accepts_rgb565a8(void) {
+  BlobBuf b;
+  const uint32_t n = makeBlob(b, 1);          // 4×2 RGB565,size=16
+  // 改成 RGB565A8:每行 4*2=8 色字节 + 每行 4 字节 alpha → size 要重算
+  ImageEntry& e = b.hdr.entries[0];
+  e.cf = LV_COLOR_FORMAT_RGB565A8;
+  const uint32_t color = 4 * 2 * 2;           // 8 字节/行 × 2 行
+  const uint32_t alpha = 4 * 2;               // 4 字节/行 × 2 行
+  e.size = color + alpha;
+  b.hdr.data_bytes = e.size;
+
+  ImageBlobHeader h;
+  TEST_ASSERT_TRUE_MESSAGE(imageBlobParse(b.bytes, kHdrSize + e.size, &h),
+                           "RGB565A8 的合法镜像被拒收了(alpha 平面没算进去?)");
+  ImageView v;
+  TEST_ASSERT_TRUE(imageBlobGet(b.bytes, kHdrSize + e.size, h, 0, &v));
+  TEST_ASSERT_EQUAL_UINT8(LV_COLOR_FORMAT_RGB565A8, v.cf);
+  TEST_ASSERT_EQUAL_UINT32(e.size, v.packedBytes());
+
+  // 反向:size 少算 alpha 平面(只写颜色字节)必须被拒
+  e.size = color;
+  b.hdr.data_bytes = color;
+  TEST_ASSERT_FALSE(imageBlobParse(b.bytes, kHdrSize + color, &h));
+}
+
 void register_image_blob_tests(void) {
   RUN_TEST(test_layout_sane);
   RUN_TEST(test_entry_field_offsets);
   RUN_TEST(test_role_ids);
+  RUN_TEST(test_rgb565a8_size_includes_alpha_plane);
+  RUN_TEST(test_parse_accepts_rgb565a8);
   RUN_TEST(test_parse_ok_and_get);
   RUN_TEST(test_rejects_bad_blob);
   RUN_TEST(test_get_out_of_range);

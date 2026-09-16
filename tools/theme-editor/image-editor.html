@@ -215,17 +215,41 @@ const FITS = [
 // 所以默认给 240×240，并在这里明确写出来，避免用户第一次就撞墙。
 const SIZE_PRESETS = [240, 320, 360, 480];
 
+// 哪些角色要保留透明通道
+//   表情 = 叠在弧线上面,必须能透出底下的东西 → RGB565A8
+//   背景 = 铺在最底层,透不透明没意义 → RGB565(省 1/3 空间)
+//   开机帧(当前不用)按不透明处理
+function wantAlpha(role) {
+  const R = ImageBlob.ROLE;
+  return role === R.FaceIdle || role === R.FaceRedline || role === R.FaceSurprise ||
+         role === R.FaceIdleR || role === R.FaceRedlineR || role === R.FaceSurpriseR;
+}
+
+// 这个角色用什么颜色格式
+function cfForRole(role) {
+  return wantAlpha(role) ? ImageBlob.CF.RGB565A8 : ImageBlob.CF.RGB565;
+}
+
 // ------------------------------------------------------------
 // 图像 → 目标分辨率的 RGBA
-// 先铺底色再画图，让 canvas 自己做 alpha 合成 ——
-// 这样 PNG 的透明区域就是底色，不会出现黑边。
+//
+// 两条路线,按角色自动选(见 wantAlpha()):
+//   · 不透明图(背景):**先铺底色再画图**,让 canvas 自己做 alpha 合成 ——
+//     PNG 的透明区域就是底色,不会出现黑边
+//   · 透明图(表情):**不铺底色**,保留 alpha 通道,导出成 RGB565A8,
+//     由 LVGL 在绘制时混合。这样表情能叠在弧线上面而不挡掉它。
+//
+// transparent=true 时画布保持透明(canvas 默认就是全透明),直接 readback
+// 拿到的就是原始 alpha。
 // ------------------------------------------------------------
-function renderToTarget(item, tw, th) {
+function renderToTarget(item, tw, th, transparent) {
   const cv = document.createElement("canvas");
   cv.width = tw; cv.height = th;
   const ctx = cv.getContext("2d", { willReadFrequently: true });
-  ctx.fillStyle = theme.bg;
-  ctx.fillRect(0, 0, tw, th);
+  if (!transparent) {
+    ctx.fillStyle = theme.bg;
+    ctx.fillRect(0, 0, tw, th);
+  }
 
   const src = item.img;
   const sw = src.naturalWidth || src.width;
@@ -453,9 +477,12 @@ function pickFace(which, state) {
   return pick(map[which][state]);
 }
 
-// 把一张图贴到 (cx, cy) 为中心的位置
+// 把一张图贴到 (cx, cy) 为中心的位置。
+// ★ 按角色决定要不要保留 alpha:表情图必须带透明,否则会把弧线挡掉一块。
+//   预览这边无所谓(putImageData 会照原样写上透明像素),
+//   关键是**导出时用同样的判断**选颜色格式 —— 见 wantAlpha()。
 function blitCentered(ctx, item, cx, cy, cw, ch) {
-  const rgba = renderToTarget(item, item.w, item.h);
+  const rgba = renderToTarget(item, item.w, item.h, wantAlpha(item.role));
   if (!rgba) return;
   const tmp = document.createElement("canvas");
   tmp.width = item.w; tmp.height = item.h;
@@ -495,17 +522,25 @@ function drawScreen(cv, which) {
 // 打包
 // ------------------------------------------------------------
 // 每张图现算像素（不在内存里缓存大缓冲：480×480 一份就 450KB）
+//
+// ★ 这里按角色分两条路,是"表情带透明"能落地的关键:
+//   表情 → 不铺底色、保留 alpha、打成 RGB565A8(3 字节/像素)
+//   背景 → 铺底色合成、打成 RGB565(2 字节/像素,省 1/3 空间)
+//   两条路的**渲染输入**也不同(transparent 参数),别只改一边。
 function buildPayload() {
   return items.map(item => {
-    const rgba = renderToTarget(item, item.w, item.h);
+    const alpha = wantAlpha(item.role);
+    const rgba = renderToTarget(item, item.w, item.h, alpha);
     if (!rgba) throw new Error("「" + item.name + "」读不出像素，请重新添加");
+    const cf = cfForRole(item.role);
     return {
       name: safeName(item.name),
       w: item.w, h: item.h,
-      cf: ImageBlob.CF.RGB565,
+      cf: cf,
       role: item.role,
       order: item.order,
-      pixels: ImageBlob.rgbaToRgb565(rgba, item.w, item.h)
+      pixels: alpha ? ImageBlob.rgbaToRgb565A8(rgba, item.w, item.h)
+                    : ImageBlob.rgbaToRgb565(rgba, item.w, item.h)
     };
   });
 }

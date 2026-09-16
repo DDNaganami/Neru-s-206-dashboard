@@ -144,6 +144,11 @@ struct ImageView {
   bool valid() const { return pixels != nullptr && w > 0 && h > 0; }
 
   // 每像素字节数(cf → 字节)。未知格式返回 0。
+  //
+  // ★ RGB565A8 返回 **2** —— 这是"颜色平面每像素占几字节"。
+  //   它另有**一张独立的 A8 平面追加在整个颜色数据之后**
+  //   (LVGL 布局:size = stride*h + (stride/2)*h,已在 lv_draw_buf.c 确认)。
+  //   所以判断"这张图总共占多少字节"不能用这个函数乘,见 packedBytes()。
   static uint8_t cfBytesPerPixel(uint8_t cf);
 
   // 每行字节数(每像素字节数 × w + 行尾填充)
@@ -151,8 +156,23 @@ struct ImageView {
     return (uint32_t)cfBytesPerPixel(cf) * w + stride_pad;
   }
 
-  // 整张图的像素字节数(按行算,含填充)
-  uint32_t imageBytes() const { return strideBytes() * h; }
+  // 整张图的实际字节数,**含 RGB565A8 追加的 A8 平面**。
+  //
+  // ★ 这个函数是必需的,别用 strideBytes()*h 代替:对 RGB565A8 那样算会
+  //   少算 alpha 平面(3 字节/像素 vs 2),于是镜像校验会**拒收**一张完全
+  //   合法的图 —— 实测踩过:打包器写 30000 字节,校验按 20000 算,直接报
+  //   "尺寸不合法",而 blob 本身没错。
+  uint32_t packedBytes() const {
+    const uint32_t color = strideBytes() * h;
+    if (cf == LV_COLOR_FORMAT_RGB565A8) {
+      return color + (strideBytes() / 2) * h;   // A8 平面行宽是颜色行宽的一半
+    }
+    return color;
+  }
+
+  // 兼容旧调用点(旧语义 = strideBytes*h,不含 alpha 平面)。
+  // 新代码请用 packedBytes()。
+  uint32_t imageBytes() const { return packedBytes(); }
 };
 
 // ---------------- 解析（纯逻辑,宿主机可测） ----------------

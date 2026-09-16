@@ -119,7 +119,46 @@
   }
 
   // ------------------------------------------------------------
-  // 生成镜像
+  // RGBA → RGB565A8(带透明通道,给"要叠在别的图层上"的图用)
+  //
+  // 为什么要专门一个格式:表情图如果是不透明方块,会把底下的弧线挡掉一块。
+  // RGB565 里没有 alpha 位,LVGL 为此提供 RGB565A8:
+  //   **上半部** = 整张 RGB565 平面(stride*h 字节)
+  //   **下半部** = 独立的 A8 平面(stride/2*h 字节,每像素 1 字节)
+  // 已在 LVGL 源码确认(lv_draw_buf.c 的 _calculate_draw_buf_size):
+  //     if(cf == LV_COLOR_FORMAT_RGB565A8) size += (stride / 2) * h;  // A8 mask
+  //   所以每像素 3 字节,A8 的行宽是 RGB565 行宽的一半。
+  //
+  // ★ 注意:颜色**不做背景合成** —— 透明就是透明,由 LVGL 在绘制时混合。
+  //   这与"打包时合成掉 alpha"是两条不同的路线,不要混。
+  // ------------------------------------------------------------
+  function rgbaToRgb565A8(rgba, w, h) {
+    var stride = w * 2;                     // RGB565 平面每行字节数
+    var colorBytes = stride * h;
+    var out = new Uint8Array(colorBytes + (stride >> 1) * h);
+
+    for (var y = 0; y < h; y++) {
+      var src = y * w * 4;
+      var dstC = y * stride;
+      var dstA = colorBytes + y * (stride >> 1);
+      for (var x = 0; x < w; x++) {
+        var i = src + x * 4;
+        var v = pack565(rgba[i], rgba[i + 1], rgba[i + 2]);
+        out[dstC + x * 2]     = v & 0xFF;   // 小端
+        out[dstC + x * 2 + 1] = (v >> 8) & 0xFF;
+        out[dstA + x]         = rgba[i + 3];
+      }
+    }
+    return out;
+  }
+
+  // 每种颜色格式每像素占多少字节(用于校验像素数组长度)。
+  // RGB565A8 是 3 字节/像素(2 字节色 + 1 字节 alpha),不是 2。
+  function packedBytesPerPixel(cf) {
+    if (cf === CF.RGB565A8) return 3;
+    return bytesPerPixel(cf);
+  }
+
   //
   // items: [{ name, w, h, cf, role, order, pixels(Uint8Array), stridePad }]
   // 返回 { blob: Uint8Array, entries: [...], dataBytes, totalBytes }
@@ -140,6 +179,9 @@
       var cf = it.cf === undefined ? CF.RGB565 : it.cf;
       var bpp = bytesPerPixel(cf);
       if (!bpp) throw new Error("第 " + (i + 1) + " 张:不支持的颜色格式 0x" + cf.toString(16));
+      // 紧凑字节数用 packedBytesPerPixel:RGB565A8 是 3 字节/像素
+      // (2 字节色 + 1 字节 alpha),用 bytesPerPixel 校验会算错。
+      var pbpp = packedBytesPerPixel(cf);
 
       var w = it.w | 0, h = it.h | 0;
       if (w <= 0 || h <= 0 || w > 65535 || h > 65535) {
@@ -148,7 +190,9 @@
 
       var px = it.pixels;
       var pxLen = px ? px.length : 0;
-      var tight = bpp * w * h;
+      // 紧凑长度 = 每像素**打包后**字节数 × 宽 × 高
+      // (RGB565A8 的 3 字节/像素已经含了 alpha 平面,不再另加)
+      var tight = pbpp * w * h;
 
       // stride_pad 没显式给的时候,**从像素数组长度反推**。
       // 为什么:像素数据里其实已经含了填充(rgbaToRgb565 会按 stridePad 补零),
@@ -159,7 +203,7 @@
         if (pxLen === tight) {
           pad = 0;
         } else if (pxLen > tight && pxLen % h === 0) {
-          pad = pxLen / h - bpp * w;      // 由实际行宽反推
+          pad = pxLen / h - pbpp * w;     // 由实际行宽反推
           if (pad < 0 || pad > 255) {
             throw new Error("第 " + (i + 1) + " 张:像素字节数 " + pxLen +
                             " 与 " + w + "x" + h + " 对不上,反推出的 stride_pad=" + pad + " 超出 0..255");
@@ -173,7 +217,7 @@
         if (pad < 0 || pad > 255) throw new Error("第 " + (i + 1) + " 张:stride_pad 超出 0..255");
       }
 
-      var size = (bpp * w + pad) * h;
+      var size = (pbpp * w + pad) * h;
       if (size > 0xFFFFFFFF) throw new Error("第 " + (i + 1) + " 张:太大");
 
       if (pxLen !== size) {
@@ -300,8 +344,10 @@
     PARTITION_BYTES: PARTITION_BYTES,
     CF: CF, ROLE: ROLE, ROLE_NAMES: ROLE_NAMES,
     bytesPerPixel: bytesPerPixel,
+    packedBytesPerPixel: packedBytesPerPixel,
     pack565: pack565,
     rgbaToRgb565: rgbaToRgb565,
+    rgbaToRgb565A8: rgbaToRgb565A8,
     build: build,
     esptoolCommand: esptoolCommand,
     toCHeader: toCHeader

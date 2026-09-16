@@ -50,9 +50,14 @@ bool imageBlobParse(const uint8_t* blob, uint32_t len, ImageBlobHeader* out) {
     const uint8_t bpp = ImageView::cfBytesPerPixel(e.cf);
     if (bpp == 0) return false;                 // 未知/不支持的格式
 
-    // 期望字节数(带行尾填充)
-    const uint64_t expect =
-        ((uint64_t)bpp * e.w + e.stride_pad) * e.h;
+    // 期望字节数(带行尾填充)。**必须含 RGB565A8 追加的 A8 平面** ——
+    // 用 strideBytes()*h 会少算 1/3,把合法镜像拒收(实测踩过)。
+    ImageView probe;
+    probe.w = e.w;
+    probe.h = e.h;
+    probe.cf = e.cf;
+    probe.stride_pad = e.stride_pad;
+    const uint64_t expect = (uint64_t)probe.packedBytes();
     if (expect == 0 || expect > 0xFFFFFFFFull) return false;
     // size 必须与 w/h/cf 自洽:不让"声明 10 字节实际按 480x480 读"
     if ((uint64_t)e.size != expect) return false;

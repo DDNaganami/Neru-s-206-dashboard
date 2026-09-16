@@ -2,12 +2,14 @@
 #include "dash_display.h"
 #include "ui_theme.h"
 #include "boot_anim.h"
+#include "image_load.h"     // 图片资源(背景图 / 表情图)
 #include <lvgl.h>
 #include <Arduino.h>
 #include <math.h>
 
 // ============ 运行时对象 ============
 struct ScreenUi {
+  uint8_t idx = 0;                  // 这是第几屏(0=左/车速,1=右/转速);图片按屏取
   lv_obj_t* arcs[kMaxArcs];
   uint8_t arc_count = 0;
   float arc_cur[kMaxArcs];          // 弧当前值(缓动用),开机扫表后从这里平滑过渡
@@ -24,6 +26,38 @@ static BootAnim g_boot;
 static bool g_boot_done_printed = false;
 static uint32_t last_ok_ms = 0;
 static uint32_t last_tick_ms = 0;
+
+// ============ 图片资源 ============
+// lv_image_dsc_t 必须由我们持有 —— LVGL 会一直引用它(set_src 不复制)。
+// 每屏一张背景 + 三种表情状态,所以是 2 组。
+static lv_image_dsc_t g_bg_dsc[2];
+static lv_image_dsc_t g_face_dsc[2][3];      // [屏][0=常态 1=红区 2=惊喜]
+static bool g_bg_ok[2] = {false, false};
+static bool g_face_ok[2][3] = {{false, false, false}, {false, false, false}};
+static lv_obj_t* g_bg_img[2] = {nullptr, nullptr};
+static lv_obj_t* g_face_img[2] = {nullptr, nullptr};
+
+// 表情状态 → 角色。左右屏各一套(车速表/转速表的表情差分不同)。
+static ImageRole faceRole(uint8_t screen, int state) {
+  if (screen == 0) {
+    return (state == 0) ? ImageRole::FaceIdle
+         : (state == 1) ? ImageRole::FaceRedline
+                        : ImageRole::FaceSurprise;
+  }
+  return (state == 0) ? ImageRole::FaceIdleR
+       : (state == 1) ? ImageRole::FaceRedlineR
+                      : ImageRole::FaceSurpriseR;
+}
+
+// 当前该显示哪一种表情。ExpressionState 与 Face 的映射沿用现有逻辑,
+// 这里只做"状态 → 数组下标"的换算。
+static int faceStateIndex(Face f) {
+  switch (f) {
+    case Face::Redline:  return 1;
+    case Face::Surprise: return 2;
+    default:             return 0;
+  }
+}
 
 // 主题尺寸换算:480 基准 → 实际分辨率(四舍五入,见 ui_theme.h 分辨率适配)
 static int32_t ts(float v480) {
@@ -104,9 +138,34 @@ static void build_face(lv_obj_t* parent, ScreenUi& ui) {
   ui.mouth = mouth;
 }
 
+// 表情状态 → 图片槽位下标。
+// Blink / Cruise / Sport 都归到"常态"那张图 —— 逐帧眨眼动画不做(已确认),
+// 所以这几种状态共用同一张脸,只有红区/惊喜才换图。
+static int faceSlot(Face f) {
+  switch (f) {
+    case Face::Redline:  return 1;
+    case Face::Surprise: return 2;
+    default:             return 0;   // Idle / Blink / Cruise / Sport
+  }
+}
+
+// 有图片表情时,只切图、不碰程序化形状。
+// 返回 true 表示这次由图片接管了。
+static bool face_apply_image(uint8_t screen, Face f) {
+  if (g_face_img[screen] == nullptr) return false;
+  const int slot = faceSlot(f);
+  if (!g_face_ok[screen][slot]) return false;      // 这个状态没有图
+  lv_image_set_src(g_face_img[screen], &g_face_dsc[screen][slot]);
+  return true;
+}
+
 static void face_apply(ScreenUi& ui, Face f) {
   if (f == ui.last_face) return;
   ui.last_face = f;
+
+  // ★ 有图片表情时由图片接管,程序化形状保持隐藏。
+  //   注意 early return 必须在 last_face 更新之后 —— 否则每次都会重复判定。
+  if (face_apply_image(ui.idx, f)) return;
 
   const bool blink = (f == Face::Blink);
   const bool surprise = (f == Face::Surprise);
@@ -161,15 +220,18 @@ static void boot_apply(uint32_t now) {
                            a.start_deg + (int32_t)(p * (a.end_deg - a.start_deg)));
     }
 
-    if (kScreens[s].show_face && ui.face_bg) {
+    if (kScreens[s].show_face && (ui.face_bg || g_face_img[s])) {
       // 表情睁眼:阶段 0 透明、之后全显。只在阶段切换时 set 一次,
       // 避免每 tick 重复 set opa 触发无谓重绘(曾导致层合成异常)。
       const uint8_t st = g_boot.faceStage(now);
       static uint8_t last_st[2] = {0xFF, 0xFF};
       if (st != last_st[s]) {
         last_st[s] = st;
-        lv_obj_set_style_opa(ui.face_bg,
-                             (st == 0) ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+        const lv_opa_t opa = (st == 0) ? LV_OPA_TRANSP : LV_OPA_COVER;
+        if (ui.face_bg) lv_obj_set_style_opa(ui.face_bg, opa, 0);
+        // ★ 有图片表情时淡入要作用在图片上 —— 否则"睁眼"这个开机动作
+        //   在有图的情况下会完全消失(程序化那层被藏起来了)。
+        if (g_face_img[s]) lv_obj_set_style_opa(g_face_img[s], opa, 0);
       }
       if (st == 1) face_apply(ui, Face::Blink);
       else if (st == 2) face_apply(ui, Face::Idle);
@@ -206,9 +268,43 @@ void dash_ui_init() {
   g_screens[1] = make_screen(dash_display_right());
   lv_display_set_default(def);
 
+  // 图片资源:先探测每个角色有没有图(没刷图片时全部 false,走降级路径)
   for (uint8_t s = 0; s < 2; ++s) {
+    g_bg_ok[s] = image_dsc_for_role(ImageRole::Background, &g_bg_dsc[s]);
+    for (int st = 0; st < 3; ++st) {
+      g_face_ok[s][st] = image_dsc_for_role(faceRole(s, st), &g_face_dsc[s][st]);
+    }
+  }
+
+  for (uint8_t s = 0; s < 2; ++s) {
+    g_ui[s].idx = s;                 // 图片按屏取,index 必须先设
+    // 图层顺序 = 创建顺序:背景图 → 弧线 → 表情。
+    // 背景图必须是**第一个**子对象,这样它衬在弧线下面。
+    if (g_bg_ok[s]) {
+      g_bg_img[s] = lv_image_create(g_screens[s]);
+      lv_image_set_src(g_bg_img[s], &g_bg_dsc[s]);
+      lv_obj_center(g_bg_img[s]);
+    }
     build_arcs(g_screens[s], kScreens[s], g_ui[s]);
     if (kScreens[s].show_face) build_face(g_screens[s], g_ui[s]);
+  }
+
+  // 用图片表情替换(或隐藏)程序化表情。
+  // ★ 降级:没有表情图时**保留程序化形状表情** —— 这条路径是刻意留的,
+  //   与"没有主题就用默认主题"是同一个原则:资源缺失不能让界面空掉。
+  for (uint8_t s = 0; s < 2; ++s) {
+    bool any = false;
+    for (int st = 0; st < 3; ++st) any = any || g_face_ok[s][st];
+    if (!any) continue;
+
+    if (g_face_img[s] == nullptr) {
+      g_face_img[s] = lv_image_create(g_screens[s]);
+      lv_obj_center(g_face_img[s]);
+    }
+    // 有图就把程序化表情藏起来(不能删 —— face_apply 还会去访问那几个对象)
+    if (g_ui[s].face_bg) lv_obj_add_flag(g_ui[s].face_bg, LV_OBJ_FLAG_HIDDEN);
+    // 先摆常态那张,后续 face_apply 按状态切换
+    lv_image_set_src(g_face_img[s], &g_face_dsc[s][0]);
   }
 
   g_boot.start(millis());

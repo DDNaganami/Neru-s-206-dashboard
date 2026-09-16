@@ -1,4 +1,5 @@
 #include "image_load.h"
+#include <string.h>
 
 // ============================================================
 // 见 image_load.h 的说明。这里只做"把字节能拿到手"这件事。
@@ -47,5 +48,45 @@ bool image_load() {
   g_blob = blob;
   g_blob_len = len;
   g_hdr_ok = true;
+  return true;
+}
+
+bool image_role_has_alpha(ImageRole role) {
+  const ImageBlobHeader* h = image_blob_header();
+  if (!h) return false;
+  ImageView v;
+  if (!imageBlobGet(image_blob(), image_blob_len(), *h, 0, &v)) return false;
+  // 按角色找第一张,看它的颜色格式
+  ImageView found[kImageMaxCount];
+  const uint8_t n = imageBlobFindRole(image_blob(), image_blob_len(), *h, role,
+                                      found, kImageMaxCount);
+  if (n == 0) return false;
+  return found[0].cf == LV_COLOR_FORMAT_RGB565A8;
+}
+
+bool image_dsc_for_role(ImageRole role, lv_image_dsc_t* out) {
+  if (!out) return false;
+  const ImageBlobHeader* h = image_blob_header();
+  if (!h) return false;
+
+  ImageView found[kImageMaxCount];
+  const uint8_t n = imageBlobFindRole(image_blob(), image_blob_len(), *h, role,
+                                      found, kImageMaxCount);
+  if (n == 0) return false;
+  const ImageView& v = found[0];      // 已按 order 升序,取第一张
+
+  memset(out, 0, sizeof(*out));
+  // lv_image_dsc_t 的 header 是 lv_image_header_t(位域,小端字节序见
+  // lib/themetool/image_blob.h 的说明)。逐字段赋值,不要整体 memcpy ——
+  // 位域布局依赖编译器,逐字段更稳。
+  out->header.magic  = LV_IMAGE_HEADER_MAGIC;   // 0x19,填错 LVGL 当旧格式画乱码
+  out->header.cf     = (lv_color_format_t)v.cf;
+  out->header.w      = v.w;
+  out->header.h      = v.h;
+  out->header.stride = (uint16_t)v.strideBytes();
+  // ★ data 直接指向 mmap 的像素,零拷贝。
+  //   LV_IMAGE_SRC_VARIABLE 路径下 LVGL 不会复制它(见 image_blob.h)。
+  out->data      = (const uint8_t*)v.pixels;
+  out->data_size = v.imageBytes();
   return true;
 }
