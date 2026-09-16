@@ -56,8 +56,8 @@
           },
           {
             "kind": 2,
-            "start_deg": 145,
-            "end_deg": 330,
+            "start_deg": 0,
+            "end_deg": 180,
             "radius": 168,
             "width": 10,
             "track_color": 0x232323,

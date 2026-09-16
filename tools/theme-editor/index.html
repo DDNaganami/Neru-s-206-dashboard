@@ -266,9 +266,13 @@ let bootPlaying = false;
 function degToRad(d) { return d * Math.PI / 180; }
 
 function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, trackColor, trackOpacity, valueColor) {
+  // ★ LVGL 把弧画在对象盒子**内**:外沿贴盒子边(= 主题里的 radius),带宽往**里**长,
+  //   即实际占 [radius-w, radius]。canvas 的描边以路径为中线的,所以要画在 r-w/2 上
+  //   才与固件重合(实测:radius=205/width=24 的弧,固件落在 182..205,不是 193..217)。
+  const rr = r - w / 2;
   // 轨道
   ctx.beginPath();
-  ctx.arc(cx, cy, r, degToRad(endDeg), degToRad(startDeg), true);
+  ctx.arc(cx, cy, rr, degToRad(endDeg), degToRad(startDeg), true);
   ctx.lineWidth = w;
   ctx.strokeStyle = trackColor;
   ctx.globalAlpha = Math.max(0, Math.min(1, trackOpacity));
@@ -280,7 +284,7 @@ function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, trackColor, trackOpac
     const span = endDeg - startDeg;
     const cur = startDeg + span * Math.max(0, Math.min(1, t01));
     ctx.beginPath();
-    ctx.arc(cx, cy, r, degToRad(cur), degToRad(startDeg), true);
+    ctx.arc(cx, cy, rr, degToRad(cur), degToRad(startDeg), true);
     ctx.lineWidth = w;
     ctx.strokeStyle = valueColor;
     ctx.stroke();

@@ -95,6 +95,13 @@ const READOUT_DIGIT   = { r: 0xFF, g: 0xFF, b: 0xFF };
 const READOUT_UNIT    = { r: 0x9A, g: 0xA0, b: 0xA6 };
 const READOUT_COOLANT = { r: 0x7C, g: 0xFF, b: 0x6B };
 
+// 水温**弧**的几何(默认主题):radius 168、width 10,LVGL 把带宽往里长 →
+// 弧带占半径 [158, 168]。
+// ★ 它和"水温数字"是同一个绿色,所以扫数字时必须按**半径**把它分开,
+//   光用矩形框不行 —— 实测踩过:弧从数字两侧绕过来,外接框从 40×13 变成 81×19。
+const COOLANT_ARC_INNER_R = 168 - 10;   // = 158
+const COOLANT_ARC_OUTER_R = 168;        // = 168
+
 // 在矩形带里数"接近某颜色"的像素
 function countNear(img, x0, y0, x1, y1, want, tol) {
   let n = 0;
@@ -110,10 +117,19 @@ function countNear(img, x0, y0, x1, y1, want, tol) {
 // 只看"有没有亮点"是不够的:LVGL 的 lv_label_create() 默认文本是 "Text",
 // 忘了清空时那一带同样是白的(这个坑真踩过,见 make_readout_label 的注释)。
 // 有了外接框就能区分:数字/单位的外框应该落在主题给的带里,且宽度有限。
-function inkBox(img, x0, y0, x1, y1, want, tol) {
+//
+// radiusFilter(可选):只统计"到圆心距离满足条件"的像素。
+// ★ 水温数字与水温弧是**同一个绿色**,而弧在数字下方两侧绕过来 ——
+//   用矩形框扫必然把弧框进去(实测:盒子从 40×13 变成 81×19)。
+//   所以按**半径**分开:数字在弧的内半径以内,弧在弧带上。
+function inkBox(img, x0, y0, x1, y1, want, tol, radiusFilter) {
   let minX = 1e9, maxX = -1, minY = 1e9, maxY = -1, n = 0;
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
+      if (radiusFilter) {
+        const dx = x - 240, dy = y - 240;
+        if (!radiusFilter(Math.sqrt(dx * dx + dy * dy))) continue;
+      }
       if (dist(img.px(x, y), want) <= tol) {
         n++;
         if (x < minX) minX = x;
@@ -289,14 +305,31 @@ function main() {
     if (side === "left") {
       // 水温数字只在**转速表(左屏)**上 —— 这条同时钉住了"水温在哪一屏"
       addBand("水温带(绿字已画出)", BAND_COOLANT, READOUT_COOLANT, 0x40, 8);
-      const cBox = inkBox(img, 180, 350, 300, 420, READOUT_COOLANT, 0x40);
+
+      // 数字:只统计**水温弧内半径以内**的绿像素(弧和数字同为绿色,几何分家)
+      const insideArc = (r) => r <= COOLANT_ARC_INNER_R - 3;
+      const cBox = inkBox(img, 120, 340, 360, 430, READOUT_COOLANT, 0x40, insideArc);
       checks.push({
-        name: "水温墨迹范围(表盘底部)", x: cBox.minX, y: cBox.minY,
+        name: "水温墨迹范围(弧内,表盘底部)", x: cBox.minX, y: cBox.minY,
         got: { r: cBox.w, g: cBox.h, b: cBox.n },
         expect: { r: 0, g: 0, b: 0 },
-        ok: cBox.n > 0 && cBox.minY >= 365 && cBox.maxY <= 405,
+        ok: cBox.n > 0 && cBox.minY >= 360 && cBox.maxY <= 402,
         text: "外框 x[" + cBox.minX + ".." + cBox.maxX + "] y[" + cBox.minY + ".." + cBox.maxY +
               "] 宽" + cBox.w + " 高" + cBox.h + " 命中" + cBox.n
+      });
+
+      // 水温弧:同色但落在弧带上 —— 它从数字两侧绕过去,不能和数字咬在一起。
+      // 这一项同时证明"弧确实画在水温数字外面那一圈"。
+      const onArc = (r) => r >= COOLANT_ARC_INNER_R - 1 && r <= COOLANT_ARC_OUTER_R + 1;
+      const aBox = inkBox(img, 120, 340, 360, 430, READOUT_COOLANT, 0x40, onArc);
+      const arcInnerY = 240 + COOLANT_ARC_INNER_R;   // 正下方弧内沿的 y
+      checks.push({
+        name: "水温弧在数字外侧绕行", x: 240, y: arcInnerY,
+        got: { r: aBox.n, g: cBox.maxY, b: 0 },
+        expect: { r: 0, g: 0, b: 0 },
+        ok: aBox.n > 0 && cBox.maxY < arcInnerY,
+        text: "弧带上命中 " + aBox.n + " 像素；数字最低点 y=" + cBox.maxY +
+              " < 弧内沿 y=" + arcInnerY + "（留 " + (arcInnerY - cBox.maxY) + " 像素）"
       });
     } else {
       // 右屏(速度表)没有水温弧,就不该有水温数字

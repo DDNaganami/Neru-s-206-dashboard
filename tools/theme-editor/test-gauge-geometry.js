@@ -38,6 +38,15 @@ function eq(a, b, what) {
 }
 function section(t) { console.log("\n== " + t); }
 
+// 去掉注释再断言。
+// ★ 这一步是必需的:注释里常常**引用**那些不该出现的写法
+//   ("曾经写成 (d - 90)"、"要画在 r-w/2 上"),照原文匹配就会假通过 ——
+//   实测踩过:把 `r - w / 2` 改回 `r` 之后,断言仍然被注释里的 "r-w/2" 满足了。
+// 只处理行注释与块注释,不处理字符串里的 //(本文件要检查的代码里没有)。
+function stripComments(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
+
 // LVGL 的约定(见 lv_arc.c):x = r·sin(deg+90), y = r·sin(deg)  → 0°=3点钟、顺时针
 function pointAt(deg, r, cx = 240, cy = 240) {
   const rad = deg * Math.PI / 180;
@@ -83,9 +92,18 @@ section("两个编辑器的角度换算没有偏移(LVGL 与 canvas 约定一致
     const drawArcBody = /function drawArc\([^)]*\)\s*\{([\s\S]*?)\n\}/.exec(src);
     ok(!!drawArcBody, f + " 里有 drawArc()");
     if (drawArcBody) {
-      ok(/degToRad|rad\(/.test(drawArcBody[1]),
+      const body = stripComments(drawArcBody[1]);   // 注释里会引用这些写法,必须去掉
+      ok(/degToRad|rad\(/.test(body),
          f + " 的 drawArc() 里用了角度换算(没有的话就是空转)");
-      ok(/ctx\.arc\(/.test(drawArcBody[1]), f + " 的 drawArc() 真的画了圆弧");
+      ok(/ctx\.arc\(/.test(body), f + " 的 drawArc() 真的画了圆弧");
+      // ★ 弧带要画在 r - w/2 上:LVGL 的外沿在 radius、带宽往里长,
+      //   而 canvas 描边以路径为中线 —— 不减 w/2 就整体外移半个带宽
+      //   (实测固件:radius=205/width=24 → 182..205;不减的话预览画在 193..217,
+      //    差 12 像素,足以把"表情压没压到弧"看错)。
+      ok(/-\s*w\s*\/\s*2/.test(body),
+         f + " 的 drawArc() 要把描边半径取 r - w/2(与 LVGL 的外沿语义一致)");
+      ok(!/ctx\.arc\([^)]*,\s*r\s*,/.test(body),
+         f + " 的 drawArc() 不该直接用 r 描边(那会把弧带画到盒子外面去)");
     }
   }
 }
@@ -134,6 +152,53 @@ section("默认主题:满量程弧的缺口在正下方");
     ok(gapMid.y > 240 && Math.abs(gapMid.x - 240) < 1,
        "缺口中心(90°)该在正下方:(" + Math.round(gapMid.x) + "," + Math.round(gapMid.y) + ")");
   }
+}
+
+// ------------------------------------------------------------
+// ★ 水温弧(内圈)的开口在**正上方** —— 与转速弧刻意相反
+//
+// 用户提的:"水温表可以做成上方开口吗，跟转速表同向感觉有点怪"。
+// 于是外圈拱在上面(缺口朝下)、内圈兜在下面(缺口朝上),一眼分得清。
+// 这条是**产品决定**,不是实现细节,所以钉住:
+// 谁要把水温弧改回和转速表同向,得先想清楚为什么。
+section("水温弧:缺口在正上方(与转速弧相反)");
+{
+  const t = TJ.themeObject(TJ.parseThemeJson(
+    fs.readFileSync(path.join(__dirname, "theme-default.json"), "utf8")));
+  const coolantArcs = [];
+  for (let s = 0; s < 2; s++) {
+    (t.screens[s].arcs || []).forEach((a, k) => {
+      if (a.kind === 2) coolantArcs.push({ s, k, a });   // kind 2 = 水温
+    });
+  }
+  eq(coolantArcs.length, 1, "默认主题里只有一条水温弧(在转速表上)");
+  const a = coolantArcs[0].a;
+  const span = a.end_deg - a.start_deg;
+  eq(span, 180, "水温弧是下半圆(跨度 180°)");
+  eq(a.start_deg, 0, "从 3 点钟开始");
+  eq(a.end_deg, 180, "顺时针绕到 9 点钟");
+
+  // 缺口 = 覆盖区的补集,中心应在正上方(270°)
+  const gapCenter = ((a.end_deg + a.start_deg + 360) / 2) % 360;
+  const diff = Math.min(Math.abs(gapCenter - 270), 360 - Math.abs(gapCenter - 270));
+  ok(diff <= 20, "水温弧缺口应朝正上方:实测缺口中心 " + clockName(gapCenter));
+
+  // 用真实几何复核:弧的中点(值填满时最亮的地方)在正下方,缺口中心在正上方
+  const midDeg = a.start_deg + span / 2;
+  const mid = pointAt(midDeg, a.radius);
+  ok(Math.abs(mid.x - 240) < 1 && mid.y > 240,
+     "水温弧的中点该在正下方:(" + Math.round(mid.x) + "," + Math.round(mid.y) + ")");
+  const gapPt = pointAt(270, a.radius);
+  ok(Math.abs(gapPt.x - 240) < 1 && gapPt.y < 240,
+     "水温弧缺口中心该在正上方:(" + Math.round(gapPt.x) + "," + Math.round(gapPt.y) + ")");
+
+  // 与转速弧必须**反向**:一个缺口朝下、一个朝上(这正是"不同向")
+  const outer = t.screens[0].arcs[0];
+  const outerGap = ((outer.end_deg + outer.start_deg + 360) / 2) % 360;
+  const outerDiff = Math.min(Math.abs(outerGap - 90), 360 - Math.abs(outerGap - 90));
+  ok(outerDiff <= 20, "转速弧缺口朝正下方(实测 " + clockName(outerGap) + ")");
+  ok(Math.abs(gapCenter - outerGap - 180) < 40 || Math.abs(gapCenter - outerGap + 180) < 40,
+     "两条弧的缺口方向应当相反(现在 " + Math.round(outerGap) + "° vs " + Math.round(gapCenter) + "°)");
 }
 
 // ------------------------------------------------------------

@@ -78,6 +78,10 @@
   **左屏 = 转速表（带水温表）**，**右屏 = 速度表**。
   别按"左车速右转速"的日德习惯改回去。
   左屏：转速弧（外）+ 水温弧（内）+ 表情；右屏：车速弧 + 表情。
+  **两条弧开口方向相反**（产品决定，用户要求）：转速弧 135→405 开口朝下（拱在上方），
+  水温弧 0→180 开口朝上（兜在下方）—— 一眼分得清哪条是哪条。
+  另注：主题里的 `radius` 是弧的**外沿**半径（LVGL 把弧画在盒子内、`width` 往里长），
+  预览若按"带宽居中在 radius"画就会整体外移半个带宽（实测外圈差 12 像素）。
 - ui_theme.h：所有颜色/弧角/半径/量程/表情占位参数集中于此
 - **主题是运行时可换的**（`lib/themetool/`）：`g_theme_ptr` 指向"闪存里的默认值"
   或"从 theme 分区读来的主题"，改配色只需重刷 16KB 的 theme 分区，固件不动。
@@ -213,7 +217,7 @@
 - **网页端与固件的一致性**（四套 JS 镜像，Node 里跑）：
     node tools/theme-editor/test-face-stages.js     # 解析 face_stages.h 逐字段对账
     node tools/theme-editor/test-theme-json.js      # 主题文件的 0x 颜色能不能读回来
-    node tools/theme-editor/test-gauge-geometry.js   # 表盘朝向:编辑器不许有 90° 偏移
+    node tools/theme-editor/test-gauge-geometry.js   # 表盘朝向 + 弧带半径语义(编辑器侧)
     node tools/theme-editor/test-image-blob-build.js
     node tools/theme-editor/syntax-check-pages.js   # 三个页面的内联脚本语法
   test-face-stages.js 的存在理由：表情导入页的"阶段模拟"是用户刷图前**唯一**
@@ -226,6 +230,9 @@
   两个编辑器曾经都写成 `(d - 90)`，把预览里的表整块逆时针转了 90° ——
   固件是对的，但用户先看到预览，于是问"表的方向是不是要向右转 90 度"。
   这类"约定对不上"不报错、只是看着怪，只能靠断言钉住。
+  同一条测试还管另外两件事：默认主题的**两条弧开口方向相反**（转速朝下、水温朝上），
+  以及 `radius` 是**外沿**半径、预览必须画在 `radius - width/2`（固件实测
+  radius 205/width 24 → 弧带 182..205；预览原来画在 193..217，整体外移 12 像素）。
   固件那一侧的朝向由 check-preview-frame.js 的「表盘朝向」检查兜着（读真实落帧）。
 - **跨语言格式核对**（图片镜像由 JS 生成、C 读取，编译期看不出不一致）：
     pwsh tools/theme-editor/test-image-roundtrip.ps1
