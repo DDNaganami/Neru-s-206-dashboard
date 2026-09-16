@@ -210,9 +210,10 @@
   这两条都是用户试用时抓出来的：点"速度·中"时转速表跟着动过）
 - 跑法（纯 ASCII 路径下，env 变量同上）：
     python -m platformio test -e native
-- **网页端与固件的一致性**（三套 JS 镜像，Node 里跑）：
+- **网页端与固件的一致性**（四套 JS 镜像，Node 里跑）：
     node tools/theme-editor/test-face-stages.js     # 解析 face_stages.h 逐字段对账
     node tools/theme-editor/test-theme-json.js      # 主题文件的 0x 颜色能不能读回来
+    node tools/theme-editor/test-gauge-geometry.js   # 表盘朝向:编辑器不许有 90° 偏移
     node tools/theme-editor/test-image-blob-build.js
     node tools/theme-editor/syntax-check-pages.js   # 三个页面的内联脚本语法
   test-face-stages.js 的存在理由：表情导入页的"阶段模拟"是用户刷图前**唯一**
@@ -220,6 +221,12 @@
   test-theme-json.js 的存在理由：主题文件是**固件与编辑器共读**的同一个文件，
   固件接受 `0xRRGGBB` 而 `JSON.parse` 不接受 —— 少了这一层就是
   "固件读得进去、编辑器导入报语法错"（实测踩过）。
+  test-gauge-geometry.js 的存在理由：LVGL 的 `lv_arc` 是 0°=3 点钟、顺时针，
+  而 canvas 的 `arc()` 约定**完全一样**，所以角度不需要任何偏移；
+  两个编辑器曾经都写成 `(d - 90)`，把预览里的表整块逆时针转了 90° ——
+  固件是对的，但用户先看到预览，于是问"表的方向是不是要向右转 90 度"。
+  这类"约定对不上"不报错、只是看着怪，只能靠断言钉住。
+  固件那一侧的朝向由 check-preview-frame.js 的「表盘朝向」检查兜着（读真实落帧）。
 - **跨语言格式核对**（图片镜像由 JS 生成、C 读取，编译期看不出不一致）：
     pwsh tools/theme-editor/test-image-roundtrip.ps1
   它用 JS 打一个镜像并生成可读的 manifest，再让固件解析器读同一个文件、

@@ -108,7 +108,14 @@ python -m platformio run -e pcpreview -t exec
   编辑器自己导出的写十进制 —— 想手改颜色的话，照 `theme-default.json` 的风格写 `0x` 更直观。
 - `kind` —— 弧跟随哪个数据：**0=车速、1=转速、2=水温**
 - `track_opa` —— 轨道透明度 0~255
-- `start_deg` / `end_deg` —— 0°=3 点钟方向、顺时针；默认 135→405 即 270° 范围、上方开口
+- `start_deg` / `end_deg` —— **0°=3 点钟方向、顺时针增大**（与 LVGL 的 `lv_arc` 一致，
+  源码 `lv_arc.c` 里就是 `x = r·sin(angle+90)`、`y = r·sin(angle)`）。
+  默认 **135→405**：起点在 **7:30（左下）**，顺时针经过左、上、右，终点在 **4:30（右下）**，
+  **缺口在正下方**（60°~120° 那段）—— 汽车仪表就是这么摆的，下方留缺口给指针轴与里程。
+  > 这个朝向被实测验证过:固件落帧沿弧带扫一圈，135° 处开始点亮、60°~120° 是底色。
+  > 而预览里曾经因为角度换算多减了 90°，整块表被逆时针转 90°（起点跑到 4:30、
+  > 缺口跑到正右方）—— 用户一眼看出来问"表的方向是不是要向右转 90 度"。
+  > 现在两个编辑器的换算都不加偏移，`test-gauge-geometry.js` 盯着这一行。
 - `radius` / `width` / `face_size` / `face.*` —— 都按 **480×480 基准**书写，
   真屏若是 800×800 会自动等比放大（`theme_scale()`）
 - `screens[i].arc_count` —— 实际画几条弧（≤ 实际数组长度）
@@ -456,6 +463,25 @@ pwsh tools/theme-editor/test-image-roundtrip.ps1
 这个核对抓出过两个真 bug（写索引项时用了上一轮循环遗留的变量，导致每项名字都相同；
 像素循环漏了 x 偏移，导致每行重复第一个像素）—— 都是编译通过、肉眼看不出来的那种。
 
+## 表盘朝向也要对账（`test-gauge-geometry.js`）
+
+```powershell
+node tools/theme-editor/test-gauge-geometry.js   # 26 项断言
+```
+
+管两件事：
+
+1. **两个编辑器的角度换算不加任何偏移**。LVGL 的 `lv_arc` 是 0°=3 点钟、顺时针，
+   而 canvas 的 `arc()` 约定完全一样 —— 所以 `d` 直接换成弧度即可。
+   曾经两个页面都写成 `(d - 90)`，于是预览里的表**整体被逆时针转了 90°**：
+   起点从 7:30 跑到 4:30、缺口从正下方跑到正右方。固件一直是对的，
+   但用户先看到的是预览，于是问"表的方向是否需要向右旋转 90 度"。
+2. **默认主题的满量程弧缺口在正下方**、起点在左下（135°）、`end > start`（顺时针增长）、
+   内圈半径小于外圈 —— 都是汽车仪表的惯例，写错了不报错、只是"看着怪"。
+
+固件那一侧的朝向由 `check-preview-frame.js` 的「表盘朝向」检查兜着：
+它读**真实落帧**，沿弧带扫一圈断言"正下方是缺口、正上方有弧"。
+
 ## 表情阶段表也要对账（`test-face-stages.js`）
 
 ```powershell
@@ -534,10 +560,11 @@ node tools/theme-editor/test-theme-json.js
 | `test-image-blob-build.js` | 打包器单测（Node 直接跑） |
 | `test-face-stages.js` | 解析 `face_stages.h`，与 `face-stages.js` 逐字段对账 |
 | `test-theme-json.js` | 主题方言 + **默认值三处对账** + **两页共用配色**的检查 |
+| `test-gauge-geometry.js` | **表盘朝向**：编辑器的角度换算不许有偏移 + 缺口在正下方 |
 | `syntax-check-pages.js` | 三个页面的内联脚本语法 + 脚本标签配对 + 引用文件存在性检查 |
 | `test-image-roundtrip.ps1` | JS ↔ 固件 的往返一致性测试（**改格式后必跑**） |
 | `make-test-blob.js` | 造"颜色可辨认"的测试镜像，用于宿主机逐像素验证 |
-| `check-preview-frame.js` | 读 pcpreview 落的 BMP，核对图层顺序、透明与数字读数 |
+| `check-preview-frame.js` | 读 pcpreview 落的 BMP：图层顺序、透明、数字读数、**表盘朝向** |
 | `theme-default.json` | 与固件默认值一致的参考主题（可直接当模板改） |
 
 相关（代码在仓库里，不在工具目录）：

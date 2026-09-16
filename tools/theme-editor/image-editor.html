@@ -670,8 +670,24 @@ function arcT(a, st) {
   return clamp01(st.speed / FaceStages.MAX.speed);
 }
 
+// 角度 → canvas 弧度。
+//
+// ★★ 这里**不能加任何偏移**（曾经写成 `(d - 90)`，是个真 bug）:
+//   LVGL 的 lv_arc 约定是 **0° = 3 点钟方向、顺时针增大**，
+//   源码里就是这么算点的（lv_arc.c）:
+//       x = r·sin(angle + 90)   y = r·sin(angle)      // 屏幕 y 向下
+//   angle=0 → (r,0) 就是 3 点钟；angle=90 → (0,r) 就是 6 点钟。
+//   而 canvas 的 arc() 角度约定**完全一样**（0 在 +x 轴、随 y 向下顺时针增大），
+//   所以 d 直接换成弧度即可。
+//   加 -90 的后果:整个表盘在预览里被逆时针转了 90° ——
+//   主题里 135° 起步（7:30）在预览里画到了 4:30，缺口也从正下方跑到正右方。
+//   用户一眼看出来:"表的方向是否需要向右旋转 90 度" —— 正是这个偏移。
+//   固件那边**是对的**（实测落帧:135° 处开始点亮、60°~120° 是缺口），
+//   所以错的一直只是预览。test-gauge-geometry.js 盯着这一行。
+function degToRad(d) { return d * Math.PI / 180; }
+
 function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, valueColor, trackColor, trackOpa) {
-  const rad = d => (d - 90) * Math.PI / 180;
+  const rad = degToRad;
   ctx.beginPath();
   ctx.arc(cx, cy, r, rad(endDeg), rad(startDeg), true);
   ctx.lineWidth = w;
