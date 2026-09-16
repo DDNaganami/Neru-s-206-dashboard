@@ -51,7 +51,9 @@ uint32_t makeBlob(BlobBuf& b, uint8_t count) {
     e.stride_pad = 0;
     e.size = 16;
     e.offset = (uint16_t)off;
-    e.role = (uint16_t)((i == 0) ? ImageRole::Background : ImageRole::BootFrame);
+    // 角色随便给一个"非表情"的固定值即可:这里测的是解析/查找,不是角色语义
+    // (角色语义由 test_role_ids / test_face_role_ids_match_stages 单独钉)
+    e.role = (uint16_t)((i == 0) ? ImageRole::Background : (ImageRole)9);
     e.order = i;
     // 名字:pic00 / pic01 ...
     e.name[0] = 'p'; e.name[1] = 'i'; e.name[2] = 'c';
@@ -126,46 +128,35 @@ static void test_entry_field_offsets(void) {
 // 改编号会让"右屏显示成左屏的表情",而且不报错 —— 所以钉死。
 static void test_role_ids(void) {
   TEST_ASSERT_EQUAL_UINT16(1, (uint16_t)ImageRole::Background);
-  TEST_ASSERT_EQUAL_UINT16(2, (uint16_t)ImageRole::BootFrame);
+  // 左屏(转速表):常态 / 红区 / 巡航 / 运动
   TEST_ASSERT_EQUAL_UINT16(3, (uint16_t)ImageRole::FaceIdle);
   TEST_ASSERT_EQUAL_UINT16(4, (uint16_t)ImageRole::FaceRedline);
-  TEST_ASSERT_EQUAL_UINT16(5, (uint16_t)ImageRole::FaceSurprise);
-  // 右屏(转速表)一整套
-  TEST_ASSERT_EQUAL_UINT16(6, (uint16_t)ImageRole::FaceIdleR);
-  TEST_ASSERT_EQUAL_UINT16(7, (uint16_t)ImageRole::FaceRedlineR);
-  TEST_ASSERT_EQUAL_UINT16(8, (uint16_t)ImageRole::FaceSurpriseR);
-  // ★ 9/10/11/16 是**保留编号**,一律不复用:
-  //   9/10 曾是左右屏的开机图;11/16 曾是左右屏的"眨眼"图(眨眼状态已删除)。
-  //   一旦有人把新角色塞进这几个号,别人已经导出的 image.bin 会突然变成另一个
-  //   角色,而且不报错。所以新角色从 11 往上接、跳过这四个。
   TEST_ASSERT_EQUAL_UINT16(12, (uint16_t)ImageRole::FaceCruise);
   TEST_ASSERT_EQUAL_UINT16(13, (uint16_t)ImageRole::FaceSport);
-  TEST_ASSERT_EQUAL_UINT16(14, (uint16_t)ImageRole::FaceCold);
-  TEST_ASSERT_EQUAL_UINT16(15, (uint16_t)ImageRole::FaceHot);
+  // 右屏(速度表):常态 / 惊喜 / 巡航 / 运动
+  TEST_ASSERT_EQUAL_UINT16(6, (uint16_t)ImageRole::FaceIdleR);
+  TEST_ASSERT_EQUAL_UINT16(8, (uint16_t)ImageRole::FaceSurpriseR);
   TEST_ASSERT_EQUAL_UINT16(17, (uint16_t)ImageRole::FaceCruiseR);
   TEST_ASSERT_EQUAL_UINT16(18, (uint16_t)ImageRole::FaceSportR);
-  TEST_ASSERT_EQUAL_UINT16(19, (uint16_t)ImageRole::FaceColdR);
-  TEST_ASSERT_EQUAL_UINT16(20, (uint16_t)ImageRole::FaceHotR);
 
   // 左屏和右屏的角色必须互不相同(复制粘贴最容易犯的错)
   TEST_ASSERT_TRUE(ImageRole::FaceIdle != ImageRole::FaceIdleR);
-  TEST_ASSERT_TRUE(ImageRole::FaceRedline != ImageRole::FaceRedlineR);
-  TEST_ASSERT_TRUE(ImageRole::FaceSurprise != ImageRole::FaceSurpriseR);
   TEST_ASSERT_TRUE(ImageRole::FaceCruise != ImageRole::FaceCruiseR);
   TEST_ASSERT_TRUE(ImageRole::FaceSport != ImageRole::FaceSportR);
-  TEST_ASSERT_TRUE(ImageRole::FaceCold != ImageRole::FaceColdR);
-  TEST_ASSERT_TRUE(ImageRole::FaceHot != ImageRole::FaceHotR);
 
-  // 保留编号不属于任何角色:imageRoleIsFace 必须把它们排除掉
-  TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)9));
-  TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)10));
-  TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)11));    // 曾是"左屏眨眼"
-  TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)16));    // 曾是"右屏眨眼"
-  TEST_ASSERT_FALSE(imageRoleIsFace(ImageRole::Background));
-  TEST_ASSERT_FALSE(imageRoleIsFace(ImageRole::BootFrame));
+  // ★ 保留编号一个都不能被复用。它们分别是:
+  //   2=开机帧、5=左屏惊喜、7=右屏红区、9/10=开机图、11/16=眨眼图、
+  //   14/15/19/20=冷车/过热图(水温已不参与表情)。
+  //   复用会让别人已导出的 image.bin 里那几张图静默变成别的表情。
+  const uint16_t kReserved[] = {2, 5, 7, 9, 10, 11, 14, 15, 16, 19, 20};
+  for (uint16_t r : kReserved) {
+    TEST_ASSERT_FALSE_MESSAGE(imageRoleIsFace((ImageRole)r),
+                              "保留编号被当成了表情角色");
+  }
+  TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)0));    // 0 = 这屏用不到
+  TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)21));   // 还没分配
   TEST_ASSERT_TRUE(imageRoleIsFace(ImageRole::FaceIdle));
-  TEST_ASSERT_TRUE(imageRoleIsFace(ImageRole::FaceHotR));
-  TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)21));
+  TEST_ASSERT_TRUE(imageRoleIsFace(ImageRole::FaceSportR));
 }
 
 }  // namespace
@@ -290,7 +281,7 @@ static void test_find_role_sorted(void) {
   const uint32_t n = makeBlob(b, 4);
   ImageBlobHeader h;
 
-  // 把 3 张 BootFrame 的 order 故意打乱,验证查找结果按 order 排序
+  // 把 3 张"保留编号 9"的图 order 故意打乱,验证查找结果按 order 排序
   b.hdr.entries[1].order = 30;
   b.hdr.entries[2].order = 10;
   b.hdr.entries[3].order = 20;
@@ -298,7 +289,7 @@ static void test_find_role_sorted(void) {
   TEST_ASSERT_TRUE(imageBlobParse(b.bytes, n, &h));
 
   ImageView v[4];
-  const uint8_t got = imageBlobFindRole(b.bytes, n, h, ImageRole::BootFrame, v, 4);
+  const uint8_t got = imageBlobFindRole(b.bytes, n, h, (ImageRole)9, v, 4);
   TEST_ASSERT_EQUAL_UINT8(3, got);
   TEST_ASSERT_EQUAL_STRING("pic02", v[0].name);   // order 10
   TEST_ASSERT_EQUAL_STRING("pic03", v[1].name);   // order 20
@@ -313,7 +304,7 @@ static void test_find_role_sorted(void) {
   TEST_ASSERT_EQUAL_UINT8(0, imageBlobFindRole(b.bytes, n, h, ImageRole::FaceIdle, v, 4));
 
   // 输出容量小于找到的数量:只写这么多,且不越界
-  const uint8_t partial = imageBlobFindRole(b.bytes, n, h, ImageRole::BootFrame, v, 2);
+  const uint8_t partial = imageBlobFindRole(b.bytes, n, h, (ImageRole)9, v, 2);
   TEST_ASSERT_EQUAL_UINT8(2, partial);
   TEST_ASSERT_EQUAL_STRING("pic02", v[0].name);
   TEST_ASSERT_EQUAL_STRING("pic03", v[1].name);
@@ -446,19 +437,13 @@ static void test_parse_accepts_rgb565a8(void) {
 
 // ★ 屏 ↔ 表情角色的对应:装反了会"右屏显示左屏的脸",而且**不会报错**。
 // 法系车(标致 206 实车):左屏 = 转速表,右屏 = 速度表。
-// 所以**不带 R 后缀**的那组给左屏、**带 R** 的给右屏 ——
-// dash_ui.cpp 的 faceRole() 就是这个映射,这里把分组钉住。
+// 这里只钉住"背景不属于任何一屏"和"两屏的常态不是同一个编号",
+// 更完整的对照见 test_face_role_ids_match_stages(它读 face_stages.h)。
 static void test_face_role_side_mapping(void) {
   TEST_ASSERT_EQUAL_UINT16(3, (uint16_t)ImageRole::FaceIdle);    // 左 = 转速表
-  TEST_ASSERT_EQUAL_UINT16(4, (uint16_t)ImageRole::FaceRedline);
-  TEST_ASSERT_EQUAL_UINT16(5, (uint16_t)ImageRole::FaceSurprise);
   TEST_ASSERT_EQUAL_UINT16(6, (uint16_t)ImageRole::FaceIdleR);   // 右 = 速度表
-  TEST_ASSERT_EQUAL_UINT16(7, (uint16_t)ImageRole::FaceRedlineR);
-  TEST_ASSERT_EQUAL_UINT16(8, (uint16_t)ImageRole::FaceSurpriseR);
-  // 左右两组必须是**不同**的编号(复制粘贴最容易犯的错)
   TEST_ASSERT_TRUE(ImageRole::FaceIdle != ImageRole::FaceIdleR);
-  // 背景两屏共用一张,不属于任何一屏
-  TEST_ASSERT_EQUAL_UINT16(1, (uint16_t)ImageRole::Background);
+  TEST_ASSERT_EQUAL_UINT16(1, (uint16_t)ImageRole::Background);  // 背景两屏共用
 }
 
 // face_stages.h 的 kFaceRoleId 与 image_blob.h 的 ImageRole **逐条比对**。
@@ -467,29 +452,31 @@ static void test_face_role_side_mapping(void) {
 // "右屏显示左屏的脸"或"巡航显示成红区",而且完全不会报错、也不崩。
 // 所以这里不靠注释,靠断言。
 static void test_face_role_ids_match_stages(void) {
-  struct { int slot; ImageRole L, R; } kExpect[7] = {
+  // 槽位顺序 = Face 枚举顺序:Idle Cruise Sport Redline Surprise
+  struct { int slot; ImageRole L, R; } kExpect[5] = {
     {0, ImageRole::FaceIdle,     ImageRole::FaceIdleR},      // Idle
     {1, ImageRole::FaceCruise,   ImageRole::FaceCruiseR},    // Cruise
     {2, ImageRole::FaceSport,    ImageRole::FaceSportR},     // Sport
-    {3, ImageRole::FaceRedline,  ImageRole::FaceRedlineR},   // Redline
-    {4, ImageRole::FaceSurprise, ImageRole::FaceSurpriseR},  // Surprise
-    {5, ImageRole::FaceCold,     ImageRole::FaceColdR},      // Cold
-    {6, ImageRole::FaceHot,      ImageRole::FaceHotR},       // Hot
+    {3, ImageRole::FaceRedline,  (ImageRole)0},              // Redline:只有左屏有
+    {4, (ImageRole)0,            ImageRole::FaceSurpriseR},  // Surprise:只有右屏有
   };
-  // 槽位顺序就是 Face 的枚举顺序,表长必须等于状态数
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Count, kFaceSlotCount);
-  for (int i = 0; i < 7; ++i) {
+  for (int i = 0; i < 5; ++i) {
     TEST_ASSERT_EQUAL_INT(i, kExpect[i].slot);
     TEST_ASSERT_EQUAL_UINT16((uint16_t)kExpect[i].L, kFaceRoleId[0][i]);
     TEST_ASSERT_EQUAL_UINT16((uint16_t)kExpect[i].R, kFaceRoleId[1][i]);
+    // 有编号的必须是真表情;0 表示这屏用不到
+    if (kFaceRoleId[0][i] != 0) TEST_ASSERT_TRUE(imageRoleIsFace((ImageRole)kFaceRoleId[0][i]));
+    if (kFaceRoleId[1][i] != 0) TEST_ASSERT_TRUE(imageRoleIsFace((ImageRole)kFaceRoleId[1][i]));
     // 同一屏里不能有两个状态共用一个角色编号(否则切状态时画面不变)
     for (int j = 0; j < i; ++j) {
-      TEST_ASSERT_TRUE(kFaceRoleId[0][i] != kFaceRoleId[0][j]);
-      TEST_ASSERT_TRUE(kFaceRoleId[1][i] != kFaceRoleId[1][j]);
+      if (kFaceRoleId[0][i] != 0 && kFaceRoleId[0][j] != 0) {
+        TEST_ASSERT_TRUE(kFaceRoleId[0][i] != kFaceRoleId[0][j]);
+      }
+      if (kFaceRoleId[1][i] != 0 && kFaceRoleId[1][j] != 0) {
+        TEST_ASSERT_TRUE(kFaceRoleId[1][i] != kFaceRoleId[1][j]);
+      }
     }
-    // 这些角色必须真的是"表情"(不能被写进保留区 9/10/11/16)
-    TEST_ASSERT_TRUE(imageRoleIsFace((ImageRole)kFaceRoleId[0][i]));
-    TEST_ASSERT_TRUE(imageRoleIsFace((ImageRole)kFaceRoleId[1][i]));
   }
 }
 

@@ -1,15 +1,15 @@
 // 表情阶段表测试（宿主机）
 //
-// 这张表回答的是产品问题:"低/中/高转速、低/中/高水温、低/中/高速度"下,
-// 屏幕上的表情到底换不换、换成哪一张?
+// 这张表回答的是产品问题:"低/中/高/红区转速"、"低/中/高车速"这些阶段下,
+// **左右两屏各自**该显示哪张表情?
 //
 // 为什么值得单独测:
 //   · 网页端(表情导入页)的"阶段模拟"直接读这张表的**镜像**,
-//     它说"高转速 = 红区脸",用户在真车上就该看到红区脸。表错了,
-//     模拟就是在骗人 —— 而模拟是用户唯一能在刷图前看到的证据。
-//   · 9 条用例里有 3 条(水温那组)是**水温驱动表情**这个新行为的唯一文档。
-//   · 阈值很容易互相盖住:比如"转速中"那条如果把转速写成 2600,
-//     它就同时满足了"运动"的下限,用例会红 —— 这正是想要的保护。
+//     它说"转速·中 → 左屏巡航/右屏常态",用户在真车上就该看到这个。
+//     表错了,模拟就是在骗人 —— 而模拟是用户刷图前唯一能看到的证据。
+//   · "每屏一套独立表情"这件事**只能靠断言表达**:表里那些
+//     "右屏恒为常态"的格子如果没人检查,写错了完全不会报错。
+//   · 阈值很容易互相盖住,阶段表是对阈值的第二份独立描述。
 #include <unity.h>
 #include <stdio.h>
 #include <string.h>
@@ -18,8 +18,8 @@
 
 // 一条用例的判定:必须**先清状态机记忆**,否则上一条用例的速度会串成
 // "急加速"(face_update 用相邻两次调用的速度差判定惊喜),用例之间就会互相污染。
-// now 取 1000:小于 3000 的首次眨眼时刻,所以不会撞上 Blink 这个瞬态。
-static Face run_stage(const FaceStage& st) {
+// now 取 1000:固定值即可 —— 稳态只由数据决定,与时刻无关(有单测钉住)。
+static FaceSet run_stage(const FaceStage& st) {
   face_reset();
   VehicleState s;
   s.rpm = st.rpm;
@@ -28,38 +28,88 @@ static Face run_stage(const FaceStage& st) {
   return face_update(s, 1000);
 }
 
-// 9 条阶段用例逐条对账
+// 10 条阶段用例逐条对账(左右两屏都比)
 static void test_stage_table(void) {
-  TEST_ASSERT_EQUAL_UINT8(9, kFaceStageCount);
+  TEST_ASSERT_EQUAL_UINT8(10, kFaceStageCount);
   for (uint8_t i = 0; i < kFaceStageCount; ++i) {
     const FaceStage& st = kFaceStages[i];
-    const Face got = run_stage(st);
-    if (got != st.expect) {
-      // 把是哪条用例打出来 —— 光看"期望 X 得到 Y"根本定位不到阈值
-      char msg[128];
-      snprintf(msg, sizeof(msg), "%s/%s rpm=%.0f spd=%.0f cool=%.0f got=%s want=%s",
+    const FaceSet got = run_stage(st);
+    char msg[160];
+    if (got.left != st.left) {
+      snprintf(msg, sizeof(msg), "%s/%s 左屏 rpm=%.0f spd=%.0f cool=%.0f got=%s want=%s",
                st.group, st.level, st.rpm, st.speed_kmh, st.coolant_c,
-               face_name(got), face_name(st.expect));
+               face_name(got.left), face_name(st.left));
+      TEST_FAIL_MESSAGE(msg);
+    }
+    if (got.right != st.right) {
+      snprintf(msg, sizeof(msg), "%s/%s 右屏 rpm=%.0f spd=%.0f cool=%.0f got=%s want=%s",
+               st.group, st.level, st.rpm, st.speed_kmh, st.coolant_c,
+               face_name(got.right), face_name(st.right));
       TEST_FAIL_MESSAGE(msg);
     }
   }
 }
 
-// 三条"低中高"必须真的给出**不同**的表情,否则这张表就白列了
-// (用户的原话是"低中高下不同的表情展现")。
-static void test_levels_differ_within_group(void) {
-  const char* groups[3] = {"rpm", "coolant", "speed"};
-  for (int g = 0; g < 3; ++g) {
-    Face seen[3] = {Face::Count, Face::Count, Face::Count};
+// ★ 每条用例的水温/转速/车速必须与**实测**结果自洽 —— 表是手写的,
+//   写错一格就会被 run_stage 抓到(这条与 test_stage_table 互补:
+//   那条查"表 ↔ 状态机",这条查"表自己有没有自相矛盾")。
+static void test_stage_values_are_consistent(void) {
+  for (uint8_t i = 0; i < kFaceStageCount; ++i) {
+    const FaceStage& st = kFaceStages[i];
+    // 转速组:速度必须是 0(否则速度表也会动)
+    if (strcmp(st.group, "rpm") == 0) {
+      TEST_ASSERT_EQUAL_FLOAT_MESSAGE(0.0f, st.speed_kmh, "转速组的速度必须是 0");
+    }
+    // 速度组:转速必须是怠速(否则转速表也会动)
+    if (strcmp(st.group, "speed") == 0) {
+      TEST_ASSERT_EQUAL_FLOAT_MESSAGE(900.0f, st.rpm, "速度组的转速必须是怠速 900");
+    }
+    // 水温组:两屏表情都必须是不变的常态
+    if (strcmp(st.group, "coolant") == 0) {
+      TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle, (uint8_t)st.left);
+      TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle, (uint8_t)st.right);
+    }
+  }
+}
+
+// ★★ "每屏一套独立表情"的可执行定义:
+//    · 转速组的**右屏**必须恒为常态(车速一直是 0)
+//    · 速度组的**左屏**必须恒为常态(转速一直是怠速)
+//    · 水温组两屏都恒为常态
+//    同时被驱动的那一屏必须真的**变**(低/中/高给出不同的脸)。
+static void test_only_own_gauge_moves_own_screen(void) {
+  for (uint8_t i = 0; i < kFaceStageCount; ++i) {
+    const FaceStage& st = kFaceStages[i];
+    const FaceSet got = run_stage(st);
+    char msg[128];
+    if (strcmp(st.group, "rpm") == 0) {
+      snprintf(msg, sizeof(msg), "转速·%s 让右屏(速度表)动了", st.level);
+      TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Idle, (uint8_t)got.right, msg);
+    } else if (strcmp(st.group, "speed") == 0) {
+      snprintf(msg, sizeof(msg), "速度·%s 让左屏(转速表)动了", st.level);
+      TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Idle, (uint8_t)got.left, msg);
+    } else {
+      snprintf(msg, sizeof(msg), "水温·%s 让表情动了(水温不该参与表情)", st.level);
+      TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Idle, (uint8_t)got.left, msg);
+      TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Idle, (uint8_t)got.right, msg);
+    }
+  }
+}
+
+// 被驱动的那一屏,各档必须给出**不同**的表情(否则这张表白列)
+static void test_driven_screen_differs_within_group(void) {
+  const char* groups[2] = {"rpm", "speed"};
+  for (int g = 0; g < 2; ++g) {
+    Face seen[4];
     int n = 0;
-    for (uint8_t i = 0; i < kFaceStageCount && n < 3; ++i) {
+    for (uint8_t i = 0; i < kFaceStageCount; ++i) {
       if (strcmp(kFaceStages[i].group, groups[g]) == 0) {
-        seen[n++] = kFaceStages[i].expect;
+        seen[n++] = (g == 0) ? kFaceStages[i].left : kFaceStages[i].right;
       }
     }
-    TEST_ASSERT_EQUAL_INT(3, n);
-    for (int a = 0; a < 3; ++a) {
-      for (int b = a + 1; b < 3; ++b) {
+    TEST_ASSERT_TRUE(n >= 3);
+    for (int a = 0; a < n; ++a) {
+      for (int b = a + 1; b < n; ++b) {
         if (seen[a] == seen[b]) {
           char msg[96];
           snprintf(msg, sizeof(msg), "%s 组里有两档用了同一张表情(%s)",
@@ -67,35 +117,6 @@ static void test_levels_differ_within_group(void) {
           TEST_FAIL_MESSAGE(msg);
         }
       }
-    }
-  }
-}
-
-// ★ 每组只能变**自己那一维**,另外两维必须固定。
-//
-// 这条是用户实际试用时抓出来的:原来"速度组"把转速也一起写成 1500/2600
-// (为了借转速凑出巡航/运动脸),结果他在阶段模拟里点"速度·中"时,
-// **转速表跟着一起动** —— 画面里两个表同时变,根本看不出这一档改了什么。
-//
-// 正确做法是让每组只动自己那一维:速度 ≥30/≥90 这两条阈值本身就够给出
-// 巡航/运动,不需要借转速。所以速度组固定 rpm=900(怠速)、水温组固定 speed=0,
-// 转速组固定 speed=0。
-static void test_stage_groups_isolate_one_dimension(void) {
-  for (uint8_t i = 0; i < kFaceStageCount; ++i) {
-    const FaceStage& st = kFaceStages[i];
-    char msg[128];
-    if (strcmp(st.group, "speed") == 0) {
-      snprintf(msg, sizeof(msg), "速度组 %s 不应改转速(转速表会跟着动)", st.level);
-      TEST_ASSERT_EQUAL_FLOAT_MESSAGE(900.0f, st.rpm, msg);
-    } else if (strcmp(st.group, "rpm") == 0) {
-      snprintf(msg, sizeof(msg), "转速组 %s 不应改速度(速度表会跟着动)", st.level);
-      TEST_ASSERT_EQUAL_FLOAT_MESSAGE(0.0f, st.speed_kmh, msg);
-    }
-    // 三组都不该把水温当作"顺带变的量" —— 水温只由水温组负责
-    if (strcmp(st.group, "coolant") != 0) {
-      snprintf(msg, sizeof(msg), "%s 组 %s 不应改水温(水温数字/内弧会跟着动)",
-               st.group, st.level);
-      TEST_ASSERT_EQUAL_FLOAT_MESSAGE(85.0f, st.coolant_c, msg);
     }
   }
 }
@@ -112,7 +133,6 @@ static void test_fallback_chain(void) {
       if (s == (int8_t)Face::Idle) reachesIdle = true;
     }
     TEST_ASSERT_TRUE(reachesIdle);
-    // 链里不能有重复项(重复 = 白占一格,真正的备选被挤掉了)
     for (int a = 0; a < 4; ++a) {
       for (int b = a + 1; b < 4; ++b) {
         TEST_ASSERT_TRUE(kFaceFallback[slot][a] != kFaceFallback[slot][b]);
@@ -128,16 +148,51 @@ static void test_slot_index_equals_face(void) {
   TEST_ASSERT_EQUAL_UINT8(2, (uint8_t)Face::Sport);
   TEST_ASSERT_EQUAL_UINT8(3, (uint8_t)Face::Redline);
   TEST_ASSERT_EQUAL_UINT8(4, (uint8_t)Face::Surprise);
-  TEST_ASSERT_EQUAL_UINT8(5, (uint8_t)Face::Cold);
-  TEST_ASSERT_EQUAL_UINT8(6, (uint8_t)Face::Hot);
-  TEST_ASSERT_EQUAL_UINT8(7, (uint8_t)Face::Count);
+  TEST_ASSERT_EQUAL_UINT8(5, (uint8_t)Face::Count);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Count, kFaceSlotCount);
+}
+
+// ★ 每屏声明的状态集合 ↔ 角色编号表:两边必须严丝合缝。
+//   不一致的后果是"某个状态永远显示不出来"或"某张图永远不会被用",
+//   两种都不会报错 —— 所以必须机器校验。
+static void test_screen_state_sets(void) {
+  struct { uint8_t screen; const Face* list; const char* name; } kScreens[2] = {
+    {0, kFaceLeftStates, "左屏(转速表)"},
+    {1, kFaceRightStates, "右屏(速度表)"},
+  };
+  for (int i = 0; i < 2; ++i) {
+    const uint8_t screen = kScreens[i].screen;
+    bool listed[8] = {false};
+    for (uint8_t k = 0; k < kFaceStatesPerScreen; ++k) {
+      const uint8_t slot = (uint8_t)kScreens[i].list[k];
+      TEST_ASSERT_TRUE(slot < kFaceSlotCount);
+      listed[slot] = true;
+      char msg[96];
+      snprintf(msg, sizeof(msg), "%s 声明会产生 %s,但没有对应的图片角色号",
+               kScreens[i].name, face_name(kScreens[i].list[k]));
+      TEST_ASSERT_TRUE_MESSAGE(kFaceRoleId[screen][slot] != 0, msg);
+    }
+    // 没声明的状态必须是"不用"(0),否则那张图永远不会被显示
+    for (uint8_t slot = 0; slot < kFaceSlotCount; ++slot) {
+      if (listed[slot]) continue;
+      char msg[96];
+      snprintf(msg, sizeof(msg), "%s 不会产生 %s,却给了角色号 %u(那张图永远不会被用到)",
+               kScreens[i].name, face_name((Face)slot), kFaceRoleId[screen][slot]);
+      TEST_ASSERT_EQUAL_UINT16_MESSAGE(0, kFaceRoleId[screen][slot], msg);
+    }
+  }
+  // 每屏声明的状态数必须一样多(现在左右各 4 个 —— 图片是按"每屏 4 张"规划的)
+  TEST_ASSERT_EQUAL_UINT8(4, kFaceStatesPerScreen);
+  TEST_ASSERT_EQUAL_UINT8(4, (uint8_t)(sizeof(kFaceLeftStates) / sizeof(Face)));
+  TEST_ASSERT_EQUAL_UINT8(4, (uint8_t)(sizeof(kFaceRightStates) / sizeof(Face)));
 }
 
 void register_face_stage_tests(void) {
   RUN_TEST(test_stage_table);
-  RUN_TEST(test_levels_differ_within_group);
-  RUN_TEST(test_stage_groups_isolate_one_dimension);
+  RUN_TEST(test_stage_values_are_consistent);
+  RUN_TEST(test_only_own_gauge_moves_own_screen);
+  RUN_TEST(test_driven_screen_differs_within_group);
   RUN_TEST(test_fallback_chain);
   RUN_TEST(test_slot_index_equals_face);
+  RUN_TEST(test_screen_state_sets);
 }

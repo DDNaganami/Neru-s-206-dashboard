@@ -214,11 +214,12 @@ function unhex(s) { return parseInt(s.replace("#", ""), 16) & 0xFFFFFF; }
 // 预览用的模拟数值（真机上来自车速/转速/水温）。
 // 既要有画弧用的百分比,也要有**读数用的原值** —— 数字显示的是原值,
 // 拿百分比反算会多一次舍入,和固件对不上。
+// faceL / faceR 是**两屏各自的表情**(每屏一套独立状态机)。
 const SIM_MAX = { speed: 210, rpm: 7000, coolant: 130 };
 const SIM = {
   speed_t: 0.55, rpm_t: 0.42, coolant_t: 0.6,
   speed: 115, rpm: 2900, coolant: 88,
-  face: "Idle"
+  faceL: "Idle", faceR: "Idle"
 };
 
 // 把一路数据的原值换算成弧的百分比(与固件 arc_progress 同一套)
@@ -230,7 +231,8 @@ function simFromStage(st) {
   SIM.speed_t = Math.max(0, Math.min(1, st.speed / SIM_MAX.speed));
   const lo = T.coolant_min_c, hi = T.coolant_max_c;
   SIM.coolant_t = Math.max(0, Math.min(1, (st.coolant - lo) / Math.max(1, hi - lo)));
-  SIM.face = st.face;
+  SIM.faceL = st.left;
+  SIM.faceR = st.right;
 }
 
 // 读数格式化 —— 必须与固件 dash_ui.cpp 的 readout_value()/unit_text() 一致:
@@ -279,17 +281,17 @@ function valueT(kind, v) {
 }
 
 // ---------------- 画表情（占位形状,与 theme 的几何字段对应） ----------------
-// ★ 这是**程序化占位表情**,不是导入的表情图。7 个状态里它只能表达"眯眼/
-//   睁大眼/张嘴/红底"这几种差别,冷车和过热在占位表情上分不出来 ——
-//   那两张的差别只有导入图片后才存在。要看导入后的效果请去「表情导入」页。
+// ★ 这是**程序化占位表情**,不是导入的表情图。状态里它只能表达"眯眼/睁大眼/
+//   张嘴/红底"这几种差别 —— 要看导入的表情图在各阶段长什么样,
+//   请去「表情导入」页的「表情阶段模拟」。
+// ★ 两屏的状态集合不一样(左:常态/巡航/运动/红区;右:常态/巡航/运动/惊喜),
+//   所以这里按状态名给形状,两边都能用。
 function faceShapeOpts(faceKey) {
   switch (faceKey) {
     case "Cruise":   return { narrow: true };
     case "Sport":    return { narrow: true };
     case "Redline":  return { narrow: true, redline: true };
     case "Surprise": return { surprise: true };
-    case "Cold":     return { narrow: true };
-    case "Hot":      return { narrow: true, redline: true };   // 过热按告警色
     default:         return {};                                // Idle:常态脸
   }
 }
@@ -412,7 +414,10 @@ function drawScreen(canvas, screenIdx, theme, v, opts) {
   }
 
   if (sc.show_face && !(opts && opts.hideFace)) {
-    const shape = faceShapeOpts((opts && opts.faceKey) || SIM.face);
+    // ★ **每屏各取各的表情**:左屏用 faceL、右屏用 faceR ——
+    //   两屏是独立状态机(左看转速、右看车速),预览必须跟着分开
+    const auto = (screenIdx === 0) ? SIM.faceL : SIM.faceR;
+    const shape = faceShapeOpts((opts && opts.faceKey) || auto);
     // 开机动画期间固定用常态脸覆盖阶段表情(与固件 boot_apply 一致)
     if (opts && opts.surprise) shape.surprise = true;
     drawFace(ctx, cx, cy, theme, shape);
@@ -676,12 +681,13 @@ function buildStageSelect() {
   const sel = document.getElementById("stage");
   sel.innerHTML = "";
   FaceStages.STAGES.forEach((st, i) => {
-    const g = FaceStages.GROUPS.filter(x => x.key === st.group)[0];
+    const g = FaceStages.group(st.group);
     const o = document.createElement("option");
     o.value = String(i);
     o.textContent = g.label + " · " + g.levels[st.level] + "（" +
-                    FaceStages.stageValueText(st) + "）→ " +
-                    FaceStages.face(st.face).label;
+                    FaceStages.stageValueText(st) + "）→ 左:" +
+                    FaceStages.stateLabel("left", st.left) + " / 右:" +
+                    FaceStages.stateLabel("right", st.right);
     sel.appendChild(o);
   });
   sel.addEventListener("change", () => {
@@ -692,13 +698,18 @@ function buildStageSelect() {
 
 function updateStageInfo() {
   const el = document.getElementById("stage-info");
-  const st = FaceStages.STAGES.find(s => s.face === SIM.face);
-  const f = FaceStages.face(SIM.face);
+  const st = FaceStages.STAGES.find(s =>
+    s.left === SIM.faceL && s.right === SIM.faceR);
+  const g = st ? FaceStages.group(st.group) : null;
   el.textContent =
-    "当前阶段表情：" + f.label + "（" + SIM.face + "）" +
-    " · 左屏用图角色 " + f.roleL + " / 右屏 " + f.roleR +
-    "，缺图时按降级链退到常态。导入图片请用「表情导入」页。";
-  if (st) el.textContent += " 水温 " + st.coolant + " ℃、转速 " + st.rpm + " rpm。";
+    "两屏各自独立：左屏(转速表) " + FaceStages.stateLabel("left", SIM.faceL) +
+    " · 右屏(速度表) " + FaceStages.stateLabel("right", SIM.faceR) +
+    "（水温不参与表情）";
+  if (st && g) {
+    el.textContent += "｜当前阶段：" + g.label + " · " + g.levels[st.level] +
+                      "（" + FaceStages.stageValueText(st) + "）";
+  }
+  el.textContent += "｜导入表情图请用「表情导入」页。";
 }
 
 // ---------------- 渲染 ----------------

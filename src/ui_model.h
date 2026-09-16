@@ -9,7 +9,11 @@ struct ArcDashView {
   float fuel_pct;
   uint8_t center_mode;
   float center_phase;
-  Face face;
+
+  // ★ 表情是**每屏一套**:左屏(转速表)只看转速,右屏(速度表)只看车速。
+  //   所以这里是两个表情,不是一个 —— 传给 dash_ui 时按屏取。
+  Face face_left;
+  Face face_right;
 
   // 原始值(数字读数用)。
   // ★ 不要用 speed_t * kSpeedMax 反算:那是**百分比**,越界时被钳到 0/1,
@@ -33,6 +37,8 @@ inline ArcDashView make_view(const VehicleState& s, uint32_t now_ms) {
   v.rpm = s.rpm;
   v.center_mode = 1;
   v.center_phase = (now_ms % 2000) / 2000.0f;
-  v.face = face_update(s, now_ms);
+  const FaceSet fs = face_update(s, now_ms);
+  v.face_left = fs.left;
+  v.face_right = fs.right;
   return v;
 }

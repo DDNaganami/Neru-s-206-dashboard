@@ -69,14 +69,18 @@
   .stages h2{font-size:13px;margin:0;color:var(--accent);text-transform:uppercase;
              letter-spacing:.06em;font-weight:600}
   .h2line{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
-  .stage-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
-              gap:10px;margin-top:10px;max-width:760px}
+  .stage-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+              gap:10px;margin-top:10px}
   .stage-cell{background:#0e1016;border:1px solid var(--line);border-radius:8px;
               padding:8px;cursor:pointer;text-align:center}
   .stage-cell.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
   .stage-cell canvas{width:100%;height:auto;border-radius:50%;display:block;background:#000}
+  /* 一格里并排两块表:左=转速表,右=速度表 —— 一眼看出这一档动了哪一屏 */
+  .stage-cell .pair{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:start}
+  .stage-cell .dial{min-width:0}
+  .stage-cell .dcap{font-size:11px;color:var(--dim);margin-top:4px}
   .stage-cell .t{font-size:12px;margin-top:6px;color:var(--text)}
-  .stage-cell .r{font-size:11px;color:var(--dim);margin-top:2px}
+  .stage-cell .r{font-size:11px;color:var(--dim);margin-top:2px;text-align:left}
   .stage-cell .miss{color:var(--warn)}
   .stage-cell .none{color:#ff9c9c}
 </style>
@@ -119,11 +123,18 @@
         <select id="stage"></select>
       </div>
       <div class="row">
-        <label>表情状态</label>
-        <select id="face-state"></select>
+        <label>左屏表情</label>
+        <select id="face-left"></select>
+        <span class="hint" style="color:var(--dim);font-size:12px">默认跟随阶段</span>
+      </div>
+      <div class="row">
+        <label>右屏表情</label>
+        <select id="face-right"></select>
         <span class="hint" style="color:var(--dim);font-size:12px">默认跟随阶段</span>
       </div>
       <div class="hint" style="color:var(--dim);font-size:12px">
+        <b>两屏各自独立</b>：左屏(转速表)只跟转速、右屏(速度表)只跟车速，
+        水温不参与表情（只改水温弧和水温数字）。<br>
         开机画面不在这里：它是程序化扫表动画（淡入 → 扫表 → 显形），不占图片资源。
       </div>
     </section>
@@ -233,30 +244,25 @@ let nextId = 1;
 let theme = { bg: "#141414" };
 
 // 角色:与 image_blob.h 的 ImageRole 一致。
-// ★ 左右屏分开列(法系车:左=转速表,右=速度表),两表用不同的表情差分。
+// ★ 左右屏分开列(法系车:左=转速表,右=速度表),**两屏的状态不一样**:
+//     左屏(转速表,只看转速):常态 / 巡航 / 运动 / 红区
+//     右屏(速度表,只看车速):常态 / 巡航 / 运动 / 惊喜
+//   一共 8 张 —— 正好是 1MB 分区能装下的规模(240×240 一张 169KB)。
 //   编号错位会让"右屏显示成左屏的",而且不报错,
 //   所以 C 侧有一条 test_role_ids 专门钉住这组编号。
-// ★ 一套表情是 **7 个状态各一张**(状态见 face-stages.js 的 FACES)。
-//   只导入 3 张(常态/红区/惊喜)也能用 —— 缺的那几个状态会自动降级到
-//   最接近的那张(降级链见 face-stages.js 的 FALLBACK,与固件同源)。
-// ★ 保留编号 2/9/10/11/16 不列出来、也不复用:9/10 曾是开机图,
-//   11/16 曾是"眨眼"图(眨眼状态已删除)。开机画面是程序化扫表动画,不占图片。
+// ★ 保留编号 2/5/7/9/10/11/14/15/16/19/20 不列出来、也不复用
+//   (当年的开机帧、左屏惊喜、右屏红区、开机图、眨眼图、冷车/过热图)。
+//   开机画面是程序化扫表动画,不占图片。
 const ROLES = [
   { id: ImageBlob.ROLE.Background,     label: "表盘背景（两屏通用）" },
-  { id: ImageBlob.ROLE.FaceIdle,       label: "左屏表情 · 常态" },
-  { id: ImageBlob.ROLE.FaceCruise,     label: "左屏表情 · 巡航" },
-  { id: ImageBlob.ROLE.FaceSport,      label: "左屏表情 · 运动" },
-  { id: ImageBlob.ROLE.FaceRedline,    label: "左屏表情 · 红区" },
-  { id: ImageBlob.ROLE.FaceSurprise,   label: "左屏表情 · 惊喜" },
-  { id: ImageBlob.ROLE.FaceCold,       label: "左屏表情 · 冷车（水温低）" },
-  { id: ImageBlob.ROLE.FaceHot,        label: "左屏表情 · 过热（水温高）" },
-  { id: ImageBlob.ROLE.FaceIdleR,      label: "右屏表情 · 常态" },
-  { id: ImageBlob.ROLE.FaceCruiseR,    label: "右屏表情 · 巡航" },
-  { id: ImageBlob.ROLE.FaceSportR,     label: "右屏表情 · 运动" },
-  { id: ImageBlob.ROLE.FaceRedlineR,   label: "右屏表情 · 红区" },
-  { id: ImageBlob.ROLE.FaceSurpriseR,  label: "右屏表情 · 惊喜" },
-  { id: ImageBlob.ROLE.FaceColdR,      label: "右屏表情 · 冷车（水温低）" },
-  { id: ImageBlob.ROLE.FaceHotR,       label: "右屏表情 · 过热（水温高）" }
+  { id: ImageBlob.ROLE.FaceIdle,       label: "左屏(转速表) · 常态" },
+  { id: ImageBlob.ROLE.FaceCruise,     label: "左屏(转速表) · 巡航" },
+  { id: ImageBlob.ROLE.FaceSport,      label: "左屏(转速表) · 运动" },
+  { id: ImageBlob.ROLE.FaceRedline,    label: "左屏(转速表) · 红区" },
+  { id: ImageBlob.ROLE.FaceIdleR,      label: "右屏(速度表) · 常态" },
+  { id: ImageBlob.ROLE.FaceCruiseR,    label: "右屏(速度表) · 巡航" },
+  { id: ImageBlob.ROLE.FaceSportR,     label: "右屏(速度表) · 运动" },
+  { id: ImageBlob.ROLE.FaceSurpriseR,  label: "右屏(速度表) · 惊喜" }
 ];
 
 const FITS = [
@@ -276,7 +282,7 @@ const SIZE_PRESETS = [240, 320, 360, 480];
 //   以后加状态不需要回来改这里(改了也容易漏,漏了不会报错,只会黑边)。
 const FACE_ROLES = (function () {
   const s = new Set();
-  FaceStages.FACES.forEach(f => { s.add(f.roleL); s.add(f.roleR); });
+  FaceStages.SCREENS.forEach(sc => sc.states.forEach(x => s.add(x.role)));
   return s;
 })();
 
@@ -586,18 +592,21 @@ function drawScreen(cv, which, stage, faceKeyOverride) {
                                    stageT(kinds[i], stage), a.color));
   }
 
-  // 3. 表情图（最上层，左右屏各一套）
-  const faceKey = faceKeyOverride || stage.face;
+  // 3. 表情图（最上层）
+  // ★ **每屏各取各的状态**:左屏看 stage.left、右屏看 stage.right ——
+  //   这就是"每屏一套独立表情"在预览里的体现。
+  const faceKey = faceKeyOverride || FaceStages.faceOf(stage, which);
   const r = pickFaceResolved(which, faceKey);
   if (r.item) blitCentered(ctx, r.item, cx, cy, cv.width, cv.height);
 }
 
 // ------------------------------------------------------------
-// 阶段模拟:9 档 × (左右屏) 的小图 + "该用哪张图"的文字
+// 阶段模拟:每一档并排画**左右两屏**,看"这一档到底动了哪一屏"
 //
 // 这是"表情导入"最需要的一块:图导进来之后,用户真正想知道的是
-//   "低转速/中转速/高转速、水温高低、速度高低,屏幕上分别长什么样"。
-// 以前只能在脑子里把 7 张图跟 7 个状态对一遍,现在直接摆出来。
+//   "低/中/高转速、车速高低、水温高低,两块表分别长什么样"。
+// 两屏是独立状态机的,所以一格里必须**同时**给出两块表 ——
+// 否则看不出"点车速档时转速表是纹丝不动的"。
 // ------------------------------------------------------------
 const ARC_KIND_SPEED = 0, ARC_KIND_RPM = 1, ARC_KIND_COOLANT = 2;
 // 与固件一致:水温弧的进度按主题量程 60..130 换算(这里是默认量程)
@@ -611,61 +620,92 @@ function stageT(kind, st) {
 function clamp01(x) { return Math.max(0, Math.min(1, x)); }
 
 let curStage = 0;                 // 当前阶段(STAGES 的下标)
-let stageFaceOverride = "";       // 表情状态下拉的覆盖值("" = 跟随阶段)
+let stageFaceOverride = ["", ""]; // [左,右] 表情下拉的覆盖值("" = 跟随阶段)
 
 function roleName(role) {
   return ImageBlob.ROLE_NAMES[role] || ("角色 " + role);
 }
 
-// 一格小图:左屏表盘 + 阶段标签 + "该用哪张图"
+// 一行"该用哪张图"的说明;返回 { text, cls }
+function faceUseText(side, wantKey) {
+  const want = FaceStages.roleFor(side, wantKey);
+  const got = FaceStages.resolve(side, wantKey, hasRole);
+  if (got === null) {
+    return { text: "无图 → 占位表情", cls: "none" };
+  }
+  if (got !== want) {
+    return { text: "缺「" + roleName(want) + "」→ 退到「" + roleName(got) + "」", cls: "miss" };
+  }
+  return { text: "用「" + roleName(got) + "」", cls: "" };
+}
+
+// 一格:两块小表(左转速 / 右车速) + 阶段标签 + 两屏各用什么图
 function buildStageGrid() {
   const grid = document.getElementById("stage-grid");
   grid.innerHTML = "";
 
   FaceStages.STAGES.forEach((st, i) => {
-    const g = FaceStages.GROUPS.filter(x => x.key === st.group)[0];
+    const g = FaceStages.group(st.group);
     const cell = document.createElement("div");
     cell.className = "stage-cell" + (i === curStage ? " on" : "");
 
-    const cv = document.createElement("canvas");
-    cv.width = 240; cv.height = 240;      // 小图,画起来便宜
+    const row = document.createElement("div");
+    row.className = "pair";
+    const cvs = [];
+    for (let side = 0; side < 2; side++) {
+      const wrap = document.createElement("div");
+      wrap.className = "dial";
+      const cv = document.createElement("canvas");
+      cv.width = 200; cv.height = 200;      // 小图,画起来便宜
+      const cap = document.createElement("div");
+      cap.className = "dcap";
+      cap.textContent = FaceStages.SCREENS[side].short + " " +
+                        FaceStages.stateLabel(side, FaceStages.faceOf(st, side));
+      wrap.append(cv, cap);
+      row.appendChild(wrap);
+      cvs.push(cv);
+    }
 
     const t = document.createElement("div");
     t.className = "t";
-    t.textContent = g.label + " · " + g.levels[st.level] + " → " + FaceStages.face(st.face).label;
+    t.textContent = g.label + " · " + g.levels[st.level] +
+                    "（" + FaceStages.stageValueText(st) + "）" +
+                    (g.faces ? "" : " · 不影响表情");
 
     const r = document.createElement("div");
     r.className = "r";
-    const want = FaceStages.roleFor(0, st.face);
-    const got = FaceStages.resolve(0, st.face, hasRole);
-    if (got === null) {
-      r.className = "r none";
-      r.textContent = "左屏没导入任何表情图 → 占位表情";
-    } else if (got !== want) {
-      r.className = "r miss";
-      r.textContent = "缺「" + roleName(want) + "」→ 退到「" + roleName(got) + "」";
-    } else {
-      r.textContent = "用「" + roleName(got) + "」";
+    for (let side = 0; side < 2; side++) {
+      const use = faceUseText(side, FaceStages.faceOf(st, side));
+      const line = document.createElement("div");
+      line.className = use.cls;
+      line.textContent = FaceStages.SCREENS[side].short + "：" + use.text;
+      r.appendChild(line);
     }
 
-    cell.append(cv, t, r);
+    cell.append(row, t, r);
     cell.addEventListener("click", () => { curStage = i; refresh(false); });
     grid.appendChild(cell);
 
-    // 小图:把 480 的画布缩到 240 —— 直接按 240 画(坐标系按 cv.width 走)
-    drawScreen(cv, 0, st, stageFaceOverride || null);
+    // 小图:两屏各画一遍(坐标系按 cv.width 走,所以 200 就是 200 基准)
+    for (let side = 0; side < 2; side++) {
+      drawScreen(cvs[side], side, st, stageFaceOverride[side] || null);
+    }
   });
 
   const note = document.getElementById("stage-note");
-  const n = FaceStages.FACES.filter(f => !hasRole(f.roleL)).length;
+  const missing = [];
+  for (let side = 0; side < 2; side++) {
+    const left = FaceStages.statesOf(side).filter(x => !hasRole(x.role)).length;
+    if (left > 0) missing.push(FaceStages.SCREENS[side].short + "屏 " + left + " 个");
+  }
   if (items.length === 0) {
-    note.textContent = "还没有图片:九格画的都是程序化占位表情。导入一张" +
-      "「左屏表情 · 常态」就能让九格全部有脸（其余状态自动降级到它）。";
-  } else if (n > 0) {
-    note.textContent = "左屏还有 " + n + " 个状态没导入图片 —— 它们会退到最接近的那一张" +
-      "（表格里橙色的那几格）。这是设计行为:缺图不会让画面空掉。";
+    note.textContent = "还没有图片:每一格画的都是程序化占位表情。" +
+      "导入一张「左屏(转速表) · 常态」就能让左屏全部有脸（其余状态自动降级到它）。";
+  } else if (missing.length) {
+    note.textContent = "还有状态没导入图片 —— " + missing.join("、") +
+      "，它们会退到最接近的那一张（表格里橙色的那几行）。这是设计行为:缺图不会让画面空掉。";
   } else {
-    note.textContent = "左屏 7 个状态都有图了 —— 每一步表情变化都会换成对应的那张。";
+    note.textContent = "两屏各 4 张都齐了 —— 每一步表情变化都会换成对应的那张。";
   }
 }
 
@@ -730,8 +770,9 @@ function budget() {
 function refresh(rebuildGrid = true) {
   buildList();
   const stage = FaceStages.STAGES[curStage] || FaceStages.STAGES[0];
-  drawScreen(document.getElementById("cv0"), 0, stage, stageFaceOverride || null);
-  drawScreen(document.getElementById("cv1"), 1, stage, stageFaceOverride || null);
+  // 大预览也按屏取:左屏看 stage.left、右屏看 stage.right(可被下拉覆盖)
+  drawScreen(document.getElementById("cv0"), 0, stage, stageFaceOverride[0] || null);
+  drawScreen(document.getElementById("cv1"), 1, stage, stageFaceOverride[1] || null);
   if (rebuildGrid) buildStageGrid();
   else syncStageGridHighlight();
   updateStageLabel();
@@ -765,41 +806,50 @@ function refresh(rebuildGrid = true) {
 }
 
 // ------------------------------------------------------------
-// 阶段 / 表情状态 两个下拉框
+// 阶段 / 表情状态 下拉框
 // ------------------------------------------------------------
-// 阶段:9 档,来自 face-stages.js(与固件同源)。
-// 表情状态:7 个状态,默认"跟随阶段";选具体某个状态可以单独检查那张图,
-//   因为 Surprise 是**瞬态、不对应任何阶段**,不给入口就没法预览。
+// 阶段:来自 face-stages.js(与固件同源)。
+// 表情状态:**每屏各一个**下拉 —— 这就是"独立出表情选项":
+//   左屏只列它自己那 4 个状态(常态/巡航/运动/红区),
+//   右屏只列它自己那 4 个(常态/巡航/运动/惊喜),默认"跟随阶段"。
+//   想单独检查某一张图(比如右屏的"惊喜"是瞬态、不对应任何阶段)就选它。
 function buildStageSelects() {
   const sel = document.getElementById("stage");
   sel.innerHTML = "";
   FaceStages.STAGES.forEach((st, i) => {
-    const g = FaceStages.GROUPS.filter(x => x.key === st.group)[0];
+    const g = FaceStages.group(st.group);
     const o = document.createElement("option");
     o.value = String(i);
     o.textContent = g.label + " · " + g.levels[st.level] + "（" +
-                    FaceStages.stageValueText(st) + "）→ " + FaceStages.face(st.face).label;
+                    FaceStages.stageValueText(st) + "）→ 左:" +
+                    FaceStages.stateLabel("left", st.left) + " / 右:" +
+                    FaceStages.stateLabel("right", st.right);
     sel.appendChild(o);
   });
   sel.value = String(curStage);
   sel.addEventListener("change", () => { curStage = +sel.value; refresh(); });
 
-  const fs = document.getElementById("face-state");
-  fs.innerHTML = "";
-  const auto = document.createElement("option");
-  auto.value = ""; auto.textContent = "跟随阶段";
-  fs.appendChild(auto);
-  FaceStages.FACES.forEach(f => {
-    const o = document.createElement("option");
-    o.value = f.key;
-    o.textContent = f.label + "（" + f.key + "）";
-    fs.appendChild(o);
-  });
-  fs.value = stageFaceOverride;
-  fs.addEventListener("change", () => { stageFaceOverride = fs.value; refresh(false); });
+  for (let side = 0; side < 2; side++) {
+    const box = document.getElementById(side === 0 ? "face-left" : "face-right");
+    box.innerHTML = "";
+    const auto = document.createElement("option");
+    auto.value = ""; auto.textContent = "跟随阶段";
+    box.appendChild(auto);
+    FaceStages.statesOf(side).forEach(x => {
+      const o = document.createElement("option");
+      o.value = x.key;
+      o.textContent = x.label + "（" + x.key + "）";
+      box.appendChild(o);
+    });
+    box.value = stageFaceOverride[side];
+    box.addEventListener("change", () => {
+      stageFaceOverride[side] = box.value;
+      refresh(false);
+    });
+  }
 }
 
-// 只更新高亮与信息行(不重画 9 格 —— 点格子时重画整排会闪)
+// 只更新高亮与信息行(不重画整套小图 —— 点格子时重画整排会闪)
 function syncStageGridHighlight() {
   const cells = document.querySelectorAll("#stage-grid .stage-cell");
   cells.forEach((c, i) => c.classList.toggle("on", i === curStage));
@@ -808,24 +858,21 @@ function syncStageGridHighlight() {
 function updateStageLabel() {
   const st = FaceStages.STAGES[curStage];
   if (!st) return;
-  const g = FaceStages.GROUPS.filter(x => x.key === st.group)[0];
-  const key = stageFaceOverride || st.face;
-  const f = FaceStages.face(key);
+  const g = FaceStages.group(st.group);
   const sel = document.getElementById("stage");
   if (sel) sel.value = String(curStage);
 
-  const parts = [];
-  for (const side of [0, 1]) {
-    const want = FaceStages.roleFor(side, key);
-    const got = FaceStages.resolve(side, key, hasRole);
-    const sideName = side === 0 ? "左屏(转速表)" : "右屏(速度表)";
-    if (got === null) parts.push(sideName + "：无图 → 占位表情");
-    else if (got !== want) parts.push(sideName + "：缺「" + roleName(want) + "」→ 退到「" + roleName(got) + "」");
-    else parts.push(sideName + "：「" + roleName(got) + "」");
+  const lines = [g.label + " · " + g.levels[st.level] +
+                 "（" + FaceStages.stageValueText(st) + "）" +
+                 (g.faces ? "" : " —— 水温不影响表情，只改水温弧和水温数字")];
+  for (let side = 0; side < 2; side++) {
+    const key = stageFaceOverride[side] || FaceStages.faceOf(st, side);
+    const use = faceUseText(side, key);
+    lines.push(FaceStages.SCREENS[side].label + "：" +
+               FaceStages.stateLabel(side, key) + " —— " + use.text +
+               (stageFaceOverride[side] ? "（手动指定，不跟随阶段）" : ""));
   }
-  say(g.label + " · " + g.levels[st.level] + "（" + FaceStages.stageValueText(st) + "）" +
-      " → " + f.label + "\n" + parts.join("\n") +
-      (stageFaceOverride ? "\n（表情状态被手动指定为「" + f.label + "」，不跟随阶段）" : ""));
+  say(lines.join("\n"));
 }
 
 // ------------------------------------------------------------

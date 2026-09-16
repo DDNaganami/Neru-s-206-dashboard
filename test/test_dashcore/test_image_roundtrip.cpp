@@ -46,16 +46,18 @@ const uint32_t kRowChars = 2200;
 
 // 角色编号 → 中文名,和 JS 的 ROLE_NAMES 是同一张表。
 // 两边对不上就说明有人只改了一边 —— 这正是要测的。
+// 表里**只列在用角色**:保留编号(2/5/7/9/10/11/14/15/16/19/20)不参与往返测试。
 const char* roleName(uint32_t role) {
   switch ((ImageRole)role) {
     case ImageRole::Background:    return "表盘背景";
-    case ImageRole::BootFrame:     return "开机动画帧";
     case ImageRole::FaceIdle:      return "左屏表情·常态";
     case ImageRole::FaceRedline:   return "左屏表情·红区";
-    case ImageRole::FaceSurprise:  return "左屏表情·惊喜";
+    case ImageRole::FaceCruise:    return "左屏表情·巡航";
+    case ImageRole::FaceSport:     return "左屏表情·运动";
     case ImageRole::FaceIdleR:     return "右屏表情·常态";
-    case ImageRole::FaceRedlineR:  return "右屏表情·红区";
     case ImageRole::FaceSurpriseR: return "右屏表情·惊喜";
+    case ImageRole::FaceCruiseR:   return "右屏表情·巡航";
+    case ImageRole::FaceSportR:    return "右屏表情·运动";
   }
   return "?";
 }

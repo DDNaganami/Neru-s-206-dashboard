@@ -70,66 +70,64 @@ static const uint16_t kImageBlobVersion = 1;
 //   改编号会让已经导出的图片全部错位,所以只修注释语义、不动数字。
 //
 // ---- 一套表情有几张? ----
-// 表情状态一共 7 个(见 lib/dashcore/expression.h 的 Face),**每个状态一张图**。
-// 最早的 3 张(常态/红区/惊喜)编号不动;另外 4 张(巡航/运动/冷车/过热)
-// **从 11 开始接**(9/10/11/16 都是保留编号)。
-// 于是只导入 3 张的老做法继续能用,新状态会自动降级到最近的那张
-// (降级链见 lib/dashcore/face_stages.h 的 kFaceFallback)。
+// **每屏 4 张，一共 8 张**（见 lib/dashcore/face_stages.h）：
+//   左屏(转速表)：常态 / 巡航 / 运动 / 红区   ← 只看转速
+//   右屏(速度表)：常态 / 巡航 / 运动 / 惊喜   ← 只看车速(+急加速瞬态)
+// 两屏**各自独立**：转速表的表情不会被车速影响，反之亦然；
+// 水温两个表都不参与（只驱动弧与数字）。
 //
 //   槽位(Face 枚举顺序)  左屏(转速表)  右屏(速度表)
 //   Idle      常态            3              6
 //   Cruise    巡航           12             17
 //   Sport     运动           13             18
-//   Redline   红区            4              7
-//   Surprise  惊喜            5              8
-//   Cold      冷车           14             19
-//   Hot       过热           15             20
-//   (Background 背景 = 1;2 / 9 / 10 / 11 / 16 保留不用)
+//   Redline   红区            4             —(不用)
+//   Surprise  惊喜           —(不用)         8
+//   (Background 背景 = 1)
+//
+// 为什么从 14 张降到 8 张:1MB 的 image 分区装不下 14 张表情 + 背景
+// (240×240 一张 169KB)。8 张 + 一张 240 背景 ≈ 1.46MB 仍然超,
+// 但降到 192×192 就是 8×108 + 72 = 936KB —— **能装下了**。
+// 所以这次减少状态数是"能放满一整套表情"的前提,不只是省事。
+//
 // ★ 这张表由 lib/dashcore/face_stages.h 的 kFaceRoleId 复述一份,
 //   test_image_blob.cpp 会逐条比对两边 —— 数字对不上不会崩,只会"右屏
 //   显示成左屏的脸",所以必须机器校验。
 enum class ImageRole : uint16_t {
   // ---- 两屏共用 ----
   Background   = 1,   // 表盘背景图（衬在圆弧下面,两屏共用一张）
-  BootFrame    = 2,   // 开机动画的一帧（**已确认不做逐帧**,保留编号不用）
 
-  // ---- 左屏(转速表,带水温表) ----
-  FaceIdle     = 3,   // 表情：常态
-  FaceRedline  = 4,   // 表情：红区
-  FaceSurprise = 5,   // 表情：惊喜
-  FaceCruise   = 12,  // 表情：巡航
-  FaceSport    = 13,  // 表情：运动
-  FaceCold     = 14,  // 表情：冷车(水温低,暖机中)
-  FaceHot      = 15,  // 表情：过热(水温高)
+  // ---- 左屏(转速表) ----
+  FaceIdle     = 3,   // 表情：常态(低转)
+  FaceRedline  = 4,   // 表情：红区(>=6000)
+  FaceCruise   = 12,  // 表情：巡航(>=2500)
+  FaceSport    = 13,  // 表情：运动(>=4500)
 
   // ---- 右屏(速度表) ----
-  FaceIdleR     = 6,  // 表情：常态
-  FaceRedlineR  = 7,  // 表情：红区
-  FaceSurpriseR = 8,  // 表情：惊喜
-  FaceCruiseR   = 17, // 表情：巡航
-  FaceSportR    = 18, // 表情：运动
-  FaceColdR     = 19, // 表情：冷车
-  FaceHotR      = 20, // 表情：过热
+  FaceIdleR     = 6,  // 表情：常态(低速)
+  FaceSurpriseR = 8,  // 表情：惊喜(急加速,瞬态)
+  FaceCruiseR   = 17, // 表情：巡航(>=30)
+  FaceSportR    = 18, // 表情：运动(>=90)
 
-  // ★ 9 / 10 / 11 / 16 **保留、不复用**(见 test_role_ids 的理由):
-  //   9/10 曾是左右屏的开机图;11/16 曾是左右屏的"眨眼"图 ——
-  //   眨眼已从状态机里删掉(与车速/转速/水温都无关,也没法在阶段模拟里体现)。
+  // ★ 以下是**保留编号,一律不复用**(见 test_role_ids):
+  //   2        当年的"开机帧"(开机画面已改成程序化扫表)
+  //   5        左屏"惊喜"(惊喜现在只属于右屏)
+  //   7        右屏"红区"(红区现在只属于左屏)
+  //   9 / 10   当年的左右屏开机图
+  //   11 / 16  当年的左右屏"眨眼"图(眨眼状态已删除)
+  //   14/15/19/20  当年的冷车/过热图(水温不再参与表情)
   //   谁手里有一份那时导出的 image.bin,复用这些编号就会让那几张图
-  //   突然变成别的表情,而且不报错。新角色一律从 11 往上接、跳过这四个。
+  //   突然变成别的表情,而且不报错。**新角色从 21 开始接。**
 };
 
-// 表情角色的**完整清单**。刻意写成一条条枚举而不是"区间 + 排除中间几个洞":
-// 洞会变(9/10/11/16),区间表达式每改一次都要重新想一遍边界,
-// 而这条 switch 漏了哪个编译器(GCC/Clang 的 -Wswitch)会直接报出来。
+// 表情角色的**完整清单**。刻意写成一条条枚举而不是"区间 + 排除一堆洞":
+// 洞会变,区间表达式每改一次都要重新想一遍边界,而这条 switch
+// 漏了哪个编译器(GCC/Clang 的 -Wswitch)会直接报出来。
 inline bool imageRoleIsFace(ImageRole r) {
   switch (r) {
     case ImageRole::FaceIdle:     case ImageRole::FaceCruise:
     case ImageRole::FaceSport:    case ImageRole::FaceRedline:
-    case ImageRole::FaceSurprise: case ImageRole::FaceCold:
-    case ImageRole::FaceHot:      case ImageRole::FaceIdleR:
-    case ImageRole::FaceCruiseR:  case ImageRole::FaceSportR:
-    case ImageRole::FaceRedlineR: case ImageRole::FaceSurpriseR:
-    case ImageRole::FaceColdR:    case ImageRole::FaceHotR:
+    case ImageRole::FaceIdleR:    case ImageRole::FaceCruiseR:
+    case ImageRole::FaceSportR:   case ImageRole::FaceSurpriseR:
       return true;
     default:
       return false;

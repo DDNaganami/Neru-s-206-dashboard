@@ -43,7 +43,7 @@ static uint32_t last_tick_ms = 0;
 
 // ============ 图片资源 ============
 // lv_image_dsc_t 必须由我们持有 —— LVGL 会一直引用它(set_src 不复制)。
-// 每屏一张背景 + 每个表情状态一张,所以是 [2][8]。
+// 每屏一张背景 + 每屏 4 个状态的表情(两屏的状态集合不完全一样,见 face_stages.h)。
 // 下标 = (uint8_t)Face(见 expression.h:枚举顺序就是槽位顺序)。
 static lv_image_dsc_t g_bg_dsc[2];
 static lv_image_dsc_t g_face_dsc[2][kFaceSlotCount];
@@ -56,15 +56,21 @@ static int8_t g_face_slot[2] = {-1, -1};    // 当前正显示哪一张(-1 = 还
 // 槽位 → 角色。角色编号表在 face_stages.h(kFaceRoleId),
 // 那里复述了 image_blob.h 的 ImageRole —— 由宿主机测试逐条比对,
 // 所以"刷进去的表情左右颠倒"这种错不会悄悄发生。
+// ★ 0 表示"这屏用不到这个状态"(左屏没有惊喜、右屏没有红区),
+//   调用方必须把它当"没有图"处理,不能拿去 image_dsc_for_role()。
 static ImageRole faceRole(uint8_t screen, uint8_t slot) {
   return (ImageRole)kFaceRoleId[screen][slot];
+}
+
+static bool faceSlotExists(uint8_t screen, uint8_t slot) {
+  return kFaceRoleId[screen][slot] != 0;
 }
 
 // 该状态该用哪张图:**按降级链找第一张"这屏导入过"的**。
 // 返回槽位下标;这张屏一张表情图都没有 → 返回 -1(交给程序化表情)。
 //
-// 为什么要降级链:一套 8 张图没人会一次凑齐。只导入 3 张(常态/红区/惊喜)时,
-// 巡航/运动/冷车/过热都应该落到常态那张,而不是"图片消失、变回占位圆脸"。
+// 为什么要降级链:一套 8 张图没人会一次凑齐。只导入常态一张时,
+// 巡航/运动/红区都应该落到它,而不是"图片消失、变回占位圆脸"。
 static int faceResolve(uint8_t screen, Face f) {
   const uint8_t slot = (uint8_t)f;
   if (slot >= kFaceSlotCount) return -1;
@@ -73,7 +79,7 @@ static int faceResolve(uint8_t screen, Face f) {
     const int8_t s = chain[i];
     if (s >= 0 && s < (int8_t)kFaceSlotCount && g_face_ok[screen][s]) return s;
   }
-  // 兜底:链里一条都没有(比如只导入了"冷车"一张),有图就用 ——
+  // 兜底:链里一条都没有,有图就用 ——
   // 图片摆在那儿却去画占位表情,才是最差的结果。
   for (uint8_t s = 0; s < kFaceSlotCount; ++s) {
     if (g_face_ok[screen][s]) return s;
@@ -181,12 +187,12 @@ static void face_apply(ScreenUi& ui, Face f) {
   //   注意 early return 必须在 last_face 更新之后 —— 否则每次都会重复判定。
   if (face_apply_image(ui.idx, f)) return;
 
-  // 程序化占位表情:7 个状态里它只能表达"眯眼/睁大眼/张嘴/红底"这几种差别
-  // (冷车与过热在占位表情上分不出来 —— 那两张的差别只有导入图片后才存在)。
+  // 程序化占位表情:5 个状态里它只能表达"眯眼/睁大眼/张嘴/红底"这几种差别
+  // (导入了图片就用图片,这一段只在完全没刷表情图时露脸)。
   const bool surprise = (f == Face::Surprise);
   const bool narrow =
       (f == Face::Cruise || f == Face::Sport || f == Face::Redline);
-  const bool alarm = (f == Face::Redline || f == Face::Hot);
+  const bool alarm = (f == Face::Redline);
 
   lv_obj_set_style_bg_color(ui.face_bg, alarm ? FACE_BG_REDLINE : FACE_BG_IDLE, 0);
 
@@ -391,7 +397,10 @@ void dash_ui_init() {
   for (uint8_t s = 0; s < 2; ++s) {
     g_bg_ok[s] = image_dsc_for_role(ImageRole::Background, &g_bg_dsc[s]);
     for (uint8_t slot = 0; slot < kFaceSlotCount; ++slot) {
-      g_face_ok[s][slot] = image_dsc_for_role(faceRole(s, slot), &g_face_dsc[s][slot]);
+      // 这屏用不到的状态(角色号 0)不要去查图:查也查不到,但会把
+      // "0 号角色"当成一个真实编号传下去,将来加角色时容易踩到。
+      g_face_ok[s][slot] = faceSlotExists(s, slot) &&
+                           image_dsc_for_role(faceRole(s, slot), &g_face_dsc[s][slot]);
     }
   }
 
@@ -461,9 +470,11 @@ void dash_ui_tick(uint32_t now_ms) {
 void dash_ui_render(const ArcDashView& v, uint32_t now) {
   if (now - last_ok_ms >= 1000) {
     last_ok_ms = now;
-    Serial.printf("206 dash ok  spd=%3.0f%% rpm=%3.0f%% coolant=%.0fC face=%s\n",
-                  v.speed_t * 100.0f, v.rpm_t * 100.0f,
-                  v.coolant_c, face_name(v.face));
+    // face= 打的是**左/右两个**:两屏表情各看各的表,只打一个就分不清
+    // 是"转速档没生效"还是"车速档没生效"。
+    Serial.printf("206 dash ok  spd=%3.0f%% rpm=%3.0f%% coolant=%.0fC face=%s/%s\n",
+                  v.speed_t * 100.0f, v.rpm_t * 100.0f, v.coolant_c,
+                  face_name(v.face_left), face_name(v.face_right));
   }
 
   if (g_boot.active(now)) return;   // 开机期间由 boot_apply 接管
@@ -491,8 +502,10 @@ void dash_ui_render(const ArcDashView& v, uint32_t now) {
                                (int32_t)(ui.arc_cur[i] * (a.end_deg - a.start_deg)));
     }
     if (kScreens[s].show_face && ui.face_bg) {
-      // 表情的显隐/形变只在 face_apply 里按状态变化时改一次,这里不重复 set
-      face_apply(ui, v.face);
+      // 表情的显隐/形变只在 face_apply 里按状态变化时改一次,这里不重复 set。
+      // ★ 按屏取:**左屏用转速表的表情,右屏用速度表的表情**。
+      const Face f = (s == 0) ? v.face_left : v.face_right;
+      face_apply(ui, f);
     }
     readout_apply(ui, v);
   }

@@ -60,17 +60,29 @@ function mk(name, role, order, rgba, w, h, alpha) {
   };
 }
 
-const items = [
-  mk("testbg", IB.ROLE.Background, 0, makeBackground(), BG, BG, false),
-  // 左屏(车速表)三态
-  mk("faceL0", IB.ROLE.FaceIdle,     0, makeFace(255, 0, 0),   FACE, FACE, true),  // 红
-  mk("faceL1", IB.ROLE.FaceRedline,  0, makeFace(255, 255, 0), FACE, FACE, true),  // 黄
-  mk("faceL2", IB.ROLE.FaceSurprise, 0, makeFace(0, 255, 0),   FACE, FACE, true),  // 绿
-  // 右屏(转速表)三态 —— 用不同颜色,便于验证"左右屏取的是各自那一套"
-  mk("faceR0", IB.ROLE.FaceIdleR,     0, makeFace(0, 128, 255),   FACE, FACE, true),  // 浅蓝
-  mk("faceR1", IB.ROLE.FaceRedlineR,  0, makeFace(255, 128, 0),   FACE, FACE, true),  // 橙
-  mk("faceR2", IB.ROLE.FaceSurpriseR, 0, makeFace(128, 0, 255),   FACE, FACE, true)   // 紫
+// 8 张表情,每张一个**互不相同**的颜色 —— 这样才能逐像素验证
+// "哪一屏、哪个状态,用的是哪一张图"。
+// 颜色选择的两条约束:
+//   · RGB565 量化后要基本不变(所以用 8 位能整除到 5/6 位的值:0/128/255)
+//   · 不要用背景标记的品红(255,0,255),否则和"表情透明"分不清
+// 左屏(转速表):常态红 / 巡航黄 / 运动绿 / 红区青
+// 右屏(速度表):常态浅蓝 / 巡航橙 / 运动紫 / 惊喜白
+const LEFT_FACES = [
+  { name: "L-idle",    role: IB.ROLE.FaceIdle,    rgb: [255, 0, 0] },
+  { name: "L-cruise",  role: IB.ROLE.FaceCruise,  rgb: [255, 255, 0] },
+  { name: "L-sport",   role: IB.ROLE.FaceSport,   rgb: [0, 255, 0] },
+  { name: "L-redline", role: IB.ROLE.FaceRedline, rgb: [0, 255, 255] }
 ];
+const RIGHT_FACES = [
+  { name: "R-idle",     role: IB.ROLE.FaceIdleR,     rgb: [0, 128, 255] },
+  { name: "R-cruise",   role: IB.ROLE.FaceCruiseR,   rgb: [255, 128, 0] },
+  { name: "R-sport",    role: IB.ROLE.FaceSportR,    rgb: [128, 0, 255] },
+  { name: "R-surprise", role: IB.ROLE.FaceSurpriseR, rgb: [255, 255, 255] }
+];
+
+const items = [mk("testbg", IB.ROLE.Background, 0, makeBackground(), BG, BG, false)]
+  .concat(LEFT_FACES.map(f => mk(f.name, f.role, 0, makeFace(...f.rgb), FACE, FACE, true)))
+  .concat(RIGHT_FACES.map(f => mk(f.name, f.role, 0, makeFace(...f.rgb), FACE, FACE, true)));
 
 const res = IB.build(items);
 const outPath = process.argv[2] || "test-image.bin";
@@ -82,3 +94,5 @@ console.log("背景: 大小 " + BG + "x" + BG + " 暗蓝(0,0,96);中心标记 " 
             " 品红(255,0,255) @ (" + BG_MARK.x0 + "," + BG_MARK.y0 + ")");
 console.log("表情: 大小 " + FACE + "x" + FACE + ",四周 " + FACE_BORDER +
             "px 透明,中心 " + FACE_CENTER + "x" + FACE_CENTER + " 纯色");
+for (const f of LEFT_FACES) console.log("  左屏 " + f.role + " " + f.name + " = rgb(" + f.rgb.join(",") + ")");
+for (const f of RIGHT_FACES) console.log("  右屏 " + f.role + " " + f.name + " = rgb(" + f.rgb.join(",") + ")");

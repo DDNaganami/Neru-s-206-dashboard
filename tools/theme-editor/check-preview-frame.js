@@ -49,17 +49,22 @@ const dist = (a, b) => Math.max(Math.abs(a.r - b.r), Math.abs(a.g - b.g), Math.a
 // 背景:暗蓝 (0,0,96) → RGB565 量化后实测 #000062(蓝 96→98)
 const BG   = { r: 0x00, g: 0x00, b: 0x62 };
 const MARK = { r: 0xff, g: 0x00, b: 0xff };          // 品红标记(背景里画的)
-const FACE = {
-  idle:     { r: 0xff, g: 0x00, b: 0x00 },           // 左屏常态 = 红
-  redline:  { r: 0xff, g: 0xff, b: 0x00 },           // 左屏红区 = 黄
-  surprise: { r: 0x00, g: 0xff, b: 0x00 }            // 左屏惊喜 = 绿
+
+// ★ 8 个状态各一个颜色,和 make-test-blob.js 写进去的一一对应。
+//   **两屏的状态集合不一样**(左有红区、右有惊喜),所以两张表分开放 ——
+//   这也正是"每屏一套独立表情"要验的东西:
+//   看左屏时如果读到右屏的颜色,说明左右串了。
+const FACE_L = {
+  idle:    { r: 0xff, g: 0x00, b: 0x00 },           // 左屏·常态 = 红
+  cruise:  { r: 0xff, g: 0xff, b: 0x00 },           // 左屏·巡航 = 黄
+  sport:   { r: 0x00, g: 0xff, b: 0x00 },           // 左屏·运动 = 绿
+  redline: { r: 0x00, g: 0xff, b: 0xff }            // 左屏·红区 = 青
 };
-// 右屏(转速表)用的是**另一套**表情图 —— 颜色故意不同,
-// 这样"左右屏各取自己那一套"才验得出来。
 const FACE_R = {
-  idle:     { r: 0x00, g: 0x80, b: 0xff },           // 右屏常态 = 浅蓝
-  redline:  { r: 0xff, g: 0x80, b: 0x00 },           // 右屏红区 = 橙
-  surprise: { r: 0x80, g: 0x00, b: 0xff }            // 右屏惊喜 = 紫
+  idle:     { r: 0x00, g: 0x80, b: 0xff },          // 右屏·常态 = 浅蓝
+  cruise:   { r: 0xff, g: 0x80, b: 0x00 },          // 右屏·巡航 = 橙
+  sport:    { r: 0x80, g: 0x00, b: 0xff },          // 右屏·运动 = 紫
+  surprise: { r: 0xff, g: 0xff, b: 0xff }           // 右屏·惊喜 = 白
 };
 // 弧线色(主题默认):外弧点亮 #39C5FF / 轨道 #232323,轨道 opa=153/255。
 // ★ 轨道是**半透明**的,所以它在背景上的实际颜色 = 轨道色按 153/255 与
@@ -144,9 +149,13 @@ function main() {
   const readoutShown = (process.argv[6] || "yes") !== "no";
   if (!path) { console.error("用法: check-preview-frame.js <bmp> [idle|redline|surprise] [yes|no] [left|right] [yes|no]"); process.exit(2); }
 
-  const table = (side === "right") ? FACE_R : FACE;
+  const table = (side === "right") ? FACE_R : FACE_L;
   const face = table[which];
-  if (!face) { console.error("未知表情: " + which); process.exit(2); }
+  if (!face) {
+    console.error("未知表情: " + which + "（" + (side === "right" ? "右屏" : "左屏") +
+                  " 只有 " + Object.keys(table).join("/") + "）");
+    process.exit(2);
+  }
 
   const img = readBmp(path);
   const checks = [];

@@ -48,20 +48,30 @@ eq(IB.PARTITION_BYTES, 1024 * 1024, "image 分区大小(partitions.csv: 0x100000
 eq(IB.CF.RGB565, 0x12, "LV_COLOR_FORMAT_RGB565");
 
 section("角色编号必须与 image_blob.h 的 ImageRole 一致");
-// 左右屏各一套,编号错位会让"右屏显示成左屏的表情"这种问题查很久
+// 两屏各自独立、状态集合还不一样(左有红区、右有惊喜),编号错位会让
+// "右屏显示成左屏的表情"这种问题查很久
 eq(IB.ROLE.Background, 1, "背景");
-eq(IB.ROLE.BootFrame, 2, "开机动画帧");
+// 左屏(转速表):常态 / 红区 / 巡航 / 运动
 eq(IB.ROLE.FaceIdle, 3, "左屏·常态");
 eq(IB.ROLE.FaceRedline, 4, "左屏·红区");
-eq(IB.ROLE.FaceSurprise, 5, "左屏·惊喜");
+eq(IB.ROLE.FaceCruise, 12, "左屏·巡航");
+eq(IB.ROLE.FaceSport, 13, "左屏·运动");
+// 右屏(速度表):常态 / 惊喜 / 巡航 / 运动
 eq(IB.ROLE.FaceIdleR, 6, "右屏·常态");
-eq(IB.ROLE.FaceRedlineR, 7, "右屏·红区");
 eq(IB.ROLE.FaceSurpriseR, 8, "右屏·惊喜");
-// ★ 9/10 是保留编号(曾是左右屏开机图,已去掉:开机画面走程序化扫表)。
-//   断言它们**没有被定义** —— 一旦有人把新角色塞进去,别人已导出的
-//   image.bin 会突然变成另一个角色,而且不报错。新角色请从 11 开始。
-eq(IB.ROLE.BootLogo, undefined, "9 必须保持保留(不要复用)");
-eq(IB.ROLE.BootLogoR, undefined, "10 必须保持保留(不要复用)");
+eq(IB.ROLE.FaceCruiseR, 17, "右屏·巡航");
+eq(IB.ROLE.FaceSportR, 18, "右屏·运动");
+// ★ 保留编号一律不服复用(2=开机帧、5=左屏惊喜、7=右屏红区、9/10=开机图、
+//   11/16=眨眼图、14/15/19/20=冷车/过热图)。断言它们**没有被定义** ——
+//   一旦有人把新角色塞进去,别人已导出的 image.bin 会突然变成另一个角色,
+//   而且不报错。新角色请从 21 开始。
+for (var reserved of [2, 5, 7, 9, 10, 11, 14, 15, 16, 19, 20]) {
+  eq(Object.values(IB.ROLE).indexOf(reserved) >= 0, false,
+     reserved + " 是保留编号,不能被复用");
+  eq(IB.ROLE_NAMES[reserved], undefined, reserved + " 不该有显示名");
+}
+// 一共 8 张表情 + 1 张背景
+eq(Object.keys(IB.ROLE).length, 9, "角色表里正好 9 项(1 背景 + 8 表情)");
 // 每个角色都要有中文名(界面下拉框要用),漏了会显示成 undefined
 for (var rk in IB.ROLE) {
   ok(IB.ROLE_NAMES[IB.ROLE[rk]] !== undefined, "角色 " + rk + " 要有显示名");

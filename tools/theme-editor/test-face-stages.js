@@ -5,15 +5,18 @@
  *
  * 为什么需要它:
  *   表情导入页的"阶段模拟"直接读 face-stages.js,然后告诉用户
- *   "低转速 = 常态脸 / 高转速 = 红区脸 / 水温高 = 过热脸"。
- *   这是用户刷图之前**唯一能看到的证据**。如果网页那份和固件那份
- *   不一样,预览就是在骗人,而真车上的表现要到刷完图才知道。
+ *   "转速·中 = 左屏巡航脸、右屏常态脸"。这是用户刷图之前**唯一**能看到的证据。
+ *   如果网页那份和固件那份不一样,预览就是在骗人,而真车上的表现要到刷完图才知道。
  *
- * 做法:直接**解析 lib/dashcore/face_stages.h 的源码文本**(那三张表),
+ * 做法:直接**解析 lib/dashcore/face_stages.h 的源码文本**(那几张表),
  * 与 JS 镜像逐字段比对。不搞代码生成 —— 表很小,解析比生成好维护。
  *
+ * ★ 这一轮的重点是"**每屏一套独立表情**":
+ *   两边都必须同意"左屏哪些状态 / 右屏哪些状态",以及"某阶段只有哪一屏会变"。
+ *   这两件事写错了都不会报错(只会有一张脸永远不出现),所以必须机器校验。
+ *
  * 链路闭环(每一环都由某条测试钉住):
- *   face_stages.h ──(本文件)──> face-stages.js ──> 表情导入页
+ *   face_stages.h ──(本文件)──> face-stages.js ──> 表情导入页 / 主题编辑器
  *        │                                              │
  *        └──(test_image_blob.cpp)──> image_blob.h <──────┘
  *                                     ↑
@@ -48,16 +51,16 @@ const stagesH = fs.readFileSync(
 // 解析 face_stages.h
 // ------------------------------------------------------------
 
-// kFaceStages 行:{"group", "level", 转速, 速度, 水温, Face::状态},
+// kFaceStages 行:{"group", "level", 转速, 速度, 水温, Face::左, Face::右},
 const stagesRe =
-  /\{\s*"(\w+)"\s*,\s*"(\w+)"\s*,\s*([\d.]+)f\s*,\s*([\d.]+)f\s*,\s*([\d.]+)f\s*,\s*Face::(\w+)\s*\}/g;
+  /\{\s*"(\w+)"\s*,\s*"(\w+)"\s*,\s*([\d.]+)f\s*,\s*([\d.]+)f\s*,\s*([\d.]+)f\s*,\s*Face::(\w+)\s*,\s*Face::(\w+)\s*\}/g;
 const cppStages = [];
 let m;
 while ((m = stagesRe.exec(stagesH)) !== null) {
   cppStages.push({
     group: m[1], level: m[2],
     rpm: Number(m[3]), speed: Number(m[4]), coolant: Number(m[5]),
-    face: m[6]
+    left: m[6], right: m[7]
   });
 }
 
@@ -68,38 +71,89 @@ while ((m = fallbackRe.exec(stagesH)) !== null) {
   cppFallback.push([m[1], m[2], m[3], m[4]]);
 }
 
-// kFaceRoleId 行:{3, 12, 13, 4, 5, 14, 15},
-// 维度写成 \[2\]\[7\] 是被解析的一部分:状态数从 8 减到 7(删掉眨眼)时,
-// 这里的数字没跟着改就会解析失败 —— 那正是想要的效果。
-const roleRe = /kFaceRoleId\[2\]\[(\d+)\]\s*=\s*\{([\s\S]*?)\};/;
+// kFaceRoleId[2][5] = { {...}, {...} };   ← 0 表示这屏用不到这个状态
+const roleRe = /kFaceRoleId\[(\d+)\]\[(\d+)\]\s*=\s*\{([\s\S]*?)\};/;
 const roleBlock = roleRe.exec(stagesH);
-const cppRoleCount = roleBlock ? Number(roleBlock[1]) : 0;
+const cppRoleDims = roleBlock ? [Number(roleBlock[1]), Number(roleBlock[2])] : [0, 0];
 const cppRoles = [];
 if (roleBlock) {
   const rowRe = /\{([\d,\s]+)\}/g;
   let rm;
-  while ((rm = rowRe.exec(roleBlock[2])) !== null) {
+  while ((rm = rowRe.exec(roleBlock[3])) !== null) {
     cppRoles.push(rm[1].split(",").map(s => Number(s.trim())).filter(n => !isNaN(n)));
   }
 }
 
+// kFaceLeftStates / kFaceRightStates = {Face::A, Face::B, ...};
+function parseStateList(name) {
+  const re = new RegExp(name + "\\[\\]\\s*=\\s*\\{([^}]*)\\}");
+  const hit = re.exec(stagesH);
+  if (!hit) return null;
+  return hit[1].split(",").map(s => s.trim())
+    .map(s => (/^Face::(\w+)$/.exec(s) || [])[1])
+    .filter(Boolean);
+}
+const cppLeftStates = parseStateList("kFaceLeftStates");
+const cppRightStates = parseStateList("kFaceRightStates");
+
 // 解析不出来就说明 face_stages.h 的排版被改了 —— 直接失败,别静默跳过
 section("face_stages.h 可解析");
-ok(cppStages.length === 9, "解析出 9 条阶段用例(得到 " + cppStages.length + ")");
-ok(cppFallback.length === 7, "解析出 7 行降级链(得到 " + cppFallback.length + ")");
-ok(cppRoleCount === 7, "角色编号表的维度是 [2][7](得到 [2][" + cppRoleCount + "])");
-ok(cppRoles.length === 2 && cppRoles[0].length === 7 && cppRoles[1].length === 7,
-   "解析出 2×7 的角色编号表");
-if (cppStages.length !== 9 || cppFallback.length !== 7 || cppRoles.length !== 2) {
+ok(cppStages.length === 10, "解析出 10 条阶段用例(得到 " + cppStages.length + ")");
+ok(cppFallback.length === 5, "解析出 5 行降级链(得到 " + cppFallback.length + ")");
+ok(cppRoleDims[0] === 2 && cppRoleDims[1] === 5,
+   "角色编号表的维度是 [2][5](得到 [" + cppRoleDims.join("][") + "])");
+ok(cppRoles.length === 2 && cppRoles[0].length === 5 && cppRoles[1].length === 5,
+   "解析出 2×5 的角色编号表");
+ok(!!cppLeftStates && cppLeftStates.length === 4, "解析出左屏状态表(4 个)");
+ok(!!cppRightStates && cppRightStates.length === 4, "解析出右屏状态表(4 个)");
+if (cppStages.length !== 10 || cppFallback.length !== 5 || cppRoles.length !== 2 ||
+    !cppLeftStates || !cppRightStates) {
   console.log("\n  ⚠ face_stages.h 里的表格排版被改动了。");
-  console.log("    那三张表的书写格式是被本测试解析的:每行一条,");
-  console.log("    用 {\"...\", \"...\", 1.0f, 2.0f, 3.0f, Face::X}, 这种写法。");
+  console.log("    那几张表的书写格式是被本测试解析的:每行一条,");
+  console.log("    阶段表用 {\"g\", \"l\", 1.0f, 2.0f, 3.0f, Face::A, Face::B}, 这种写法。");
   console.log("    改回原排版,或同步改本文件的解析正则。");
   process.exit(1);
 }
 
 // ------------------------------------------------------------
-section("9 条阶段用例:JS 镜像 == face_stages.h");
+section("每屏的状态集合:JS 镜像 == face_stages.h");
+eq(FS_JS.SCREENS.length, 2, "两屏");
+for (let i = 0; i < 2; i++) {
+  const js = FS_JS.SCREENS[i].states.map(s => s.key);
+  const cpp = (i === 0) ? cppLeftStates : cppRightStates;
+  eq(js.join(","), cpp.join(","), (i === 0 ? "左屏" : "右屏") + "状态表");
+  // 该屏每个状态的图片角色号必须与非零的 kFaceRoleId 一致
+  const cppRolesForScreen = cppRoles[i].map((r, slot) => ({ slot, r }))
+    .filter(x => x.r > 0).map(x => x.r);
+  const jsRoles = FS_JS.SCREENS[i].states.map(s => s.role);
+  eq(jsRoles.join(","), cppRolesForScreen.join(","), (i === 0 ? "左屏" : "右屏") + "角色编号(去掉 0)");
+  eq(FS_JS.SCREENS[i].states.length, 4, (i === 0 ? "左屏" : "右屏") + " 4 个状态");
+  // 该屏不该有的状态:kFaceRoleId 必须是 0
+  for (let slot = 0; slot < 5; slot++) {
+    const key = ["Idle", "Cruise", "Sport", "Redline", "Surprise"][slot];
+    const has = js.indexOf(key) >= 0;
+    if (has) continue;
+    eq(cppRoles[i][slot], 0, (i === 0 ? "左屏" : "右屏") + " 不该有的 " + key + " 角色号");
+  }
+}
+
+// 两屏状态集合必须**不一样**(这正是"每屏一套"的意义);相同的话说明有人抄错了
+section("两屏状态集合确实不同(左有红区、右有惊喜)");
+{
+  const L = FS_JS.SCREENS[0].states.map(s => s.key);
+  const R = FS_JS.SCREENS[1].states.map(s => s.key);
+  ok(L.indexOf("Redline") >= 0, "左屏有红区");
+  ok(L.indexOf("Surprise") < 0, "左屏没有惊喜");
+  ok(R.indexOf("Surprise") >= 0, "右屏有惊喜");
+  ok(R.indexOf("Redline") < 0, "右屏没有红区");
+  // 所有用到的角色编号必须互不重复(左右也不能撞)
+  const all = FS_JS.SCREENS.reduce((a, s) => a.concat(s.states.map(x => x.role)), []);
+  eq(new Set(all).size, all.length, "8 个角色编号互不重复");
+  eq(all.length, 8, "两屏各 4 张 = 8 张");
+}
+
+// ------------------------------------------------------------
+section("10 条阶段用例:JS 镜像 == face_stages.h");
 eq(FS_JS.STAGES.length, cppStages.length, "条数");
 for (let i = 0; i < cppStages.length; i++) {
   const c = cppStages[i], j = FS_JS.STAGES[i];
@@ -109,93 +163,120 @@ for (let i = 0; i < cppStages.length; i++) {
   eq(j.rpm, c.rpm, tag + " 转速");
   eq(j.speed, c.speed, tag + " 速度");
   eq(j.coolant, c.coolant, tag + " 水温");
-  eq(j.face, c.face, tag + " 期望表情");
+  eq(j.left, c.left, tag + " 左屏期望表情");
+  eq(j.right, c.right, tag + " 右屏期望表情");
 }
 
-// 三组必须各三档,而且档位名是 low/mid/high(界面按这个取中文)
 section("分组结构");
-for (const g of ["rpm", "coolant", "speed"]) {
+for (const g of ["rpm", "speed", "coolant"]) {
   const rows = FS_JS.stagesOf(g);
-  eq(rows.length, 3, g + " 组有 3 档");
-  eq(rows.map(r => r.level).join(","), "low,mid,high", g + " 档位顺序");
+  ok(rows.length >= 3, g + " 组至少 3 档");
+  eq(rows[0].level, "low", g + " 第一档是 low");
 }
+eq(FS_JS.stagesOf("rpm").length, 4, "转速组 4 档(含红区)");
+eq(FS_JS.stagesOf("speed").length, 3, "车速组 3 档");
+eq(FS_JS.stagesOf("coolant").length, 3, "水温组 3 档");
+eq(FS_JS.group("coolant").faces, false, "水温组声明为不影响表情");
 
 // ------------------------------------------------------------
-// ★ 每组只能变自己那一维 —— 用户在阶段模拟里点"速度·中"时,
-//   **转速表不能跟着动**,否则画面里两个表同时变,看不出这一档改了什么。
-//   这条与固件的 test_stage_groups_isolate_one_dimension 是同一条规则的两端。
-section("每组只变自己那一维(点速度档不该动转速表)");
+// ★★ 这一轮的核心规则,两端各钉一遍(C 侧见 test_face_stages.cpp)
+section("每组只变自己那一维");
 for (const st of FS_JS.STAGES) {
   if (st.group === "speed") {
-    eq(st.rpm, 900, "速度·" + st.level + " 的转速必须是怠速 900");
+    eq(st.rpm, 900, "车速·" + st.level + " 的转速必须是怠速 900");
   } else if (st.group === "rpm") {
-    eq(st.speed, 0, "转速·" + st.level + " 的速度必须是 0");
+    eq(st.speed, 0, "转速·" + st.level + " 的车速必须是 0");
   }
   if (st.group !== "coolant") {
     eq(st.coolant, 85, st.group + "·" + st.level + " 的水温必须是正常值 85");
   }
 }
 
-// ------------------------------------------------------------
-section("降级链:JS 镜像 == face_stages.h");
-eq(FS_JS.FACES.length, cppFallback.length, "链的条数 = 表情状态数");
-for (let i = 0; i < cppFallback.length; i++) {
-  const key = FS_JS.FACES[i].key;
-  eq((FS_JS.FALLBACK[key] || []).join(","), cppFallback[i].join(","),
-     "槽位 " + i + "(" + key + ") 的降级链");
+section("每屏只被自己那一路驱动");
+for (const st of FS_JS.STAGES) {
+  const tag = st.group + "/" + st.level;
+  if (st.group === "rpm") {
+    eq(st.right, "Idle", tag + " 不该动右屏(速度表)");
+  } else if (st.group === "speed") {
+    eq(st.left, "Idle", tag + " 不该动左屏(转速表)");
+  } else {
+    eq(st.left, "Idle", tag + " 不该动左屏(水温不参与表情)");
+    eq(st.right, "Idle", tag + " 不该动右屏(水温不参与表情)");
+  }
+  // 期望的表情必须是那一屏真的有的状态
+  ok(FS_JS.roleFor("left", st.left) !== null, tag + " 左屏期望 " + st.left + " 是左屏的状态");
+  ok(FS_JS.roleFor("right", st.right) !== null, tag + " 右屏期望 " + st.right + " 是右屏的状态");
+}
+
+section("被驱动的那一屏各档必须给出不同表情");
+for (const spec of [{ g: "rpm", side: "left" }, { g: "speed", side: "right" }]) {
+  const faces = FS_JS.stagesOf(spec.g).map(s => FS_JS.faceOf(s, spec.side));
+  eq(new Set(faces).size, faces.length, spec.g + " 组各档表情不重复(" + faces.join(",") + ")");
 }
 
 // ------------------------------------------------------------
-section("角色编号:JS 镜像 == face_stages.h == image-blob-build.js");
-for (let side = 0; side < 2; side++) {
-  for (let i = 0; i < FS_JS.FACES.length; i++) {
-    const f = FS_JS.FACES[i];
-    const js = side === 0 ? f.roleL : f.roleR;
-    eq(js, cppRoles[side][i], "第 " + side + " 屏 " + f.key + " 的角色编号(face_stages.h)");
-    eq(js, ImageBlob.ROLE["Face" + f.key + (side === 1 ? "R" : "")],
-       "第 " + side + " 屏 " + f.key + " 的角色编号(image-blob-build.js)");
+section("降级链:JS 镜像 == face_stages.h");
+{
+  // 两屏状态的并集 = 5 个(Idle/Cruise/Sport/Redline/Surprise),每个一行链
+  const union = new Set();
+  FS_JS.SCREENS.forEach(s => s.states.forEach(x => union.add(x.key)));
+  eq(union.size, 5, "两屏状态并集是 5 个");
+  eq(cppFallback.length, union.size, "链的行数 = 状态并集大小");
+  const keys = ["Idle", "Cruise", "Sport", "Redline", "Surprise"];
+  for (let i = 0; i < cppFallback.length; i++) {
+    eq((FS_JS.FALLBACK[keys[i]] || []).join(","), cppFallback[i].join(","),
+       "状态 " + keys[i] + " 的降级链");
   }
 }
 
-// 保留编号不能被复用(9/10 曾是开机图,11/16 曾是眨眼图)
-section("保留编号 9/10/11/16 未被复用");
-const usedRoles = [];
-FS_JS.FACES.forEach(f => { usedRoles.push(f.roleL); usedRoles.push(f.roleR); });
-for (const reserved of [9, 10, 11, 16]) {
-  ok(usedRoles.indexOf(reserved) === -1, reserved + " 没被当成表情角色");
-  // 打包器里也不该再给它们起名字:留着名字,界面上就会冒出"能选但没人用"的用途
-  ok(ImageBlob.ROLE_NAMES[reserved] === undefined, reserved + " 在打包器里没有名字");
-  ok(ImageBlob.ROLE["Face" + reserved] === undefined, reserved + " 不是打包器的具名角色");
+section("角色编号:JS 镜像 == face_stages.h == image-blob-build.js");
+for (let side = 0; side < 2; side++) {
+  for (const st of FS_JS.SCREENS[side].states) {
+    const js = st.role;
+    const slot = ["Idle", "Cruise", "Sport", "Redline", "Surprise"].indexOf(st.key);
+    eq(js, cppRoles[side][slot], "第 " + side + " 屏 " + st.key + " 角色号(face_stages.h)");
+    eq(js, ImageBlob.ROLE["Face" + st.key + (side === 1 ? "R" : "")],
+       "第 " + side + " 屏 " + st.key + " 角色号(image-blob-build.js)");
+  }
 }
-eq(new Set(usedRoles).size, usedRoles.length, "14 个角色编号互不重复");
-eq(usedRoles.length, 14, "7 个状态 × 2 屏 = 14 个角色");
+
+// ------------------------------------------------------------
+section("保留编号没有被复用");
+{
+  const used = FS_JS.SCREENS.reduce((a, s) => a.concat(s.states.map(x => x.role)), []);
+  // 2=开机帧、5=左屏惊喜、7=右屏红区、9/10=开机图、11/16=眨眼图、14/15/19/20=冷车/过热
+  for (const reserved of [2, 5, 7, 9, 10, 11, 14, 15, 16, 19, 20]) {
+    ok(used.indexOf(reserved) === -1, reserved + " 没被当成在用角色");
+    ok(ImageBlob.ROLE_NAMES[reserved] === undefined, reserved + " 在打包器里没有名字");
+  }
+}
 
 // ------------------------------------------------------------
 section("resolve():缺图时的替代品符合固件规则");
 {
   const only = (...ids) => (id) => ids.indexOf(id) >= 0;
 
-  // 什么都没导入 → null(程序化占位表情接管)
-  eq(FS_JS.resolve(0, "Idle", only()), null, "一张都没有 → null");
+  eq(FS_JS.resolve("left", "Idle", only()), null, "一张都没有 → null");
 
-  // 只导入常态:所有状态都应落到常态
-  const justIdle = only(ImageBlob.ROLE.FaceIdle);
-  for (const key of ["Idle", "Cruise", "Sport", "Redline", "Surprise", "Cold", "Hot"]) {
-    eq(FS_JS.resolve(0, key, justIdle), ImageBlob.ROLE.FaceIdle, "只有常态图时 " + key + " → 常态");
+  // 只导入左屏常态:左屏所有状态都应落到它
+  const justLeftIdle = only(ImageBlob.ROLE.FaceIdle);
+  for (const st of FS_JS.SCREENS[0].states) {
+    eq(FS_JS.resolve("left", st.key, justLeftIdle), ImageBlob.ROLE.FaceIdle,
+       "只有左屏常态图时 " + st.key + " → 常态");
   }
+  eq(FS_JS.resolve("right", "Idle", justLeftIdle), null, "只导入了左屏 → 右屏仍然无图");
 
-  // 有红区图:惊喜退到红区之前先看自己有没有
+  // 有红区图:运动缺图退红区
   const red = only(ImageBlob.ROLE.FaceIdle, ImageBlob.ROLE.FaceRedline);
-  eq(FS_JS.resolve(0, "Sport", red), ImageBlob.ROLE.FaceRedline, "运动缺图 → 红区");
-  eq(FS_JS.resolve(0, "Surprise", red), ImageBlob.ROLE.FaceRedline, "惊喜缺图 → 红区");
+  eq(FS_JS.resolve("left", "Sport", red), ImageBlob.ROLE.FaceRedline, "运动缺图 → 红区");
 
-  // 左右屏必须各查各的:右屏的角色不能顶替左屏
-  const leftOnly = only(ImageBlob.ROLE.FaceIdle);
-  eq(FS_JS.resolve(1, "Idle", leftOnly), null, "只导入了左屏常态 → 右屏仍然无图");
+  // 右屏的惊喜缺图:退到运动
+  const rSport = only(ImageBlob.ROLE.FaceIdleR, ImageBlob.ROLE.FaceSportR);
+  eq(FS_JS.resolve("right", "Surprise", rSport), ImageBlob.ROLE.FaceSportR, "惊喜缺图 → 运动");
 
-  // 兜底:只导入"过热"一张时,别的状态也用它(有图就用,别去画占位脸)
-  const hotOnly = only(ImageBlob.ROLE.FaceHot);
-  eq(FS_JS.resolve(0, "Idle", hotOnly), ImageBlob.ROLE.FaceHot, "只有过热图时 常态 → 兜底用过热");
+  // 兜底:只导入"左屏红区"一张时,别的状态也用它(有图就用)
+  const redOnly = only(ImageBlob.ROLE.FaceRedline);
+  eq(FS_JS.resolve("left", "Idle", redOnly), ImageBlob.ROLE.FaceRedline, "只有红区图时 常态 → 兜底用红区");
 }
 
 // ------------------------------------------------------------
