@@ -94,6 +94,117 @@ section("坏输入要报错,不能静默返回半个对象");
 }
 
 // ------------------------------------------------------------
+// ★ 主题默认值有**三处**副本,必须一致 —— 这一节就是给它们对账的。
+//
+// 为什么值得单独测:这三处不一致**不会报错**,只会表现成
+// "预览里的颜色和真车不一样"或者"照参考文件刷进去，两个表左右颠倒"。
+// 后者真实发生过:theme-default.json 里左右屏还是旧布局(左车速右转速),
+// 而固件早已改成 左=转速表(法系车)。
+//
+//   1) lib/themetool/ui_theme.h  的 theme_set_defaults()  ← 固件的事实来源
+//   2) tools/theme-editor/theme-default.json             ← 给人当模板的手改参考
+//   3) image-editor.html 的 ARC_FALLBACK                 ← 图片编辑器没读主题时的兜底
+//      (读了 theme.json 就用主题里的,兜底只是"参考值",但参考值错了照样误导人)
+section("三处默认主题必须一致(ui_theme.h / theme-default.json / ARC_FALLBACK)");
+{
+  const repo = path.resolve(__dirname, "..", "..");
+  const hSrc = fs.readFileSync(path.join(repo, "lib", "themetool", "ui_theme.h"), "utf8");
+  const jsonSrc = fs.readFileSync(path.join(__dirname, "theme-default.json"), "utf8");
+  const imgSrc = fs.readFileSync(path.join(__dirname, "image-editor.html"), "utf8");
+
+  // ---- 1) ui_theme.h:把默认主题的几条弧抠出来 ----
+  const arcRe = /([LR])\.arcs\[(\d+)\]\s*=\s*ArcStyle\{\s*ArcKind::(\w+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*lv_color_hex\((0x[0-9A-Fa-f]+)\)\s*,\s*(\d+)\s*,\s*lv_color_hex\((0x[0-9A-Fa-f]+)\)\s*\}/g;
+  const kindOf = { Speed: 0, Rpm: 1, Coolant: 2 };
+  const hArcs = [];
+  let m;
+  while ((m = arcRe.exec(hSrc)) !== null) {
+    hArcs.push({
+      screen: m[1] === "L" ? 0 : 1,
+      slot: Number(m[2]),
+      kind: kindOf[m[3]],
+      start_deg: Number(m[4]),
+      end_deg: Number(m[5]),
+      radius: Number(m[6]),
+      width: Number(m[7]),
+      track_color: Number(m[8]),
+      track_opa: Number(m[9]),
+      value_color: Number(m[10])
+    });
+  }
+  ok(hArcs.length === 3, "ui_theme.h 里解析出 3 条默认弧(得到 " + hArcs.length + ")");
+  ok(hArcs.every(a => a.kind !== undefined), "弧类型都认识");
+
+  // 屏与表的对应是产品契约,顺手也钉一下(左=转速表+水温,右=速度表)
+  {
+    const left = hArcs.filter(a => a.screen === 0).sort((a, b) => a.slot - b.slot);
+    const right = hArcs.filter(a => a.screen === 1).sort((a, b) => a.slot - b.slot);
+    eq(left.length, 2, "左屏两条弧");
+    eq(left[0].kind, 1, "左屏外弧 = 转速(法系车左=转速表)");
+    eq(left[1].kind, 2, "左屏内弧 = 水温");
+    eq(right.length, 1, "右屏一条弧");
+    eq(right[0].kind, 0, "右屏 = 车速");
+  }
+
+  // 与 theme-default.json 对照(展开成同样的顺序:左屏外/内 → 右屏)
+  const t = TJ.themeObject(TJ.parseThemeJson(jsonSrc));
+  const jsonArcs = [];
+  for (let s = 0; s < 2; s++) {
+    (t.screens[s].arcs || []).forEach((a, k) => jsonArcs.push({
+      screen: s, slot: k, kind: a.kind,
+      start_deg: a.start_deg, end_deg: a.end_deg,
+      radius: a.radius, width: a.width,
+      track_color: a.track_color, track_opa: a.track_opa, value_color: a.value_color
+    }));
+  }
+  const hOrdered = hArcs.slice().sort((a, b) => (a.screen - b.screen) || (a.slot - b.slot));
+  eq(jsonArcs.length, hOrdered.length, "弧的条数一致");
+  for (let i = 0; i < Math.min(jsonArcs.length, hOrdered.length); i++) {
+    const h = hOrdered[i], j = jsonArcs[i];
+    const tag = "弧 " + i + "(第" + h.screen + "屏 #" + h.slot + ")";
+    eq(j.kind, h.kind, tag + " 类型");
+    eq(j.start_deg, h.start_deg, tag + " 起始角");
+    eq(j.end_deg, h.end_deg, tag + " 结束角");
+    eq(j.radius, h.radius, tag + " 半径");
+    eq(j.width, h.width, tag + " 线宽");
+    eq(j.track_color, h.track_color, tag + " 轨道色");
+    eq(j.track_opa, h.track_opa, tag + " 轨道不透明度");
+    eq(j.value_color, h.value_color, tag + " 点亮色");
+  }
+  // 背景色/表情大小也要一致
+  eq(t.bg_color, Number(/t\.bg_color\s*=\s*(0x[0-9A-Fa-f]+)/.exec(hSrc)[1]), "背景色");
+  eq(t.face_size, Number(/t\.face_size\s*=\s*(\d+)/.exec(hSrc)[1]), "表情大小");
+
+  // ---- 3) image-editor.html 的 ARC_FALLBACK ----
+  const fbBlock = /const ARC_FALLBACK\s*=\s*\{([\s\S]*?)\n\};/.exec(imgSrc);
+  ok(!!fbBlock, "在 image-editor.html 里找到 ARC_FALLBACK");
+  const fbRe = /kind:\s*(\d+),\s*start_deg:\s*(-?\d+),\s*end_deg:\s*(-?\d+),\s*radius:\s*(\d+),\s*width:\s*(\d+),\s*track_color:\s*(0x[0-9A-Fa-f]+),\s*track_opa:\s*(\d+),\s*value_color:\s*(0x[0-9A-Fa-f]+)/g;
+  const fbArcs = [];
+  while ((m = fbRe.exec(fbBlock ? fbBlock[1] : "")) !== null) {
+    fbArcs.push({
+      kind: Number(m[1]), start_deg: Number(m[2]), end_deg: Number(m[3]),
+      radius: Number(m[4]), width: Number(m[5]),
+      track_color: Number(m[6]), track_opa: Number(m[7]), value_color: Number(m[8])
+    });
+  }
+  eq(fbArcs.length, hOrdered.length, "ARC_FALLBACK 的弧数 = 默认主题的弧数");
+  for (let i = 0; i < Math.min(fbArcs.length, hOrdered.length); i++) {
+    const f = fbArcs[i], h = hOrdered[i];
+    const tag = "ARC_FALLBACK 弧 " + i;
+    eq(f.kind, h.kind, tag + " 类型");
+    eq(f.start_deg, h.start_deg, tag + " 起始角");
+    eq(f.end_deg, h.end_deg, tag + " 结束角");
+    eq(f.radius, h.radius, tag + " 半径");
+    eq(f.width, h.width, tag + " 线宽");
+    eq(f.track_color, h.track_color, tag + " 轨道色");
+    eq(f.track_opa, h.track_opa, tag + " 轨道不透明度");
+    eq(f.value_color, h.value_color, tag + " 点亮色");
+  }
+  // 三条弧的点亮色必须互不相同(不然后面"看颜色认哪条弧"就失效了)
+  const lit = fbArcs.map(a => a.value_color);
+  eq(new Set(lit).size, lit.length, "三条弧的点亮色互不相同");
+}
+
+// ------------------------------------------------------------
 console.log("\n" + "=".repeat(56));
 if (fail === 0) console.log("全部通过:" + pass + " 项断言");
 else {

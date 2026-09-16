@@ -56,6 +56,7 @@
   .kinds button{padding:4px 9px;font-size:12px}
   .kinds button.on{background:#1d4f6b;border-color:#2a6f96}
   .note{color:var(--warn);font-size:12px;margin-top:8px}
+  section > .note:first-child{margin:0 0 10px;color:var(--dim)}
 </style>
 </head>
 <body>
@@ -534,6 +535,18 @@ function buildControls() {
   syncers.push(color(g1, "五官颜色", () => T.face_ink, v => T.face_ink = v));
 
   // ---- 两屏的弧 ----
+  // ★ 三条弧（转速 / 水温 / 车速）的配色都在这里 —— 左屏有两条（外弧转速、
+  //   内弧水温），右屏一条（车速）。每条都能单独调
+  //   「点亮色 / 轨道色 / 轨道透明度」，另外还有角度、半径、线宽。
+  //   图片编辑器那页只能**读**这些颜色（它读 theme.json），改色只在这里改 ——
+  //   同一个颜色两处可改就会有两个事实来源。
+  const arcNote = document.createElement("div");
+  arcNote.className = "note";
+  arcNote.textContent =
+    "三条弧的配色都在下面两个分组里：左屏 = 转速弧（外）+ 水温弧（内），" +
+    "右屏 = 车速弧。每条弧的「点亮色 / 轨道色 / 轨道透明度」都可单独调；" +
+    "改完导出 theme.json，图片编辑器可以读入它来对齐预览。";
+  controls.appendChild(arcNote);
   for (let si = 0; si < 2; si++) {
     const sc = T.screens[si];
     const g = group(si === 0 ? "左屏（转速表）" : "右屏（速度表）");
