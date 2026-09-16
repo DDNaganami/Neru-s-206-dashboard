@@ -1,10 +1,10 @@
 # 验收
 
 - [x] 工程能编译（esp32dev 已实测；构建路径需纯 ASCII，见 ARCHITECTURE.md）
-- [x] 宿主机单元测试全绿（python -m platformio test -e native，当前 **93 例**，
+- [x] 宿主机单元测试全绿（python -m platformio test -e native，当前 **95 例**，
       2 例需环境变量否则跳过）；网页端另有 5 个 Node 检查脚本
       （`test-face-stages.js` 230 项、`test-image-blob-build.js` 164 项、
-      `test-theme-json.js` 123 项、`test-gauge-geometry.js` 26 项、
+      `test-theme-json.js` 131 项、`test-gauge-geometry.js` 48 项、
       `syntax-check-pages.js` 页面脚本语法）
 - [x] **主题文件的颜色两种写法都能读**：`0xRRGGBB` 与十进制。
       固件解析器一直两种都吃，但编辑器用裸 `JSON.parse` ——
@@ -67,6 +67,19 @@
       两端都有测试：`test-gauge-geometry.js`（26 项，查编辑器源码 + 默认主题几何）
       与 `check-preview-frame.js` 的「表盘朝向」检查（读真实 BMP，断言正下方是缺口、
       正上方有弧）。故意把偏移改回去，前者立刻红两项。
+- [x] **水温弧镜像(从左端起涨)**（用户要求："位置对了，但是涨幅方向反了，得做一下镜像"）
+      横比:两条弧开口相反(转速朝下、水温朝上);纵比:水温弧从左端(9 点钟)起涨。
+      实现:`ArcStyle` 新增 `reverse`(1 = 从 end 端起涨),固件里由 `arc_set_progress()`
+      统一决定"固定哪一端" —— 建屏、开机扫表、正常渲染三处都走它(不再是三份手算角度)。
+      主题 JSON 里的字段名就是 `reverse`，两个编辑器都有「涨幅反向（镜像）」开关，
+      预览也认它(不认的话固件镜像了、预览还是反的)。
+      **实测证据**(固件落帧,水温 89℃):弧带左端 170° 是点亮色 #7bff6a、
+      右端 15° 只是轨道 #181818 —— 点亮区确实从左端往右长。
+      测试:`test_coolant_arc_is_mirrored`(C,钉住默认值 + 另两条弧是 0)、
+      `test_reverse_defaults_to_zero`(老主题缺字段 → 0)、
+      `test-gauge-geometry.js`(水温弧 reverse=1 + 85℃ 时点亮区在左半边)、
+      `check-preview-frame.js` 的「水温弧从左端起涨」（读真实 BMP）、
+      以及三处默认值对账里新增的 reverse 比对。
 - [x] **本机记住的配色不会挡住新的默认值**（用户实测撞到的坑）
       编辑器把配色记在本机（刷新不丢），但只存"整份主题"时，固件默认值一改就被
       旧记录盖住 —— 用户刷新后看到"什么都没变"（水温弧 145→330 改成 0→180 时）。

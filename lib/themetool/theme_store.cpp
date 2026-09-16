@@ -145,6 +145,8 @@ void readArc(Scan& s, ArcStyle& a) {
     if (keyIs(k, klen, "track_color")) { if (s.uintVal(&u)) a.track_color = lv_color_hex(u); return true; }
     if (keyIs(k, klen, "track_opa"))   { if (s.uintVal(&u)) a.track_opa = (uint8_t)u; return true; }
     if (keyIs(k, klen, "value_color")) { if (s.uintVal(&u)) a.value_color = lv_color_hex(u); return true; }
+    // 涨幅方向:1 = 从 end 端起涨(镜像)。见 ui_theme.h 的 ArcStyle 说明。
+    if (keyIs(k, klen, "reverse"))     { if (s.uintVal(&u)) a.reverse = (uint8_t)(u ? 1 : 0); return true; }
     return false;
   });
 }

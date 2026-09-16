@@ -94,6 +94,7 @@ void theme_clamp(Theme& t) {
       if (a.width < 1)    a.width = 1;
       if (a.width > 60)   a.width = 60;
       if (a.end_deg <= a.start_deg) a.end_deg = a.start_deg + 1;
+      a.reverse = a.reverse ? 1 : 0;
     }
   }
 

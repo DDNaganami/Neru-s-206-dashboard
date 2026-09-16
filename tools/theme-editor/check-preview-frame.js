@@ -331,6 +331,31 @@ function main() {
         text: "弧带上命中 " + aBox.n + " 像素；数字最低点 y=" + cBox.maxY +
               " < 弧内沿 y=" + arcInnerY + "（留 " + (arcInnerY - cBox.maxY) + " 像素）"
       });
+
+      // ★ 涨幅方向(镜像):水温弧是 reverse=1 —— 点亮区从**左端(9 点钟)**起涨。
+      //   实测法:在弧带上取左端附近与右端附近各一点,
+      //   左端应是**点亮色**(水温数字同色,但按半径已经分开)、右端应只是**轨道**。
+      //   取样角度选得离两端有点余量:仿真水温 77~93℃ → t=0.24~0.47 →
+      //   点亮区 [180-180t, 180] = 至少 [95°,180°],所以 170° 一定亮、15° 一定不亮。
+      {
+        const arcPt = (deg) => {
+          const rad = deg * Math.PI / 180;
+          const r = (COOLANT_ARC_INNER_R + COOLANT_ARC_OUTER_R) / 2;
+          return img.px(Math.round(240 + r * Math.cos(rad)),
+                        Math.round(240 + r * Math.sin(rad)));
+        };
+        const leftPt = arcPt(170);    // 靠近 9 点钟(左端)
+        const rightPt = arcPt(15);    // 靠近 3 点钟(右端)
+        const isLit = (c) => dist(c, READOUT_COOLANT) <= 0x50;
+        const litLeft = isLit(leftPt), litRight = isLit(rightPt);
+        checks.push({
+          name: "水温弧从左端起涨(镜像)", x: 240, y: 240,
+          got: leftPt, expect: READOUT_COOLANT,
+          ok: litLeft && !litRight,
+          text: "左端(170°) " + hex(leftPt) + (litLeft ? " = 点亮" : " = 未亮") +
+                "；右端(15°) " + hex(rightPt) + (litRight ? " = 点亮(方向反了)" : " = 轨道") 
+        });
+      }
     } else {
       // 右屏(速度表)没有水温弧,就不该有水温数字
       addBand("右屏不该有水温数字", BAND_COOLANT, READOUT_COOLANT, 0x40, undefined, 0);

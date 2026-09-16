@@ -578,7 +578,7 @@ const ARC_FALLBACK = {
       { kind: 1, start_deg: 135, end_deg: 405, radius: 205, width: 24,
         track_color: 0x232323, track_opa: 153, value_color: 0xFF5C5C },   // 转速
       { kind: 2, start_deg: 0, end_deg: 180, radius: 168, width: 10,
-        track_color: 0x232323, track_opa: 153, value_color: 0x7CFF6B }    // 水温
+        track_color: 0x232323, track_opa: 153, value_color: 0x7CFF6B, reverse: 1 }  // 水温(镜像)
     ] },
     { arcs: [
       { kind: 0, start_deg: 135, end_deg: 405, radius: 205, width: 24,
@@ -718,7 +718,7 @@ function arcT(a, st) {
 //   所以错的一直只是预览。test-gauge-geometry.js 盯着这一行。
 function degToRad(d) { return d * Math.PI / 180; }
 
-function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, valueColor, trackColor, trackOpa) {
+function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, valueColor, trackColor, trackOpa, reverse) {
   // ★ LVGL 把弧画在对象盒子**内**:外沿贴盒子边(= 主题里的 radius),带宽往**里**长,
   //   即实际占 [radius-w, radius]。canvas 的描边以路径为中线的,所以要画在 r-w/2 上
   //   才与固件重合(实测:radius=205/width=24 的弧,固件落在 182..205,不是 193..217)。
@@ -732,9 +732,17 @@ function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, valueColor, trackColo
   ctx.globalAlpha = trackOpa;
   ctx.stroke();
   ctx.globalAlpha = 1;
+  // ★ reverse=1 = 从 end 端起涨(镜像),与固件 arc_set_progress() 同一套规则。
+  //   水温弧就是镜像的:它是下方半圆(开口朝上),不镜像的话只会从右边(3 点钟)
+  //   开始亮,而水温表该从左端(9 点钟)起涨。
   if (t01 > 0.001) {
+    const k = Math.max(0, Math.min(1, t01));
     ctx.beginPath();
-    ctx.arc(cx, cy, rr, rad(startDeg + (endDeg - startDeg) * t01), rad(startDeg), true);
+    if (reverse) {
+      ctx.arc(cx, cy, rr, rad(endDeg), rad(endDeg - (endDeg - startDeg) * k), true);
+    } else {
+      ctx.arc(cx, cy, rr, rad(startDeg + (endDeg - startDeg) * k), rad(startDeg), true);
+    }
     ctx.lineWidth = w; ctx.strokeStyle = valueColor; ctx.stroke();
   }
 }
@@ -806,14 +814,40 @@ function buildArcEditors() {
       arcColorRow(wrap, "点亮色", () => a.value_color, v => a.value_color = v);
       arcColorRow(wrap, "轨道色", () => a.track_color, v => a.track_color = v);
       arcOpaRow(wrap, () => a.track_opa, v => a.track_opa = v);
+      // 涨幅方向:勾上 = 从 end 端起涨(镜像)。水温弧是勾着的 ——
+      // 它是"下方半圆",不勾就只会从右边(3 点钟)开始亮。
+      arcReverseRow(wrap, () => a.reverse || 0, v => a.reverse = v ? 1 : 0);
       box.appendChild(wrap);
     }
   }
   buildArcSourceLine();
 }
 
-function buildArcSourceLine() {
-  const el = document.getElementById("arc-source");
+// 涨幅方向(镜像)开关
+function arcReverseRow(parent, get, set) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const lb = document.createElement("label");
+  lb.textContent = "涨幅反向";
+  const c = document.createElement("input");
+  c.type = "checkbox"; c.checked = !!get();
+  c.title = "勾上 = 从终点端起涨（镜像）。水温弧是下方半圆，勾上才会从左端开始亮。";
+  const hint = document.createElement("span");
+  hint.className = "val";
+  hint.style.width = "auto";
+  hint.textContent = "镜像";
+  c.addEventListener("change", () => {
+    set(c.checked ? 1 : 0);
+    gThemeSource = "本页改过（记得导出 theme.json）";
+    saveTheme();
+    buildArcSourceLine();
+    refresh(false);
+  });
+  row.append(lb, c, hint);
+  parent.appendChild(row);
+}
+
+function buildArcSourceLine() {  const el = document.getElementById("arc-source");
   if (el) {
     el.textContent = "当前配色来源：" + gThemeSource +
       "　（改完点上面的「导出 theme.json」刷到 theme 分区）";
@@ -894,7 +928,8 @@ function drawScreen(cv, which, stage, faceKeyOverride) {
       drawArc(ctx, cx, cy,
               a.radius * (cv.width / 480), a.width * (cv.width / 480),
               a.start_deg, a.end_deg, arcT(a, stage),
-              hexOf(a.value_color), hexOf(a.track_color), opa);
+              hexOf(a.value_color), hexOf(a.track_color), opa,
+              a.reverse);   // 涨幅方向(水温弧是镜像的)
     }
   }
 

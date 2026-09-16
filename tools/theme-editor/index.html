@@ -265,7 +265,7 @@ let bootPlaying = false;
 //   test-gauge-geometry.js 盯着这一行。
 function degToRad(d) { return d * Math.PI / 180; }
 
-function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, trackColor, trackOpacity, valueColor) {
+function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, trackColor, trackOpacity, valueColor, reverse) {
   // ★ LVGL 把弧画在对象盒子**内**:外沿贴盒子边(= 主题里的 radius),带宽往**里**长,
   //   即实际占 [radius-w, radius]。canvas 的描边以路径为中线的,所以要画在 r-w/2 上
   //   才与固件重合(实测:radius=205/width=24 的弧,固件落在 182..205,不是 193..217)。
@@ -280,11 +280,17 @@ function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, trackColor, trackOpac
   ctx.globalAlpha = 1;
 
   // 已点亮部分:从 start 起按 t01 比例
+  // ★ reverse=1 时改成"从 end 端起涨"(镜像):固定端换成另一端 ——
+  //   与固件 arc_set_progress() 同一套规则,水温弧就是靠它从左端开始亮。
   if (t01 > 0.0001) {
     const span = endDeg - startDeg;
-    const cur = startDeg + span * Math.max(0, Math.min(1, t01));
+    const k = Math.max(0, Math.min(1, t01));
     ctx.beginPath();
-    ctx.arc(cx, cy, rr, degToRad(cur), degToRad(startDeg), true);
+    if (reverse) {
+      ctx.arc(cx, cy, rr, degToRad(endDeg), degToRad(endDeg - span * k), true);
+    } else {
+      ctx.arc(cx, cy, rr, degToRad(startDeg + span * k), degToRad(startDeg), true);
+    }
     ctx.lineWidth = w;
     ctx.strokeStyle = valueColor;
     ctx.stroke();
@@ -427,7 +433,8 @@ function drawScreen(canvas, screenIdx, theme, v, opts) {
     drawArc(ctx, cx, cy,
             a.radius * scale, a.width * scale,
             a.start_deg, a.end_deg, t,
-            hex(a.track_color), a.track_opa / 255, hex(a.value_color));
+            hex(a.track_color), a.track_opa / 255, hex(a.value_color),
+            a.reverse);   // 涨幅方向(水温弧是镜像的)
   }
 
   if (sc.show_face && !(opts && opts.hideFace)) {
@@ -600,6 +607,9 @@ function buildControls() {
       syncers.push(color(sub, "点亮色", () => a.value_color, v => a.value_color = v));
       syncers.push(color(sub, "轨道色", () => a.track_color, v => a.track_color = v));
       syncers.push(slider(sub, "轨道透明", () => a.track_opa, v => a.track_opa = v, 0, 255, 1));
+      // 涨幅方向:勾上 = 从 end 端起涨(镜像)。水温弧是勾着的 ——
+      // 它是"下方半圆",不勾就只会从右边(3 点钟)开始亮。
+      syncers.push(check(sub, "涨幅反向（镜像）", () => a.reverse || 0, v => a.reverse = v));
 
       g.appendChild(sub);
     }

@@ -104,6 +104,12 @@ section("两个编辑器的角度换算没有偏移(LVGL 与 canvas 约定一致
          f + " 的 drawArc() 要把描边半径取 r - w/2(与 LVGL 的外沿语义一致)");
       ok(!/ctx\.arc\([^)]*,\s*r\s*,/.test(body),
          f + " 的 drawArc() 不该直接用 r 描边(那会把弧带画到盒子外面去)");
+      // ★ 预览必须认 reverse(镜像)—— 不然固件镜像了、预览没镜像,
+      //   用户看到的还是反的(这一轮他报的就是"涨幅方向反了")。
+      ok(/reverse/.test(body), f + " 的 drawArc() 要认 reverse(涨幅方向/镜像)");
+      const sig = /function drawArc\(([^)]*)\)/.exec(src);
+      ok(sig && /reverse/.test(sig[1]), f + " 的 drawArc() 签名要带 reverse 参数");
+      ok(/a\.reverse|\.reverse\b/.test(src), f + " 调用 drawArc 时要传 reverse");
     }
   }
 }
@@ -199,6 +205,19 @@ section("水温弧:缺口在正上方(与转速弧相反)");
   ok(outerDiff <= 20, "转速弧缺口朝正下方(实测 " + clockName(outerGap) + ")");
   ok(Math.abs(gapCenter - outerGap - 180) < 40 || Math.abs(gapCenter - outerGap + 180) < 40,
      "两条弧的缺口方向应当相反(现在 " + Math.round(outerGap) + "° vs " + Math.round(gapCenter) + "°)");
+
+  // ★ 涨幅方向:水温弧必须是 reverse=1(从左端起涨),转速弧是 0
+  eq(a.reverse, 1, "水温弧要镜像(从左端 9 点钟起涨)");
+  eq(outer.reverse || 0, 0, "转速弧保持默认方向(从 start 端起涨)");
+
+  // 镜像的几何含义:点亮区从 end 端往 start 端长。
+  // 温度偏低时(比如 85℃ → t≈0.36)点亮区该落在**左半边**,
+  // 而不是右半边 —— 这一条把"镜像到底镜像了什么"说清楚。
+  const tCold = (85 - 60) / (130 - 60);
+  const litFrom = a.end_deg - span * tCold;      // reverse=1:点亮 [litFrom, end]
+  const litMid = (litFrom + a.end_deg) / 2;
+  const litPt = pointAt(litMid, a.radius);
+  ok(litPt.x < 240, "85℃ 时点亮区该在左半边(实测中心 x=" + Math.round(litPt.x) + ")");
 }
 
 // ------------------------------------------------------------

@@ -62,7 +62,8 @@
             "width": 10,
             "track_color": 0x232323,
             "track_opa": 153,
-            "value_color": 0x7CFF6B
+            "value_color": 0x7CFF6B,
+            "reverse": 1
           }
         ]
       },

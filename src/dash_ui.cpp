@@ -92,6 +92,26 @@ static int32_t ts(float v480) {
   return (int32_t)lroundf(v480 * theme_scale());
 }
 
+// 把一条弧的进度(0..1)落到 LVGL 上。
+//
+// ★ 只有这一个地方决定"动的是哪一端",别在别处再算一遍:
+//     reverse=0:start 端固定,动 end(值从 start 往 end 涨)
+//     reverse=1:end   端固定,动 start(值从 end 往回涨 —— 视觉上是镜像)
+//   为什么需要后者:水温弧是"下方半圆"(开口朝上),LVGL 只能从 start 顺时针画到
+//   end,所以默认只会从右边(3 点钟)开始亮;水温表该从左端(9 点钟)起涨。
+static void arc_set_progress(lv_obj_t* arc, const ArcStyle& a, float t) {
+  if (t < 0.0f) t = 0.0f;
+  if (t > 1.0f) t = 1.0f;
+  const int32_t span = a.end_deg - a.start_deg;
+  if (a.reverse) {
+    lv_arc_set_end_angle(arc, a.end_deg);                       // 固定端
+    lv_arc_set_start_angle(arc, a.end_deg - (int32_t)(t * span));
+  } else {
+    lv_arc_set_start_angle(arc, a.start_deg);                   // 固定端
+    lv_arc_set_end_angle(arc, a.start_deg + (int32_t)(t * span));
+  }
+}
+
 // ============ 屏幕与控件构建 ============
 static lv_obj_t* make_screen(lv_display_t* disp) {
   lv_display_set_default(disp);
@@ -114,8 +134,7 @@ static void build_arcs(lv_obj_t* parent, const ScreenTheme& cfg, ScreenUi& ui) {
     lv_arc_set_rotation(arc, 0);
     lv_arc_set_bg_start_angle(arc, a.start_deg);
     lv_arc_set_bg_end_angle(arc, a.end_deg);
-    lv_arc_set_start_angle(arc, a.start_deg);
-    lv_arc_set_end_angle(arc, a.start_deg);   // 初始 0 进度
+    arc_set_progress(arc, a, 0.0f);   // 初始 0 进度(动哪一端由 reverse 决定)
 
     lv_obj_set_style_arc_width(arc, ts(a.width), LV_PART_MAIN);
     lv_obj_set_style_arc_width(arc, ts(a.width), LV_PART_INDICATOR);
@@ -340,9 +359,7 @@ static void boot_apply(uint32_t now) {
     const float p = g_boot.arcProgress(now, s);
     for (uint8_t i = 0; i < ui.arc_count; ++i) {
       ui.arc_cur[i] = p;   // 扫表直接跟随,结束后的数据缓动从这里起步
-      const ArcStyle& a = kScreens[s].arcs[i];
-      lv_arc_set_end_angle(ui.arcs[i],
-                           a.start_deg + (int32_t)(p * (a.end_deg - a.start_deg)));
+      arc_set_progress(ui.arcs[i], kScreens[s].arcs[i], p);
     }
 
     if (kScreens[s].show_face && (ui.face_bg || g_face_img[s])) {
@@ -497,9 +514,7 @@ void dash_ui_render(const ArcDashView& v, uint32_t now) {
       const ArcStyle& a = kScreens[s].arcs[i];
       const float target = arc_progress(a, v);
       ui.arc_cur[i] += (target - ui.arc_cur[i]) * k;
-      lv_arc_set_end_angle(ui.arcs[i],
-                           a.start_deg +
-                               (int32_t)(ui.arc_cur[i] * (a.end_deg - a.start_deg)));
+      arc_set_progress(ui.arcs[i], a, ui.arc_cur[i]);
     }
     if (kScreens[s].show_face && ui.face_bg) {
       // 表情的显隐/形变只在 face_apply 里按状态变化时改一次,这里不重复 set。

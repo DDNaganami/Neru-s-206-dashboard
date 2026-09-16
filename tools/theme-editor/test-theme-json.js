@@ -246,7 +246,8 @@ section("三处默认主题必须一致(ui_theme.h / theme-default.json / ARC_FA
   const imgSrc = fs.readFileSync(path.join(__dirname, "image-editor.html"), "utf8");
 
   // ---- 1) ui_theme.h:把默认主题的几条弧抠出来 ----
-  const arcRe = /([LR])\.arcs\[(\d+)\]\s*=\s*ArcStyle\{\s*ArcKind::(\w+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*lv_color_hex\((0x[0-9A-Fa-f]+)\)\s*,\s*(\d+)\s*,\s*lv_color_hex\((0x[0-9A-Fa-f]+)\)\s*\}/g;
+  // 末尾的 reverse 是可选的(C++ 聚合初始化可以少写,缺省即 0)
+  const arcRe = /([LR])\.arcs\[(\d+)\]\s*=\s*ArcStyle\{\s*ArcKind::(\w+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*lv_color_hex\((0x[0-9A-Fa-f]+)\)\s*,\s*(\d+)\s*,\s*lv_color_hex\((0x[0-9A-Fa-f]+)\)\s*(?:,\s*(\d+)\s*)?\}/g;
   const kindOf = { Speed: 0, Rpm: 1, Coolant: 2 };
   const hArcs = [];
   let m;
@@ -261,7 +262,8 @@ section("三处默认主题必须一致(ui_theme.h / theme-default.json / ARC_FA
       width: Number(m[7]),
       track_color: Number(m[8]),
       track_opa: Number(m[9]),
-      value_color: Number(m[10])
+      value_color: Number(m[10]),
+      reverse: m[11] === undefined ? 0 : Number(m[11])
     });
   }
   ok(hArcs.length === 3, "ui_theme.h 里解析出 3 条默认弧(得到 " + hArcs.length + ")");
@@ -286,7 +288,8 @@ section("三处默认主题必须一致(ui_theme.h / theme-default.json / ARC_FA
       screen: s, slot: k, kind: a.kind,
       start_deg: a.start_deg, end_deg: a.end_deg,
       radius: a.radius, width: a.width,
-      track_color: a.track_color, track_opa: a.track_opa, value_color: a.value_color
+      track_color: a.track_color, track_opa: a.track_opa, value_color: a.value_color,
+      reverse: a.reverse === undefined ? 0 : a.reverse
     }));
   }
   const hOrdered = hArcs.slice().sort((a, b) => (a.screen - b.screen) || (a.slot - b.slot));
@@ -302,6 +305,7 @@ section("三处默认主题必须一致(ui_theme.h / theme-default.json / ARC_FA
     eq(j.track_color, h.track_color, tag + " 轨道色");
     eq(j.track_opa, h.track_opa, tag + " 轨道不透明度");
     eq(j.value_color, h.value_color, tag + " 点亮色");
+    eq(j.reverse, h.reverse, tag + " 涨幅方向(reverse)");
   }
   // 背景色/表情大小也要一致
   eq(t.bg_color, Number(/t\.bg_color\s*=\s*(0x[0-9A-Fa-f]+)/.exec(hSrc)[1]), "背景色");
@@ -310,13 +314,14 @@ section("三处默认主题必须一致(ui_theme.h / theme-default.json / ARC_FA
   // ---- 3) image-editor.html 的 ARC_FALLBACK ----
   const fbBlock = /const ARC_FALLBACK\s*=\s*\{([\s\S]*?)\n\};/.exec(imgSrc);
   ok(!!fbBlock, "在 image-editor.html 里找到 ARC_FALLBACK");
-  const fbRe = /kind:\s*(\d+),\s*start_deg:\s*(-?\d+),\s*end_deg:\s*(-?\d+),\s*radius:\s*(\d+),\s*width:\s*(\d+),\s*track_color:\s*(0x[0-9A-Fa-f]+),\s*track_opa:\s*(\d+),\s*value_color:\s*(0x[0-9A-Fa-f]+)/g;
+  const fbRe = /kind:\s*(\d+),\s*start_deg:\s*(-?\d+),\s*end_deg:\s*(-?\d+),\s*radius:\s*(\d+),\s*width:\s*(\d+),\s*track_color:\s*(0x[0-9A-Fa-f]+),\s*track_opa:\s*(\d+),\s*value_color:\s*(0x[0-9A-Fa-f]+)(?:,\s*reverse:\s*(\d+))?/g;
   const fbArcs = [];
   while ((m = fbRe.exec(fbBlock ? fbBlock[1] : "")) !== null) {
     fbArcs.push({
       kind: Number(m[1]), start_deg: Number(m[2]), end_deg: Number(m[3]),
       radius: Number(m[4]), width: Number(m[5]),
-      track_color: Number(m[6]), track_opa: Number(m[7]), value_color: Number(m[8])
+      track_color: Number(m[6]), track_opa: Number(m[7]), value_color: Number(m[8]),
+      reverse: m[9] === undefined ? 0 : Number(m[9])
     });
   }
   eq(fbArcs.length, hOrdered.length, "ARC_FALLBACK 的弧数 = 默认主题的弧数");
@@ -331,7 +336,11 @@ section("三处默认主题必须一致(ui_theme.h / theme-default.json / ARC_FA
     eq(f.track_color, h.track_color, tag + " 轨道色");
     eq(f.track_opa, h.track_opa, tag + " 轨道不透明度");
     eq(f.value_color, h.value_color, tag + " 点亮色");
+    eq(f.reverse, h.reverse, tag + " 涨幅方向(reverse)");
   }
+  // 水温弧必须镜像(从左端起涨) —— 三处都要一致,这里再显式说一次
+  eq(hOrdered[1].reverse, 1, "默认主题:水温弧 reverse = 1(镜像)");
+  eq(hOrdered[0].reverse, 0, "默认主题:转速弧 reverse = 0");
   // 三条弧的点亮色必须互不相同(不然后面"看颜色认哪条弧"就失效了)
   const lit = fbArcs.map(a => a.value_color);
   eq(new Set(lit).size, lit.length, "三条弧的点亮色互不相同");

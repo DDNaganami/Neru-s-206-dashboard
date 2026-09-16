@@ -113,7 +113,7 @@ static void test_clamp_bad_values(void) {
   // 半径/线宽越界 → 钳到合理区间（LVGL 对负半径不会报错,只会画错）
   const char* json2 = R"({"theme":{"screens":[
      {"arc_count": 9, "arcs":[
-        {"radius": -50, "width": 0, "start_deg": 300, "end_deg": 100}]},
+        {"radius": -50, "width": 0, "start_deg": 300, "end_deg": 100, "reverse": 7}]},
      {"arc_count": 1, "arcs":[{"radius": 99999, "width": 500}]}]}})";
   TEST_ASSERT_TRUE(theme_parse_json(json2, (uint32_t)strlen(json2), t));
   TEST_ASSERT_TRUE(t.screens[0].arc_count <= kMaxArcs);   // 弧数量上限
@@ -122,6 +122,8 @@ static void test_clamp_bad_values(void) {
   TEST_ASSERT_TRUE(t.screens[0].arcs[0].end_deg > t.screens[0].arcs[0].start_deg);
   TEST_ASSERT_TRUE(t.screens[1].arcs[0].radius <= 240);
   TEST_ASSERT_TRUE(t.screens[1].arcs[0].width <= 60);
+  // reverse 是开关,一律归一到 0/1(写 7 也当 1)
+  TEST_ASSERT_EQUAL_UINT8(1, t.screens[0].arcs[0].reverse);
 
   // face_size 越界
   const char* json3 = R"({"theme":{"face_size": 5}})";
@@ -281,6 +283,33 @@ static void test_readout_defaults_fit_gap(void) {
   TEST_ASSERT_TRUE(d.readout.coolant_cy < 430);
 }
 
+// ★ 涨幅方向(镜像):水温弧必须是从左端起涨,否则它(下方半圆)只会从右边开始亮。
+//   这是用户提的"位置对了但涨幅方向反了,得做一下镜像",所以钉住默认值。
+static void test_coolant_arc_is_mirrored(void) {
+  Theme d;
+  theme_set_defaults(d);
+
+  const ArcStyle& coolant = d.screens[0].arcs[1];
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)ArcKind::Coolant, (uint8_t)coolant.kind);
+  TEST_ASSERT_EQUAL_INT(0, coolant.start_deg);      // 3 点钟
+  TEST_ASSERT_EQUAL_INT(180, coolant.end_deg);      // 9 点钟 → 开口朝上
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, coolant.reverse,
+                                  "水温弧要从 end 端(9 点钟)起涨,否则只会从右边开始亮");
+
+  // 另外两条弧保持默认方向(从 start 端起涨)
+  TEST_ASSERT_EQUAL_UINT8(0, d.screens[0].arcs[0].reverse);   // 转速
+  TEST_ASSERT_EQUAL_UINT8(0, d.screens[1].arcs[0].reverse);   // 车速
+}
+
+// 缺 reverse 字段的老主题 → 默认 0(从 start 端起涨),不能是随机值
+static void test_reverse_defaults_to_zero(void) {
+  const char* json = R"({"theme":{"screens":[
+     {"arc_count": 1, "arcs":[{"kind": 2, "start_deg": 0, "end_deg": 180}]}]}})";
+  Theme t;
+  TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+  TEST_ASSERT_EQUAL_UINT8(0, t.screens[0].arcs[0].reverse);
+}
+
 void register_theme_store_tests(void) {
   RUN_TEST(test_parse_full_theme);
   RUN_TEST(test_parse_partial_keeps_defaults);
@@ -294,4 +323,6 @@ void register_theme_store_tests(void) {
   RUN_TEST(test_parse_readout_missing_keeps_defaults);
   RUN_TEST(test_clamp_readout);
   RUN_TEST(test_readout_defaults_fit_gap);
+  RUN_TEST(test_coolant_arc_is_mirrored);
+  RUN_TEST(test_reverse_defaults_to_zero);
 }

@@ -38,15 +38,26 @@ static inline float theme_scale() {
 enum class ArcKind : uint8_t { Speed, Rpm, Coolant };
 static const uint8_t kMaxArcs = 3;
 
+// 一条弧的样式。
+//
+// ★ `reverse` —— 涨幅从**哪一端**开始涨(用户说的"镜像"):
+//     0(默认):start 端固定,值从 start 往 end 涨。外圈转速弧就是这样:
+//              起点 7:30,顺时针经过左、上、右,涨到 4:30。
+//     1:end 端固定,值从 end 往回涨 —— 几何上等于把这条弧**水平镜像**一遍。
+//   为什么需要它:水温弧是"下方半圆"(0°→180°,开口朝上),而 LVGL 的弧只能从
+//   start 顺时针画到 end,所以只会从**右边**(3 点钟)开始亮。
+//   水温表按惯例该从**左边**开始涨,所以给它 reverse=1:
+//   点亮区从 180°(9 点钟)往 0°(3 点钟)长,读起来就是"从左往右涨"。
 struct ArcStyle {
   ArcKind  kind;
-  int32_t  start_deg;  // 0°=3点钟,顺时针;135→405 即 270° 范围、12 点上方开口
+  int32_t  start_deg;  // 0°=3点钟,顺时针;见 README 的角度约定
   int32_t  end_deg;
-  int32_t  radius;     // 弧半径(480 基准,渲染时乘 theme_scale())
+  int32_t  radius;     // 弧的**外沿**半径(width 往里长;480 基准,渲染时乘 theme_scale())
   int32_t  width;      // 弧线宽(480 基准)
   lv_color_t track_color;  // 未点亮轨道
   uint8_t  track_opa;      // 0..255
   lv_color_t value_color;  // 已点亮部分
+  uint8_t  reverse;        // 1 = 从 end 端起涨(镜像);见上面的说明
 };
 
 struct ScreenTheme {
@@ -221,15 +232,16 @@ inline void theme_set_defaults(Theme& t) {
   ScreenTheme& L = t.screens[0];
   L.arc_count = 2; L.show_face = 1;
   L.arcs[0] = ArcStyle{ ArcKind::Rpm,     135, 405, 205, 24,
-                        lv_color_hex(0x232323), 153, lv_color_hex(0xFF5C5C) };
+                        lv_color_hex(0x232323), 153, lv_color_hex(0xFF5C5C), 0 };
+  // reverse=1:水温弧从**左端(9 点钟)**起涨 —— 与转速弧形成镜像关系
   L.arcs[1] = ArcStyle{ ArcKind::Coolant,   0, 180, 168, 10,
-                        lv_color_hex(0x232323), 153, lv_color_hex(0x7CFF6B) };
+                        lv_color_hex(0x232323), 153, lv_color_hex(0x7CFF6B), 1 };
 
   // 右屏 = 速度表:车速弧
   ScreenTheme& R = t.screens[1];
   R.arc_count = 1; R.show_face = 1;
   R.arcs[0] = ArcStyle{ ArcKind::Speed,   135, 405, 205, 24,
-                        lv_color_hex(0x232323), 153, lv_color_hex(0x39C5FF) };
+                        lv_color_hex(0x232323), 153, lv_color_hex(0x39C5FF), 0 };
 }
 
 // 全局主题**指针**。
