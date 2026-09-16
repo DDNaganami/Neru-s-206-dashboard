@@ -117,7 +117,7 @@
     <section>
       <h2>3 · 刷写</h2>
       <div class="hint" style="color:var(--dim);font-size:12px">
-        image 分区在 <code>0x3D0000</code>，大小 128 KB。
+        image 分区在 <code>0x254000</code>，大小 1024 KB。
       </div>
       <div class="cmd">
         <input type="text" id="cmd" readonly>
@@ -211,7 +211,7 @@ const FITS = [
   { id: "stretch", label: "拉伸铺满（会变形）" }
 ];
 
-// 常见尺寸：480×480 一张就 450KB，塞不进 128KB 分区，
+// 常见尺寸：480×480 一张就 450KB，塞不进 1MB 分区（还要放表情图），
 // 所以默认给 240×240，并在这里明确写出来，避免用户第一次就撞墙。
 const SIZE_PRESETS = [240, 320, 360, 480];
 
@@ -337,10 +337,14 @@ function buildList() {
 
     const meta = document.createElement("div");
     meta.className = "meta";
-    const bpp = ImageBlob.bytesPerPixel(ImageBlob.CF.RGB565);
+    // ★ 字节数要按**角色实际会用的格式**算:表情走 RGB565A8(3 字节/像素),
+    //   背景走 RGB565(2 字节)。写死 2 会让表情的占用少报 1/3。
+    const cf = cfForRole(item.role);
+    const bpp = ImageBlob.packedBytesPerPixel(cf);
+    const fmtName = (cf === ImageBlob.CF.RGB565A8) ? "RGB565A8(带透明)" : "RGB565";
     meta.textContent = "原图 " + (item.img.naturalWidth || item.img.width) + "×" +
       (item.img.naturalHeight || item.img.height) +
-      "　输出 " + item.w + "×" + item.h + " RGB565　" +
+      "　输出 " + item.w + "×" + item.h + " " + fmtName + "　" +
       (item.w * item.h * bpp) + " 字节";
 
     // 用途
@@ -600,7 +604,11 @@ function refresh() {
     ImageBlob.esptoolCommand("COM3", "image.bin");
 
   if (items.length && b.total >= 0 && b.pct > 100) {
-    say("⚠ 超了 128KB 分区：" + b.total + " 字节。\n" +
+    // ★ 分区大小必须从 PARTITION_BYTES 读,别写死数字 ——
+    //   这里曾经写死 "128KB"(分区还是 128KB 时的值),分区改成 1MB 后
+    //   提示就变成错的,会把人往"把图改小"的方向误导。
+    say("⚠ 超了 image 分区（" + (ImageBlob.PARTITION_BYTES / 1024) + " KB）：" +
+        b.total + " 字节。\n" +
         "把「目标宽度」改小（480→240 会小到 1/4），或减少图片数量。", "err");
   }
 }
@@ -653,7 +661,7 @@ function addFiles(files) {
       if (--pending === 0) {
         refresh();
         say("已添加 " + list.length + " 张。默认按 240 宽输出（省分区）；" +
-            "要全屏背景就点 480，但注意一张 480×480 要 450KB，装不下 128KB 分区。");
+            "要全屏背景就点 480，但注意一张 480×480 要 450KB，再放表情图就超 1MB 分区了。");
       }
     };
     img.onerror = () => {
@@ -678,7 +686,8 @@ document.getElementById("btn-export").addEventListener("click", () => {
     return;
   }
   if (res.totalBytes > ImageBlob.PARTITION_BYTES) {
-    say("打包结果是 " + res.totalBytes + " 字节，超过 128KB 分区，刷进去会被截断。\n" +
+    say("打包结果是 " + res.totalBytes + " 字节，超过 image 分区（" +
+        (ImageBlob.PARTITION_BYTES / 1024) + " KB），刷进去会被截断。\n" +
         "先把「目标宽度」改小再导出。", "err");
     return;
   }
