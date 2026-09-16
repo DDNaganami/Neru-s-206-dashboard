@@ -141,6 +141,37 @@ static void test_fallback_chain(void) {
   }
 }
 
+// ★ 转速组的四档必须是**实车地标**,不是随手取的数 ——
+//   表里的值就是"车上真会出现的那一格",所以要能对上怠速/巡航/上限。
+//   换车、换表时这条会红,提醒你把 vehicle_state.h 的地标常量一起改。
+static void test_rpm_stages_use_real_landmarks(void) {
+  const FaceStage* rows[4] = {nullptr, nullptr, nullptr, nullptr};
+  for (uint8_t i = 0; i < kFaceStageCount; ++i) {
+    if (strcmp(kFaceStages[i].group, "rpm") != 0) continue;
+    if (strcmp(kFaceStages[i].level, "low") == 0) rows[0] = &kFaceStages[i];
+    if (strcmp(kFaceStages[i].level, "mid") == 0) rows[1] = &kFaceStages[i];
+    if (strcmp(kFaceStages[i].level, "high") == 0) rows[2] = &kFaceStages[i];
+    if (strcmp(kFaceStages[i].level, "redline") == 0) rows[3] = &kFaceStages[i];
+  }
+  for (int i = 0; i < 4; ++i) TEST_ASSERT_NOT_NULL(rows[i]);
+
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(kRpmIdleNominal, rows[0]->rpm,
+                                  "转速·低 应该是点火怠速(实车 900)");
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(kRpmCruiseNominal, rows[1]->rpm,
+                                  "转速·中 应该是稳定巡航(实车 2000)");
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(kRpmMax, rows[3]->rpm,
+                                  "转速·红区 应该是表盘上限(实车 6000)");
+  // 运动档取巡航与上限之间,而且要真的落在"运动"那一档
+  TEST_ASSERT_TRUE(rows[2]->rpm > kRpmCruiseNominal);
+  TEST_ASSERT_TRUE(rows[2]->rpm < kRpmMax);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport, (uint8_t)rows[2]->left);
+
+  // 每个地标都必须落在**它自己那一档**里(表 ↔ 状态机的交叉验证)
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle, (uint8_t)run_stage(*rows[0]).left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise, (uint8_t)run_stage(*rows[1]).left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Redline, (uint8_t)run_stage(*rows[3]).left);
+}
+
 // 表里的槽位编号必须就是 Face 的枚举值(网页端按下标找角色,错一位全乱)
 static void test_slot_index_equals_face(void) {
   TEST_ASSERT_EQUAL_UINT8(0, (uint8_t)Face::Idle);
@@ -193,6 +224,7 @@ void register_face_stage_tests(void) {
   RUN_TEST(test_only_own_gauge_moves_own_screen);
   RUN_TEST(test_driven_screen_differs_within_group);
   RUN_TEST(test_fallback_chain);
+  RUN_TEST(test_rpm_stages_use_real_landmarks);
   RUN_TEST(test_slot_index_equals_face);
   RUN_TEST(test_screen_state_sets);
 }

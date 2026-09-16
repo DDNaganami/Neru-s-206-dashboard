@@ -215,7 +215,9 @@ function unhex(s) { return parseInt(s.replace("#", ""), 16) & 0xFFFFFF; }
 // 既要有画弧用的百分比,也要有**读数用的原值** —— 数字显示的是原值,
 // 拿百分比反算会多一次舍入,和固件对不上。
 // faceL / faceR 是**两屏各自的表情**(每屏一套独立状态机)。
-const SIM_MAX = { speed: 210, rpm: 7000, coolant: 130 };
+// 量程上限来自 face-stages.js(它由 test-face-stages.js 与 vehicle_state.h 对账),
+// 不在这里再抄一遍数字 —— 抄了就会在"改了固件忘了改预览"时静默跑偏。
+const SIM_MAX = { speed: FaceStages.MAX.speed, rpm: FaceStages.MAX.rpm, coolant: 130 };
 const SIM = {
   speed_t: 0.55, rpm_t: 0.42, coolant_t: 0.6,
   speed: 115, rpm: 2900, coolant: 88,

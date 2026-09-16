@@ -614,7 +614,7 @@ const COOLANT_LO = 60, COOLANT_HI = 130;
 
 function stageT(kind, st) {
   if (kind === ARC_KIND_SPEED) return clamp01(st.speed / 210);
-  if (kind === ARC_KIND_RPM) return clamp01(st.rpm / 7000);
+  if (kind === ARC_KIND_RPM) return clamp01(st.rpm / FaceStages.MAX.rpm);
   return clamp01((st.coolant - COOLANT_LO) / (COOLANT_HI - COOLANT_LO));
 }
 function clamp01(x) { return Math.max(0, Math.min(1, x)); }

@@ -46,6 +46,14 @@ const dir = __dirname;
 const repoRoot = path.resolve(dir, "..", "..");
 const stagesH = fs.readFileSync(
   path.join(repoRoot, "lib", "dashcore", "face_stages.h"), "utf8");
+const stateH = fs.readFileSync(
+  path.join(repoRoot, "lib", "dashcore", "vehicle_state.h"), "utf8");
+
+// 量程上限:画弧进度要用,两边不一致的表现是"预览里弧的进度和真车不同"(看不出来)
+const maxRe = /kRpmMax\s*=\s*([\d.]+)f/;
+const maxSpeedRe = /kSpeedMax\s*=\s*([\d.]+)f/;
+const cppRpmMax = Number((maxRe.exec(stateH) || [])[1]);
+const cppSpeedMax = Number((maxSpeedRe.exec(stateH) || [])[1]);
 
 // ------------------------------------------------------------
 // 解析 face_stages.h
@@ -177,6 +185,29 @@ eq(FS_JS.stagesOf("rpm").length, 4, "转速组 4 档(含红区)");
 eq(FS_JS.stagesOf("speed").length, 3, "车速组 3 档");
 eq(FS_JS.stagesOf("coolant").length, 3, "水温组 3 档");
 eq(FS_JS.group("coolant").faces, false, "水温组声明为不影响表情");
+
+// ------------------------------------------------------------
+// 量程上限(画弧进度用):网页镜像 == vehicle_state.h
+// 不一致的表现是"预览里弧的进度和真车不一样" —— 同样不会报错。
+section("量程上限:JS 镜像 == vehicle_state.h");
+eq(FS_JS.MAX.rpm, cppRpmMax, "转速上限 kRpmMax");
+eq(FS_JS.MAX.speed, cppSpeedMax, "车速上限 kSpeedMax");
+ok(cppRpmMax > 0 && cppSpeedMax > 0, "解析出了量程上限(排版没被改)");
+
+// 阶段表里的转速值不能超出表盘刻度 —— 超了预览里弧会填满而真车也填满,
+// 但数字读数会显示一个表盘上不存在的转速,容易误判"表是不是坏了"
+section("阶段值不超出量程");
+for (const st of FS_JS.STAGES) {
+  ok(st.rpm <= FS_JS.MAX.rpm, st.group + "/" + st.level + " 的转速 " + st.rpm + " 没超上限");
+  ok(st.speed <= FS_JS.MAX.speed, st.group + "/" + st.level + " 的车速 " + st.speed + " 没超上限");
+}
+// 红区那一档必须**就在上限附近**(否则"红区"这一档在真车上永远看不到)
+{
+  const red = FS_JS.stagesOf("rpm").filter(s => s.level === "redline")[0];
+  ok(red.rpm >= FS_JS.MAX.rpm * 0.9,
+     "红区档的转速 " + red.rpm + " 应该接近表盘上限 " + FS_JS.MAX.rpm);
+  eq(red.left, "Redline", "红区档的左屏期望是红区脸");
+}
 
 // ------------------------------------------------------------
 // ★★ 这一轮的核心规则,两端各钉一遍(C 侧见 test_face_stages.cpp)

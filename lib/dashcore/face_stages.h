@@ -36,7 +36,9 @@
 //    速度组的左屏必须恒为常态;水温组**两屏都不许变**(水温不参与表情)。
 //    这正是"每屏一套独立表情"的可执行定义。
 //
-// 未被测的那两路取"正常值":速度 0、水温 85(正常运行温度)、转速 900(怠速)。
+// 未被测的那两路取"正常值":车速 0、水温 85(正常运行温度)、转速 900(怠速)。
+// **转速组的四档直接用实车地标**:点火怠速 900 / 稳定巡航 2000 /
+// 运动 4200 / 表盘上限 6000 —— 这样"表里那一行"就是"车上真会出现的那一格"。
 // 瞬态(惊喜 Surprise)不在表里 —— 它不是稳态,由 test_expression.cpp 单独覆盖。
 struct FaceStage {
   const char* group;      // "rpm" | "speed" | "coolant"
@@ -50,10 +52,11 @@ struct FaceStage {
 
 static const FaceStage kFaceStages[] = {
   // 转速:只驱动左屏;右屏恒为常态(车速一直是 0)
-  {"rpm", "low", 800.0f, 0.0f, 85.0f, Face::Idle, Face::Idle},
-  {"rpm", "mid", 3200.0f, 0.0f, 85.0f, Face::Cruise, Face::Idle},
-  {"rpm", "high", 4800.0f, 0.0f, 85.0f, Face::Sport, Face::Idle},
-  {"rpm", "redline", 6600.0f, 0.0f, 85.0f, Face::Redline, Face::Idle},
+  // 四档 = 实车地标(怠速/巡航/运动/上限),阈值见 expression.cpp
+  {"rpm", "low", 900.0f, 0.0f, 85.0f, Face::Idle, Face::Idle},
+  {"rpm", "mid", 2000.0f, 0.0f, 85.0f, Face::Cruise, Face::Idle},
+  {"rpm", "high", 4200.0f, 0.0f, 85.0f, Face::Sport, Face::Idle},
+  {"rpm", "redline", 6000.0f, 0.0f, 85.0f, Face::Redline, Face::Idle},
   // 车速:只驱动右屏;左屏恒为常态(转速一直是怠速)
   {"speed", "low", 900.0f, 0.0f, 85.0f, Face::Idle, Face::Idle},
   {"speed", "mid", 900.0f, 55.0f, 85.0f, Face::Idle, Face::Cruise},
