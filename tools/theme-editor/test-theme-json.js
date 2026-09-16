@@ -86,6 +86,51 @@ section("裸根写法(不带 theme 外壳)也接受");
 }
 
 // ------------------------------------------------------------
+// ★ 两个页面共用同一份"本机配色"
+//
+// 为什么值得测:弧的配色在两个页面里都能改(用户是在图片编辑器里对着表情图调色的,
+// 却也要能在主题编辑器里改)。共享靠的是一个 localStorage 键 ——
+// 键名写错一个字符、或者哪一页只读不写,共享就静默失效:
+// 表现是"我在 A 页改了色,打开 B 页还是旧的",而不会有任何报错。
+// ------------------------------------------------------------
+section("两个编辑器共用同一份配色(localStorage)");
+{
+  const idxSrc = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+  const imgSrc2 = fs.readFileSync(path.join(__dirname, "image-editor.html"), "utf8");
+  const keyOf = (s) => {
+    const m = /const THEME_KEY = "([^"]+)"/.exec(s);
+    return m ? m[1] : null;
+  };
+  const kTheme = keyOf(idxSrc);
+  const kImage = keyOf(imgSrc2);
+  ok(kTheme !== null, "主题编辑器里定义了 THEME_KEY");
+  ok(kImage !== null, "图片编辑器里定义了 THEME_KEY");
+  eq(kImage, kTheme, "两页的键名必须一致");
+
+  for (const [name, src] of [["主题编辑器", idxSrc], ["图片编辑器", imgSrc2]]) {
+    ok(src.indexOf("localStorage.setItem(THEME_KEY") >= 0, name + " 会写这份配色");
+    ok(src.indexOf("localStorage.getItem(THEME_KEY") >= 0, name + " 会读这份配色");
+  }
+  // 图片编辑器必须真的能改色 + 导出(不然"读得到"却没有产出的路子)
+  ok(/id="btn-theme-export"/.test(imgSrc2), "图片编辑器有「导出 theme.json」按钮");
+  ok(/type = "color"/.test(imgSrc2) || /type:"color"/.test(imgSrc2) ||
+     /type = 'color'/.test(imgSrc2) || /\.type = "color"/.test(imgSrc2),
+     "图片编辑器里用了颜色选择器");
+  ok(/exportThemeJson/.test(imgSrc2), "图片编辑器里有导出函数");
+
+  // 存的形态:B 页写的是**裸主题对象**,A 页用 themeObject 读(带 theme 外壳也认)。
+  // 走一遍真实的往返,确认字段不丢。
+  const t0 = TJ.themeObject(TJ.parseThemeJson(
+    fs.readFileSync(path.join(__dirname, "theme-default.json"), "utf8")));
+  const stored = JSON.stringify(t0);                 // 图片编辑器 saveTheme() 的写法
+  const back = TJ.themeObject(TJ.parseThemeJson(stored));
+  eq(back.bg_color, t0.bg_color, "往返后背景色");
+  eq(back.screens.length, t0.screens.length, "往返后屏数");
+  eq(back.screens[0].arcs[1].value_color, t0.screens[0].arcs[1].value_color, "往返后水温弧点亮色");
+  eq(back.screens[1].arcs[0].radius, t0.screens[1].arcs[0].radius, "往返后车速弧半径");
+}
+
+// ------------------------------------------------------------
 section("坏输入要报错,不能静默返回半个对象");
 {
   let threw = false;

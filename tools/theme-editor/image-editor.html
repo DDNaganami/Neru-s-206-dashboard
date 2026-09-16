@@ -83,13 +83,17 @@
   .stage-cell .r{font-size:11px;color:var(--dim);margin-top:2px;text-align:left}
   .stage-cell .miss{color:var(--warn)}
   .stage-cell .none{color:#ff9c9c}
-  /* 三条弧的配色只读展示:左边名字、中间两个色块(点亮/轨道)、右边色号 */
-  .swatches{margin:6px 0 4px}
-  .swatch{display:flex;align-items:center;gap:6px;margin:3px 0;font-size:12px}
-  .swatch .nm{flex:0 0 108px;color:var(--dim)}
-  .swatch i{width:20px;height:14px;border:1px solid var(--line);border-radius:3px;
-            display:inline-block}
-  .swatch .cd{color:var(--dim);font:11px Consolas,monospace}
+  /* 三条弧的配色编辑:一行一条弧,色块 + 色号 + 不透明度 */
+  .arc-edit{margin:8px 0 12px;padding:8px 10px;border:1px solid var(--line);border-radius:6px}
+  .arc-edit .ttl{color:var(--text);font-size:12px;margin-bottom:6px}
+  .arc-edit .row label{flex:0 0 92px}
+  .arc-edit input[type=color]{width:38px;height:24px;border:1px solid var(--line);
+                              background:#0e1016;border-radius:4px;padding:0;cursor:pointer}
+  .arc-edit input[type=text]{width:78px;background:#0e1016;border:1px solid var(--line);
+                             color:var(--text);border-radius:4px;padding:3px 5px;
+                             font:12px Consolas,monospace}
+  .arc-edit input[type=range]{flex:1;min-width:0}
+  .arc-edit .val{width:34px;text-align:right;color:var(--dim);font-size:12px}
 </style>
 </head>
 <body>
@@ -127,17 +131,18 @@
       </div>
       <div class="row">
         <label>仪表配色</label>
+        <button id="btn-theme-export" class="primary">导出 theme.json</button>
         <button id="btn-load-theme">读入 theme.json</button>
         <button id="btn-reset-theme" class="tiny">用固件默认</button>
       </div>
-      <div id="arc-swatches" class="swatches"></div>
+      <div id="arc-editors"></div>
       <div class="hint" id="arc-source" style="color:var(--dim);font-size:12px"></div>
       <div class="hint" style="color:var(--dim);font-size:12px">
-        <b>三条弧的配色在这里只读</b> —— 改色请用「主题编辑器」（<code>index.html</code>）：
-        每条弧的<b>点亮色 / 轨道色 / 轨道透明度</b>都在那里，导出 <code>theme.json</code>
-        后回到本页点「读入 theme.json」，这一页的预览就与真车完全一致。<br>
-        为什么不在这里直接改：弧色属于<b>主题</b>（刷进 theme 分区），
-        图片属于 <b>image 分区</b>；两处都能改的话，同一个颜色就有了两个事实来源。
+        这里的颜色就是**主题里的那三条弧**：改完点「导出 theme.json」，
+        用 esptool 刷进 <code>theme</code> 分区就生效（固件不用重编译）。
+        本页只写<b>弧与底色</b>；五官、开机时长、数字读数那些字段缺失时固件用默认值 ——
+        要调它们请用<b>主题编辑器</b>（两页共用同一份配色，不会互相覆盖）。<br>
+        注意：配色属于 <b>theme 分区</b>，图片属于 <b>image 分区</b>，是两次刷写。
       </div>
       <div class="row">
         <label>阶段</label>
@@ -537,20 +542,36 @@ function setSize(item, w) {
 }
 
 // ------------------------------------------------------------
-// 预览：按角色把图贴到 480×480 上
+// 主题(仪表配色) —— 本页**可改、可导出 theme.json**
+//
+// ★ 为什么不"只读 + 去主题编辑器改":
+//   用户是在这一页对着表情图看"弧压在脸上什么效果"的，配色就该在这一页顺手调；
+//   把活儿推给另一页等于没做。（前一版就是只读的，用户当场指出
+//   "那你做的读入 theme.json 功能有啥意义，一般用户也不会写"。）
+//
+// ★ 怎么避免"两处都能改 = 两个事实来源":
+//   两页**共用同一个 localStorage 键**(THEME_KEY)：
+//     · 本页改色 → 立刻写进去 → 打开主题编辑器时它读到的就是这一份
+//     · 主题编辑器改完 → 本页刷新后读到的就是那一份
+//   谁也没有"自己的一份默认值"，所以不会互相覆盖。
+//
+// ★ 本页导出的 theme.json 只包含它动过的字段(底色 + 三条弧)。
+//   固件对缺失字段一律用默认值(主题格式的设计，见 theme_store.cpp)，
+//   所以这个文件**直接刷也安全** —— 拿主题编辑器导出的完整文件来读、
+//   改完再导出，那就还是完整的。
 // ------------------------------------------------------------
-// ---- 预览用的三条弧(转速 / 水温 / 车速) ----
-//
-// ★ 这里以前是**写死的颜色**(红弧/绿弧/蓝弧),后果和那个"主题左右屏装反"一样:
-//   你在主题编辑器里把水温弧改成别的颜色,这一页还按旧颜色预览 ——
-//   而这一页正是用来看"表情叠在弧上是什么效果"的,颜色错了就等于看错了。
-//   所以现在改成:**从主题文件读**(themetool 的 theme.json),
-//   读不到才退回下面这份"与固件默认主题一致"的兜底值。
-//
-// 兜底值必须与 lib/themetool/ui_theme.h 的 theme_set_defaults() 一致 ——
-// 它是"没带主题文件时的参考",不是第二份事实来源。
+const THEME_KEY = "206dash.theme";      // 与主题编辑器共用同一个键
+
+function cloneTheme(o) { return JSON.parse(JSON.stringify(o)); }
+function hexOf(n) { return "#" + (n & 0xFFFFFF).toString(16).padStart(6, "0").toUpperCase(); }
+function unhexOf(s) { return parseInt(String(s).replace("#", ""), 16) & 0xFFFFFF; }
+
+// 兜底 = 固件默认主题里"本页用得到的那部分"(底色 + 三条弧)。
+// 与 lib/themetool/ui_theme.h 的 theme_set_defaults() 一致，
+// 由 test-theme-json.js 逐字段对账(这几处副本不许跑偏)。
 // 字段名与主题里一样(kind: 0=车速 1=转速 2=水温)。
 const ARC_FALLBACK = {
+  bg_color: 0x141414,
   screens: [
     { arcs: [
       { kind: 1, start_deg: 135, end_deg: 405, radius: 205, width: 24,
@@ -565,18 +586,84 @@ const ARC_FALLBACK = {
   ]
 };
 const ARC_KIND_LABEL = ["车速", "转速", "水温"];
+const SCREEN_LABEL = ["左屏(转速表)", "右屏(速度表)"];
 
-// 当前生效的弧配置 + 它的来源(界面要写清楚,免得"以为在读主题"其实在读兜底)
-let gArcs = cloneArcs(ARC_FALLBACK.screens);
-let gArcSource = "固件默认主题（未读入 theme.json）";
+// 当前主题对象(整份保留:读进来是什么样就什么样，只改本页管的字段) + 来源说明
+let gTheme = cloneTheme(ARC_FALLBACK);
+let gThemeSource = "固件默认主题（没改过）";
 
-function cloneArcs(screens) {
-  return JSON.parse(JSON.stringify(screens));
+// 底色跟着主题走:预览按它合成透明度
+function themeBgHex() {
+  return typeof gTheme.bg_color === "number" ? hexOf(gTheme.bg_color) : "#141414";
 }
 
-function hexOf(n) { return "#" + (n & 0xFFFFFF).toString(16).padStart(6, "0").toUpperCase(); }
+// 写回本机(两页共用的那一份)。存储不可用(隐私模式)时静默跳过，不影响使用。
+function saveTheme() {
+  try { localStorage.setItem(THEME_KEY, JSON.stringify(gTheme)); } catch { /* ignore */ }
+}
 
-// 这一个阶段下,某条弧该点亮多少(与固件 arc_progress 同一套:转速看转速、水温看水温、车速看车速)
+function applyThemeObject(t) {
+  if (!t || typeof t !== "object") return false;
+  // 整份接过来(不认识的字段原样留着 —— 主题编辑器导出的文件里有五官/开机时长等)，
+  // 只保证本页要用到的字段存在
+  gTheme = t;
+  if (typeof gTheme.bg_color !== "number") gTheme.bg_color = ARC_FALLBACK.bg_color;
+  if (!Array.isArray(gTheme.screens)) gTheme.screens = cloneTheme(ARC_FALLBACK.screens);
+  for (let s = 0; s < 2; s++) {
+    if (!gTheme.screens[s]) gTheme.screens[s] = cloneTheme(ARC_FALLBACK.screens)[s];
+    if (!Array.isArray(gTheme.screens[s].arcs) || !gTheme.screens[s].arcs.length) {
+      gTheme.screens[s].arcs = cloneTheme(ARC_FALLBACK.screens)[s].arcs;
+    }
+    gTheme.screens[s].arcs.forEach(a => { if (a.track_opa === undefined) a.track_opa = 153; });
+  }
+  return true;
+}
+
+function loadThemeText(text, sourceName) {
+  try {
+    const t = ThemeJson.themeObject(ThemeJson.parseThemeJson(text));
+    if (!applyThemeObject(t)) throw new Error("主题对象是空的");
+    gThemeSource = "theme.json：" + (sourceName || "已读入");
+    saveTheme();
+    applyThemeToUi();
+    return true;
+  } catch (e) {
+    say("主题文件读不进来：" + e.message + "\n" +
+        "（从主题编辑器导出的 theme.json 应该能直接读；" +
+        "手改过的话注意 JSON 括号要配对）", "err");
+    return false;
+  }
+}
+
+// 启动时先看本机有没有存过 —— 可能是主题编辑器写的，也可能是本页上次改的
+function restoreSavedTheme() {
+  let text = null;
+  try { text = localStorage.getItem(THEME_KEY); } catch { return false; }
+  if (!text) return false;
+  try {
+    const t = ThemeJson.themeObject(ThemeJson.parseThemeJson(text));
+    applyThemeObject(t);
+    gThemeSource = "本机记住的配色（本页或主题编辑器改的）";
+    return true;
+  } catch { return false; }
+}
+
+// 导出 theme.json —— 与主题编辑器导出的是**同一种文件**，刷法也一样
+function exportThemeJson() {
+  const text = JSON.stringify({ theme: gTheme }, null, 2);
+  download(new Blob([text], { type: "application/json" }), "theme.json");
+  const bytes = new Blob([text]).size;
+  say("已导出 theme.json（" + bytes + " 字节）。\n\n" +
+      "刷到 theme 分区（端口按你电脑上的改）：\n" +
+      "python -m esptool --chip esp32 -p COM3 write_flash 0x210000 theme.json\n\n" +
+      "注意：配色属于 theme 分区、图片属于 image 分区，是两次刷写。" +
+      (bytes > 4096
+        ? "\n⚠ 超过 4096 字节：设备端缓冲只有 4KB（见 theme_store.h），请精简后重试。"
+        : "\n大小在设备端 4KB 缓冲限制内，OK。"),
+      bytes > 4096 ? "err" : "ok");
+}
+
+// 这一个阶段下,某条弧该点亮多少(与固件 arc_progress 同一套:按弧自己那一维算)
 function arcT(a, st) {
   if (a.kind === 1) return clamp01(st.rpm / FaceStages.MAX.rpm);
   if (a.kind === 2) return clamp01((st.coolant - COOLANT_LO) / (COOLANT_HI - COOLANT_LO));
@@ -588,8 +675,8 @@ function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, valueColor, trackColo
   ctx.beginPath();
   ctx.arc(cx, cy, r, rad(endDeg), rad(startDeg), true);
   ctx.lineWidth = w;
-  ctx.strokeStyle = trackColor !== undefined ? trackColor : "#232323";
-  ctx.globalAlpha = trackOpa !== undefined ? trackOpa : 0.6;
+  ctx.strokeStyle = trackColor;
+  ctx.globalAlpha = trackOpa;
   ctx.stroke();
   ctx.globalAlpha = 1;
   if (t01 > 0.001) {
@@ -599,99 +686,95 @@ function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, valueColor, trackColo
   }
 }
 
-// ------------------------------------------------------------
-// 读入主题文件 —— 让这一页的弧**与真车一致**
-//
-// 主题文件由「主题编辑器」导出(theme.json)。格式与固件同一套:
-// 颜色可以写 0xRRGGBB(theme-json.js 负责这种方言),屏幕顺序 = 左/右。
-// 读进来只影响预览,不影响导出的 image.bin。
-// ------------------------------------------------------------
-function applyThemeObject(t) {
-  if (!t) return false;
-  if (Array.isArray(t.screens) && t.screens.length) {
-    gArcs = cloneArcs(ARC_FALLBACK.screens);        // 先落默认,再按键覆盖
-    for (let i = 0; i < 2 && i < t.screens.length; i++) {
-      const src = t.screens[i];
-      if (!src || !Array.isArray(src.arcs)) continue;
-      if (src.arc_count !== undefined) gArcs[i].arc_count = src.arc_count;
-      src.arcs.forEach((a, k) => {
-        if (k < gArcs[i].arcs.length) Object.assign(gArcs[i].arcs[k], a);
-      });
-    }
-  }
-  if (typeof t.bg_color === "number") {
-    theme.bg = hexOf(t.bg_color);
-    document.getElementById("bg-color").value = theme.bg;
-  }
-  return true;
+// ---- 配色控件(与主题编辑器同一套字段名与交互) ----
+function arcColorRow(parent, label, get, set) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const lb = document.createElement("label");
+  lb.textContent = label;
+  const c = document.createElement("input");
+  c.type = "color"; c.value = hexOf(get());
+  const t = document.createElement("input");
+  t.type = "text"; t.value = hexOf(get());
+  const commit = (v) => {
+    set(v);
+    c.value = hexOf(v); t.value = hexOf(v);
+    gThemeSource = "本页改过（记得导出 theme.json）";
+    saveTheme();
+    buildArcSourceLine();
+    refresh(false);
+  };
+  c.addEventListener("input", () => commit(unhexOf(c.value)));
+  t.addEventListener("change", () => {
+    if (/^#?[0-9a-fA-F]{6}$/.test(t.value)) {
+      commit(unhexOf(t.value[0] === "#" ? t.value : "#" + t.value));
+    } else { t.value = hexOf(get()); }
+  });
+  row.append(lb, c, t);
+  parent.appendChild(row);
 }
 
-function loadThemeText(text, sourceName) {
-  try {
-    const t = ThemeJson.themeObject(ThemeJson.parseThemeJson(text));
-    if (!applyThemeObject(t)) throw new Error("主题对象是空的");
-    gArcSource = "theme.json：" + (sourceName || "已读入");
-    // 记住它 —— 换页/刷新后还要用同一套配色(体积很小,不必存整棵树)
-    try { localStorage.setItem("206dash.previewTheme", text); } catch { /* 隐私模式忽略 */ }
-    buildArcSwatches();
-    refresh();
-    return true;
-  } catch (e) {
-    say("主题文件读不进来：" + e.message + "\n" +
-        "（如果是从主题编辑器导出的 theme.json，应该能直接读；" +
-        "手改过的话注意 JSON 括号要配对）", "err");
-    return false;
-  }
+function arcOpaRow(parent, get, set) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const lb = document.createElement("label");
+  lb.textContent = "轨道透明";
+  const r = document.createElement("input");
+  r.type = "range"; r.min = 0; r.max = 255; r.step = 1; r.value = get();
+  const v = document.createElement("span");
+  v.className = "val"; v.textContent = get();
+  r.addEventListener("input", () => {
+    set(+r.value); v.textContent = r.value;
+    gThemeSource = "本页改过（记得导出 theme.json）";
+    saveTheme();
+    buildArcSourceLine();
+    refresh(false);
+  });
+  row.append(lb, r, v);
+  parent.appendChild(row);
 }
 
-// 上次读入的主题:刷新页面后自动恢复,免得"以为一直在用主题色,其实退回默认了"
-function restoreSavedTheme() {
-  let text = null;
-  try { text = localStorage.getItem("206dash.previewTheme"); } catch { /* ignore */ }
-  if (!text) return false;
-  try {
-    const t = ThemeJson.themeObject(ThemeJson.parseThemeJson(text));
-    applyThemeObject(t);
-    gArcSource = "theme.json：上次读入（本机记忆）";
-    return true;
-  } catch { return false; }
-}
-
-// 三条弧的当前配色(只读展示 + 指向真正改色的地方)
-function buildArcSwatches() {
-  const box = document.getElementById("arc-swatches");
+// 每条弧一块:点亮色 / 轨道色 / 轨道透明度
+function buildArcEditors() {
+  const box = document.getElementById("arc-editors");
   if (!box) return;
   box.innerHTML = "";
-  const rows = [
-    { label: "左屏 外弧", arc: gArcs[0].arcs[0] },
-    { label: "左屏 内弧", arc: gArcs[0].arcs[1] },
-    { label: "右屏 外弧", arc: gArcs[1].arcs[0] }
-  ];
-  for (const r of rows) {
-    if (!r.arc) continue;
-    const line = document.createElement("div");
-    line.className = "swatch";
-    const name = document.createElement("span");
-    name.className = "nm";
-    name.textContent = r.label + " · " + (ARC_KIND_LABEL[r.arc.kind] || "?");
-    const lit = document.createElement("i");
-    lit.style.background = hexOf(r.arc.value_color);
-    lit.title = "点亮色 " + hexOf(r.arc.value_color);
-    const trk = document.createElement("i");
-    trk.style.background = hexOf(r.arc.track_color);
-    trk.style.opacity = String((r.arc.track_opa === undefined ? 153 : r.arc.track_opa) / 255);
-    trk.title = "轨道色 " + hexOf(r.arc.track_color) + "（不透明度 " +
-                (r.arc.track_opa === undefined ? 153 : r.arc.track_opa) + "/255）";
-    const code = document.createElement("span");
-    code.className = "cd";
-    code.textContent = hexOf(r.arc.value_color) + " / " + hexOf(r.arc.track_color);
-    line.append(name, lit, trk, code);
-    box.appendChild(line);
+  for (let s = 0; s < 2; s++) {
+    const arcs = gTheme.screens[s].arcs;
+    for (let i = 0; i < arcs.length; i++) {
+      const a = arcs[i];
+      const wrap = document.createElement("div");
+      wrap.className = "arc-edit";
+      const ttl = document.createElement("div");
+      ttl.className = "ttl";
+      ttl.textContent = SCREEN_LABEL[s] + " · " + (ARC_KIND_LABEL[a.kind] || "?") + "弧" +
+                        (s === 0 ? (i === 0 ? "（外圈）" : "（内圈）") : "（外圈）");
+      wrap.appendChild(ttl);
+      arcColorRow(wrap, "点亮色", () => a.value_color, v => a.value_color = v);
+      arcColorRow(wrap, "轨道色", () => a.track_color, v => a.track_color = v);
+      arcOpaRow(wrap, () => a.track_opa, v => a.track_opa = v);
+      box.appendChild(wrap);
+    }
   }
-  const src = document.getElementById("arc-source");
-  if (src) src.textContent = "弧的配色来源：" + gArcSource;
+  buildArcSourceLine();
 }
 
+function buildArcSourceLine() {
+  const el = document.getElementById("arc-source");
+  if (el) {
+    el.textContent = "当前配色来源：" + gThemeSource +
+      "　（改完点上面的「导出 theme.json」刷到 theme 分区）";
+  }
+}
+
+// 主题变过之后统一刷新:底色选择器、配色控件、预览
+function applyThemeToUi() {
+  theme.bg = themeBgHex();
+  const bg = document.getElementById("bg-color");
+  if (bg) bg.value = theme.bg;
+  buildArcEditors();
+  refresh();
+}
 // 从图片列表里取某个角色的第一张（按 order 最小）
 function pick(role) {
   const cand = items.filter(i => i.role === role);
@@ -747,9 +830,9 @@ function drawScreen(cv, which, stage, faceKeyOverride) {
   if (bgItem) blitCentered(ctx, bgItem, cx, cy, cv.width, cv.height);
 
   // 2. 弧线（进度按当前阶段算:转速看转速、左屏内弧看水温、右屏看车速）
-  //    颜色/半径/角度都来自**主题**(读不到才用固件默认值),与真车一致
+  //    颜色/半径/角度就是**当前主题**里的那一份(本页可改、可导出),与真车一致
   if (document.getElementById("show-arcs").checked) {
-    const sc = gArcs[which] || ARC_FALLBACK.screens[which];
+    const sc = gTheme.screens[which] || ARC_FALLBACK.screens[which];
     const count = sc.arc_count === undefined ? sc.arcs.length : sc.arc_count;
     for (let i = 0; i < count && i < sc.arcs.length; i++) {
       const a = sc.arcs[i];
@@ -1199,13 +1282,19 @@ drop.addEventListener("drop", e => handleDroppedFiles(e.dataTransfer.files));
 window.addEventListener("dragover", e => e.preventDefault());
 window.addEventListener("drop", e => e.preventDefault());
 
-// 底色 / 弧线 / 表情状态
+// 底色也是主题的一部分(bg_color):改它就等于改主题,所以要一起存下来、一起导出
 document.getElementById("bg-color").addEventListener("input", e => {
-  theme.bg = e.target.value; refresh();
+  gTheme.bg_color = unhexOf(e.target.value);
+  theme.bg = e.target.value;
+  gThemeSource = "本页改过（记得导出 theme.json）";
+  saveTheme();
+  buildArcSourceLine();
+  refresh(false);
 });
 document.getElementById("show-arcs").addEventListener("change", () => refresh(false));
 
-// 读入主题(弧的配色) / 恢复固件默认
+// 配色:导出 / 读入 / 恢复固件默认
+document.getElementById("btn-theme-export").addEventListener("click", exportThemeJson);
 document.getElementById("btn-load-theme").addEventListener("click", () =>
   document.getElementById("file-theme").click());
 document.getElementById("file-theme").addEventListener("change", e => {
@@ -1217,14 +1306,11 @@ document.getElementById("file-theme").addEventListener("change", e => {
   r.readAsText(f);
 });
 document.getElementById("btn-reset-theme").addEventListener("click", () => {
-  gArcs = cloneArcs(ARC_FALLBACK.screens);
-  gArcSource = "固件默认主题（未读入 theme.json）";
-  theme.bg = "#141414";
-  document.getElementById("bg-color").value = theme.bg;
-  try { localStorage.removeItem("206dash.previewTheme"); } catch { /* ignore */ }
-  buildArcSwatches();
-  refresh();
-  say("已恢复固件默认配色。想让预览与真车一致，请从主题编辑器导出 theme.json 后读入。");
+  gTheme = cloneTheme(ARC_FALLBACK);
+  gThemeSource = "固件默认主题（已恢复）";
+  try { localStorage.removeItem(THEME_KEY); } catch { /* ignore */ }
+  applyThemeToUi();
+  say("已恢复固件默认配色（底色 + 三条弧的颜色/不透明度）。");
 });
 
 // 载入已有 bin（方便在已有资源上继续改）
@@ -1245,15 +1331,15 @@ document.getElementById("file-bin").addEventListener("change", e => {
 
 // ------------------------------------------------------------
 buildStageSelects();
-// 弧的配色:能记住上次读入的 theme.json 就先用它,否则用固件默认值
+// 仪表配色:本机存过就用那一份(可能是本页改的,也可能是主题编辑器改的),
+// 否则用固件默认值
 restoreSavedTheme();
-buildArcSwatches();
-refresh();
+applyThemeToUi();
 say("就绪。\n" +
     "1) 加图片  2) 选「用途」（背景 / 表情）  3) 导出 image.bin\n" +
-    "右下「表情阶段模拟」可以逐档看低/中/高转速、水温、速度下会显示哪张表情。\n" +
-    "弧的配色请用主题编辑器（index.html）改，导出 theme.json 后拖到本页即可读入 ——\n" +
-    "这样预览里的弧色就和真车一致（本页的配色只读，避免同一个颜色有两处事实来源）。");
+    "左上「仪表配色」可以直接改三条弧的颜色，改完点「导出 theme.json」刷到 theme 分区。\n" +
+    "（配色和图片是两个分区，要各刷一次；两页共用同一份配色，不会互相覆盖。）\n" +
+    "右下「表情阶段模拟」可以逐档看转速/车速/水温各档下会显示哪张表情。");
 </script>
 </body>
 </html>

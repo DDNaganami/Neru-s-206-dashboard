@@ -727,6 +727,41 @@ function updateStageInfo() {
   el.textContent += "｜导入表情图请用「表情导入」页。";
 }
 
+// ---------------- 本机记忆：与图片编辑器共用同一份配色 ----------------
+// ★ 两个页面都能改弧的配色（图片编辑器那边也有颜色选择器，因为用户是在
+//   对着表情图调色的）。为了让"两处都能改"不等于"两个事实来源"，
+//   两页共用同一个 localStorage 键：谁改都写这里，另一页打开/刷新就读到它。
+//   顺带也解决了"改了半天、刷新一下全没了"。
+const THEME_KEY = "206dash.theme";
+
+function saveThemeToLocal() {
+  try { localStorage.setItem(THEME_KEY, JSON.stringify(T)); } catch { /* 隐私模式忽略 */ }
+}
+
+// 读回来时用与导入文件**同一条合并路径**：缺字段继承默认值
+function loadThemeFromLocal() {
+  let text = null;
+  try { text = localStorage.getItem(THEME_KEY); } catch { return false; }
+  if (!text) return false;
+  try {
+    const t = ThemeJson.themeObject(ThemeJson.parseThemeJson(text));
+    T = Object.assign(defaultTheme(), t);
+    T.face = Object.assign(defaultTheme().face, t.face || {});
+    T.readout = Object.assign(defaultTheme().readout, t.readout || {});
+    if (Array.isArray(t.screens)) {
+      for (let i = 0; i < 2; i++) {
+        if (!t.screens[i]) continue;
+        T.screens[i] = Object.assign(defaultTheme().screens[i], t.screens[i]);
+        if (Array.isArray(t.screens[i].arcs)) {
+          T.screens[i].arcs = defaultTheme().screens[i].arcs.map(
+            (da, k) => Object.assign(da, t.screens[i].arcs[k] || {}));
+        }
+      }
+    }
+    return true;
+  } catch { return false; }
+}
+
 // ---------------- 渲染 ----------------
 function render() {
   drawScreen(document.getElementById("cv0"), 0, T, SIM, {});
@@ -735,6 +770,8 @@ function render() {
   document.getElementById("json").value = JSON.stringify({ theme: T }, null, 2);
   updateStageInfo();
   syncers.forEach(s => s.sync && s.sync());
+  // 每次参数变化都存一份(约 2KB,代价可以忽略)—— 两页共用，也是防丢
+  saveThemeToLocal();
 }
 
 function renderAnim() {
@@ -899,13 +936,19 @@ document.getElementById("btn-play").addEventListener("click", (e) => {
 });
 
 // ---------------- 启动 ----------------
+// 先看本机有没有存过的配色(可能是本页上次改的,也可能是图片编辑器改的),
+// 没有才用编译期默认值
+const hadSaved = loadThemeFromLocal();
 buildControls();
 buildStageSelect();
 simFromStage(FaceStages.STAGES[0]);   // 默认停在"转速 · 低"(怠速常态)
 render();
 say("就绪。左栏调参、右侧实时预览。\n" +
-    "右上角「阶段预览」可切到低/中/高转速、水温、速度,看各档的表情与读数。\n" +
-    "满意后点右上角「导出主题文件」。");
+    "右上角「阶段预览」可切到转速/车速/水温各档,看两屏各自的表情与读数。\n" +
+    "满意后点右上角「导出主题文件」。\n" +
+    (hadSaved
+      ? "（已载入本机记住的配色 —— 这一份与「图片导入」页共用，两边改都算数。）"
+      : "（弧的配色在「图片导入」页也能直接改，两页共用同一份。）"));
 </script>
 </body>
 </html>
