@@ -310,9 +310,24 @@ const FITS = [
   { id: "stretch", label: "拉伸铺满（会变形）" }
 ];
 
-// 常见尺寸：480×480 一张就 450KB，塞不进 1MB 分区（还要放表情图），
-// 所以默认给 240×240，并在这里明确写出来，避免用户第一次就撞墙。
-const SIZE_PRESETS = [240, 320, 360, 480];
+// 常见尺寸（一键按钮）。**默认值见 pickDefaultSize()**：
+// 默认按"原图多大就输出多大（但不超过 240）"来定，所以导入 152×152 的图
+// 输出就是 152×152 —— 早期版本无论原图多大都输出 240，
+// 结果用户按建议做好了 152 的图、导进来却被**放大**成 240，
+// 8 张直接从 542KB 变成 1350KB、空间报 132% 溢出。
+// ★ 152 是"1MB 分区里放得下完整一套 8 张表情"的尺寸，所以放进预设。
+const SIZE_PRESETS = [152, 192, 240, 320, 480];
+
+// 新导入的图默认输出多宽：**只缩不放**。
+// 源图比 240 小就按源图（向下取到 4 的倍数，保证不会反而放大），
+// 比 240 大才缩到 240（省分区）—— 480 一张背景就 450KB，
+// 第一次用的人不该一上来就撞墙。
+const DEFAULT_MAX_W = 240;
+function pickDefaultSize(naturalW) {
+  const w = Math.min(DEFAULT_MAX_W, Math.round(naturalW || DEFAULT_MAX_W));
+  const q = Math.floor(w / 4) * 4;               // 向下对齐到输入框的 step=4
+  return Math.max(8, Math.min(DEFAULT_MAX_W, q));
+}
 
 // 哪些角色要保留透明通道
 //   表情 = 叠在弧线上面,必须能透出底下的东西 → RGB565A8
@@ -446,10 +461,22 @@ function buildList() {
     const cf = cfForRole(item.role);
     const bpp = ImageBlob.packedBytesPerPixel(cf);
     const fmtName = (cf === ImageBlob.CF.RGB565A8) ? "RGB565A8(带透明)" : "RGB565";
-    meta.textContent = "原图 " + (item.img.naturalWidth || item.img.width) + "×" +
-      (item.img.naturalHeight || item.img.height) +
+    const sw0 = item.img.naturalWidth || item.img.width;
+    const sh0 = item.img.naturalHeight || item.img.height;
+    // ★ 放大要**明确写出来**：输出比原图大只会变糊 + 白占分区，
+    //   而缩略图看起来一样大，不说用户看不出来（踩过：152 的图被导成 240，
+    //   8 张从 542KB 涨到 1350KB，只看到"溢出了"却不知道涨在哪）。
+    const scaleNote = (item.w > sw0) ? "　⚠ 放大了 " + sw0 + "→" + item.w + "，建议改回 " + sw0
+                   : (item.w < sw0 ? "　缩小" : "");
+    // ★ 背景图的**覆盖范围**要单独提醒：弧带在半径 181..205，底图不够大时
+    //   那一圈会露出主题底色（不是"看不清"，而是明显的一圈色差）。
+    //   480×480 才铺满整屏；410×410（半径 205 的圆外接）也够盖住弧带。
+    const bgNote = (item.role === ImageBlob.ROLE.Background && Math.max(item.w, item.h) < 410)
+      ? "　⚠ 背景小于 410×410，弧带（半径 181..205）那一圈会露出主题底色"
+      : "";
+    meta.textContent = "原图 " + sw0 + "×" + sh0 +
       "　输出 " + item.w + "×" + item.h + " " + fmtName + "　" +
-      (item.w * item.h * bpp) + " 字节";
+      (item.w * item.h * bpp) + " 字节" + scaleNote + bgNote;
 
     // 用途
     const roleRow = document.createElement("div");
@@ -517,12 +544,20 @@ function buildList() {
   });
 
   // 同一角色多帧时提醒播放顺序
+  // ★ 这里以前查的是 ImageBlob.ROLE.BootFrame —— 那个角色早就删了
+  //   (开机改成程序化扫表),键是 undefined,于是这段提示永远不会出现。
+  //   现在按"任何角色有多张"判断(order 字段对每个角色都有效)。
   const note = document.getElementById("list-note");
-  const bootCount = items.filter(i => i.role === ImageBlob.ROLE.BootFrame).length;
-  if (bootCount > 1) {
+  const byRole = {};
+  items.forEach(i => { byRole[i.role] = (byRole[i.role] || 0) + 1; });
+  const multi = Object.keys(byRole).filter(r => byRole[r] > 1);
+  if (multi.length) {
+    const names = multi.map(r => (ImageBlob.ROLE_NAMES[r] || ("角色 " + r)) +
+                                 " ×" + byRole[r]).join("、");
     note.style.display = "";
-    note.textContent = "有 " + bootCount + " 张开机帧：设备会按「顺序」从小到大播放。" +
-      "单帧开机动画的时长在主题编辑器里调（boot_* 字段）。";
+    note.textContent = "有角色放了多张：" + names +
+      "。设备按「顺序」从小到大取用（同角色取 order 最小的一张；" +
+      "表情的降级链见 face-stages.js）。";
   } else {
     note.style.display = "none";
   }
@@ -1137,9 +1172,24 @@ function refresh(rebuildGrid = true) {
     // ★ 分区大小必须从 PARTITION_BYTES 读,别写死数字 ——
     //   这里曾经写死 "128KB"(分区还是 128KB 时的值),分区改成 1MB 后
     //   提示就变成错的,会把人往"把图改小"的方向误导。
+    // ★ 报溢出时**指出是谁占的**：只说"改小一点"没用,
+    //   用户看到的是"我明明按 152 做的图"（实际是导入时被放大了）。
+    const worst = items.map(i => ({
+      i, bytes: i.w * i.h * ImageBlob.packedBytesPerPixel(cfForRole(i.role))
+    })).sort((a, b2) => b2.bytes - a.bytes).slice(0, 3)
+      .map(x => x.i.name + " " + x.i.w + "×" + x.i.h + " " +
+                Math.round(x.bytes / 1024) + "KB").join("、");
+    const over = items.filter(i => (i.img.naturalWidth || 0) && i.w > i.img.naturalWidth);
     say("⚠ 超了 image 分区（" + (ImageBlob.PARTITION_BYTES / 1024) + " KB）：" +
         b.total + " 字节。\n" +
-        "把「目标宽度」改小（480→240 会小到 1/4），或减少图片数量。", "err");
+        "占得最多的三张：" + worst + "\n" +
+        (over.length
+          ? "有 " + over.length + " 张的输出比原图还大（白占空间、还变糊）：" +
+            over.map(i => i.name + " " + i.img.naturalWidth + "→" + i.w).join("、") +
+            "。把「目标宽度」改回原图宽度即可。\n"
+          : "") +
+        "表情建议 152×152（8 张 = 542KB，再加一张 480×480 背景 450KB 正好 1MB）；" +
+        "背景如果不需要铺满整屏，可以只放弧带以内（半径 205 的圆 ≈ 410×410）。", "err");
   }
 }
 
@@ -1258,10 +1308,13 @@ function addFiles(files) {
     const url = URL.createObjectURL(f);
     const img = new Image();
     img.onload = () => {
-      // 默认 240×240：480 一张 450KB 会直接超分区，
-      // 第一次用的人不该一上来就撞墙
-      const target = 240;
+      // ★ 默认输出尺寸 = **原图尺寸，但不超过 240**（见 pickDefaultSize）。
+      //   早先无论原图多大都输出 240，于是"按建议做好 152×152 的图"
+      //   导进来会被放成 240×240：8 张从 542KB 变成 1350KB，直接报 132% 溢出，
+      //   而且用户看不出是被放大了（缩略图一样大）。
+      const target = pickDefaultSize(img.naturalWidth);
       const sh = img.naturalHeight, sw = img.naturalWidth;
+      const upscaled = target > (sw || target);
       items.push({
         id: nextId++,
         img,
@@ -1275,9 +1328,10 @@ function addFiles(files) {
       URL.revokeObjectURL(url);
       if (--pending === 0) {
         refresh();
-        say("已添加 " + list.length + " 张。默认按 240 宽输出（省分区）；" +
-            "要全屏背景就点 480，但注意一张 480×480 要 450KB，" +
-            "再加 8 张表情图就超 1MB 分区了。");
+        say("已添加 " + list.length + " 张，输出尺寸按原图（不超过 " + DEFAULT_MAX_W +
+            " 宽）。要全屏背景就点 480，但注意一张 480×480 要 450KB；" +
+            "表情建议 152×152 —— 8 张 + 一张 480 背景正好装进 1MB。" +
+            (upscaled ? "（有图被放大了，见每张的「原图/输出」）" : ""));
       }
     };
     img.onerror = () => {

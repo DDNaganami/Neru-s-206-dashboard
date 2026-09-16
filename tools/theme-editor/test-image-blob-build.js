@@ -324,6 +324,53 @@ section("页面里两个纯函数:名字截断与字节长度");
 }
 
 // ------------------------------------------------------------
+section("页面:导入时的默认输出尺寸(只缩不放)");
+// 为什么值得单测:这里踩过一次,而且是用户踩的 ——
+//   导入时的默认输出宽度**写死 240**,不管原图多大。
+//   用户按建议做好了 8 张 152×152 的图,导进去却被放大成 240×240,
+//   占用从 542KB 变成 1350KB,界面直接报 132% 溢出。
+//   而缩略图看起来一样大,他只能看到"我明明做的是 152,怎么还溢出"。
+// 现在的规则:默认 = min(原图宽, 240),并向下对齐到 4 —— 保证**不会放大**。
+{
+  const html = require("fs").readFileSync(__dirname + "/image-editor.html", "utf8");
+  const mw = /const DEFAULT_MAX_W = (\d+);/.exec(html);
+  if (!mw) throw new Error("image-editor.html 里找不到 DEFAULT_MAX_W");
+  const fm = /function pickDefaultSize\(([\s\S]*?)\n\}/.exec(html);
+  if (!fm) throw new Error("image-editor.html 里找不到 pickDefaultSize");
+  const pick = new Function("const DEFAULT_MAX_W = " + mw[1] + ";\n" +
+                            fm[0] + "\nreturn pickDefaultSize;")();
+
+  eq(pick(152), 152, "★ 152×152 的源图输出还是 152(不许放大成 240)");
+  eq(pick(100), 100, "比 240 小的源图按原尺寸");
+  eq(pick(480), 240, "480 的源图缩到 240(省分区;要满屏自己点 480)");
+  eq(pick(800), 240, "大图缩到 240");
+  eq(pick(10), 8, "极小的图向下对齐到 4 的倍数,不会反而放大");
+  eq(pick(0), 240, "拿不到原图宽度时按保守值");
+
+  // ★ 不变式:对任何尺寸都"只缩不放"(下限 8 那次除外)
+  let grew = [];
+  for (let n = 8; n <= 900; n++) {
+    if (pick(n) > n) grew.push(n + "→" + pick(n));
+  }
+  eq(grew.length, 0, "8..900 里没有任何尺寸被放大" + (grew.length ? ": " + grew.slice(0, 5) : ""));
+
+  // ★ 用户那次的实际账:8 张 152 的表情必须装得下
+  const eight152 = IB.HEADER_SIZE + 8 * (152 * 152 * 3);
+  ok(eight152 <= IB.PARTITION_BYTES,
+     "8 张 152×152 表情 = " + eight152 + " 字节,占分区 " +
+     (100 * eight152 / IB.PARTITION_BYTES).toFixed(1) + "%");
+  // 再加一张满屏 480 背景(用户的目标形态)
+  const withBg = eight152 + (480 * 480 * 2);
+  ok(withBg <= IB.PARTITION_BYTES,
+     "8 张 152 表情 + 一张 480×480 背景 = " + withBg + " 字节,占分区 " +
+     (100 * withBg / IB.PARTITION_BYTES).toFixed(1) + "%");
+  // 而被放大成 240 的版本必须是超的 —— 这正是当时的现象
+  const eight240 = IB.HEADER_SIZE + 8 * (240 * 240 * 3);
+  ok(eight240 > IB.PARTITION_BYTES,
+     "8 张 240×240 表情 = " + eight240 + " 字节,确实超了(用户看到的 132%)");
+}
+
+// ------------------------------------------------------------
 section("RGB565A8(带透明):布局与尺寸契约");
 // 表情图要叠在弧线上面,所以必须带透明通道。这个格式的布局是
 // 「上半部 RGB565 平面 + 下半部独立 A8 平面」(已在 LVGL 源码确认),
