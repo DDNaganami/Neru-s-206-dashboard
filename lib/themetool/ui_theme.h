@@ -122,19 +122,23 @@ inline void theme_set_defaults(Theme& t) {
   t.boot_face_blink_ms  = 130;
   t.boot_total_ms       = t.boot_face_start_ms + 4 * t.boot_face_blink_ms;
 
-  // 左屏(原车速位):车速弧 + 水温弧
+  // ★ 屏幕布局按**法系车**来:左 = 转速表,右 = 速度表。
+  //   (标致 206 实车就是这样,别按"左车速右转速"的日德习惯改回去。)
+  //   水温表在**转速表**上,所以水温弧属于左屏。
+
+  // 左屏 = 转速表:转速弧 + 水温弧(水温在表盘下方)
   ScreenTheme& L = t.screens[0];
   L.arc_count = 2; L.show_face = 1;
-  L.arcs[0] = ArcStyle{ ArcKind::Speed,   135, 405, 205, 24,
-                        lv_color_hex(0x232323), 153, lv_color_hex(0x39C5FF) };
+  L.arcs[0] = ArcStyle{ ArcKind::Rpm,     135, 405, 205, 24,
+                        lv_color_hex(0x232323), 153, lv_color_hex(0xFF5C5C) };
   L.arcs[1] = ArcStyle{ ArcKind::Coolant, 145, 330, 168, 10,
                         lv_color_hex(0x232323), 153, lv_color_hex(0x7CFF6B) };
 
-  // 右屏(原转速位):转速弧
+  // 右屏 = 速度表:车速弧
   ScreenTheme& R = t.screens[1];
   R.arc_count = 1; R.show_face = 1;
-  R.arcs[0] = ArcStyle{ ArcKind::Rpm,     135, 405, 205, 24,
-                        lv_color_hex(0x232323), 153, lv_color_hex(0xFF5C5C) };
+  R.arcs[0] = ArcStyle{ ArcKind::Speed,   135, 405, 205, 24,
+                        lv_color_hex(0x232323), 153, lv_color_hex(0x39C5FF) };
 }
 
 // 全局主题**指针**。

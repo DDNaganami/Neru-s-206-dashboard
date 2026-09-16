@@ -77,11 +77,11 @@
     <div class="previews">
       <div class="screen">
         <canvas id="cv0" width="480" height="480"></canvas>
-        <div class="cap">左屏 · 车速 + 水温 + 表情</div>
+        <div class="cap">左屏 · 转速 + 水温 + 表情</div>
       </div>
       <div class="screen">
         <canvas id="cv1" width="480" height="480"></canvas>
-        <div class="cap">右屏 · 转速 + 表情</div>
+        <div class="cap">右屏 · 车速 + 表情</div>
       </div>
     </div>
 
@@ -136,16 +136,18 @@ function defaultTheme() {
       mouth_line_x: 75, mouth_line_y: 138, mouth_line_w: 50, mouth_line_h: 6,
       mouth_o_x: 80, mouth_o_y: 120, mouth_o_size: 40
     },
+    // ★ 左 = 转速表(带水温),右 = 速度表 —— 法系车(标致 206 实车)布局。
+    //   别按"左车速右转速"的日德习惯改回去。
     screens: [
       { arc_count: 2, show_face: 1, arcs: [
-        { kind:0, start_deg:135, end_deg:405, radius:205, width:24,
-          track_color:0x232323, track_opa:153, value_color:0x39C5FF },
+        { kind:1, start_deg:135, end_deg:405, radius:205, width:24,
+          track_color:0x232323, track_opa:153, value_color:0xFF5C5C },
         { kind:2, start_deg:145, end_deg:330, radius:168, width:10,
           track_color:0x232323, track_opa:153, value_color:0x7CFF6B }
       ]},
       { arc_count: 1, show_face: 1, arcs: [
-        { kind:1, start_deg:135, end_deg:405, radius:205, width:24,
-          track_color:0x232323, track_opa:153, value_color:0xFF5C5C }
+        { kind:0, start_deg:135, end_deg:405, radius:205, width:24,
+          track_color:0x232323, track_opa:153, value_color:0x39C5FF }
       ]}
     ],
     boot_fade_ms: 250,
@@ -358,7 +360,7 @@ function buildControls() {
   // ---- 两屏的弧 ----
   for (let si = 0; si < 2; si++) {
     const sc = T.screens[si];
-    const g = group(si === 0 ? "左屏（车速位）" : "右屏（转速位）");
+    const g = group(si === 0 ? "左屏（转速表）" : "右屏（速度表）");
 
     for (let ai = 0; ai < sc.arcs.length; ai++) {
       const a = sc.arcs[ai];
@@ -437,7 +439,7 @@ function buildControls() {
   const g4 = group("开机动画（毫秒）");
   syncers.push(slider(g4, "整体淡入", () => T.boot_fade_ms, v => T.boot_fade_ms = v, 0, 2000, 10));
   syncers.push(slider(g4, "扫表开始", () => T.boot_sweep_start_ms, v => T.boot_sweep_start_ms = v, 0, 2000, 10));
-  syncers.push(slider(g4, "右屏错峰", () => T.boot_stagger_ms, v => T.boot_stagger_ms = v, 0, 1000, 10));
+  syncers.push(slider(g4, "错峰启动", () => T.boot_stagger_ms, v => T.boot_stagger_ms = v, 0, 1000, 10));
   syncers.push(slider(g4, "0→满弧", () => T.boot_sweep_rise_ms, v => T.boot_sweep_rise_ms = v, 1, 3000, 10));
   syncers.push(slider(g4, "满弧停留", () => T.boot_sweep_hold_ms, v => T.boot_sweep_hold_ms = v, 0, 2000, 10));
   syncers.push(slider(g4, "满弧→0", () => T.boot_sweep_fall_ms, v => T.boot_sweep_fall_ms = v, 1, 3000, 10));

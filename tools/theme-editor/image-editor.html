@@ -150,11 +150,11 @@
     <div class="previews">
       <div class="screen">
         <canvas id="cv0" width="480" height="480"></canvas>
-        <div class="cap">左屏 · 车速表（+水温）</div>
+        <div class="cap">左屏 · 转速表（+水温）</div>
       </div>
       <div class="screen">
         <canvas id="cv1" width="480" height="480"></canvas>
-        <div class="cap">右屏 · 转速表</div>
+        <div class="cap">右屏 · 速度表</div>
       </div>
     </div>
     <div id="status" class="status">就绪。先拖一张图进来。</div>
@@ -190,7 +190,7 @@ let nextId = 1;
 let theme = { bg: "#141414" };
 
 // 角色:与 image_blob.h 的 ImageRole 一致。
-// ★ 左右屏分开列:车速表(左)和转速表(右)用不同的表情差分。
+// ★ 左右屏分开列(法系车:左=转速表,右=速度表),两表用不同的表情差分。
 //   编号错位会让"右屏显示成左屏的",而且不报错,
 //   所以 C 侧有一条 test_role_ids 专门钉住这组编号。
 //   9/10 是保留编号(曾是开机图),界面里不出现。
@@ -440,13 +440,15 @@ function setSize(item, w) {
 // ------------------------------------------------------------
 // 预览：按角色把图贴到 480×480 上
 // ------------------------------------------------------------
+// 预览用的弧(颜色/进度跟着主题默认走)。
+// ★ 法系车布局:左 = 转速表(红弧 + 水温内弧),右 = 速度表(蓝弧)。
 const ARC_DEFAULT = {
   left: [
-    { start: 135, end: 405, r: 205, w: 24, color: "#39C5FF", t: 0.55 },
+    { start: 135, end: 405, r: 205, w: 24, color: "#FF5C5C", t: 0.42 },
     { start: 145, end: 330, r: 168, w: 10, color: "#7CFF6B", t: 0.60 }
   ],
   right: [
-    { start: 135, end: 405, r: 205, w: 24, color: "#FF5C5C", t: 0.42 }
+    { start: 135, end: 405, r: 205, w: 24, color: "#39C5FF", t: 0.55 }
   ]
 };
 

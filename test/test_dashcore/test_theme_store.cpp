@@ -156,6 +156,36 @@ static void test_defaults_are_valid(void) {
   TEST_ASSERT_EQUAL_UINT32(before.boot_fade_ms, d.boot_fade_ms);
 }
 
+// ============================================================
+// 屏 ↔ 表的对应关系(**这是产品契约,不是实现细节**)
+//
+// 法系车(标致 206 实车)的仪表布局是 **左 = 转速表,右 = 速度表**,
+// 水温表在转速表上。按"左车速右转速"的日德习惯写就会左右装反 ——
+// 而**装反了不会有任何报错**:两屏都能正常画,只是画的是另一个表的数据。
+//
+// 之前没有任何测试锁这个映射(改错了全绿),这条补上。
+// ============================================================
+static void test_screen_gauge_mapping(void) {
+  Theme d;
+  theme_set_defaults(d);
+
+  // 左屏 = 转速表:外圈转速弧 + 内圈水温弧(水温在转速表上)
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, d.screens[0].arc_count,
+                                  "左屏应有两条弧(转速 + 水温)");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)ArcKind::Rpm, (uint8_t)d.screens[0].arcs[0].kind,
+                                  "左屏外弧必须是转速(法系车左=转速表)");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)ArcKind::Coolant, (uint8_t)d.screens[0].arcs[1].kind,
+                                  "水温弧必须在左屏(转速表)上");
+
+  // 右屏 = 速度表
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, d.screens[1].arc_count,
+                                  "右屏应有一条弧(车速)");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)ArcKind::Speed, (uint8_t)d.screens[1].arcs[0].kind,
+                                  "右屏必须是车速(法系车右=速度表)");
+}
+
+// 屏 ↔ 表情图片角色的对应在 test_image_blob.cpp 里(那里才有 ImageRole)。
+
 void register_theme_store_tests(void) {
   RUN_TEST(test_parse_full_theme);
   RUN_TEST(test_parse_partial_keeps_defaults);
@@ -163,5 +193,6 @@ void register_theme_store_tests(void) {
   RUN_TEST(test_parse_ignores_unknown);
   RUN_TEST(test_clamp_bad_values);
   RUN_TEST(test_parse_garbage_is_safe);
+  RUN_TEST(test_screen_gauge_mapping);
   RUN_TEST(test_defaults_are_valid);
 }

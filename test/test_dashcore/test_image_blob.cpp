@@ -418,10 +418,28 @@ static void test_parse_accepts_rgb565a8(void) {
   TEST_ASSERT_FALSE(imageBlobParse(b.bytes, kHdrSize + color, &h));
 }
 
+// ★ 屏 ↔ 表情角色的对应:装反了会"右屏显示左屏的脸",而且**不会报错**。
+// 法系车(标致 206 实车):左屏 = 转速表,右屏 = 速度表。
+// 所以**不带 R 后缀**的那组给左屏、**带 R** 的给右屏 ——
+// dash_ui.cpp 的 faceRole() 就是这个映射,这里把分组钉住。
+static void test_face_role_side_mapping(void) {
+  TEST_ASSERT_EQUAL_UINT16(3, (uint16_t)ImageRole::FaceIdle);    // 左 = 转速表
+  TEST_ASSERT_EQUAL_UINT16(4, (uint16_t)ImageRole::FaceRedline);
+  TEST_ASSERT_EQUAL_UINT16(5, (uint16_t)ImageRole::FaceSurprise);
+  TEST_ASSERT_EQUAL_UINT16(6, (uint16_t)ImageRole::FaceIdleR);   // 右 = 速度表
+  TEST_ASSERT_EQUAL_UINT16(7, (uint16_t)ImageRole::FaceRedlineR);
+  TEST_ASSERT_EQUAL_UINT16(8, (uint16_t)ImageRole::FaceSurpriseR);
+  // 左右两组必须是**不同**的编号(复制粘贴最容易犯的错)
+  TEST_ASSERT_TRUE(ImageRole::FaceIdle != ImageRole::FaceIdleR);
+  // 背景两屏共用一张,不属于任何一屏
+  TEST_ASSERT_EQUAL_UINT16(1, (uint16_t)ImageRole::Background);
+}
+
 void register_image_blob_tests(void) {
   RUN_TEST(test_layout_sane);
   RUN_TEST(test_entry_field_offsets);
   RUN_TEST(test_role_ids);
+  RUN_TEST(test_face_role_side_mapping);
   RUN_TEST(test_rgb565a8_size_includes_alpha_plane);
   RUN_TEST(test_parse_accepts_rgb565a8);
   RUN_TEST(test_parse_ok_and_get);

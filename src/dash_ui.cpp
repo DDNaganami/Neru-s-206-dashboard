@@ -37,14 +37,17 @@ static bool g_face_ok[2][3] = {{false, false, false}, {false, false, false}};
 static lv_obj_t* g_bg_img[2] = {nullptr, nullptr};
 static lv_obj_t* g_face_img[2] = {nullptr, nullptr};
 
-// 表情状态 → 角色。左右屏各一套(车速表/转速表的表情差分不同)。
+// 表情状态 → 角色。
+// ★ 按**法系车**布局:左屏(0) = 转速表,右屏(1) = 速度表。
+//   所以"不带 R 后缀"的那组角色给左屏,"带 R"的给右屏 ——
+//   这里的映射决定了刷进去的表情图会不会左右颠倒。
 static ImageRole faceRole(uint8_t screen, int state) {
-  if (screen == 0) {
+  if (screen == 0) {                 // 左屏 = 转速表
     return (state == 0) ? ImageRole::FaceIdle
          : (state == 1) ? ImageRole::FaceRedline
                         : ImageRole::FaceSurprise;
   }
-  return (state == 0) ? ImageRole::FaceIdleR
+  return (state == 0) ? ImageRole::FaceIdleR      // 右屏 = 速度表
        : (state == 1) ? ImageRole::FaceRedlineR
                       : ImageRole::FaceSurpriseR;
 }
