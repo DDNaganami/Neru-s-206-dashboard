@@ -35,9 +35,13 @@
   // 角色编号与 image_blob.h 的 ImageRole 一致(由 test-face-stages.js 对账)。
   // ★ 两屏的状态集合**不一样**:左屏有"红区"没有"超速",右屏反过来。
   //   哪一屏有哪些状态由固件状态机决定(expression.cpp),这里只是声明。
+  // ★ label 里的"（+水温）/（+进气温度）"是**副表**的说明,与弧一一对应:
+  //   左屏转速表上挂着水温表、右屏速度表上挂着进气温度表(2026-09 加)。
+  //   不带这个后缀的话,界面上一排"左屏 · 转速表 / 右屏 · 速度表"会让人以为
+  //   右屏只有车速一条弧 —— 而那两条副弧正是要点出来调的东西。
   var SCREENS = [
     {
-      key: "left", idx: 0, short: "左", label: "左屏 · 转速表",
+      key: "left", idx: 0, short: "左", label: "左屏 · 转速表（+水温）",
       gauge: "rpm", unit: "rpm", gaugeLabel: "转速",
       states: [
         { key: "Idle",    label: "常态", role: 3  },
@@ -47,7 +51,7 @@
       ]
     },
     {
-      key: "right", idx: 1, short: "右", label: "右屏 · 速度表",
+      key: "right", idx: 1, short: "右", label: "右屏 · 速度表（+进气温度）",
       gauge: "speed", unit: "km/h", gaugeLabel: "车速",
       states: [
         { key: "Idle",      label: "常态", role: 6  },

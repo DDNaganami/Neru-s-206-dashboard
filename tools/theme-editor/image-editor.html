@@ -159,8 +159,9 @@
         <span class="hint" style="color:var(--dim);font-size:12px">默认跟随阶段</span>
       </div>
       <div class="hint" style="color:var(--dim);font-size:12px">
-        <b>两屏各自独立</b>：左屏(转速表)只跟转速、右屏(速度表)只跟车速，
-        水温不参与表情（只改水温弧和水温数字）。<br>
+        <b>两屏各自独立</b>：左屏(转速表)只跟转速、右屏(速度表)只跟车速；
+        <b>两个温度都不参与表情</b> —— 水温只改左屏那条水温弧和水温数字，
+        进气温度只改右屏那条进气弧和进气数字。<br>
         开机画面不在这里：它是程序化扫表动画（淡入 → 扫表 → 显形），不占图片资源。
       </div>
     </section>
@@ -205,7 +206,7 @@
       </div>
       <div class="screen">
         <canvas id="cv1" width="480" height="480"></canvas>
-        <div class="cap">右屏 · 速度表</div>
+        <div class="cap">右屏 · 速度表（+进气温度）</div>
       </div>
     </div>
 
@@ -848,8 +849,14 @@ function buildArcEditors() {
       wrap.className = "arc-edit";
       const ttl = document.createElement("div");
       ttl.className = "ttl";
-      ttl.textContent = SCREEN_LABEL[s] + " · " + (ARC_KIND_LABEL[a.kind] || "?") + "弧" +
-                        (s === 0 ? (i === 0 ? "（外圈）" : "（内圈）") : "（外圈）");
+      // ★ 外圈/内圈按**半径**判定,不看"第几条"、也不看是哪一屏。
+      //   原来的写法是 `s === 0 ? (i === 0 ? "（外圈）" : "（内圈）") : "（外圈）"` ——
+      //   那是"右屏只有一条车速弧"时写死的;加了进气温度弧之后,
+      //   右屏第二条(内圈)被标成了"（外圈）"(用户一眼就看出来)。
+      //   按半径判还有个好处:万一有人把两条弧在主题里换了顺序,标签依然是对的。
+      const maxR = Math.max.apply(null, arcs.map(x => x.radius || 0));
+      const ring = (a.radius >= maxR) ? "（外圈）" : "（内圈）";
+      ttl.textContent = SCREEN_LABEL[s] + " · " + (ARC_KIND_LABEL[a.kind] || "?") + "弧" + ring;
       wrap.appendChild(ttl);
       arcColorRow(wrap, "点亮色", () => a.value_color, v => a.value_color = v);
       arcColorRow(wrap, "轨道色", () => a.track_color, v => a.track_color = v);
@@ -1259,9 +1266,13 @@ function updateStageLabel() {
   const sel = document.getElementById("stage");
   if (sel) sel.value = String(curStage);
 
+  // 温度组不影响表情,这行提示要说清"只改哪条弧、哪个数字" ——
+  // ★ 原来写死的是"水温…"(那时只有水温一组);加了进气温度组之后,
+  //   点进气档也显示"水温不影响表情",是指鹿为马。现在按分组名拼。
   const lines = [g.label + " · " + g.levels[st.level] +
                  "（" + FaceStages.stageValueText(st) + "）" +
-                 (g.faces ? "" : " —— 水温不影响表情，只改水温弧和水温数字")];
+                 (g.faces ? "" : " —— " + g.label + "不影响表情，只改" +
+                                 g.label + "弧和" + g.label + "数字")];
   for (let side = 0; side < 2; side++) {
     const key = stageFaceOverride[side] || FaceStages.faceOf(st, side);
     const use = faceUseText(side, key);

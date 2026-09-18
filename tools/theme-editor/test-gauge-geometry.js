@@ -160,6 +160,31 @@ section("默认主题:满量程弧的缺口在正下方");
     }
   }
 
+  // ★ 界面上的"（外圈）/（内圈）"标签必须**按半径判**,不能按"第几条/哪一屏"写死。
+  //   踩过:原来的写法是 `s === 0 ? (i === 0 ? 外圈 : 内圈) : 外圈` ——
+  //   那是"右屏只有一条车速弧"时的写法,加了进气温度弧之后
+  //   右屏第二条(内圈)被标成"（外圈）",用户一眼就看出来了。
+  //   这条守卫盯住两件事:① 不再出现按屏号写死的三元式;
+  //   ② 标签确实是从半径比出来的。两个编辑器的弧块标题都在 image-editor 里,
+  //   这里只查那个文件。
+  {
+    const imgSrc = fs.readFileSync(path.join(__dirname, "image-editor.html"), "utf8");
+    const build = /function buildArcEditors\(\)\s*\{([\s\S]*?)\n\}/.exec(imgSrc);
+    ok(!!build, "找得到 buildArcEditors()");
+    if (build) {
+      const b = stripComments(build[1]);
+      ok(!/s\s*===\s*0\s*\?\s*\(\s*i\s*===\s*0/.test(b),
+         "弧块标题不该按屏号写死外圈/内圈(右屏也有内圈弧)");
+      ok(/Math\.max/.test(b) && /radius/.test(b),
+         "弧块标题的外圈/内圈要按半径判定(Math.max(...radius))");
+    }
+    // 两屏的说明文字都要写明带哪条副表(否则看不出右屏还有进气温度弧)
+    ok(/右屏 · 速度表（\+进气温度）/.test(imgSrc),
+       "预览标题应写明 右屏 · 速度表（+进气温度）");
+    ok(/左屏 · 转速表（\+水温）/.test(imgSrc),
+       "预览标题应写明 左屏 · 转速表（+水温）");
+  }
+
   // 起始角对应的屏幕坐标必须在左半边、下半边(用真实几何算一遍,不靠肉眼看数字)
   {
     const outer = arcs.find(x => (x.a.end_deg - x.a.start_deg) >= 240);

@@ -777,7 +777,8 @@ function updateStageInfo() {
   el.textContent =
     "两屏各自独立：左屏(转速表) " + FaceStages.stateLabel("left", SIM.faceL) +
     " · 右屏(速度表) " + FaceStages.stateLabel("right", SIM.faceR) +
-    "（水温不参与表情）";
+    // 两条副表(水温 / 进气温度)都不参与表情 —— 别只写水温
+    "（水温、进气温度都不参与表情）";
   if (st && g) {
     el.textContent += "｜当前阶段：" + g.label + " · " + g.levels[st.level] +
                       "（" + FaceStages.stageValueText(st) + "）";
