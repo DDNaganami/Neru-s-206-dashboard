@@ -135,9 +135,30 @@
         同时把上电后每秒重打完整自检那段刷屏删掉了（它会淹掉 VAN 帧）。
       · 抓开机日志的脚本进了仓库：`tools/serial-capture/capture.py`
         （把"DTR=IO0、RTS=EN、且必须在 open() 之前设"这套知识固化下来）。
-      **实测**：esp32dev / esp32s3 / pcpreview 三目标全 SUCCESS；
+       **实测**：esp32dev / esp32s3 / pcpreview 三目标全 SUCCESS；
       native 105 例（103 通过 / 2 跳过）；S3 上电后
       `psram=8189KB flash=16MB image=8192KB`、heap 259KB。
+- [x] **桌面联调：VAN 解帧链在真板上跑通**（2026-09-18，收发器还没接）
+      用 `tools/serial-capture/replay.py` 往 UART 口持续贴
+      `VAN 824 18 F8 27 10 00 00 00`，设备端那行从 `speed=sim` 变成：
+      ```
+      SRC speed=van rpm=van coolant=sim intake=sim | v=100.0km/h 799rpm 80.4C 27.8C
+      ```
+      车速正好 **100.0 km/h**（0x2710 × 0.01，与 `van_source.h` 的
+      `kSpeedIden=0x824 / kSpeedOffset=2 / kSpeedScale=0.01` 完全对得上），
+      同一帧的转速字段也一起变成 `rpm=van 799rpm`。
+      *（注意：0x824 是本项目的**假设**，实车 IDEN 必须实测确认 ——
+      见下面的实车必验清单。）*
+      顺手记下两条必须先知道的坑（都写进工具注释里了）：
+      ① **开串口那一下会复位板子**（CH340 的 DTR/RTS 接在 EN/IO0 上），
+         而 Arduino 的 `Serial0.begin()` 会**清空 RX FIFO** ——
+         开机那几百毫秒里贴进去的帧直接丢掉。所以工具先等 2.5 秒再发。
+      ② 数据源有 **3 秒新鲜度窗口**（`data_service.cpp` 的 `kStaleMs = 3000`），
+         而 `SRC` 行 5 秒才打一次 —— 只发一帧很容易"过期了才轮到打日志"，
+         看着像没生效。真车上本来就是连续帧，所以工具每 0.5 秒重发一次。
+      同时能看到 GPIO 收帧那路的 1 Hz 诊断：
+      `van: edges=1 frames=0 fcs_ok=0 dropped=0(队列0) 待收=0`
+      —— 收发器还没接，那 1 个边沿是浮空脚上的噪声，正常现象。
 - [x] **右屏第 4 档从"惊喜"改成"超速"**（用户提出："这个惊喜挡测试的时候
       是无法选出来的，是做什么用的"）
       原来它是**急加速瞬态**：相邻两次调用速度差 > 15 km/h/s 就亮 400ms。
@@ -597,6 +618,8 @@ SRC speed=sim rpm=sim coolant=sim intake=sim | v=176.6km/h 5963rpm 87.0C 28.3C
 - `PINOUT.md`：引脚预案 + **「接线两段」**（VAN 到车上的接法、极性待定）
 - `tools/serial-capture/capture.py`：抓 UART 口日志，尤其是**复位后的完整开机日志**
   （监视器做不到这件事，原因见上面「S3 板子开箱」那一节）
+- `tools/serial-capture/replay.py`：往设备贴 VAN 回放帧，桌面联调解帧链用
+  （收发器没接、车不在手边时唯一的端到端验证手段）
 - `tools/theme-editor/README.md`：两个编辑器（主题 / 图片）的用法、
   二进制格式、分区偏移、限制
 - `ARCHITECTURE.md`：模块划分与数据流
