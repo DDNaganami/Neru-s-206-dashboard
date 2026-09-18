@@ -34,27 +34,42 @@ static Face right_of(float speed, uint32_t t) {
 }
 
 // ---------------- 左屏:只看转速 ----------------
+// ★ 注意边界值:每条边界都有 ±80 转迟滞(见 face_ladder.h),而 `at()` 每次都
+//   face_reset(),所以这里测的是**进入门槛**(阈值 + 80)。退出门槛(阈值 - 80)
+//   由下面的 test_face_ladder_hysteresis 连帧测。
 void test_left_follows_rpm_only(void) {
-  // 转速分档边界(按实车地标定:怠速 900 / 巡航 2000 / 上限 7000)
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle,    (uint8_t)at(0, 1799).left);
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise,  (uint8_t)at(0, 1800).left);
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise,  (uint8_t)at(0, 3499).left);
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport,   (uint8_t)at(0, 3500).left);
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport,   (uint8_t)at(0, 4999).left);
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Redline, (uint8_t)at(0, 5000).left);
+  // 转速五档边界(按 TU5JP4 + AL4 的活动范围定,见 expression.cpp 顶部)
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle,    (uint8_t)at(0, 1579).left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise,  (uint8_t)at(0, 1580).left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise,  (uint8_t)at(0, 3579).left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport,   (uint8_t)at(0, 3580).left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport,   (uint8_t)at(0, 4579).left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::High,    (uint8_t)at(0, 4580).left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::High,    (uint8_t)at(0, 6079).left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Redline, (uint8_t)at(0, 6080).left);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Redline, (uint8_t)at(0, kRpmMax).left);
 
-  // ★ 三个实车地标必须各自落在**对的那一档**里(这是用户给的真实数据,
-  //   不是"随便取几个点"):怠速 900 → 常态、巡航 2000 → 巡航、上限 6000 → 红区
+  // ★ 实车地标必须各自落在**对的那一档**里(这是用户给的真实数据,
+  //   不是"随便取几个点"):怠速 900 → 怠速、巡航 2000 → 巡航、
+  //   4200 → 运动、5200 → 高转、6500 → 红区(断油附近)
   TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Idle, (uint8_t)at(0, kRpmIdleNominal).left,
-                                  "点火怠速 900 转该是常态脸");
+                                  "点火怠速 900 转该是怠速脸");
   TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Cruise, (uint8_t)at(0, kRpmCruiseNominal).left,
                                   "巡航 2000 转该是巡航脸");
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Redline, (uint8_t)at(0, kRpmMax).left,
-                                  "表盘上限 7000 转该是红区脸");
-  // 红区必须在**上限之前**就开始提醒(踩到断油才亮红是没用的)
-  TEST_ASSERT_TRUE_MESSAGE(at(0, kRpmMax - 1000.0f).left == Face::Redline,
-                           "上限前 1000 转就该进红区");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Sport, (uint8_t)at(0, 4200.0f).left,
+                                  "运动 4200 转该是运动脸");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::High, (uint8_t)at(0, 5200.0f).left,
+                                  "高转 5200 转该是高转脸");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Redline, (uint8_t)at(0, 6500.0f).left,
+                                  "断油附近 6500 转该是红区脸");
+  // 红区必须在**断油之前**就开始提醒(踩到断油才亮红是没用的):
+  // AL4 的 kickdown 就能到 5000+,所以红区定在 6000(断油约 6500 之前 500 转)。
+  //    (进入门槛 = 阈值 + 迟滞 = 6080;底下那条 6079 已经断言过"还没进")
+  TEST_ASSERT_TRUE_MESSAGE(at(0, 6080.0f).left == Face::Redline,
+                           "6080 转就该进红区(断油约 6500,留 500 转提前量)");
+  // 反过来说:5500 转**不该**已经报红(那是"高转",正常全油门就会到)
+  TEST_ASSERT_TRUE_MESSAGE(at(0, 5500.0f).left == Face::High,
+                           "5500 转还在高转 —— 报红太早会让正常加速一直亮红区");
 
   // ★ 车速从 0 扫到 210,左屏必须一直是同一个表情(转速不变就不许动)
   for (float v = 0; v <= kSpeedMax; v += 15.0f) {
@@ -65,16 +80,72 @@ void test_left_follows_rpm_only(void) {
   }
 }
 
+// ★ 迟滞(2026-09-18 补):同一数值区间里,**从上面下来**和**从下面上来**
+//   应该给不同的答案 —— 这就是"贴着边界不闪"的全部机制。
+//   这台车的 AL4 会在边界附近停住(锁止/解锁差 200~300 转、
+//   定速巡航 ±1km/h),没有迟滞脸就会来回切。
+void test_face_ladder_hysteresis(void) {
+  const float hyst = 80.0f;   // 与 expression.cpp 的 kRpmHyst 一致(改一处要改两处!)
+
+  // ① 从下面上来:必须涨到 阈值+迟滞 才进档
+  face_reset();
+  VehicleState s; s.rpm = 1500.0f; s.speed_kmh = 0; s.coolant_c = 85;
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle, (uint8_t)face_update(s, 1000).left);
+  s.rpm = 1500.0f + hyst;                       // 1580:刚好进档
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise, (uint8_t)face_update(s, 1100).left);
+
+  // ② 已经在巡航档:掉到 1500(阈值本身)**不退出**,掉到 阈值-迟滞 才退
+  s.rpm = 1500.0f;
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Cruise, (uint8_t)face_update(s, 1200).left,
+                                  "已进档时停在阈值上不该退出(迟滞区)");
+  //    退出门槛约定:**等于门槛仍保留**,低于才退(所以这里减 1 转)
+  s.rpm = 1500.0f - hyst - 1.0f;
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle, (uint8_t)face_update(s, 1300).left);
+
+  // ③ 红区同理:6300 进、5900 还在红区、5800 退出
+  face_reset();
+  s.rpm = 6300.0f;
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Redline, (uint8_t)face_update(s, 2000).left);
+  s.rpm = 5920.0f;                              // 退出门槛本身:仍算红区
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Redline, (uint8_t)face_update(s, 2100).left,
+                                  "5920(退出门槛)仍在红区,不该立刻掉回高转");
+  s.rpm = 5919.0f;                              // 差 1 转就退出
+
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::High, (uint8_t)face_update(s, 2200).left);
+
+  // ④ 车速那条:66 进市区→快速路?不 —— 用 30 那条边界看两个方向
+  face_reset();
+  s.rpm = kRpmIdleNominal; s.speed_kmh = 30.0f;
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle, (uint8_t)face_update(s, 3000).right);
+  s.speed_kmh = 30.0f + 3.0f;                   // 33:进市区
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::City, (uint8_t)face_update(s, 3100).right);
+  s.speed_kmh = 30.0f;                          // 回到阈值:仍在市区
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::City, (uint8_t)face_update(s, 3200).right);
+  s.speed_kmh = 30.0f - 3.0f - 0.1f;       // 26.9:低于退出门槛才退出
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle, (uint8_t)face_update(s, 3300).right);
+}
+
 // ---------------- 右屏:只看车速 ----------------
+// 同样注意:边界值是**进入门槛**(阈值 + 3km/h 迟滞)。
 void test_right_follows_speed_only(void) {
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle,   (uint8_t)at(29.9f, 900).right);
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise, (uint8_t)at(30.0f, 900).right);
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise, (uint8_t)at(89.9f, 900).right);
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport,  (uint8_t)at(90.0f, 900).right);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle,   (uint8_t)at(32.9f, 900).right);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::City,   (uint8_t)at(33.0f, 900).right);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::City,   (uint8_t)at(67.9f, 900).right);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise, (uint8_t)at(68.0f, 900).right);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise, (uint8_t)at(97.9f, 900).right);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport,  (uint8_t)at(98.0f, 900).right);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport,  (uint8_t)at(130.0f, 900).right);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Overspeed, (uint8_t)at(kSpeedMax, 900).right);
 
-  // ★ 转速从怠速扫到上限,右屏必须一直是常态(车速不变就不许动)
+  // ★ 五档的实车落点也要各自对得上:45 市区、80 快速路、115 高速
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::City, (uint8_t)at(45.0f, 900).right,
+                                  "市区 45 该是市区脸");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Cruise, (uint8_t)at(80.0f, 900).right,
+                                  "环路 80 该是快速路脸");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Sport, (uint8_t)at(115.0f, 900).right,
+                                  "高速 115 该是高速脸");
+
+  // ★ 转速从怠速扫到上限,右屏必须一直是怠速脸(车速不变就不许动)
   for (float r = kRpmIdleNominal; r <= kRpmMax; r += 250.0f) {
     const BothFaces f = at(0, r);
     char msg[80];
@@ -116,9 +187,19 @@ void test_two_screens_can_differ(void) {
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport, (uint8_t)b.right);
 
   // 巡航车速 + 巡航转速:两边都是"巡航",但这是各自的阈值各自命中的
-  const BothFaces cruise = at(55, kRpmCruiseNominal);
+  const BothFaces cruise = at(80, kRpmCruiseNominal);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise, (uint8_t)cruise.left);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise, (uint8_t)cruise.right);
+
+  // 高速 115 + 高转 5200:左高转、右高速 —— 两条轴的第五档同时亮
+  const BothFaces fifth = at(115, 5200);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::High,  (uint8_t)fifth.left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport, (uint8_t)fifth.right);
+
+  // 市区 45 + 怠速 900:右屏市区、左屏怠速
+  const BothFaces city = at(45, kRpmIdleNominal);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle, (uint8_t)city.left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::City, (uint8_t)city.right);
 
   // 两面都拉满(转速到表盘上限)
   const BothFaces c = at(120, kRpmMax);
@@ -197,7 +278,7 @@ void test_acceleration_does_not_change_face(void) {
   // 200ms 内 +30 km/h = 150 km/h/s(旧实现会在这里亮"惊喜")
   VehicleState b; b.speed_kmh = 40; b.rpm = 4200; b.coolant_c = 85;
   const FaceSet fs = face_update(b, 1200);
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise, (uint8_t)fs.right);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::City, (uint8_t)fs.right);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport, (uint8_t)fs.left);
 }
 
@@ -211,7 +292,7 @@ void test_time_independent(void) {
   for (int i = 0; i < 40; ++i) {           // 40 帧 × 500ms = 20 秒
     const FaceSet fs = face_update(s, t);
     TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle, (uint8_t)fs.left);
-    TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise, (uint8_t)fs.right);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::City, (uint8_t)fs.right);
     t += 500;
   }
 }
@@ -256,6 +337,7 @@ void test_face_names(void) {
 
 void register_expression_tests(void) {
   RUN_TEST(test_left_follows_rpm_only);
+  RUN_TEST(test_face_ladder_hysteresis);
   RUN_TEST(test_right_follows_speed_only);
   RUN_TEST(test_coolant_never_affects_faces);
   RUN_TEST(test_two_screens_can_differ);

@@ -12,11 +12,16 @@
  * 并逐字段比对。改了那边不改这边,Node 测试立刻红。
  *
  * ★ 两屏是**各自独立**的:
- *     左屏(转速表)只看转速 —— 常态/巡航/运动/红区
- *     右屏(速度表)只看车速 —— 常态/巡航/运动/超速
+ *     左屏(转速表)只看转速 —— 怠速/巡航/运动/高转/红区
+ *     右屏(速度表)只看车速 —— 静止/市区/快速路/高速/超速
  *   水温两个表都不参与(只驱动水温弧与水温数字)。
  *   所以"某阶段该显示什么"必须按屏分别回答,这也是这里用
  *   SCREENS[].states 而不是一张全局状态表的原因。
+ *
+ * ★ 2026-09-18:每屏从 4 档扩到 **5 档**(依据是 TU5JP4 + AL4 的活动范围,
+ *   那笔账在 lib/dashcore/expression.cpp 顶部):
+ *     左屏加 High(高转 4500..6000) / 右屏加 City(市区 30..65),
+ *     角色号 **21 / 22**(编号从 21 起接,保留号不复用)。
  *
  * 同时给浏览器(<script src>)和 Node(require)用:
  * 不写 import/export,只在末尾挂到 globalThis / module.exports。
@@ -31,9 +36,9 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  // ---- 两屏各自的 4 个状态(**顺序 = 该屏档位从低到高**) ----
+  // ---- 两屏各自的 5 个状态(**顺序 = 该屏档位从低到高**) ----
   // 角色编号与 image_blob.h 的 ImageRole 一致(由 test-face-stages.js 对账)。
-  // ★ 两屏的状态集合**不一样**:左屏有"红区"没有"超速",右屏反过来。
+  // ★ 两屏的状态集合**不一样**:左屏有"红区/高转"没有"超速/市区",右屏反过来。
   //   哪一屏有哪些状态由固件状态机决定(expression.cpp),这里只是声明。
   // ★ label 里的"（+水温）/（+进气温度）"是**副表**的说明,与弧一一对应:
   //   左屏转速表上挂着水温表、右屏速度表上挂着进气温度表(2026-09 加)。
@@ -44,9 +49,10 @@
       key: "left", idx: 0, short: "左", label: "左屏 · 转速表（+水温）",
       gauge: "rpm", unit: "rpm", gaugeLabel: "转速",
       states: [
-        { key: "Idle",    label: "常态", role: 3  },
+        { key: "Idle",    label: "怠速", role: 3  },
         { key: "Cruise",  label: "巡航", role: 12 },
         { key: "Sport",   label: "运动", role: 13 },
+        { key: "High",    label: "高转", role: 21 },
         { key: "Redline", label: "红区", role: 4  }
       ]
     },
@@ -54,10 +60,11 @@
       key: "right", idx: 1, short: "右", label: "右屏 · 速度表（+进气温度）",
       gauge: "speed", unit: "km/h", gaugeLabel: "车速",
       states: [
-        { key: "Idle",      label: "常态", role: 6  },
-        { key: "Cruise",    label: "巡航", role: 17 },
-        { key: "Sport",     label: "运动", role: 18 },
-        // 第 4 档:>130 km/h。角色号 8 沿用(当年是"惊喜"),改名不改号。
+        { key: "Idle",      label: "静止", role: 6  },
+        { key: "City",      label: "市区", role: 22 },
+        { key: "Cruise",    label: "快速路", role: 17 },
+        { key: "Sport",     label: "高速", role: 18 },
+        // 第 5 档:>130 km/h。角色号 8 沿用(当年是"惊喜"),改名不改号。
         { key: "Overspeed", label: "超速", role: 8  }
       ]
     }
@@ -85,15 +92,17 @@
   function statesOf(side) { return screen(side).states; }
 
   // ---- 缺图降级链(按状态名;顺序 = 优先顺序) ----
-  // 与 face_stages.h 的 kFaceFallback 逐行对应。
+  // 与 face_stages.h 的 kFaceFallback 逐行对应,顺序按"离它最近的表情"。
   // 链里出现"这一屏没有的状态"没有副作用:roleFor 会返回 null,
   // resolve 会直接跳过它(与固件侧 g_face_ok 恒为 false 同理)。
   var FALLBACK = {
-    Idle:      ["Idle", "Cruise", "Sport", "Redline"],
-    Cruise:    ["Cruise", "Idle", "Sport", "Redline"],
-    Sport:     ["Sport", "Cruise", "Redline", "Idle"],
-    Redline:   ["Redline", "Sport", "Cruise", "Idle"],
-    Overspeed: ["Overspeed", "Sport", "Cruise", "Idle"]
+    Idle:      ["Idle", "Cruise", "Sport", "High", "City"],
+    Cruise:    ["Cruise", "Idle", "Sport", "High", "City"],
+    Sport:     ["Sport", "Cruise", "High", "Redline", "Idle"],
+    Redline:   ["Redline", "High", "Sport", "Cruise", "Idle"],
+    Overspeed: ["Overspeed", "Sport", "Cruise", "Idle", "City"],
+    High:      ["High", "Sport", "Redline", "Cruise", "Idle"],
+    City:      ["City", "Cruise", "Idle", "Sport", "Overspeed"]
   };
 
   // 该状态该用哪张图 —— 与固件 dash_ui.cpp 的 faceResolve() 同一套规则。
@@ -119,28 +128,30 @@
   // ★★ 两条硬规则(固件与网页两端都有测试钉住):
   //   ① 每组只变自己那一维:速度组固定 rpm=900(怠速)、转速组固定 speed=0。
   //      否则点"速度·中"时转速表跟着动,看不出这一档改了什么。
-  //   ② **只有该屏自己的那一路能改它的表情**:转速组的右屏恒为常态、
-  //      速度组的左屏恒为常态、水温组与进气温度组两屏都不动。
+  //   ② **只有该屏自己的那一路能改它的表情**:转速组的右屏恒为怠速、
+  //      速度组的左屏恒为怠速、水温组与进气温度组两屏都不动。
   //      这就是"每屏一套独立表情"的可执行定义。
   //
-  // 转速四档用的是**实车地标**(用户实测:点火怠速 900 / 稳定巡航 2000 /
-  // 表盘上限 7000;运动取中间 4200)—— 所以表里那一行就是车上真会出现的那一格。
-  // 车速四档 0 / 55 / 110 / 140:分别落在 常态/巡航/运动/超速。
+  // 转速五档用的是**实车地标**(怠速 900 / 稳定巡航 2000 / 运动 4200 /
+  // 高转 5200 / 红区 6500≈断油)—— 所以表里那一行就是车上真会出现的那一格。
+  // 车速五档 0 / 45 / 80 / 115 / 140:分别落在 静止/市区/快速路/高速/超速。
   // 温度两组各三档:水温 60/85/115、进气 20/40/65。
-  // ★ 每屏 4 个状态、表里就 4 条 —— 每个状态都能被"点"出来。
+  // ★ 每屏 5 个状态、表里就 5 条 —— 每个状态都能被"点"出来。
   //   (当年右屏第 4 档是"急加速惊喜",它不是按车速分档的,所以表里没有它,
   //    用户试用时发现"这个档选不出来" —— 改成超速后就补齐了。)
   var STAGES = [
-    // 转速:只驱动左屏;右屏恒为常态(车速一直是 0)
+    // 转速:只驱动左屏;右屏恒为怠速(车速一直是 0)
     { group: "rpm", level: "low",     rpm: 900,  speed: 0,   coolant: 85,  intake: 35, left: "Idle",    right: "Idle" },
     { group: "rpm", level: "mid",     rpm: 2000, speed: 0,   coolant: 85,  intake: 35, left: "Cruise",  right: "Idle" },
     { group: "rpm", level: "high",    rpm: 4200, speed: 0,   coolant: 85,  intake: 35, left: "Sport",   right: "Idle" },
-    { group: "rpm", level: "redline", rpm: 7000, speed: 0,   coolant: 85,  intake: 35, left: "Redline", right: "Idle" },
-    // 车速:只驱动右屏;左屏恒为常态(转速一直是怠速)
-    { group: "speed", level: "low",  rpm: 900, speed: 0,   coolant: 85, intake: 35, left: "Idle", right: "Idle"      },
-    { group: "speed", level: "mid",  rpm: 900, speed: 55,  coolant: 85, intake: 35, left: "Idle", right: "Cruise"    },
-    { group: "speed", level: "high", rpm: 900, speed: 110, coolant: 85, intake: 35, left: "Idle", right: "Sport"     },
-    { group: "speed", level: "over", rpm: 900, speed: 140, coolant: 85, intake: 35, left: "Idle", right: "Overspeed" },
+    { group: "rpm", level: "vhigh",   rpm: 5200, speed: 0,   coolant: 85,  intake: 35, left: "High",    right: "Idle" },
+    { group: "rpm", level: "redline", rpm: 6500, speed: 0,   coolant: 85,  intake: 35, left: "Redline", right: "Idle" },
+    // 车速:只驱动右屏;左屏恒为怠速(转速一直是怠速)
+    { group: "speed", level: "low",   rpm: 900, speed: 0,   coolant: 85, intake: 35, left: "Idle", right: "Idle"      },
+    { group: "speed", level: "mid",   rpm: 900, speed: 45,  coolant: 85, intake: 35, left: "Idle", right: "City"      },
+    { group: "speed", level: "high",  rpm: 900, speed: 80,  coolant: 85, intake: 35, left: "Idle", right: "Cruise"    },
+    { group: "speed", level: "vhigh", rpm: 900, speed: 115, coolant: 85, intake: 35, left: "Idle", right: "Sport"     },
+    { group: "speed", level: "over",  rpm: 900, speed: 140, coolant: 85, intake: 35, left: "Idle", right: "Overspeed" },
     // 水温:两屏表情都不动,只影响水温弧与水温数字(左屏)
     { group: "coolant", level: "low",  rpm: 900, speed: 0, coolant: 60,  intake: 35, left: "Idle", right: "Idle" },
     { group: "coolant", level: "mid",  rpm: 900, speed: 0, coolant: 85,  intake: 35, left: "Idle", right: "Idle" },
@@ -165,9 +176,9 @@
   // faces:false = 这一组不影响表情(界面要明确写出来,免得用户以为调了没用)
   var GROUPS = [
     { key: "rpm",     label: "转速", unit: "rpm",  faces: true,
-      levels: { low: "低", mid: "中", high: "高", redline: "红区" } },
+      levels: { low: "怠速", mid: "巡航", high: "运动", vhigh: "高转", redline: "红区" } },
     { key: "speed",   label: "车速", unit: "km/h", faces: true,
-      levels: { low: "低", mid: "中", high: "高", over: "超速" } },
+      levels: { low: "静止", mid: "市区", high: "快速路", vhigh: "高速", over: "超速" } },
     { key: "coolant", label: "水温", unit: "°C",   faces: false,
       levels: { low: "低", mid: "中", high: "高" } },
     // 进气温度(OBD 010F):右屏的副表,与左屏水温对称 —— 同样不影响表情

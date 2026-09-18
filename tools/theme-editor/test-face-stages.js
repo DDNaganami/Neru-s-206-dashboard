@@ -73,14 +73,23 @@ while ((m = stagesRe.exec(stagesH)) !== null) {
   });
 }
 
-// kFaceFallback 行:{FACE_SLOT(A), FACE_SLOT(B), FACE_SLOT(C), FACE_SLOT(D)},
-const fallbackRe = /\{\s*FACE_SLOT\((\w+)\)\s*,\s*FACE_SLOT\((\w+)\)\s*,\s*FACE_SLOT\((\w+)\)\s*,\s*FACE_SLOT\((\w+)\)\s*\}/g;
+// kFaceFallback 行:{FACE_SLOT(A), FACE_SLOT(B), ...},
+// ★ 这里**不写死每行几个**:链长必须等于"每屏状态数",而那个数会随档位变化
+//   (2026-09-18 从 4 档扩到 5 档时,写死 4 个的正则直接一行都匹配不到,
+//    报出来的是"解析出 0 行降级链",看不出真正原因)。
+//   改成:先按行抓出整行,再数里面的 FACE_SLOT —— 条数由下面的用例断言。
+const fallbackRowRe = /\{([^{}]*FACE_SLOT\([^{}]*)\}/g;
+const fallbackItemRe = /FACE_SLOT\((\w+)\)/g;
 const cppFallback = [];
-while ((m = fallbackRe.exec(stagesH)) !== null) {
-  cppFallback.push([m[1], m[2], m[3], m[4]]);
+while ((m = fallbackRowRe.exec(stagesH)) !== null) {
+  const names = [];
+  let im;
+  fallbackItemRe.lastIndex = 0;
+  while ((im = fallbackItemRe.exec(m[1])) !== null) names.push(im[1]);
+  cppFallback.push(names);
 }
 
-// kFaceRoleId[2][5] = { {...}, {...} };   ← 0 表示这屏用不到这个状态
+// kFaceRoleId[2][7] = { {...}, {...} };   ← 0 表示这屏用不到这个状态
 const roleRe = /kFaceRoleId\[(\d+)\]\[(\d+)\]\s*=\s*\{([\s\S]*?)\};/;
 const roleBlock = roleRe.exec(stagesH);
 const cppRoleDims = roleBlock ? [Number(roleBlock[1]), Number(roleBlock[2])] : [0, 0];
@@ -107,62 +116,93 @@ const cppRightStates = parseStateList("kFaceRightStates");
 
 // 解析不出来就说明 face_stages.h 的排版被改了 —— 直接失败,别静默跳过
 section("face_stages.h 可解析");
-ok(cppStages.length === 14, "解析出 14 条阶段用例(得到 " + cppStages.length + ")");
-ok(cppFallback.length === 5, "解析出 5 行降级链(得到 " + cppFallback.length + ")");
-ok(cppRoleDims[0] === 2 && cppRoleDims[1] === 5,
-   "角色编号表的维度是 [2][5](得到 [" + cppRoleDims.join("][") + "])");
-ok(cppRoles.length === 2 && cppRoles[0].length === 5 && cppRoles[1].length === 5,
-   "解析出 2×5 的角色编号表");
-ok(!!cppLeftStates && cppLeftStates.length === 4, "解析出左屏状态表(4 个)");
-ok(!!cppRightStates && cppRightStates.length === 4, "解析出右屏状态表(4 个)");
-if (cppStages.length !== 14 || cppFallback.length !== 5 || cppRoles.length !== 2 ||
-    !cppLeftStates || !cppRightStates) {
-  console.log("\n  ⚠ face_stages.h 里的表格排版被改动了。");
-  console.log("    那几张表的书写格式是被本测试解析的:每行一条,");
-  console.log("    阶段表用 {\"g\", \"l\", 1.0f, 2.0f, 3.0f, Face::A, Face::B}, 这种写法。");
-  console.log("    改回原排版,或同步改本文件的解析正则。");
+ok(cppStages.length === 16, "解析出 16 条阶段用例(得到 " + cppStages.length + ")");
+ok(cppFallback.length === 7, "解析出 7 行降级链(得到 " + cppFallback.length + ")");
+// 每行的链长必须等于"每屏状态数"(5) —— 链短了就会出现"降级不到任何一张图"
+for (let i = 0; i < cppFallback.length; i++) {
+  eq(cppFallback[i].length, 5, "降级链第 " + i + " 行有 5 个候选");
+}
+ok(cppRoleDims[0] === 2 && cppRoleDims[1] === 7,
+   "角色编号表的维度是 [2][7](得到 [" + cppRoleDims.join("][") + "])");
+ok(cppRoles.length === 2 && cppRoles[0].length === 7 && cppRoles[1].length === 7,
+   "解析出 2×7 的角色编号表");
+ok(!!cppLeftStates && cppLeftStates.length === 5, "解析出左屏状态表(5 个)");
+ok(!!cppRightStates && cppRightStates.length === 5, "解析出右屏状态表(5 个)");
+// ★ 这条守卫的数字必须跟着契约走(阶段条数 / 降级链行数 / 每屏状态数 / 槽位数),
+//   否则会出现最坏的情况:**解析失败时守卫先说"排版被改了"**,
+//   而真正原因(数字没同步)被这句警告盖住 —— 2026-09-18 加了两个用例就是这个症状。
+const kExpectStages = 16;      // 5 转速 + 5 车速 + 3 水温 + 3 进气
+const kExpectSlots  = 7;       // 槽位数 = Face::Count
+const kExpectStates = 5;       // 每屏状态数
+if (cppStages.length !== kExpectStages || cppFallback.length !== kExpectSlots ||
+    cppRoles.length !== 2 || (cppRoles[0] || []).length !== kExpectSlots ||
+    !cppLeftStates || cppLeftStates.length !== kExpectStates ||
+    !cppRightStates || cppRightStates.length !== kExpectStates) {
+  console.log("\n  ⚠ face_stages.h 里的表格**没解析成预期形状**(可能是排版被改,");
+  console.log("    也可能是本测试的预期数字没跟着契约更新)。实测:");
+  console.log("      阶段用例 " + cppStages.length + " 条(期望 " + kExpectStages + ")");
+  console.log("      降级链   " + cppFallback.length + " 行(期望 " + kExpectSlots + ")");
+  console.log("      角色表   " + cppRoles.length + " 行,每行 " +
+              cppRoles.map(r => r.length).join("/") + "(期望 2 行 × " + kExpectSlots + ")");
+  console.log("      状态表   左 " + (cppLeftStates ? cppLeftStates.length : "null") +
+              " / 右 " + (cppRightStates ? cppRightStates.length : "null") +
+              "(期望 " + kExpectStates + ")");
+  console.log("    每行一条的写法见文件头注释;数字对不上就同步本文件的 kExpect*。");
   process.exit(1);
 }
 
 // ------------------------------------------------------------
 section("每屏的状态集合:JS 镜像 == face_stages.h");
 eq(FS_JS.SCREENS.length, 2, "两屏");
+// ★ 槽位顺序 ≠ 档位顺序,别再按下标比(2026-09-18 扩到 5 档时踩的):
+//   kFaceRoleId 是**按槽位**排的(枚举顺序,两个屏共用一套槽位名),
+//   而 JS 的 states 是**按该屏档位从低到高**排的。
+//   左屏加了"高转"之后这两套顺序就分叉了(高转的槽位是 5,但它是该屏第 4 档),
+//   按下标比会报"角色编号不一致",而其实两边都对 —— 所以**按状态名比**。
+const FACE_KEYS = ["Idle", "Cruise", "Sport", "Redline", "Overspeed", "High", "City"];
 for (let i = 0; i < 2; i++) {
   const js = FS_JS.SCREENS[i].states.map(s => s.key);
   const cpp = (i === 0) ? cppLeftStates : cppRightStates;
-  eq(js.join(","), cpp.join(","), (i === 0 ? "左屏" : "右屏") + "状态表");
-  // 该屏每个状态的图片角色号必须与非零的 kFaceRoleId 一致
-  const cppRolesForScreen = cppRoles[i].map((r, slot) => ({ slot, r }))
-    .filter(x => x.r > 0).map(x => x.r);
-  const jsRoles = FS_JS.SCREENS[i].states.map(s => s.role);
-  eq(jsRoles.join(","), cppRolesForScreen.join(","), (i === 0 ? "左屏" : "右屏") + "角色编号(去掉 0)");
-  eq(FS_JS.SCREENS[i].states.length, 4, (i === 0 ? "左屏" : "右屏") + " 4 个状态");
-  // 该屏不该有的状态:kFaceRoleId 必须是 0
-  for (let slot = 0; slot < 5; slot++) {
-    const key = ["Idle", "Cruise", "Sport", "Redline", "Overspeed"][slot];
-    const has = js.indexOf(key) >= 0;
-    if (has) continue;
-    eq(cppRoles[i][slot], 0, (i === 0 ? "左屏" : "右屏") + " 不该有的 " + key + " 角色号");
+  const who = (i === 0 ? "左屏" : "右屏");
+  eq(js.slice().sort().join(","), cpp.slice().sort().join(","), who + "状态集合");
+  eq(js.length, 5, who + " 5 个状态");
+
+  // 每个状态的图片角色号:按**名字**在槽位表里找,再和 JS 比
+  for (const st of FS_JS.SCREENS[i].states) {
+    const slot = FACE_KEYS.indexOf(st.key);
+    ok(slot >= 0, who + " 的 " + st.key + " 是个已知槽位名");
+    if (slot < 0) continue;
+    eq(st.role, cppRoles[i][slot], who + " 的 " + st.key + " 角色号");
+  }
+  // 该屏用不到的槽位必须是 0(否则会出现"永远显示不出来的图")
+  for (let slot = 0; slot < FACE_KEYS.length; slot++) {
+    const key = FACE_KEYS[slot];
+    if (js.indexOf(key) >= 0) continue;
+    eq(cppRoles[i][slot], 0, who + " 不该有的 " + key + " 角色号必须是 0");
   }
 }
 
 // 两屏状态集合必须**不一样**(这正是"每屏一套"的意义);相同的话说明有人抄错了
-section("两屏状态集合确实不同(左有红区、右有超速)");
+section("两屏状态集合确实不同(左有红区/高转、右有超速/市区)");
 {
   const L = FS_JS.SCREENS[0].states.map(s => s.key);
   const R = FS_JS.SCREENS[1].states.map(s => s.key);
   ok(L.indexOf("Redline") >= 0, "左屏有红区");
+  ok(L.indexOf("High") >= 0, "左屏有高转");
   ok(L.indexOf("Overspeed") < 0, "左屏没有超速");
+  ok(L.indexOf("City") < 0, "左屏没有市区");
   ok(R.indexOf("Overspeed") >= 0, "右屏有超速");
+  ok(R.indexOf("City") >= 0, "右屏有市区");
   ok(R.indexOf("Redline") < 0, "右屏没有红区");
+  ok(R.indexOf("High") < 0, "右屏没有高转");
   // 所有用到的角色编号必须互不重复(左右也不能撞)
   const all = FS_JS.SCREENS.reduce((a, s) => a.concat(s.states.map(x => x.role)), []);
-  eq(new Set(all).size, all.length, "8 个角色编号互不重复");
-  eq(all.length, 8, "两屏各 4 张 = 8 张");
+  eq(new Set(all).size, all.length, "10 个角色编号互不重复");
+  eq(all.length, 10, "两屏各 5 张 = 10 张");
 }
 
 // ------------------------------------------------------------
-section("14 条阶段用例:JS 镜像 == face_stages.h");
+section("16 条阶段用例:JS 镜像 == face_stages.h");
 eq(FS_JS.STAGES.length, cppStages.length, "条数");
 for (let i = 0; i < cppStages.length; i++) {
   const c = cppStages[i], j = FS_JS.STAGES[i];
@@ -182,8 +222,8 @@ for (const g of ["rpm", "speed", "coolant", "intake"]) {
   ok(rows.length >= 3, g + " 组至少 3 档");
   eq(rows[0].level, "low", g + " 第一档是 low");
 }
-eq(FS_JS.stagesOf("rpm").length, 4, "转速组 4 档(含红区)");
-eq(FS_JS.stagesOf("speed").length, 4, "车速组 4 档(含超速)");
+eq(FS_JS.stagesOf("rpm").length, 5, "转速组 5 档(怠速/巡航/运动/高转/红区)");
+eq(FS_JS.stagesOf("speed").length, 5, "车速组 5 档(静止/市区/快速路/高速/超速)");
 eq(FS_JS.stagesOf("coolant").length, 3, "水温组 3 档");
 // ★ 进气温度那一组是用户当场抓出来的漏项:"阶段里面缺失了进气温度低中高的选项"。
 //   弧和读数加了、阶段表没加,结果是**模拟器里点不出来**那条弧 —— 表里没有它。
@@ -284,15 +324,24 @@ for (const spec of [{ g: "rpm", side: "left" }, { g: "speed", side: "right" }]) 
 // ------------------------------------------------------------
 section("降级链:JS 镜像 == face_stages.h");
 {
-  // 两屏状态的并集 = 5 个(Idle/Cruise/Sport/Redline/Overspeed),每个一行链
+  // 两屏状态的并集（现在是 7 个:Idle/Cruise/Sport/Redline/Overspeed/High/City），
+  // 每个槽位一行链 —— 行数必须等于槽位数。
   const union = new Set();
   FS_JS.SCREENS.forEach(s => s.states.forEach(x => union.add(x.key)));
-  eq(union.size, 5, "两屏状态并集是 5 个");
+  eq(union.size, 7, "两屏状态并集是 7 个槽位");
   eq(cppFallback.length, union.size, "链的行数 = 状态并集大小");
-  const keys = ["Idle", "Cruise", "Sport", "Redline", "Overspeed"];
-  for (let i = 0; i < cppFallback.length; i++) {
-    eq((FS_JS.FALLBACK[keys[i]] || []).join(","), cppFallback[i].join(","),
-       "状态 " + keys[i] + " 的降级链");
+  for (let i = 0; i < cppFallback.length; ++i) {
+    for (const name of cppFallback[i]) {
+      ok(union.has(name), "第 " + i + " 行链里的 " + name + " 是个真实状态名");
+    }
+  }
+  // ★ 按**状态名**逐行对账(不能按下标:见上面槽位顺序 ≠ 档位顺序那段说明)
+  for (const key of union) {
+    const cppRow = cppFallback[FACE_KEYS.indexOf(key)];
+    ok(!!cppRow, key + " 在 face_stages.h 里有降级链");
+    if (!cppRow) continue;
+    eq((FS_JS.FALLBACK[key] || []).join(","), cppRow.join(","),
+       "状态 " + key + " 的降级链");
   }
 }
 
@@ -300,8 +349,9 @@ section("角色编号:JS 镜像 == face_stages.h == image-blob-build.js");
 for (let side = 0; side < 2; side++) {
   for (const st of FS_JS.SCREENS[side].states) {
     const js = st.role;
-    const slot = ["Idle", "Cruise", "Sport", "Redline", "Overspeed"].indexOf(st.key);
+    const slot = FACE_KEYS.indexOf(st.key);
     eq(js, cppRoles[side][slot], "第 " + side + " 屏 " + st.key + " 角色号(face_stages.h)");
+    // 右屏的角色名带 R 后缀(与 image_blob.h 的命名一致)
     eq(js, ImageBlob.ROLE["Face" + st.key + (side === 1 ? "R" : "")],
        "第 " + side + " 屏 " + st.key + " 角色号(image-blob-build.js)");
   }

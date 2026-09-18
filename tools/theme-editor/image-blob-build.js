@@ -104,17 +104,17 @@
   //   只改名不改号,已导出的 image.bin 不受影响。见 image_blob.h。
   var ROLE = {
     Background: 1,
-    // 左屏(转速表)
-    FaceIdle: 3, FaceRedline: 4, FaceCruise: 12, FaceSport: 13,
-    // 右屏(速度表)
-    FaceIdleR: 6, FaceOverspeedR: 8, FaceCruiseR: 17, FaceSportR: 18
+    // 左屏(转速表):怠速 / 红区 / 巡航 / 运动 / 高转(21,2026-09-18 新增)
+    FaceIdle: 3, FaceRedline: 4, FaceCruise: 12, FaceSport: 13, FaceHigh: 21,
+    // 右屏(速度表):静止 / 超速 / 快速路 / 高速 / 市区(22,2026-09-18 新增)
+    FaceIdleR: 6, FaceOverspeedR: 8, FaceCruiseR: 17, FaceSportR: 18, FaceCityR: 22
   };
   var ROLE_NAMES = {
     1: "表盘背景",
-    3: "左屏表情·常态", 4: "左屏表情·红区",
-    12: "左屏表情·巡航", 13: "左屏表情·运动",
-    6: "右屏表情·常态", 8: "右屏表情·超速",
-    17: "右屏表情·巡航", 18: "右屏表情·运动"
+    3: "左屏表情·怠速", 4: "左屏表情·红区",
+    12: "左屏表情·巡航", 13: "左屏表情·运动", 21: "左屏表情·高转",
+    6: "右屏表情·静止", 8: "右屏表情·超速",
+    17: "右屏表情·快速路", 18: "右屏表情·高速", 22: "右屏表情·市区"
   };
 
   function bytesPerPixel(cf) {

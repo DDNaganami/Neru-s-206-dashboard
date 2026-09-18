@@ -71,7 +71,7 @@ for (var reserved of [2, 5, 7, 9, 10, 11, 14, 15, 16, 19, 20]) {
   eq(IB.ROLE_NAMES[reserved], undefined, reserved + " 不该有显示名");
 }
 // 一共 8 张表情 + 1 张背景
-eq(Object.keys(IB.ROLE).length, 9, "角色表里正好 9 项(1 背景 + 8 表情)");
+eq(Object.keys(IB.ROLE).length, 11, "角色表里正好 11 项(1 背景 + 10 表情 = 每屏 5 档)");
 // 每个角色都要有中文名(界面下拉框要用),漏了会显示成 undefined
 for (var rk in IB.ROLE) {
   ok(IB.ROLE_NAMES[IB.ROLE[rk]] !== undefined, "角色 " + rk + " 要有显示名");

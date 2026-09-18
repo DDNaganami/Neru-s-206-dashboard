@@ -304,13 +304,15 @@ let theme = { bg: "#141414" };
 //   开机画面是程序化扫表动画,不占图片。
 const ROLES = [
   { id: ImageBlob.ROLE.Background,     label: "表盘背景（两屏通用）" },
-  { id: ImageBlob.ROLE.FaceIdle,       label: "左屏(转速表) · 常态" },
+  { id: ImageBlob.ROLE.FaceIdle,       label: "左屏(转速表) · 怠速" },
   { id: ImageBlob.ROLE.FaceCruise,     label: "左屏(转速表) · 巡航" },
   { id: ImageBlob.ROLE.FaceSport,      label: "左屏(转速表) · 运动" },
+  { id: ImageBlob.ROLE.FaceHigh,       label: "左屏(转速表) · 高转" },
   { id: ImageBlob.ROLE.FaceRedline,    label: "左屏(转速表) · 红区" },
-  { id: ImageBlob.ROLE.FaceIdleR,      label: "右屏(速度表) · 常态" },
-  { id: ImageBlob.ROLE.FaceCruiseR,    label: "右屏(速度表) · 巡航" },
-  { id: ImageBlob.ROLE.FaceSportR,     label: "右屏(速度表) · 运动" },
+  { id: ImageBlob.ROLE.FaceIdleR,      label: "右屏(速度表) · 静止" },
+  { id: ImageBlob.ROLE.FaceCityR,      label: "右屏(速度表) · 市区" },
+  { id: ImageBlob.ROLE.FaceCruiseR,    label: "右屏(速度表) · 快速路" },
+  { id: ImageBlob.ROLE.FaceSportR,     label: "右屏(速度表) · 高速" },
   { id: ImageBlob.ROLE.FaceOverspeedR, label: "右屏(速度表) · 超速" }
 ];
 

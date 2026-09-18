@@ -103,16 +103,18 @@ enum class ImageRole : uint16_t {
   Background   = 1,   // 表盘背景图（衬在圆弧下面,两屏共用一张）
 
   // ---- 左屏(转速表) ----
-  FaceIdle     = 3,   // 表情：常态(低转)
-  FaceRedline  = 4,   // 表情：红区(>=5000;表盘上限 7000,阈值待重排)
-  FaceCruise   = 12,  // 表情：巡航(>=1800)
-  FaceSport    = 13,  // 表情：运动(>=3500)
+  FaceIdle     = 3,   // 表情：怠速/常态(<1500)
+  FaceRedline  = 4,   // 表情：红区(>=6000,断油约 6500 之前 500 转)
+  FaceCruise   = 12,  // 表情：巡航(1500..3499)
+  FaceSport    = 13,  // 表情：运动(3500..4499)
+  FaceHigh     = 21,  // 表情：高转(4500..5999) —— 2026-09-18 新增,编号从 21 起接
 
   // ---- 右屏(速度表) ----
-  FaceIdleR      = 6,   // 表情：常态(低速)
+  FaceIdleR      = 6,   // 表情：静止/挪车(<30)
   FaceOverspeedR = 8,   // 表情：超速(>130 km/h) —— 号 8 沿用(当年是"惊喜")
-  FaceCruiseR    = 17,  // 表情：巡航(>=30)
-  FaceSportR     = 18,  // 表情：运动(>=90)
+  FaceCruiseR    = 17,  // 表情：快速路(65..94) —— 名与左屏的 Cruise 对齐,速度段的含义在右屏
+  FaceSportR     = 18,  // 表情：高速(95..130)
+  FaceCityR      = 22,  // 表情：市区(30..64) —— 2026-09-18 新增,编号从 21 起接
 
   // ★ 以下是**保留编号,一律不复用**(见 test_role_ids):
   //   2        当年的"开机帧"(开机画面已改成程序化扫表)
@@ -124,6 +126,10 @@ enum class ImageRole : uint16_t {
   //   谁手里有一份那时导出的 image.bin,复用这些编号就会让那几张图
   //   突然变成别的表情,而且不报错。**新角色从 21 开始接。**
 };
+// 已用到的编号一览(便于"下一个新角色该用几号"一眼看出):
+//   1 背景 | 3/4/12/13/21 左屏(怠速/红区/巡航/运动/高转)
+//          | 6/8/17/18/22 右屏(静止/超速/快速路/高速/市区)
+//   → 下一个新角色用 **23**。
 
 // 表情角色的**完整清单**。刻意写成一条条枚举而不是"区间 + 排除一堆洞":
 // 洞会变,区间表达式每改一次都要重新想一遍边界,而这条 switch
@@ -132,8 +138,10 @@ inline bool imageRoleIsFace(ImageRole r) {
   switch (r) {
     case ImageRole::FaceIdle:     case ImageRole::FaceCruise:
     case ImageRole::FaceSport:    case ImageRole::FaceRedline:
+    case ImageRole::FaceHigh:
     case ImageRole::FaceIdleR:    case ImageRole::FaceCruiseR:
     case ImageRole::FaceSportR:   case ImageRole::FaceOverspeedR:
+    case ImageRole::FaceCityR:
       return true;
     default:
       return false;

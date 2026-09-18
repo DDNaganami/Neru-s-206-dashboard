@@ -29,13 +29,15 @@ static FaceSet run_stage(const FaceStage& st) {
 }
 
 // 阶段用例逐条对账(左右两屏都比)
-// ★ 条数变了要改这里:4 转速 + 4 车速 + 3 水温 + 3 进气温度 = 14。
+// ★ 条数变了要改这里:5 转速 + 5 车速 + 3 水温 + 3 进气温度 = 16。
 //   (车速从 3 条变 4 条,是"惊喜"改成"超速"时补的 —— 原来第 4 档是瞬态,
 //    列不进表,用户试用时发现"这个档选不出来";
 //    进气温度那 3 条也是同一个来路:先加了弧和读数却漏了阶段表,
-//    用户当场发现"阶段里面缺失了进气温度低中高的选项"。)
+//    用户当场发现"阶段里面缺失了进气温度低中高的选项"。
+//    2026-09-18 转速与车速各从 4 条变 5 条:按 TU5JP4 + AL4 的活动范围
+//    加了"高转"与"市区"两档,理由见 expression.cpp 顶部。)
 static void test_stage_table(void) {
-  TEST_ASSERT_EQUAL_UINT8(14, kFaceStageCount);
+  TEST_ASSERT_EQUAL_UINT8(16, kFaceStageCount);
   for (uint8_t i = 0; i < kFaceStageCount; ++i) {
     const FaceStage& st = kFaceStages[i];
     const FaceSet got = run_stage(st);
@@ -161,35 +163,44 @@ static void test_fallback_chain(void) {
   }
 }
 
-// ★ 转速组的四档必须是**实车地标**,不是随手取的数 ——
+// ★ 转速组的**五档**必须是**实车地标**,不是随手取的数 ——
 //   表里的值就是"车上真会出现的那一格",所以要能对上怠速/巡航/上限。
 //   换车、换表时这条会红,提醒你把 vehicle_state.h 的地标常量一起改。
 static void test_rpm_stages_use_real_landmarks(void) {
-  const FaceStage* rows[4] = {nullptr, nullptr, nullptr, nullptr};
+  const FaceStage* rows[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
   for (uint8_t i = 0; i < kFaceStageCount; ++i) {
     if (strcmp(kFaceStages[i].group, "rpm") != 0) continue;
     if (strcmp(kFaceStages[i].level, "low") == 0) rows[0] = &kFaceStages[i];
     if (strcmp(kFaceStages[i].level, "mid") == 0) rows[1] = &kFaceStages[i];
     if (strcmp(kFaceStages[i].level, "high") == 0) rows[2] = &kFaceStages[i];
-    if (strcmp(kFaceStages[i].level, "redline") == 0) rows[3] = &kFaceStages[i];
+    if (strcmp(kFaceStages[i].level, "vhigh") == 0) rows[3] = &kFaceStages[i];
+    if (strcmp(kFaceStages[i].level, "redline") == 0) rows[4] = &kFaceStages[i];
   }
-  for (int i = 0; i < 4; ++i) TEST_ASSERT_NOT_NULL(rows[i]);
+  for (int i = 0; i < 5; ++i) TEST_ASSERT_NOT_NULL(rows[i]);
 
   TEST_ASSERT_EQUAL_FLOAT_MESSAGE(kRpmIdleNominal, rows[0]->rpm,
-                                  "转速·低 应该是点火怠速(实车 900)");
+                                  "转速·怠速 应该是点火怠速(实车 900)");
   TEST_ASSERT_EQUAL_FLOAT_MESSAGE(kRpmCruiseNominal, rows[1]->rpm,
-                                  "转速·中 应该是稳定巡航(实车 2000)");
-  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(kRpmMax, rows[3]->rpm,
-                                  "转速·红区 应该是表盘上限(实车 7000)");
-  // 运动档取巡航与上限之间,而且要真的落在"运动"那一档
+                                  "转速·巡航 应该是稳定巡航(实车 2000)");
+  // ★ 红区那一行**不取表盘上限**(7000):发动机根本到不了,
+  //   取断油点附近(6500)才有现实对应 —— 这条断言把它钉住,
+  //   免得以后有人"顺手"把它改成 kRpmMax 让模拟看起来走到头。
+  TEST_ASSERT_TRUE_MESSAGE(rows[4]->rpm < kRpmMax,
+                           "转速·红区 不该取表盘上限 7000 —— 发动机到不了,取断油附近");
+  TEST_ASSERT_TRUE_MESSAGE(rows[4]->rpm >= 6000.0f,
+                           "转速·红区 必须落进红区档(>=6000)");
+  // 运动/高转取中间,而且要各自真的落在"运动"/"高转"那一档
   TEST_ASSERT_TRUE(rows[2]->rpm > kRpmCruiseNominal);
-  TEST_ASSERT_TRUE(rows[2]->rpm < kRpmMax);
+  TEST_ASSERT_TRUE(rows[3]->rpm > rows[2]->rpm);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport, (uint8_t)rows[2]->left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::High, (uint8_t)rows[3]->left);
 
   // 每个地标都必须落在**它自己那一档**里(表 ↔ 状态机的交叉验证)
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle, (uint8_t)run_stage(*rows[0]).left);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise, (uint8_t)run_stage(*rows[1]).left);
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Redline, (uint8_t)run_stage(*rows[3]).left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport, (uint8_t)run_stage(*rows[2]).left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::High, (uint8_t)run_stage(*rows[3]).left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Redline, (uint8_t)run_stage(*rows[4]).left);
 }
 
 // 表里的槽位编号必须就是 Face 的枚举值(网页端按下标找角色,错一位全乱)
@@ -199,7 +210,11 @@ static void test_slot_index_equals_face(void) {
   TEST_ASSERT_EQUAL_UINT8(2, (uint8_t)Face::Sport);
   TEST_ASSERT_EQUAL_UINT8(3, (uint8_t)Face::Redline);
   TEST_ASSERT_EQUAL_UINT8(4, (uint8_t)Face::Overspeed);
-  TEST_ASSERT_EQUAL_UINT8(5, (uint8_t)Face::Count);
+  // ★ 新增的两个**必须追加在末尾**(2026-09-18):枚举号就是槽位下标,
+  //   kFaceFallback 按它索引 —— 插队会让整条降级链错位,而且不报错。
+  TEST_ASSERT_EQUAL_UINT8(5, (uint8_t)Face::High);
+  TEST_ASSERT_EQUAL_UINT8(6, (uint8_t)Face::City);
+  TEST_ASSERT_EQUAL_UINT8(7, (uint8_t)Face::Count);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Count, kFaceSlotCount);
 }
 

@@ -128,22 +128,29 @@ static void test_entry_field_offsets(void) {
 // 改编号会让"右屏显示成左屏的表情",而且不报错 —— 所以钉死。
 static void test_role_ids(void) {
   TEST_ASSERT_EQUAL_UINT16(1, (uint16_t)ImageRole::Background);
-  // 左屏(转速表):常态 / 红区 / 巡航 / 运动
+  // 左屏(转速表):怠速 / 红区 / 巡航 / 运动 / 高转
   TEST_ASSERT_EQUAL_UINT16(3, (uint16_t)ImageRole::FaceIdle);
   TEST_ASSERT_EQUAL_UINT16(4, (uint16_t)ImageRole::FaceRedline);
   TEST_ASSERT_EQUAL_UINT16(12, (uint16_t)ImageRole::FaceCruise);
   TEST_ASSERT_EQUAL_UINT16(13, (uint16_t)ImageRole::FaceSport);
-  // 右屏(速度表):常态 / 超速 / 巡航 / 运动
+  // 高转(左)与市区(右)是 2026-09-18 新增的第五档,编号从 21 起接
+  TEST_ASSERT_EQUAL_UINT16(21, (uint16_t)ImageRole::FaceHigh);
+  // 右屏(速度表):静止 / 超速 / 快速路 / 高速 / 市区
   // ★ 超速这张的角色号 8 沿用当年的"惊喜"(只改名不改号,已导出的 image.bin 不受影响)
   TEST_ASSERT_EQUAL_UINT16(6, (uint16_t)ImageRole::FaceIdleR);
   TEST_ASSERT_EQUAL_UINT16(8, (uint16_t)ImageRole::FaceOverspeedR);
   TEST_ASSERT_EQUAL_UINT16(17, (uint16_t)ImageRole::FaceCruiseR);
   TEST_ASSERT_EQUAL_UINT16(18, (uint16_t)ImageRole::FaceSportR);
+  TEST_ASSERT_EQUAL_UINT16(22, (uint16_t)ImageRole::FaceCityR);
 
   // 左屏和右屏的角色必须互不相同(复制粘贴最容易犯的错)
   TEST_ASSERT_TRUE(ImageRole::FaceIdle != ImageRole::FaceIdleR);
   TEST_ASSERT_TRUE(ImageRole::FaceCruise != ImageRole::FaceCruiseR);
   TEST_ASSERT_TRUE(ImageRole::FaceSport != ImageRole::FaceSportR);
+  // 新增的两张也各自独立:高转是左屏的、市区是右屏的,不能互相顶替
+  TEST_ASSERT_TRUE(ImageRole::FaceHigh != ImageRole::FaceCityR);
+  TEST_ASSERT_TRUE(ImageRole::FaceHigh != ImageRole::FaceRedline);
+  TEST_ASSERT_TRUE(ImageRole::FaceCityR != ImageRole::FaceCruiseR);
 
   // ★ 保留编号一个都不能被复用。它们分别是:
   //   2=开机帧、5=左屏惊喜、7=右屏红区、9/10=开机图、11/16=眨眼图、
@@ -155,7 +162,11 @@ static void test_role_ids(void) {
                               "保留编号被当成了表情角色");
   }
   TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)0));    // 0 = 这屏用不到
-  TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)21));   // 还没分配
+  // 21/22 现在**已经分配**给高转(左)/市区(右)了,所以下一个没用到的号是 23 ——
+  // 这条同时防止有人把 21/22 又当成"保留号"或者把 23 提前占掉。
+  TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)23));   // 还没分配
+  TEST_ASSERT_TRUE(imageRoleIsFace(ImageRole::FaceHigh));
+  TEST_ASSERT_TRUE(imageRoleIsFace(ImageRole::FaceCityR));
   TEST_ASSERT_TRUE(imageRoleIsFace(ImageRole::FaceIdle));
   TEST_ASSERT_TRUE(imageRoleIsFace(ImageRole::FaceSportR));
 }
