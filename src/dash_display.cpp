@@ -161,6 +161,16 @@ void dash_display_poll() {
   ++frame_no;
 }
 
+#elif defined(DASH_DISPLAY_RGB)
+
+// ============ 实驱动:RGB 并口屏(实现见 dash_display_rgb.cpp) ============
+// 单独一个文件,免得这个文件被两套实现撑成五百行。
+// 它提供**同一组**接口(dash_display_init / left / right / poll),
+// 所以 dash_ui.cpp 一行都不用改 —— 这正是当初抽接口的目的。
+// 编译开关见 platformio.ini 的 [env:esp32s3-rgb]。
+// ★ 双屏方案被这一版框架的旧 esp_lcd 卡住(缺 num_fbs/get_frame_buffer),
+//   原因与两条出路写在该文件的文件头,先读那段再动手。
+
 #else
 
 // ============ 实驱动:屏到货后在此实现(ST7701S / GC9xxx SPI / LovyanGFX) ============

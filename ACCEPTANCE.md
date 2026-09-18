@@ -774,6 +774,39 @@ SRC speed=sim rpm=sim coolant=sim intake=sim | v=176.6km/h 5963rpm 87.0C 28.3C
   但文件本身是好的（这次差点因此去"修"一个没坏的 manifest）。
   要确认内容请用 read 工具或 `[System.Text.Encoding]::UTF8.GetString()`。
 
+## RGB 并口屏驱动骨架 + 一个"买屏前必须知道"的发现（2026-09-18）
+
+用户确认两块屏**还没买**，板上只有 2.54mm 排针（没有 FPC 座）。这一轮的产出是
+"先别买错" + "动手时从哪开始"。
+
+**1）实驱动骨架落地**：新增 `src/dash_display_rgb.cpp`（`-DDASH_DISPLAY_RGB=1`，
+新 env `[env:esp32s3-rgb]`），提供与桩/预览**同一组接口**，所以 `dash_ui.cpp`
+一行未改。里面已经写好：LVGL→面板的区域 flush（`esp_lcd_panel_draw_bitmap`，
+只搬变化区域）、每帧完成回调（只在中断里记数）、每秒一次的 `rgb: frames=…/s`
+诊断（与 VAN 那条 `edges/frames` 同思路）、以及 ST7701S 的 3 线 SPI 初始化通路。
+**屏到手后只需要填文件顶部三块**：引脚、初始化命令表、时序（各项都注明了从哪来）。
+编译已验证：`esp32s3-rgb` SUCCESS（RAM 46.2% / Flash 69.3%）。
+
+**2）★ 关键发现：这一版框架的 `esp_lcd` 是旧精简版，双屏方案被它卡住。**
+`framework-arduinoespressif32` 自带的 `esp_lcd_panel_rgb.h`（4 个芯片目录同一份、
+120 行）只有 `esp_lcd_new_rgb_panel` + 单个 `on_frame_trans_done` + `fb_in_psram`；
+**没有** `num_fbs` / `esp_lcd_rgb_panel_get_frame_buffer` /
+`esp_lcd_rgb_panel_register_event_callbacks` / bounce buffer（那些是 IDF 5.x 的）。
+而"两块 480×480 共用一条 16 位总线、轮流发帧"**恰好需要那三样**：
+DMA 得能在两块帧缓冲之间自动切换。旧 API 下面板只有**一块** fb，
+硬做会出现"两块屏轮流显示对方的画面"（每帧约 16ms 的鬼影）。
+⇒ 双屏两条出路（都不推翻现有代码）：
+  ① **换构建**拿到 IDF 5.x 的 esp_lcd（新 pioarduino 平台 / 直接 ESP-IDF 工程）
+     → 一元 RGB 总线 + 硬件 1→2 选通（16 位缓冲 + /OE 选通脚）成立，每屏 30Hz。
+     **推荐**：本文件的时序/初始化/LVGL 绑定都能留。
+  ② 两块屏各占一组数据线 → 需约 40 根 ✗ S3 没有。
+这也解释了为什么"先把 13 号验证板买来跑通"是对的：它是**带屏的整板**，
+0 根线，验证的是帧率/内存/观感，与这个 API 缺口无关。
+
+**3）买屏信息**（详见 `.md` 第十一节与回复）：官方型号 `ESP32-S3-Touch-LCD-2.1`
+（平面）/ `-2.1B`（2.5D 曲面）；淘宝按关键词搜（商品链接会话绑定、会失效，
+关键词耐用）；核对清单：480×480、**RGB 并口**、ST7701S、S3 + 8MB PSRAM、
+板内已有 FPC 座。
 ## 相关文档
 
 - `PURCHASE.md`：采购清单（含到货后的验证动作、安全提示）
