@@ -405,51 +405,88 @@ section("页面里两个纯函数:名字截断与字节长度");
 }
 
 // ------------------------------------------------------------
-section("页面:导入时的默认输出尺寸(只缩不放)");
+section("页面:导入时的默认输出尺寸(只缩不放 + 按角色设上限)");
 // 为什么值得单测:这里踩过一次,而且是用户踩的 ——
-//   导入时的默认输出宽度**写死 240**,不管原图多大。
-//   用户按建议做好了 8 张 152×152 的图,导进去却被放大成 240×240,
-//   占用从 542KB 变成 1350KB,界面直接报 132% 溢出。
-//   而缩略图看起来一样大,他只能看到"我明明做的是 152,怎么还溢出"。
-// 现在的规则:默认 = min(原图宽, 240),并向下对齐到 4 —— 保证**不会放大**。
+//   导入时的默认输出宽度**写死一个数**,不管原图多大也不管角色。
+//   用户按建议做好的图导进去却被放大,占用直接翻倍到报溢出,
+//   而缩略图看起来一样大,他只能看到"我明明做的是那个尺寸,怎么还溢出"。
+// 现在的规则(2026-09-18 重排):上限**按角色**取,而且**从共享常量读**:
+//   表情 → min(原图, FACE_CANVAS_MAX),S3 上默认给推荐值 300、经典板给 128
+//   背景 → min(原图, 480)
+//   再向下对齐到 4。保证不会放大,也保证不会超过几何上限(320:再大盖住副弧)。
+section("页面与共享常量没有分叉");
 {
   const html = require("fs").readFileSync(__dirname + "/image-editor.html", "utf8");
-  const mw = /const DEFAULT_MAX_W = (\d+);/.exec(html);
-  if (!mw) throw new Error("image-editor.html 里找不到 DEFAULT_MAX_W");
+  // ★ 页面里**不许**再出现写死的表情上限 —— 一律问 ImageBlob 的常量。
+  //   这条是"改了共享常量但页面没跟上"的唯一守卫(那种错不报错,只是导出的图不对)。
+  ok(html.indexOf("ImageBlob.FACE_CANVAS_MAX") >= 0,
+     "页面用 ImageBlob.FACE_CANVAS_MAX(不写死 320)");
+  ok(html.indexOf("ImageBlob.FACE_SIZE_RECOMMENDED") >= 0,
+     "页面用 ImageBlob.FACE_SIZE_RECOMMENDED(不写死 300)");
+  ok(html.indexOf("ImageBlob.ARC_INNER_MOST_RADIUS") >= 0,
+     "页面用 ImageBlob.ARC_INNER_MOST_RADIUS(不写死 163)");
   const fm = /function pickDefaultSize\(([\s\S]*?)\n\}/.exec(html);
   if (!fm) throw new Error("image-editor.html 里找不到 pickDefaultSize");
-  const pick = new Function("const DEFAULT_MAX_W = " + mw[1] + ";\n" +
-                            fm[0] + "\nreturn pickDefaultSize;")();
+  // ★ 用真的共享常量 + 真的页面函数跑一遍(不复制逻辑)。
+  //   注意:new Function 的函数体在**全局作用域**,拿不到模块的 require ——
+  //   所以依赖一律走参数传进去(踩过:直接写 require 会 ReferenceError)。
+  const FaceStages = require("./face-stages.js");
+  const roles = new Set();
+  FaceStages.SCREENS.forEach(sc => sc.states.forEach(x => roles.add(x.role)));
+  const makePick = (target) => new Function(
+    "ImageBlob", "FACE_ROLES", "curTarget",
+    fm[0] + "\nreturn pickDefaultSize;")(IB, roles, target);
+  const pick = makePick("s3");          // S3:表情默认给推荐值 300
+  const pickClassic = makePick("classic");   // 经典板:放不下 300,默认 128
 
-  eq(pick(152), 152, "★ 152×152 的源图输出还是 152(不许放大成 240)");
-  eq(pick(100), 100, "比 240 小的源图按原尺寸");
-  eq(pick(480), 240, "480 的源图缩到 240(省分区;要满屏自己点 480)");
-  eq(pick(800), 240, "大图缩到 240");
-  eq(pick(10), 8, "极小的图向下对齐到 4 的倍数,不会反而放大");
-  eq(pick(0), 240, "拿不到原图宽度时按保守值");
+  eq(pick(152, 3), 152, "★ 152×152 的表情源图输出还是 152(不许放大)");
+  eq(pick(100, 3), 100, "比上限小的源图按原尺寸");
+  eq(pick(480, 3), IB.FACE_SIZE_RECOMMENDED,
+     "480 的表情源图缩到推荐值(不是缩小到 240 —— 那是旧策略)");
+  eq(pick(800, 3), IB.FACE_SIZE_RECOMMENDED, "大图缩到推荐值");
+  eq(pick(10, 3), 8, "极小的图向下对齐到 4 的倍数,不会反而放大");
+  eq(pick(0, 3), IB.FACE_SIZE_RECOMMENDED, "拿不到原图宽度时按推荐值");
+  eq(pick(480, 1), 480, "★ 背景可以到 480(它不需要躲开弧)");
+  eq(pick(800, 1), 480, "背景大图缩到 480");
+  eq(pickClassic(480, 3), 128,
+     "经典板(1MB)放不下 10 张 300,表情默认 128(一整套 + 背景 ≈ 0.93MB)");
+  eq(pickClassic(480, 1), 480, "经典板的背景同样可以到 480");
 
-  // ★ 不变式:对任何尺寸都"只缩不放"(下限 8 那次除外)
+  // ★ 不变式一:对任何尺寸都"只缩不放"(下限 8 那次除外)
   let grew = [];
   for (let n = 8; n <= 900; n++) {
-    if (pick(n) > n) grew.push(n + "→" + pick(n));
+    if (pick(n, 3) > n) grew.push(n + "→" + pick(n, 3));
+    if (pick(n, 1) > n) grew.push("bg:" + n + "→" + pick(n, 1));
   }
   eq(grew.length, 0, "8..900 里没有任何尺寸被放大" + (grew.length ? ": " + grew.slice(0, 5) : ""));
 
-  // ★ 用户那次的实际账:8 张 152 的表情必须装得下
-  const eight152 = IB.HEADER_SIZE + 8 * (152 * 152 * 3);
-  ok(eight152 <= IB.PARTITION_BYTES,
-     "8 张 152×152 表情 = " + eight152 + " 字节,占分区 " +
-     (100 * eight152 / IB.PARTITION_BYTES).toFixed(1) + "%");
-  // 再加一张满屏 480 背景(用户的目标形态)
-  const withBg = eight152 + (480 * 480 * 2);
-  ok(withBg <= IB.PARTITION_BYTES,
-     "8 张 152 表情 + 一张 480×480 背景 = " + withBg + " 字节,占分区 " +
-     (100 * withBg / IB.PARTITION_BYTES).toFixed(1) + "%");
-  // 而被放大成 240 的版本必须是超的 —— 这正是当时的现象
-  const eight240 = IB.HEADER_SIZE + 8 * (240 * 240 * 3);
-  ok(eight240 > IB.PARTITION_BYTES,
-     "8 张 240×240 表情 = " + eight240 + " 字节,确实超了(用户看到的 132%)");
+  // ★ 不变式二:表情的默认输出**永远不超几何上限**(超了就会盖住副弧)
+  for (let n = 8; n <= 900; n++) {
+    if (pick(n, 3) > IB.FACE_CANVAS_MAX) {
+      ok(false, "表情默认输出 " + pick(n, 3) + " 超过了画布上限 " + IB.FACE_CANVAS_MAX);
+      break;
+    }
+  }
+  ok(true, "表情默认输出永远 ≤ 画布上限 " + IB.FACE_CANVAS_MAX);
 }
+
+  // ★ 用户那次的实际账:经典板(1MB)按新推荐值 128 必须装得下
+  const n = IB.FACE_COUNT_PER_SET;
+  const setClassic = IB.HEADER_SIZE + n * (128 * 128 * 3);
+  const bg480 = 480 * 480 * 2;
+  ok(setClassic + bg480 <= IB.PARTITION_BYTES,
+     n + " 张 128×128 表情 + 一张 480×480 背景 = " + (setClassic + bg480) +
+     " 字节,占 1MB 分区 " + (100 * (setClassic + bg480) / IB.PARTITION_BYTES).toFixed(1) + "%");
+  // 经典板放不下推荐的 300 —— 这正是"要用满 5 档就上 S3"的依据
+  const setClassic300 = IB.HEADER_SIZE + n * (300 * 300 * 3);
+  ok(setClassic300 > IB.PARTITION_BYTES,
+     n + " 张 300×300 表情 = " + setClassic300 + " 字节,经典板 1MB 确实放不下");
+  // ★ S3(8MB)上推荐的 300×300 一整套 + 480 背景必须放得下(3.0MB 左右)
+  const setS3 = IB.HEADER_SIZE + n * (IB.FACE_SIZE_RECOMMENDED * IB.FACE_SIZE_RECOMMENDED * 3) + bg480;
+  ok(setS3 <= IB.partitionBytesFor("s3"),
+     "S3:" + n + " 张 " + IB.FACE_SIZE_RECOMMENDED + "×" + IB.FACE_SIZE_RECOMMENDED +
+     " + 480 背景 = " + setS3 + " 字节,占 8MB 分区 " +
+     (100 * setS3 / IB.partitionBytesFor("s3")).toFixed(1) + "%");
 
 // ------------------------------------------------------------
 section("RGB565A8(带透明):布局与尺寸契约");

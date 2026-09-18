@@ -117,6 +117,29 @@
     17: "右屏表情·快速路", 18: "右屏表情·高速", 22: "右屏表情·市区"
   };
 
+  // ============================================================
+  // 表情画布的**几何上限**（不是分区上限）—— 2026-09-18 查清
+  //
+  // 表情图是**原尺寸居中**画的：dash_ui.cpp 里只有
+  //     g_face_img[s] = lv_image_create(...);  lv_obj_center(...);
+  // **没有** lv_image_set_scale / set_size —— 所以"图像像素尺寸 = 屏上尺寸"。
+  // 而画面中心有**两圈**弧，都在表情**下面**（图层顺序：背景 → 弧 → 表情）：
+  //     外圈弧   radius 205  width 24  → 弧带 181..205
+  //     内圈副弧 radius 168  width 10  → 弧带 163..173   ← 水温 / 进气温度
+  // （数字见 tools/theme-editor/theme-default.json，与固件的 ArcStyle 同源）
+  // ⇒ 表情的圆不能超过半径 **163**，画布上限 = 2×163 = 326 → 取 **320**
+  //   （向下对齐到 4，留 6px 余量）。再大就会**盖住内圈那两条副弧**，
+  //   而且不会报错 —— 只有把图导进去才看得出来，所以这里当硬闸门用。
+  // 推荐 **300**：半径 150，离 163 还有 13px，是"画质 / 空间"的甜点。
+  var ARC_INNER_MOST_RADIUS = 163;   // = 168 - 10/2（内圈副弧的内沿）
+  var FACE_CANVAS_MAX = 320;         // = floor(2*163 / 4)*4 = 324 → 取 320
+  var FACE_SIZE_RECOMMENDED = 300;
+  // 一整套表情 = 每屏 5 档 × 2 屏
+  var FACE_COUNT_PER_SET = 10;
+
+  function faceCanvasMax() { return FACE_CANVAS_MAX; }
+  function faceSizeRecommended() { return FACE_SIZE_RECOMMENDED; }
+
   function bytesPerPixel(cf) {
     switch (cf) {
       case CF.L8: case CF.I8: case CF.A8: return 1;
@@ -407,6 +430,13 @@
     PARTITION_BYTES: PARTITION_BYTES,
     TARGETS: TARGETS, DEFAULT_TARGET: DEFAULT_TARGET,
     targetInfo: targetInfo, partitionBytesFor: partitionBytesFor,
+    // 表情的几何约束(见上面那段说明):画布上限 320、推荐 300、一套 10 张
+    ARC_INNER_MOST_RADIUS: ARC_INNER_MOST_RADIUS,
+    FACE_CANVAS_MAX: FACE_CANVAS_MAX,
+    FACE_SIZE_RECOMMENDED: FACE_SIZE_RECOMMENDED,
+    FACE_COUNT_PER_SET: FACE_COUNT_PER_SET,
+    faceCanvasMax: faceCanvasMax,
+    faceSizeRecommended: faceSizeRecommended,
     CF: CF, ROLE: ROLE, ROLE_NAMES: ROLE_NAMES,
     bytesPerPixel: bytesPerPixel,
     packedBytesPerPixel: packedBytesPerPixel,

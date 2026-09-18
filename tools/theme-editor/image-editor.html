@@ -323,22 +323,30 @@ const FITS = [
 ];
 
 // 常见尺寸（一键按钮）。**默认值见 pickDefaultSize()**：
-// 默认按"原图多大就输出多大（但不超过 240）"来定，所以导入 152×152 的图
-// 输出就是 152×152 —— 早期版本无论原图多大都输出 240，
-// 结果用户按建议做好了 152 的图、导进来却被**放大**成 240，
-// 8 张直接从 542KB 变成 1350KB、空间报 132% 溢出。
-// ★ 152 是"1MB 分区里放得下完整一套 8 张表情"的尺寸，所以放进预设。
-const SIZE_PRESETS = [152, 192, 240, 320, 480];
+// 默认按"原图多大就输出多大（但不超过上限）"来定，所以导入 152×152 的图
+// 输出就是 152×152 —— 早期版本无论原图多大都输出固定值，
+// 结果用户按建议做好的图、导进来却被**放大**，空间直接从 542KB 变成 1350KB。
+// ★ 预设里那几个数各有来头（2026-09-18 重排）：
+//   128 / 152 —— 经典板(1MB)能放下一整套 10 张的尺寸（128 稳、152 超）
+//   240       —— 旧的"经典板满配"尺寸；S3 上偏小
+//   **300**   —— S3 的推荐值：半径 150 < 内圈副弧内沿 163，留 13px 余量
+//   320       —— 几何上限（= 2×163 向下取整）；再大就盖住副弧
+//   480       —— 只给**背景**用（表情用它会盖住整圈弧）
+const SIZE_PRESETS = [128, 152, 240, 300, 320, 480];
 
-// 新导入的图默认输出多宽：**只缩不放**。
-// 源图比 240 小就按源图（向下取到 4 的倍数，保证不会反而放大），
-// 比 240 大才缩到 240（省分区）—— 480 一张背景就 450KB，
-// 第一次用的人不该一上来就撞墙。
-const DEFAULT_MAX_W = 240;
-function pickDefaultSize(naturalW) {
-  const w = Math.min(DEFAULT_MAX_W, Math.round(naturalW || DEFAULT_MAX_W));
+// 新导入的图默认输出多宽：**只缩不放**，且按角色分开：
+//   背景 → 最多 480（弧带在半径 181..205，底图必须铺满才不出主题底色）
+//   表情 → 最多 FACE_CANVAS_MAX(320)，S3 上默认给推荐的 300；
+//          经典板(1MB)放不下 10 张 300，默认 128
+function pickDefaultSize(naturalW, role) {
+  const isFace = FACE_ROLES.has(role);
+  const cap = isFace
+    ? (curTarget === "s3" ? Math.min(ImageBlob.FACE_SIZE_RECOMMENDED, ImageBlob.FACE_CANVAS_MAX)
+                          : 128)
+    : 480;
+  const w = Math.min(cap, Math.round(naturalW || cap));
   const q = Math.floor(w / 4) * 4;               // 向下对齐到输入框的 step=4
-  return Math.max(8, Math.min(DEFAULT_MAX_W, q));
+  return Math.max(8, Math.min(cap, q));
 }
 
 // 哪些角色要保留透明通道
@@ -1243,10 +1251,34 @@ function refresh(rebuildGrid = true) {
             "。把「目标宽度」改回原图宽度即可。\n"
           : "") +
         (isClassic
-          ? "表情建议 152×152（8 张 = 542KB，再加一张 480×480 背景 450KB 正好 1MB）；"
-          : "这块板的 image 有 8MB：240×240 一整套表情 + 480×480 背景都放得下，"
-            + "先把「目标宽度」按屏幕分辨率给足。") +
+          ? "经典板 1MB 放不下 10 张 300：表情用 128（一整套 + 一张 480 背景 ≈ 0.93MB）；"
+          : "这块板的 image 有 8MB：表情建议 " + ImageBlob.FACE_SIZE_RECOMMENDED +
+            "×" + ImageBlob.FACE_SIZE_RECOMMENDED + "（10 张 + 一张 480 背景 ≈ 3.0MB）。") +
         "背景如果不需要铺满整屏，可以只放弧带以内（半径 205 的圆 ≈ 410×410）。", "err");
+  }
+
+  // ★ **几何闸门**（与上面的分区闸门是两回事，2026-09-18 加）：
+  //   分区够大 ≠ 画得下。表情图是原尺寸居中画的（没有缩放），而屏心有两圈弧
+  //   压在它下面：外圈 181..205、内圈副弧（水温/进气）163..173。
+  //   所以表情的圆一旦超过半径 163（画布 326）就会**盖住内圈那两条副弧** ——
+  //   而且不报错，只有把图导进去才看得出来。这里提前说。
+  const tooBig = items.filter(i => FACE_ROLES.has(i.role) &&
+                                   (i.w > ImageBlob.FACE_CANVAS_MAX ||
+                                    i.h > ImageBlob.FACE_CANVAS_MAX));
+  if (tooBig.length) {
+    const names = tooBig.slice(0, 3)
+      .map(i => i.name + " " + i.w + "×" + i.h).join("、");
+    say("⚠ 有 " + tooBig.length + " 张表情超过了画布上限 " +
+        ImageBlob.FACE_CANVAS_MAX + "×" + ImageBlob.FACE_CANVAS_MAX + "：" + names +
+        "。\n" +
+        "表情是**原尺寸居中**画的（固件没有缩放），而这个尺寸的圆会盖住画面中心的" +
+        "两圈弧（外圈 181..205、内圈副弧 163..173）—— 表盘会缺一块。\n" +
+        "把它们的「目标宽度」改到 " + ImageBlob.FACE_CANVAS_MAX + " 以内" +
+        "（推荐 " + ImageBlob.FACE_SIZE_RECOMMENDED + "）即可。" +
+        (curTarget === "s3"
+          ? "S3 上 " + ImageBlob.FACE_SIZE_RECOMMENDED + "×" +
+            ImageBlob.FACE_SIZE_RECOMMENDED + " 一整套 10 张 + 480 背景 ≈ 3.0MB，空间够。"
+          : ""), "err");
   }
 }
 
@@ -1369,18 +1401,19 @@ function addFiles(files) {
     const url = URL.createObjectURL(f);
     const img = new Image();
     img.onload = () => {
-      // ★ 默认输出尺寸 = **原图尺寸，但不超过 240**（见 pickDefaultSize）。
-      //   早先无论原图多大都输出 240，于是"按建议做好 152×152 的图"
-      //   导进来会被放成 240×240：8 张从 542KB 变成 1350KB，直接报 132% 溢出，
-      //   而且用户看不出是被放大了（缩略图一样大）。
-      const target = pickDefaultSize(img.naturalWidth);
+      // ★ 默认输出尺寸 = **原图尺寸，但不超过该角色的上限**（见 pickDefaultSize）。
+      //   早先无论原图多大都输出固定值，于是"按建议做好的图"导进来会被放大，
+      //   空间直接翻倍，而且用户看不出是被放大了（缩略图一样大）。
+      //   角色也要传进去：背景可以 480，表情上限是几何决定的 320。
+      const role = defaultRoleForNewItem();
+      const target = pickDefaultSize(img.naturalWidth, role);
       const sh = img.naturalHeight, sw = img.naturalWidth;
       const upscaled = target > (sw || target);
       items.push({
         id: nextId++,
         img,
         name: f.name.replace(/\.[^.]+$/, ""),
-        role: defaultRoleForNewItem(),
+        role,
         order: 0,
         fit: "contain",
         w: target,
@@ -1389,9 +1422,17 @@ function addFiles(files) {
       URL.revokeObjectURL(url);
       if (--pending === 0) {
         refresh();
-        say("已添加 " + list.length + " 张，输出尺寸按原图（不超过 " + DEFAULT_MAX_W +
-            " 宽）。要全屏背景就点 480，但注意一张 480×480 要 450KB；" +
-            "表情建议 152×152 —— 8 张 + 一张 480 背景正好装进 1MB。" +
+        say("已添加 " + list.length + " 张，输出尺寸按原图（表情不超过 " +
+            ImageBlob.FACE_CANVAS_MAX + "、背景不超过 480）。\n" +
+            "表情建议 " + ImageBlob.FACE_SIZE_RECOMMENDED + "×" +
+            ImageBlob.FACE_SIZE_RECOMMENDED + "（半径 " +
+            (ImageBlob.FACE_SIZE_RECOMMENDED / 2) + " < 内圈副弧内沿 " +
+            ImageBlob.ARC_INNER_MOST_RADIUS + "，不会盖住弧）；" +
+            "背景要 480 才够到弧带（一张 450KB）。" +
+            (curTarget === "s3"
+              ? "S3 的 image 分区 8MB：10 张 " + ImageBlob.FACE_SIZE_RECOMMENDED +
+                " + 一张 480 背景 ≈ 3.0MB。"
+              : "经典板 1MB 放不下 10 张 300，表情请用 128（一整套 + 背景 ≈ 0.93MB）。") +
             (upscaled ? "（有图被放大了，见每张的「原图/输出」）" : ""));
       }
     };
