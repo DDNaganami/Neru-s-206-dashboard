@@ -161,6 +161,13 @@ void dash_display_poll() {
   ++frame_no;
 }
 
+#elif defined(DASH_DISPLAY_SPI)
+
+// ============ 实驱动:SPI 屏(实现见 dash_display_spi.cpp) ============
+// 两块屏共享 SCK/MOSI、各自 CS/DC/RST/BL ≈ 10 根,不需要转接板。
+// ★ 这一版框架**没有**现成的 st7789/ili9341 驱动(esp_lcd/include 下只有
+//   commands/io/ops/rgb/vendor),所以那边是"自己发命令 + 送像素"的通用实现,
+//   init 序列表要从卖家例程抄。编译开关见 [env:esp32s3-spi]。
 #elif defined(DASH_DISPLAY_RGB)
 
 // ============ 实驱动:RGB 并口屏(实现见 dash_display_rgb.cpp) ============
