@@ -417,6 +417,56 @@ LVGL 就无法把样式对象折叠进 rodata（可写全局会阻止 const 折�
   `offsetof`/`sizeof` 断言、JS 侧用字节断言，把同一张表各钉一遍，
   往返测试再逐字节对账。
 
+## 板子开箱刷写（S3 原生 USB）踩过的三个坑
+
+第一次刷板，`Upload SUCCESS` 之后串口监视器**一片空白**。三个原因各管一段，
+症状一模一样，所以必须一起记住（前两条已修，第三条仍待验证）：
+
+1. **`Serial` 绑到了 TinyUSB 的 `USBCDC`，写进去石沉大海。**
+   `cores/esp32` 里的映射与直觉相反：
+   ```
+   HWCDC.h :  #if ARDUINO_USB_MODE         → extern HWCDC Serial;   ← 要的是这条
+   USBCDC.h:  #if CDC_ON_BOOT && !USB_MODE → extern USBCDC Serial;
+   ```
+   也就是 **`ARDUINO_USB_MODE` 必须为 1**（板子定义 `esp32-s3-devkitc-1.json`
+   本来就写着）。我先前"顺手"覆盖成 0，`Serial` 就成了 TinyUSB —— 它在这块
+   板子上没接管 USB 外设，于是所有 printf 都没了，**而芯片其实跑得好好的**。
+   *教训：别再读代码猜宏，直接让编译器回答* —— 用
+   `static_assert(std::is_same<decltype(Serial), HWCDC>::value)` 这种探针，
+   两个取值各编一次，答案立刻明确（本次就是这么定的案）。
+   现在 `platformio.ini` 里**只留** `-DARDUINO_USB_CDC_ON_BOOT=1`，
+   那两行 `-UARDUINO_USB_MODE` / `-DARDUINO_USB_MODE=0` **不要再加回来**。
+
+2. **监视器把芯片按在复位态。** USB-Serial-JTAG 把 `RTS→EN`、`DTR→GPIO0`
+   （esptool 就是靠这个复位，见 `tool-esptoolpy/esptool/reset.py` 的
+   `USBJTAGSerialReset`，最后一步注释写着 `Chip out of reset`）。
+   而 pyserial **打开串口时默认把 RTS/DTR 都置位** → EN 一直低 → 屏幕空白。
+   `platformio.ini` 的 S3 段加 `monitor_rts = 0` / `monitor_dtr = 0` 解决。
+   （经典 ESP32 那边**故意不设**：USB 桥的 DTR/RTS 是自动复位线，
+   监视器打开时复位一次正好能看到完整启动日志。）
+
+3. **上电后立刻打印的内容会丢**，因为 USB-CDC 在没有主机时没有缓冲。
+   第一版写成"等主机连上再补打"，结果更糟：`HWCDC` 的 `connected` 标志
+   **要靠数据流动才置位**（`HWCDC.cpp` 的 `SERIAL_IN_EMPTY` 中断里才置 true，
+   端口一打开反而被 `BUS_RESET` 清成 false）→ "不打就不连接、不连接就不打"
+   **死锁**。现在改成上电后头 20 秒**每秒无条件补打**自检、之后的 5 秒状态行
+   也无条件打印：监视器随时接上，最多 1 秒就能看到那几个数。
+   **永远不要**把串口打印挂在 `(bool)Serial` 这种判断上。
+
+**仍未解决（下一步要人按一下板子）**：上传完成后芯片**仍停在 ROM 下载模式**，
+从未运行过 app。证据是上传成功后立刻 `esptool --before no_reset read_mac`
+竟然能直接同步（`Stub running`）—— 只有还在下载模式才可能。已经排除的：
+
+| 猜想 | 怎么排除的 |
+|---|---|
+| 固件崩溃重启 | `coredump` 分区全 `0xFF`，没有任何转储 |
+| 分区表越界 / 写错 | 读回 flash 逐项核对与 `partitions-s3.csv` 完全一致；末地址 `0xA6400` ≤ bootloader 头声明的 16MB（`spi_size_code=4`） |
+| app 头损坏 | `0x10000` 处 magic = `0xE9` |
+| 端口选错 / 重新枚举 | `303A:1001` 只有一个且稳定在场 |
+
+esptool 的两种复位（`--after hard_reset` / USB-Serial-JTAG 序列）都不让它离开
+下载模式，所以下一步是**按板子上的 RST 键（或拔插 USB）**再看监视器。
+
 ## 实车必验清单（van_wire 的未定项，到货后逐条确认）
 
 1. **FCS 约定**：公开描述是"CRC-15、覆盖 IDEN+CMD+DATA、多项式

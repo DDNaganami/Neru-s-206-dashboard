@@ -66,6 +66,10 @@ static VanLogSink g_van_log;
 static uint32_t last_ui_ms = 0;
 static uint32_t last_status_ms = 0;
 
+// 上电后"每秒补打自检"的窗口长度(见 loop 里的说明:USB-CDC 的
+// connected 标志要靠数据流动才置位,所以不得不主动打)。
+static const uint32_t kBringupMs = 20000;
+
 // 串口离线回放 VAN 帧:一行 "VAN 824 18F82710000000" 喂一帧(见 van_replay.h),
 // 实车接收发器前先用抓到的帧联调,不用先焊板。
 static void van_replay_poll(uint32_t now) {
@@ -190,16 +194,22 @@ void loop() {
     dash_ui_render(make_view(st, now), now);
   }
 
-  // ★ USB 主机是**开机之后**才连上的情况(实测:刷完立刻开监视器,一片空白)。
-  //   设备端 USB-CDC 在没主机时没有缓冲,开机那几行就是丢了。所以主机第一次
-  //   连上的那一刻补打一次自检 —— 之后任何时候打开监视器都看得到那几个数。
-  //   只在 HWCDC 模式下有意义(UART0 没有"连上"这个状态,见 platformio.ini)。
-#if defined(DASH_DEVICE_SELFTEST) && defined(ARDUINO_USB_MODE) && (ARDUINO_USB_MODE == 0)
+  // ★ 上电后的"补打窗口":头 20 秒每秒打一次自检。
+  //
+  // 为什么不是"等主机连上再打"(第一版就是这么写的,结果更糟):
+  //   HWCDC 的 connected 标志**要靠数据流动才能置位** —— 看 cores/esp32/HWCDC.cpp:
+  //   SERIAL_IN_EMPTY 中断(host 把发出去的数据收走了)里才 connected = true;
+  //   而端口一打开(BUS_RESET)反而会把它清成 false。
+  //   所以"没连接就不打印"会变成死锁:不打 → 没人收 → 永远不 connected → 永远不打。
+  //   实测现象就是监视器一片空白,看起来跟固件没跑一样。
+  //   改成无条件重打:只要监视器接上,最多 1 秒就能看到这几行。
+  //   车上是没有 USB 主机的,那时这些字进环形缓冲后被丢掉 —— 代价可忽略。
+#if defined(DASH_DEVICE_SELFTEST)
   {
-    static bool host_seen = false;
-    if (!host_seen && (bool)Serial) {   // HWCDC::operator bool() = 主机已连上
-      host_seen = true;
-      print_selftest("USB 已连上");
+    static uint32_t last_bringup_ms = 0;
+    if (now < kBringupMs && (uint32_t)(now - last_bringup_ms) >= 1000) {
+      last_bringup_ms = now;
+      print_selftest("上电后 1Hz 补打,监视器随时接上都能看到");
     }
   }
 #endif
@@ -207,23 +217,15 @@ void loop() {
   // 每 5 秒打印各字段当前由哪个源供给 + 当前数值(调试用)。
   // 数值是必须的:桩驱动丢弃画面,开机动画/换屏之前只能靠串口确认
   // 假数据弧确实在扫量程(见 ACCEPTANCE.md 的"假数据扫表"一条)。
-  // ★ 只在真有主机连着时打印:车上是没有 USB 主机的,那时候这行纯属白干
-  //   (格式化 + 写一个没人收的口)。
+  // ★ 无条件打印(别加"主机连上才打"的判断 —— 那会把 connected 卡死,见上)。
   if (now - last_status_ms >= 5000) {
     last_status_ms = now;
-#if defined(DASH_DEVICE_SELFTEST) && defined(ARDUINO_USB_MODE) && (ARDUINO_USB_MODE == 0)
-    const bool host_ready = (bool)Serial;   // HWCDC:主机没连上就是 false
-#else
-    const bool host_ready = true;           // UART0 没有"连上"这个状态
-#endif
-    if (host_ready) {
-      const DataSourceStatus& s = g_data.status();
-      Serial.printf("SRC speed=%s rpm=%s coolant=%s intake=%s | v=%.1fkm/h %.0frpm %.1fC %.1fC\n",
-                    fieldSourceName(s.speed),
-                    fieldSourceName(s.rpm),
-                    fieldSourceName(s.coolant),
-                    fieldSourceName(s.intake),
-                    st.speed_kmh, st.rpm, st.coolant_c, st.intake_c);
-    }
+    const DataSourceStatus& s = g_data.status();
+    Serial.printf("SRC speed=%s rpm=%s coolant=%s intake=%s | v=%.1fkm/h %.0frpm %.1fC %.1fC\n",
+                  fieldSourceName(s.speed),
+                  fieldSourceName(s.rpm),
+                  fieldSourceName(s.coolant),
+                  fieldSourceName(s.intake),
+                  st.speed_kmh, st.rpm, st.coolant_c, st.intake_c);
   }
 }
