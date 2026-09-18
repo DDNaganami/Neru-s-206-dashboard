@@ -34,8 +34,50 @@
   var ENTRY_SIZE = 44;
   var HEADER_SIZE = 12 + MAX_COUNT * ENTRY_SIZE;   // = 1420
 
-  // 分区大小,与 partitions.csv 的 image 分区一致(0x100000 = 1MB)
-  var PARTITION_BYTES = 1024 * 1024;
+  // 分区大小。★ 有两块板,**image 分区不一样大**(4MB 板 1MB / S3 16MB 板 8MB),
+  //   所以这里只留"经典板"这个名字给老代码用;要按目标板取大小请用
+  //   TARGETS + partitionBytesFor(id)。见下面那段说明。
+  var PARTITION_BYTES = 1024 * 1024;   // = TARGETS.classic.partitionBytes
+
+  // ============================================================
+  // 目标板(2026-09-18 加)
+  //
+  // 为什么要有这个东西:固件那边 [env:esp32s3] 已经把 IMAGE_PARTITION_BYTES
+  // 放宽到 8MB(partitions-s3.csv 的 image 分区),而编辑器这边还写死 1MB ——
+  // 于是**多出来的 7MB 从网页导出进不去**:图做大了就在浏览器里被拦下,
+  // 提示还写着"超过 image 分区(1024 KB)",让人以为设备装不下。
+  //
+  // ★ 两份分区表的 theme/image **偏移刻意相同**(0x210000 / 0x254000),
+  //   所以 esptool 命令一个字都不用改 —— 只有"能放多大"这一条不同。
+  //   这也正是当初把偏移对齐的目的(见 partitions-s3.csv 的文件头注释)。
+  // ★ 这些数字必须与分区表一致:test-image-blob-build.js 会**直接读两份 csv**
+  //   对账,改了一边忘了另一边会被测试抓住。
+  // ============================================================
+  var TARGETS = {
+    classic: {
+      id: "classic",
+      label: "经典 ESP32(4MB flash)",
+      partitionBytes: 1024 * 1024,
+      partitionsCsv: "partitions.csv",
+      // 面板大于这个就别指望装了(给 UI 提示用,不作为硬闸门)
+      hint: "image 分区 1MB:192×192 能放下一整套表情,240×240 放不下全部"
+    },
+    s3: {
+      id: "s3",
+      label: "ESP32-S3 N16R8(16MB flash)",
+      partitionBytes: 8 * 1024 * 1024,
+      partitionsCsv: "partitions-s3.csv",
+      hint: "image 分区 8MB:240×240 一整套表情 + 480×480 背景都放得下"
+    }
+  };
+  var DEFAULT_TARGET = "classic";
+
+  function targetInfo(id) {
+    var t = TARGETS[id || DEFAULT_TARGET];
+    if (!t) throw new Error("未知的目标板:" + id);
+    return t;
+  }
+  function partitionBytesFor(id) { return targetInfo(id).partitionBytes; }
 
   // LVGL 颜色格式(与 lv_color.h 的枚举值一致)
   var CF = {
@@ -323,9 +365,15 @@
   // ------------------------------------------------------------
   // esptool 刷写命令行(直接复制到终端就能用)
   // 波特率给 921600:1MB 用 115200 要一分半,太慢
+  //
+  // ★ --chip 必须跟着**目标板**走(2026-09-18):两块板的芯片不一样,
+  //   拿 "--chip esp32" 去刷 S3 会被 esptool 当场拒掉
+  //   ("Chip is ESP32-S3 ... but --chip esp32 was specified")。
+  //   分区偏移两块板相同(0x254000),所以只有这一个是变量。
   // ------------------------------------------------------------
-  function esptoolCommand(port, binPath) {
-    return "python -m esptool --chip esp32 --port " + (port || "COM3") +
+  function esptoolCommand(port, binPath, targetId) {
+    var chip = (targetId === "s3") ? "esp32s3" : "esp32";
+    return "python -m esptool --chip " + chip + " --port " + (port || "COM3") +
            " --baud 921600 write_flash 0x254000 " + (binPath || "image.bin");
   }
 
@@ -357,6 +405,8 @@
     MAGIC: MAGIC, VERSION: VERSION, NAME_MAX: NAME_MAX, MAX_COUNT: MAX_COUNT,
     ENTRY_SIZE: ENTRY_SIZE, HEADER_SIZE: HEADER_SIZE,
     PARTITION_BYTES: PARTITION_BYTES,
+    TARGETS: TARGETS, DEFAULT_TARGET: DEFAULT_TARGET,
+    targetInfo: targetInfo, partitionBytesFor: partitionBytesFor,
     CF: CF, ROLE: ROLE, ROLE_NAMES: ROLE_NAMES,
     bytesPerPixel: bytesPerPixel,
     packedBytesPerPixel: packedBytesPerPixel,

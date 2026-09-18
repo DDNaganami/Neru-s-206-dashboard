@@ -55,17 +55,22 @@ void VanPhyGpio::begin() {
 void VanPhyGpio::tick(uint32_t now_ms) {
   // 1) 排空队列 → 解码器。一批一批地做,别把主循环卡在这里:
   //    一帧几百个边沿,而每个边沿的解码只有几十微秒,所以整帧也就几毫秒。
+  //    budget = 一整圈:吃到这么多说明队列已经满了(dropped 在涨),
+  //    这时剩下的边沿下一 tick 接着喂 —— 下面的关帧判据会等它。
   VanEdgeQueue::Edge e;
-  uint16_t budget = VanEdgeQueue::kCapacity;   // 一次 tick 最多处理一整圈
+  uint16_t budget = VanEdgeQueue::kCapacity;
   while (budget-- && q_.pop(&e)) {
     last_edge_us_ = e.t_us;
     wire_.onEdge(e.t_us, e.level != 0);
   }
 
-  // 2) 总线空闲 → 关帧。★ 用 micros() 而不是 tick 的 now_ms:
-  //    边沿时间戳是微秒域,两者混用会差出三个数量级。
+  // 2) 总线空闲 → 关帧。★ 判据在 van_edge_queue.h 的 vanIdleCloseReady():
+  //    **队列非空就不关** —— 否则会把还压在队列里的同帧后续边沿截掉
+  //    (表现是 edges 在涨、frames/fcs_ok 不涨)。
+  //    用 micros() 而不是 tick 的 now_ms:边沿时间戳是微秒域,两者混用会差三个数量级。
   const uint32_t now_us = (uint32_t)esp_timer_get_time();
-  if (wire_.framePending() && (uint32_t)(now_us - last_edge_us_) > kIdleCloseUs) {
+  if (vanIdleCloseReady(wire_.framePending(), q_.empty(), now_us, last_edge_us_,
+                        kIdleCloseUs)) {
     if (wire_.finish()) ++frames_emitted_;   // finish() 内部会回调 sink 报包
   }
 

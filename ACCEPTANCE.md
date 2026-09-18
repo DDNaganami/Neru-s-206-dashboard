@@ -646,6 +646,53 @@ BEACON  1  step=6(loop: 刚开始一轮)  uptime=1s heap=259KB psram=8189KB flas
 SRC speed=sim rpm=sim coolant=sim intake=sim | v=176.6km/h 5963rpm 87.0C 28.3C
 ```
 
+- [x] **外部审核（Grok，审到 b1d920a）提的实质问题：帧可能被提前关掉**（2026-09-18 修）
+      审核指到 `van_phy_gpio.cpp`：关帧用的是"距最后一条**已喂给解码器**的边沿多久"，
+      而队列里可能还压着同一帧的后续边沿 → `finish()` 会把帧当场截断，
+      表现是 **`edges` 在涨、`frames`/`fcs_ok` 不涨**。
+      核实：**方向对，触发条件比描述的更窄**（排空是"先全排空、再判空闲"，
+      普通卡顿时最后弹出的边沿总是刚弹的，微秒级前）——
+      真会踩到的是**排空预算吃满**那条路（`budget = kCapacity` → 2048 个边沿
+      ≈ 16ms 总线活动），此时最后弹出的边沿可能已老出几百微秒而队列里还有新的。
+      代价却是单向的：多等一个 tick（几毫秒）换一整帧数据，所以照改。
+      改法：判据抽成**宿主机可测**的纯函数 `vanIdleCloseReady()`
+      （`frame_pending && queue_empty && 空闲超阈值`），`van_phy_gpio.cpp` 调它，
+      ISR 继续只入队。新增两条用例：判据的四条边界 + **把截断场景整个复现**
+      （同一帧分两次喂，中间用判据问"能关吗"，必须答不能，最后才关成功）。
+      *（生成设备专属代码没法在宿主机测，所以"抽纯函数"这一步不是洁癖，
+      是唯一能在 CI 里钉住它的办法。）*
+- [x] **外部审核提的口径问题：编辑器还按 1MB 卡**（2026-09-18 修）
+      固件 `[env:esp32s3]` 早已放宽到 8MB，而 `image-blob-build.js` 写死
+      `1024*1024` —— **S3 上多出来的 7MB 从网页根本导出不进去**，
+      提示还写着"超过 image 分区(1024 KB)"，把人往"把图改小"的方向误导。
+      改法（照审核的意见"要目标板开关，别只改 C 宏"）：
+      · `image-blob-build.js` 加 `TARGETS`（classic 1MB / s3 8MB）、
+        `targetInfo()`、`partitionBytesFor()`；老名字 `PARTITION_BYTES` 保留为
+        经典板的值（不破坏已有调用）。
+      · 图片编辑器「占用」栏加**目标板下拉**，页面里所有分区数字都改问 `partBytes()`
+        （原来 4 处各自读常量）。
+      · 命令行加 `--target classic|s3`，usage 里列出两块板。
+      · ★ 顺带修掉两个连带 bug：**刷写命令的 `--chip` 要跟着目标板**
+        （拿 `--chip esp32` 刷 S3 会被 esptool 当场拒掉）；
+        **spec.json 的 UTF-8 BOM**（记事本/PowerShell 存出来就带 BOM，
+        `JSON.parse` 报 `Unexpected token ''`，完全看不出是 BOM）。
+      · 测试：`test-image-blob-build.js` **直接读两份 csv** 对账
+        （`TARGETS` 的大小必须等于分区表里 image 行），另外钉住
+        `--chip` 两块板各是什么、未知目标板要报错。
+      **端到端验证**：造一个 1.2MB 的包（8 张 280×280）——
+      默认目标下 119.8% 被拒（exit 3，并提示可切 S3），`--target s3` 下
+      15.0% 正常产出（exit 0，刷写命令为 `--chip esp32s3`，偏移仍是 0x254000）。
+- [x] **审核提的五处口径/注释过期**（2026-09-18 逐条核实后改）
+      · `obd_source.h` 头一段还写"轮流请求 010C/0105/010F"（降频后不是这样了）；
+      · `obd_source.cpp` 位图超时注释"按默认三路"（现在是"快路只有转速"）；
+      · `ARCHITECTURE.md` 阶段表"10 条用例"（实际 14）、
+        `tools/theme-editor/README.md` "9 条阶段用例"（同上）；
+      · `main.cpp` 的 `van phy` 注释"当前为桩"（`-DVAN_PHY_GPIO=1` 时就是真收帧）；
+      · `data_service.h` 优先级行把水温/进气也写成 `Obd > Van > Sim` ——
+        这两项 VAN 帧里根本没有，只有 `Obd > Sim`。
+      另外把编辑器 README 的「1MB 能放什么」一节改成**按目标板**讲
+      （经典板 1MB / S3 板 8MB），并写清两份分区表偏移相同、只有大小不同。
+
 ## 实车必验清单（van_wire 的未定项，到货后逐条确认）
 
 1. **FCS 约定**：公开描述是"CRC-15、覆盖 IDEN+CMD+DATA、多项式

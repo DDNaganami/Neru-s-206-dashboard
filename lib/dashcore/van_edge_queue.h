@@ -74,3 +74,31 @@ private:
   volatile uint32_t dropped_ = 0;
   Edge buf_[kCapacity] = {};
 };
+
+// ============================================================
+// "这一帧可以关了吗" —— **唯一**的关帧判据
+//
+// 为什么单独抽成一个纯函数:它错一次的表现是"edges 在涨、frames 不涨"
+// (帧被截断,FCS 永远不过),这是实车调线时最难查的一类;抽出来才能在宿主机
+// 上把边界钉死(见 test_van_phywire.cpp 的这几条用例)。
+//
+// ★ 队列非空时**不许**关帧(2026-09-18 审核指出):
+//   关帧用的是"距最后一条**已喂给解码器**的边沿有多久",而队列里可能还压着
+//   同一帧的后续边沿。此时 finish() 会把这一帧当场截断。
+//   什么时候真会踩到:主循环被 LVGL 拖住,排空又正好吃满预算
+//   (van_phy_gpio.cpp 的 budget = kCapacity → 2048 个边沿 ≈ 16ms 总线活动),
+//   于是"最后弹出的边沿"可能已经老出几百微秒,而队列里还有新的。
+//   窗口很窄,但代价是单向的:多等一个 tick(几毫秒)换一整帧数据,该等。
+//
+// 为什么消费者可以放心读 empty():head_ 只由 ISR 写、tail_ 只由主循环写,
+// 这里读到的 head_ 要么是旧的(队列看起来更空 → 更保守)、
+// 要么是新的(队列非空 → 不关),两种都不会误判成"可以关"。
+// ISR 那边**继续只入队**,不要在中断里 finish()。
+// ============================================================
+inline bool vanIdleCloseReady(bool frame_pending, bool queue_empty,
+                              uint32_t now_us, uint32_t last_edge_us,
+                              uint32_t idle_close_us) {
+  if (!frame_pending) return false;      // 没有半截帧,没什么可关的
+  if (!queue_empty) return false;        // ★ 还有边沿没喂:一帧还没走完
+  return (uint32_t)(now_us - last_edge_us) > idle_close_us;
+}

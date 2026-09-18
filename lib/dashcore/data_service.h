@@ -37,7 +37,9 @@ struct DataSourceStatus {
 };
 
 // 多源数据合并服务。
-// 优先级:车速 Van > Obd > Sim;转速/水温/进气温度 Obd > Van > Sim;油量/挡位 Sim。
+// 优先级:车速 Van > Obd > Sim;转速 Obd > Van > Sim;
+//         **水温/进气温度只有 Obd > Sim**(这两项 VAN 帧里没有,没有第二来源);
+//         油量/挡位 Sim。
 // 高优先级源超过 3 秒无新数据自动回退下一源(行车中拔线/OBD 断连不黑屏)。
 //
 // ★ 车速为什么是 Van 优先(而不是 Obd 优先):

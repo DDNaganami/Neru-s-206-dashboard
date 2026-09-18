@@ -287,6 +287,12 @@ section("刷写命令与 C 头文件");
   //   症状是"刷进去了但设备说没有图片资源"(刷到了别的地方)。
   ok(cmd.includes("0x254000"), "刷写偏移必须是 image 分区起始 0x254000");
   ok(cmd.includes("COM7"), "端口要带上");
+  // ★ --chip 必须跟着目标板:拿 --chip esp32 去刷 S3 会被 esptool 当场拒掉
+  ok(cmd.includes("--chip esp32 "), "经典板用 --chip esp32");
+  const cmdS3 = IB.esptoolCommand("COM7", "image.bin", "s3");
+  ok(cmdS3.includes("--chip esp32s3 "), "S3 板必须用 --chip esp32s3");
+  ok(cmdS3.includes("0x254000"),
+     "两块板的刷写偏移相同(S3 也走 0x254000,所以只有 chip 是变量)");
   const res = IB.build([{ name: "a", w: 2, h: 2, pixels: new Uint8Array(8) }]);
   const h = IB.toCHeader(res.blob);
   ok(h.includes("const uint8_t g_image_blob[1428]"), "C 数组长度要对(1420 头 + 8 像素)");
@@ -334,6 +340,27 @@ section("分区表必须是纯 ASCII(否则 PlatformIO 在中文 Windows 上直�
     return out;
   };
   const a = parse("partitions.csv"), b = parse("partitions-s3.csv");
+  // ★ TARGETS 里那两块板的 image 分区大小必须**等于分区表里写的**
+  //   (2026-09-18 审核指出:固件放宽到 8MB 了,编辑器还按 1MB 拦,
+  //    S3 上多出来的 7MB 从网页根本导出不进去)。
+  //   直接读 csv 对账,而不是再抄一遍数字 —— 抄的那份迟早会和分区表分叉。
+  const expected = { classic: a.image.size, s3: b.image.size };
+  for (const id of Object.keys(IB.TARGETS)) {
+    const t = IB.TARGETS[id];
+    ok(!!expected[id], id + " 在分区表里有 image 行");
+    if (expected[id]) {
+      eq("0x" + t.partitionBytes.toString(16), expected[id],
+         id + " 的 image 分区大小必须与 " + t.partitionsCsv + " 一致");
+    }
+    eq(IB.partitionBytesFor(id), t.partitionBytes, "partitionBytesFor(" + id + ") 要对上");
+  }
+  eq(IB.partitionBytesFor(), IB.TARGETS[IB.DEFAULT_TARGET].partitionBytes,
+     "不传参数时用默认目标板");
+  eq(IB.PARTITION_BYTES, IB.TARGETS.classic.partitionBytes,
+     "PARTITION_BYTES(老代码用的那个名字)必须还是经典板的值");
+  ok(IB.TARGETS.s3.partitionBytes > IB.TARGETS.classic.partitionBytes,
+     "S3 的 image 分区必须比经典板大(不然加这个开关没意义)");
+  throws(() => IB.partitionBytesFor("esp32c3"), "未知目标板要报错,不能悄悄按默认算");
   const need = ["theme", "image", "spiffs", "nvs", "otadata"];
   for (const k of need) {
     ok(!!a[k] && !!b[k], "两份分区表都有 " + k);

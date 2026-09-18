@@ -374,9 +374,81 @@ static void test_edge_queue_delivers_same_frame(void) {
   TEST_ASSERT_EQUAL_INT(1, sink.count);
 }
 
-// 队列满了必须**丢新的并计数**,而不是覆盖未读数据或死循环
-static void test_edge_queue_overflow_counts_and_keeps_order(void) {
+// ============================================================
+// 关帧判据(van_edge_queue.h 的 vanIdleCloseReady)
+//
+// 为什么值得单独测:判据错一次的表现是"edges 在涨、frames/fcs_ok 不涨"
+// (帧被截断),实车调线时最难查。2026-09-18 审核指出的就是这个:
+// 只看"距最后一条已喂边沿多久"就关帧,**没看队列里还有没有边沿**。
+// ============================================================
+static void test_idle_close_refuses_while_queue_has_edges(void) {
+  const uint32_t idle = 300;
+  // 有半截帧 + 队列非空 + "早就该算空闲了" → ★ 不许关(旧判据这里会关,于是截帧)
+  TEST_ASSERT_FALSE(vanIdleCloseReady(true, /*queue_empty=*/false,
+                                      /*now_us=*/100000, /*last_edge_us=*/99000, idle));
+  // 队列空了、也真的空闲了 → 该关
+  TEST_ASSERT_TRUE(vanIdleCloseReady(true, true, 100000, 99000, idle));
+  // 还没到空闲阈值(差 1µs)→ 不关
+  TEST_ASSERT_FALSE(vanIdleCloseReady(true, true, 100000, 100000 - idle, idle));
+  // 没有半截帧 → 永远不关(finish() 会自己判断有没有东西可收)
+  TEST_ASSERT_FALSE(vanIdleCloseReady(false, true, 100000, 0, idle));
+  // 边界:刚过阈值 1µs → 关
+  TEST_ASSERT_TRUE(vanIdleCloseReady(true, true, 100000, 100000 - idle - 1, idle));
+}
+
+// ★ 端到端:主循环被拖住、"排空预算吃满"的那种节奏下,帧不能被截断。
+//   做法是把同一帧的边沿分两次喂:第一次排空一半(此时最后一条边沿已经"老"了),
+//   在两次之间用判据问"能关吗" —— 必须答"不能";第二次喂完再问,才答"能"。
+static void test_idle_close_does_not_truncate_split_frame(void) {
+  Frame f;
+  f.ident = 0x824; f.cmd = 0xC; f.len = 2;
+  f.data[0] = 0x18; f.data[1] = 0xF8;
+
+  VanPhyWire phy;
+  VanSource src;
+  CaptureSink sink(&src);
   VanEdgeQueue q;
+  q.reset();
+  phy.begin();
+  phy.setSink(&sink);
+
+  uint32_t edge_count = 0;
+  feedFrameVia([&](uint32_t t, bool lv) { q.push(t, (uint8_t)(lv ? 1 : 0)); ++edge_count; },
+               phy, f, 1000);
+  TEST_ASSERT_TRUE(q.size() > 4);
+
+  // 第一半:排空到还剩几个边沿(模拟"预算吃满,剩下的下一 tick 再喂")
+  VanEdgeQueue::Edge e;
+  uint32_t last_edge_us = 0;
+  while (q.size() > 3 && q.pop(&e)) {
+    last_edge_us = e.t_us;
+    phy.onEdge(e.t_us, e.level != 0);
+  }
+  TEST_ASSERT_FALSE(q.empty());
+  // 此刻"距最后一条已喂边沿"已经远超空闲阈值(时间戳是 1000 起的虚拟时间),
+  // 若判据不看队列就会当场关帧 → 这一帧永远收不出来
+  const uint32_t now_us = last_edge_us + 10000;
+  TEST_ASSERT_FALSE_MESSAGE(vanIdleCloseReady(phy.framePending(), q.empty(),
+                                              now_us, last_edge_us, 300),
+                            "队列里还有边沿,不许关帧");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, sink.count, "这时不该有任何帧被收出来");
+
+  // 第二半:喂完(与固件一致:用真实判据决定关不关)
+  while (q.pop(&e)) {
+    last_edge_us = e.t_us;
+    phy.onEdge(e.t_us, e.level != 0);
+  }
+  TEST_ASSERT_TRUE(q.empty());
+  TEST_ASSERT_TRUE(vanIdleCloseReady(phy.framePending(), q.empty(),
+                                     last_edge_us + 400, last_edge_us, 300));
+  TEST_ASSERT_TRUE(phy.finish());
+  TEST_ASSERT_EQUAL_INT(1, sink.count);
+  TEST_ASSERT_TRUE(sink.last.fcs_ok);
+  TEST_ASSERT_EQUAL_HEX16(0x824, sink.last.iden);
+}
+
+// 队列满了必须**丢新的并计数**,而不是覆盖未读数据或死循环
+static void test_edge_queue_overflow_counts_and_keeps_order(void) {  VanEdgeQueue q;
   q.reset();
 
   const uint16_t cap = VanEdgeQueue::kCapacity;
@@ -428,6 +500,8 @@ void register_van_phy_wire_tests(void) {
   RUN_TEST(test_chain_feeds_van_source);
   RUN_TEST(test_frame_to_packet_truncates);
   RUN_TEST(test_edge_queue_delivers_same_frame);
+  RUN_TEST(test_idle_close_refuses_while_queue_has_edges);
+  RUN_TEST(test_idle_close_does_not_truncate_split_frame);
   RUN_TEST(test_edge_queue_overflow_counts_and_keeps_order);
   RUN_TEST(test_edge_queue_reset);
 }

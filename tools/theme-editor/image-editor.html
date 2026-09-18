@@ -190,6 +190,15 @@
 
     <section>
       <h2>占用</h2>
+      <!-- ★ 目标板决定 image 分区多大(经典 4MB 板 1MB / S3 16MB 板 8MB)。
+           2026-09-18 加:以前这里写死 1MB,于是 S3 上多出来的 7MB
+           从网页根本导出不进去(图做大了被浏览器拦下)。
+           分区大小**不在页面上写死**,一律问 ImageBlob.partitionBytesFor()。 -->
+      <div style="margin-bottom:8px">
+        <label for="target-board" style="font-size:12px;color:var(--dim)">目标板</label>
+        <select id="target-board" style="margin-left:6px"></select>
+        <div id="target-hint" class="hint" style="color:var(--dim);font-size:12px;margin-top:4px"></div>
+      </div>
       <div id="budget-text" class="hint" style="color:var(--dim);font-size:12px">还没有图片</div>
       <div class="budget" id="budget-bar"><i></i></div>
     </section>
@@ -1144,11 +1153,36 @@ function byteLen(s) {
   return n;
 }
 
+// ------------------------------------------------------------
+// 目标板:image 分区多大由它决定(见 image-blob-build.js 的 TARGETS)
+// ★ 页面上任何地方都不许再出现 1024*1024 这种数字 —— 一律走 partBytes()
+// ------------------------------------------------------------
+let curTarget = ImageBlob.DEFAULT_TARGET;
+function partBytes() { return ImageBlob.partitionBytesFor(curTarget); }
+
+(function initTargetBoard() {
+  const sel = document.getElementById("target-board");
+  Object.keys(ImageBlob.TARGETS).forEach(id => {
+    const t = ImageBlob.TARGETS[id];
+    const o = document.createElement("option");
+    o.value = id;
+    o.textContent = t.label + "（image " + (t.partitionBytes / 1024 / 1024) + "MB）";
+    sel.appendChild(o);
+  });
+  sel.value = curTarget;
+  document.getElementById("target-hint").textContent = ImageBlob.targetInfo(curTarget).hint;
+  sel.addEventListener("change", () => {
+    curTarget = sel.value;
+    document.getElementById("target-hint").textContent = ImageBlob.targetInfo(curTarget).hint;
+    refresh(false);   // 重新算占用百分比(图没变,变的是分母)
+  });
+})();
+
 function budget() {
   if (!items.length) return { total: 0, pct: 0 };
   try {
     const res = ImageBlob.build(buildPayload());
-    return { total: res.totalBytes, pct: 100 * res.totalBytes / ImageBlob.PARTITION_BYTES };
+    return { total: res.totalBytes, pct: 100 * res.totalBytes / partBytes() };
   } catch (e) {
     return { total: -1, pct: 0, error: e.message };
   }
@@ -1175,17 +1209,19 @@ function refresh(rebuildGrid = true) {
   } else if (b.total < 0) {
     txt.textContent = "打包会失败：" + b.error;
   } else {
-    txt.textContent = b.total + " / " + ImageBlob.PARTITION_BYTES + " 字节（" +
+    txt.textContent = b.total + " / " + partBytes() + " 字节（" +
       b.pct.toFixed(1) + "%）";
   }
 
   document.getElementById("cmd").value =
-    ImageBlob.esptoolCommand("COM3", "image.bin");
+    ImageBlob.esptoolCommand("COM3", "image.bin", curTarget);
 
   if (items.length && b.total >= 0 && b.pct > 100) {
-    // ★ 分区大小必须从 PARTITION_BYTES 读,别写死数字 ——
+    // ★ 分区大小必须问 partBytes(),别写死数字 ——
     //   这里曾经写死 "128KB"(分区还是 128KB 时的值),分区改成 1MB 后
-    //   提示就变成错的,会把人往"把图改小"的方向误导。
+    //   提示就变成错的,会把人往"把图改小"的方向误导;
+    //   2026-09-18 又踩了同一坑的另一面:S3 板的 image 是 8MB,而这里按 1MB 算,
+    //   于是"能装下"的组合被报成超了。
     // ★ 报溢出时**指出是谁占的**：只说"改小一点"没用,
     //   用户看到的是"我明明按 152 做的图"（实际是导入时被放大了）。
     const worst = items.map(i => ({
@@ -1194,7 +1230,9 @@ function refresh(rebuildGrid = true) {
       .map(x => x.i.name + " " + x.i.w + "×" + x.i.h + " " +
                 Math.round(x.bytes / 1024) + "KB").join("、");
     const over = items.filter(i => (i.img.naturalWidth || 0) && i.w > i.img.naturalWidth);
-    say("⚠ 超了 image 分区（" + (ImageBlob.PARTITION_BYTES / 1024) + " KB）：" +
+    const isClassic = curTarget === "classic";
+    say("⚠ 超了 image 分区（" + (partBytes() / 1024) + " KB，目标板：" +
+        ImageBlob.targetInfo(curTarget).label + "）：" +
         b.total + " 字节。\n" +
         "占得最多的三张：" + worst + "\n" +
         (over.length
@@ -1202,7 +1240,10 @@ function refresh(rebuildGrid = true) {
             over.map(i => i.name + " " + i.img.naturalWidth + "→" + i.w).join("、") +
             "。把「目标宽度」改回原图宽度即可。\n"
           : "") +
-        "表情建议 152×152（8 张 = 542KB，再加一张 480×480 背景 450KB 正好 1MB）；" +
+        (isClassic
+          ? "表情建议 152×152（8 张 = 542KB，再加一张 480×480 背景 450KB 正好 1MB）；"
+          : "这块板的 image 有 8MB：240×240 一整套表情 + 480×480 背景都放得下，"
+            + "先把「目标宽度」按屏幕分辨率给足。") +
         "背景如果不需要铺满整屏，可以只放弧带以内（半径 205 的圆 ≈ 410×410）。", "err");
   }
 }
@@ -1373,15 +1414,17 @@ document.getElementById("btn-export").addEventListener("click", () => {
     say("打包失败：" + e.message, "err");
     return;
   }
-  if (res.totalBytes > ImageBlob.PARTITION_BYTES) {
+  if (res.totalBytes > partBytes()) {
     say("打包结果是 " + res.totalBytes + " 字节，超过 image 分区（" +
-        (ImageBlob.PARTITION_BYTES / 1024) + " KB），刷进去会被截断。\n" +
-        "先把「目标宽度」改小再导出。", "err");
+        (partBytes() / 1024) + " KB，目标板：" + ImageBlob.targetInfo(curTarget).label + "），" +
+        "刷进去会被截断。\n" +
+        "两条路：① 把「目标宽度」改小；② 如果板上是 S3 那块(16MB)，" +
+        "把上面的「目标板」切到它 —— 它的 image 分区是 8MB。", "err");
     return;
   }
   download(new Blob([res.blob], { type: "application/octet-stream" }), "image.bin");
   say("已导出 image.bin（" + res.totalBytes + " 字节，" + res.entries.length + " 张图）。\n\n" +
-      "刷进去（端口按你电脑上的改）：\n" + ImageBlob.esptoolCommand("COM3", "image.bin") + "\n\n" +
+      "刷进去（端口按你电脑上的改）：\n" + ImageBlob.esptoolCommand("COM3", "image.bin", curTarget) + "\n\n" +
       "注意：图片要等真屏接上、固件里接好显示代码才会出现在屏幕上。", "ok");
 });
 
@@ -1486,7 +1529,7 @@ document.getElementById("file-bin").addEventListener("change", e => {
   r.onload = () => {
     say("已读取 " + f.name + "（" + r.result.byteLength + " 字节）。\n" +
         "注意：本工具不解析已有 bin 的像素，只用于核对大小与刷写命令。", "ok");
-    document.getElementById("cmd").value = ImageBlob.esptoolCommand("COM3", f.name);
+    document.getElementById("cmd").value = ImageBlob.esptoolCommand("COM3", f.name, curTarget);
   };
   r.readAsArrayBuffer(f);
 });

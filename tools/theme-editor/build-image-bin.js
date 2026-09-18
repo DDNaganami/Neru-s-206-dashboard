@@ -93,7 +93,7 @@ function roleId(v) {
 // 与 test_image_roundtrip.cpp 约定的纯文本格式。
 // 注意:这里的字段是**数据模型**层面的(offset/size 由打包器算出来),
 // 不是照着二进制布局反推的 —— 否则测试就成了"自己抄自己"。
-function manifestText(res, binPath) {
+function manifestText(res, binPath, target) {
   const L = [];
   L.push("# image.bin manifest —— 由 build-image-bin.js 生成");
   L.push("# 用途:test_image_roundtrip.cpp 用它和固件解析器的结果逐字节对账");
@@ -132,20 +132,32 @@ function manifestText(res, binPath) {
     L.push("");
   });
   L.push("# 生成的是二进制镜像,目标是设备 flash 的 image 分区:");
-  L.push("#   " + IB.esptoolCommand("COM3", path.basename(binPath || "image.bin")));
+  L.push("#   " + IB.esptoolCommand("COM3", path.basename(binPath || "image.bin"), target));
   L.push("");
   return L.join("\n");
 }
 
 // ---------------- 参数解析 ----------------
+// ★ 去掉开头的 UTF-8 BOM(2026-09-18 实测踩到):
+//   Windows 上用记事本 / PowerShell 的 `Set-Content -Encoding UTF8` 存
+//   spec.json,文件头会多出 EF BB BF,而 JSON.parse 会在那里直接炸:
+//   `Unexpected token '', "{` —— 报错完全看不出是 BOM 的问题。
+//   这和 partitions*.csv 那条坑是同一家族(编码问题在中文 Windows 上尤其爱咬人),
+//   所以入口处一律剥掉,而不是要求用户"存成无 BOM"。
+function stripBom(s) {
+  return (s.charCodeAt(0) === 0xFEFF) ? s.slice(1) : s;
+}
+
 function parseArgs(argv) {
-  const o = { spec: null, out: "image.bin", raw: [], manifest: null };
+  const o = { spec: null, out: "image.bin", raw: [], manifest: null,
+              target: IB.DEFAULT_TARGET };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--spec") o.spec = argv[++i];
     else if (a === "--out") o.out = argv[++i];
     else if (a === "--manifest") o.manifest = argv[++i];
     else if (a === "--raw") o.raw.push(argv[++i]);
+    else if (a === "--target") o.target = argv[++i];   // classic | s3
     else if (a === "--help" || a === "-h") o.help = true;
     else throw new Error("不认识的参数: " + a);
   }
@@ -176,6 +188,13 @@ function main() {
     console.log("  node build-image-bin.js --spec spec.json --out image.bin");
     console.log("  node build-image-bin.js --raw a.raw:480x480:rgb565:background:0:bg --out image.bin");
     console.log("");
+    console.log("--target  目标板,决定 image 分区多大(默认 " + IB.DEFAULT_TARGET + "):");
+    for (const id of Object.keys(IB.TARGETS)) {
+      const t = IB.TARGETS[id];
+      console.log("            " + id.padEnd(8) + t.label + "  image " +
+                  (t.partitionBytes / 1024 / 1024) + "MB  (" + t.partitionsCsv + ")");
+    }
+    console.log("");
     console.log("图案类型(配方里的 pattern): ramp | checker | solid | transparent");
     return 0;
   }
@@ -183,7 +202,7 @@ function main() {
   const items = [];
 
   if (args.spec) {
-    const spec = JSON.parse(fs.readFileSync(args.spec, "utf8"));
+    const spec = JSON.parse(stripBom(fs.readFileSync(args.spec, "utf8")));
     for (const im of spec.images || []) {
       const w = im.w | 0, h = im.h | 0;
       const rgba = makePattern(im.pattern || "ramp", w, h);
@@ -223,20 +242,28 @@ function main() {
   fs.writeFileSync(args.out, Buffer.from(res.blob));
 
   const manPath = args.manifest || (args.out + ".manifest");
-  fs.writeFileSync(manPath, manifestText(res, args.out), "utf8");
+  fs.writeFileSync(manPath, manifestText(res, args.out, args.target), "utf8");
 
+  // ★ 分区大小按**目标板**取(经典板 1MB / S3 板 8MB),别写死 1MB ——
+  //   写死的那版会把 S3 上完全装得下的组合判成超限(见 image-blob-build.js 的 TARGETS)
+  const partBytes = IB.partitionBytesFor(args.target);
+  const tinfo = IB.targetInfo(args.target);
   console.log("已生成 " + args.out + "  (" + res.totalBytes + " 字节)");
   console.log("       " + manPath + "  (对账清单)");
   console.log("  头 " + res.headerBytes + " 字节 + 像素 " + res.dataBytes + " 字节,共 " +
               res.entries.length + " 张图");
-  const pct = (100 * res.totalBytes / IB.PARTITION_BYTES).toFixed(1);
+  const pct = (100 * res.totalBytes / partBytes).toFixed(1);
+  console.log("  目标板 " + tinfo.label + "(" + tinfo.partitionsCsv + ")");
   console.log("  占 image 分区 " + pct + "%  (" + res.totalBytes + "/" +
-              IB.PARTITION_BYTES + " 字节)");
-  if (res.totalBytes > IB.PARTITION_BYTES) {
-    console.error("✗ 超出分区大小,刷进去会被截断!");
+              partBytes + " 字节)");
+  if (res.totalBytes > partBytes) {
+    console.error("✗ 超出分区大小,刷进去会被截断!" +
+                  (args.target === IB.DEFAULT_TARGET
+                    ? "(板上如果是 S3 那块,加 --target s3:它的 image 分区是 8MB)"
+                    : ""));
     return 3;
   }
-  console.log("  刷写: " + IB.esptoolCommand("COM3", path.basename(args.out)));
+  console.log("  刷写: " + IB.esptoolCommand("COM3", path.basename(args.out), args.target));
   return 0;
 }
 

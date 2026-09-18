@@ -281,7 +281,9 @@ void loop() {
   // 示位标报的"第几步"= 本轮**已经走到**的最后一步(不是累计值):
   // 所以卡在哪一步,串口上看到的就是哪一步。
   BOOT_STAGE(6);
-  g_van_phy.tick(now);   // VAN 物理层解帧 → 喂给 data_service(当前为桩)
+  g_van_phy.tick(now);   // VAN 物理层解帧 → 喂给 data_service
+                         // (桩 / GPIO 收帧两种实现共用这一个接口,见 van_phy.h:
+                         //  加 -DVAN_PHY_GPIO=1 时这里就是真的 GPIO 收帧)
   van_replay_poll(now);  // 串口贴帧离线回放(和物理层等价,先到的先写)
   const VehicleState st = g_data.update(now);
   BOOT_STAGE(7);

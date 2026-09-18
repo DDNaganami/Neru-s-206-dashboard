@@ -121,7 +121,8 @@ void ObdSource::tick(uint32_t now_ms) {
         break;
       }
       // 拿到位图(onSupportedPids 里已经把表建好了)或等超时。
-      // ★ 拿不到位图**不能卡住整条链**:按默认三路继续跑,不猜、不试。
+      // ★ 拿不到位图**不能卡住整条链**:按**默认节奏**继续跑
+      //   (快路只有转速,慢路两条照旧;车速那一路不开),不猜、不试。
       if (support_known_) {
         phase_ = Phase::PollIdle;
         last_activity_ms_ = now_ms;
