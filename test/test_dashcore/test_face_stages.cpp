@@ -180,7 +180,7 @@ static void test_rpm_stages_use_real_landmarks(void) {
   TEST_ASSERT_EQUAL_FLOAT_MESSAGE(kRpmCruiseNominal, rows[1]->rpm,
                                   "转速·中 应该是稳定巡航(实车 2000)");
   TEST_ASSERT_EQUAL_FLOAT_MESSAGE(kRpmMax, rows[3]->rpm,
-                                  "转速·红区 应该是表盘上限(实车 6000)");
+                                  "转速·红区 应该是表盘上限(实车 7000)");
   // 运动档取巡航与上限之间,而且要真的落在"运动"那一档
   TEST_ASSERT_TRUE(rows[2]->rpm > kRpmCruiseNominal);
   TEST_ASSERT_TRUE(rows[2]->rpm < kRpmMax);

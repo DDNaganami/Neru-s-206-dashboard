@@ -35,7 +35,7 @@ static Face right_of(float speed, uint32_t t) {
 
 // ---------------- 左屏:只看转速 ----------------
 void test_left_follows_rpm_only(void) {
-  // 转速分档边界(按实车地标定:怠速 900 / 巡航 2000 / 上限 6000)
+  // 转速分档边界(按实车地标定:怠速 900 / 巡航 2000 / 上限 7000)
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle,    (uint8_t)at(0, 1799).left);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise,  (uint8_t)at(0, 1800).left);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise,  (uint8_t)at(0, 3499).left);
@@ -51,7 +51,7 @@ void test_left_follows_rpm_only(void) {
   TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Cruise, (uint8_t)at(0, kRpmCruiseNominal).left,
                                   "巡航 2000 转该是巡航脸");
   TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Redline, (uint8_t)at(0, kRpmMax).left,
-                                  "表盘上限 6000 转该是红区脸");
+                                  "表盘上限 7000 转该是红区脸");
   // 红区必须在**上限之前**就开始提醒(踩到断油才亮红是没用的)
   TEST_ASSERT_TRUE_MESSAGE(at(0, kRpmMax - 1000.0f).left == Face::Redline,
                            "上限前 1000 转就该进红区");

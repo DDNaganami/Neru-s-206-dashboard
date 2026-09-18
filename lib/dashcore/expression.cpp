@@ -5,11 +5,11 @@
 // 分档阈值
 //
 // ★ 转速三档按**实车地标**推(用户实测:点火怠速 900、稳定巡航 2000、
-//   表盘上限 6000):
+//   表盘上限 7000):
 //     常态 < 1800  —— 包住怠速 900,并给起步/低速跟车留余量
 //     巡航 1800..3499 —— 巡航 2000 稳稳落在里面(不会在 2000 上下抖来抖去)
 //     运动 3500..4999 —— 加速、超车、上坡
-//     红区 >= 5000 —— 上限 6000 之前 1000 转开始报红(83% 刻度)
+//     红区 >= 5000 —— 但★ 这个值是按 6000 的表盘标的(见下),表盘更正为 7000 后偏早
 //   所以红区**不是**"踩到断油才亮":5000 就该看到 —— 那才是它该提醒的位置。
 //
 // ★ 车速四档按 城区/快速路/高速/超速 取 30/90/130。
@@ -26,7 +26,7 @@
 // ============================================================
 static const float kRpmCruiseFrom  = 1800.0f;   // 转速·中(巡航)
 static const float kRpmSportFrom   = 3500.0f;   // 转速·高(运动)
-static const float kRpmRedlineFrom = 5000.0f;   // 红区(上限 6000 之前 1000)
+static const float kRpmRedlineFrom = 5000.0f;   // 红区(按 6000 表盘标的,待按 7000 重排)
 static const float kSpeedMid   = 30.0f;         // 车速·中(巡航)
 static const float kSpeedHigh  = 90.0f;         // 车速·高(运动)
 static const float kSpeedOver  = 130.0f;        // 超速(进入:> 130)
@@ -53,7 +53,7 @@ static bool g_overspeed = false;
 
 // ---- 左屏(转速表):只看转速 ----
 // 水温、车速都不参与 —— 这是"每屏一套独立表情"的核心。
-// 分档按实车地标:怠速 900 落在常态、巡航 2000 落在巡航、上限 6000 前 1000 报红。
+// 分档按实车地标:怠速 900 落在常态、巡航 2000 落在巡航、红区在上限之前报红。
 static Face tach_face(float rpm) {
   if (rpm >= kRpmRedlineFrom) return Face::Redline;
   if (rpm >= kRpmSportFrom)   return Face::Sport;

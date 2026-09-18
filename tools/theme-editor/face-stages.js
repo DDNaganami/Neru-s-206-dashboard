@@ -124,7 +124,7 @@
   //      这就是"每屏一套独立表情"的可执行定义。
   //
   // 转速四档用的是**实车地标**(用户实测:点火怠速 900 / 稳定巡航 2000 /
-  // 表盘上限 6000;运动取中间 4200)—— 所以表里那一行就是车上真会出现的那一格。
+  // 表盘上限 7000;运动取中间 4200)—— 所以表里那一行就是车上真会出现的那一格。
   // 车速四档 0 / 55 / 110 / 140:分别落在 常态/巡航/运动/超速。
   // 温度两组各三档:水温 60/85/115、进气 20/40/65。
   // ★ 每屏 4 个状态、表里就 4 条 —— 每个状态都能被"点"出来。
@@ -135,7 +135,7 @@
     { group: "rpm", level: "low",     rpm: 900,  speed: 0,   coolant: 85,  intake: 35, left: "Idle",    right: "Idle" },
     { group: "rpm", level: "mid",     rpm: 2000, speed: 0,   coolant: 85,  intake: 35, left: "Cruise",  right: "Idle" },
     { group: "rpm", level: "high",    rpm: 4200, speed: 0,   coolant: 85,  intake: 35, left: "Sport",   right: "Idle" },
-    { group: "rpm", level: "redline", rpm: 6000, speed: 0,   coolant: 85,  intake: 35, left: "Redline", right: "Idle" },
+    { group: "rpm", level: "redline", rpm: 7000, speed: 0,   coolant: 85,  intake: 35, left: "Redline", right: "Idle" },
     // 车速:只驱动右屏;左屏恒为常态(转速一直是怠速)
     { group: "speed", level: "low",  rpm: 900, speed: 0,   coolant: 85, intake: 35, left: "Idle", right: "Idle"      },
     { group: "speed", level: "mid",  rpm: 900, speed: 55,  coolant: 85, intake: 35, left: "Idle", right: "Cruise"    },
@@ -155,11 +155,11 @@
   ];
 
   // 量程上限 —— 画弧进度要用,必须与固件一致:
-  //   rpm   → lib/dashcore/vehicle_state.h 的 kRpmMax(表盘刻度上限,实车 6000)
+  //   rpm   → lib/dashcore/vehicle_state.h 的 kRpmMax(表盘刻度上限,实车 7000)
   //   speed → 同文件的 kSpeedMax
   // 不一致的后果是"预览里弧的进度和真车不一样"(而且看不出来),
   // 所以 test-face-stages.js 会把这两个数从 vehicle_state.h 里解析出来对比。
-  var MAX = { rpm: 6000, speed: 210 };
+  var MAX = { rpm: 7000, speed: 210 };
 
   // 界面上的分组与中文标签(纯展示,固件不关心)
   // faces:false = 这一组不影响表情(界面要明确写出来,免得用户以为调了没用)
