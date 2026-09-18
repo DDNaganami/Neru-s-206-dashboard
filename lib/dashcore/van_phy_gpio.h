@@ -1,0 +1,48 @@
+#pragma once
+#include "van_phy.h"
+
+// ============================================================
+// VAN 物理层的**硬件胶水**:RO 引脚的电平变化 → VanPhyWire 解码器
+//
+// 分工(和 van_phy_wire.h 里写的一样,这里只是把边沿"从哪来"补上):
+//   GPIO 中断(本文件)  读电平 + 读时间戳 → 塞进 VanEdgeQueue(几个微秒)
+//   tick(本文件)        排空队列 → VanPhyWire::onEdge();总线空闲 → finish()
+//   解码(van_phy_wire) 4B5B / E-Manchester / CRC-15 → VanPacket
+//
+// 接线(PINOUT.md 第一段):
+//   SN65HVD230:VCC=3.3V、GND=GND、RO=GPIO16、DI=不接、DE/RE=GND(只收)
+//   ★ 模块上的 120Ω 终端电阻必须拆掉(总线两端才有终端,我们挂在中间)
+//
+// ★ 只有设备端编译(整个头/实现被 ARDUINO 包住):
+//   它依赖 attachInterrupt / esp_timer_get_time,宿主机没有这些。
+//   能宿主机测的那一半在 van_edge_queue.h(纯逻辑)与 van_phy_wire.cpp(解码),
+//   所以"中断到不了"这件事只影响真实硬件,不影响可测性。
+// ============================================================
+#if defined(ARDUINO)
+
+#include "van_edge_queue.h"
+#include "van_phy_wire.h"
+
+class VanPhyGpio : public VanPhy {
+public:
+  void begin() override;
+  void tick(uint32_t now_ms) override;
+
+  // 供 GPIO 中断调用(实现见 .cpp 的静态跳板)。必须是 public:
+  // 跳板是文件级函数,够不到私有成员。
+  void onIsrEdge();
+
+  // 诊断:实车调线时看的几个数
+  const VanPhyWire& wire() const { return wire_; }
+  const VanEdgeQueue& queue() const { return q_; }
+  uint32_t framesEmitted() const { return frames_emitted_; }
+
+private:
+  VanPhyWire wire_;
+  VanEdgeQueue q_;
+  uint32_t last_edge_us_ = 0;
+  uint32_t frames_emitted_ = 0;
+  uint32_t last_report_ms_ = 0;
+};
+
+#endif  // ARDUINO

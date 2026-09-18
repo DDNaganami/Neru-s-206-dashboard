@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "van_phy_wire.h"
+#include "van_edge_queue.h"
 #include "van_wire.h"
 #include "van_source.h"
 
@@ -38,7 +39,7 @@ class CaptureSink : public VanSink {
   VanSource* src_ = nullptr;
 };
 
-// 用编码器造一帧,把槽序列当边沿喂给 VanPhyWire。1 TS = 8µs(125 kbit/s)。
+// 用编码器造一帧,把槽序列当边沿喂进去。1 TS = 8µs(125 kbit/s)。
 //
 // 时基约定(踩了多次的坑,别再动):
 //   空闲沿放 base_us,帧首沿放在 base_us + 8000µs(= 1000 个槽)。
@@ -51,7 +52,13 @@ class CaptureSink : public VanSink {
 //
 // ★ 收尾统一由 phy.finish() 负责(onEdge 不再关帧,见 van_phy_wire.h)。
 //   本函数末尾只认 finish() 的返回值 —— 那正是"帧界"这条链路的证明点。
-bool feedFrame(VanPhyWire& phy, const Frame& f, uint32_t base_us) {
+//
+// ★ emit 是"边沿往哪去"的注入点:直接进解码器(实测路径的最简形式),
+//   或者先进 VanEdgeQueue(真实固件的路径 —— 中断里入队、主循环再排空)。
+//   两条路必须解出同样的帧,所以这里做成模板,免得两套边沿生成代码各写一遍
+//   而其中一套悄悄漂移(那就变成"测的不是固件跑的那条路")。
+template <typename Emit>
+bool feedFrameVia(Emit emit, VanPhyWire& phy, const Frame& f, uint32_t base_us) {
   uint8_t slots[512];
   const uint32_t n = encodeFrame(f, slots, sizeof(slots));
   if (n == 0) return false;
@@ -60,23 +67,27 @@ bool feedFrame(VanPhyWire& phy, const Frame& f, uint32_t base_us) {
   const uint32_t tail_slots = 100u;                // 帧后空闲 ≥ 8 槽即可,留足余量
   const uint32_t origin_slot = idle_slots;         // 帧首槽号
   bool level = true;                               // 总线空闲 = recessive
-  phy.onEdge(base_us, level);                      // 空闲沿
+  emit(base_us, level);                            // 空闲沿
 
   // 帧体:只在电平变化时才会有沿
   for (uint32_t i = 0; i < n; ++i) {
     const bool sl = slots[i] != 0;
     if (sl == level) continue;
     level = sl;
-    phy.onEdge(base_us + (origin_slot + i) * 8u, level);
+    emit(base_us + (origin_slot + i) * 8u, level);
   }
   // 帧后空闲:按槽展开,保证解码器能数到 8 个连续 recessive
   for (uint32_t i = 0; i < tail_slots; ++i) {
     if (level) continue;                           // 已经是 recessive 就不需要沿
     level = true;
-    phy.onEdge(base_us + (origin_slot + n + i) * 8u, level);
+    emit(base_us + (origin_slot + n + i) * 8u, level);
   }
   // 收尾:显式结束本帧(唯一关帧入口)。返回是否真的收出一帧。
   return phy.finish();
+}
+
+bool feedFrame(VanPhyWire& phy, const Frame& f, uint32_t base_us) {
+  return feedFrameVia([&phy](uint32_t t, bool lv) { phy.onEdge(t, lv); }, phy, f, base_us);
 }
 
 }  // namespace
@@ -297,6 +308,118 @@ static void test_frame_to_packet_truncates(void) {
   for (uint8_t i = 0; i < p.len; ++i) TEST_ASSERT_EQUAL_UINT8((uint8_t)(i + 1), p.data[i]);
 }
 
+// ============================================================
+// VanEdgeQueue —— 真实固件那条路(中断入队 → 主循环排空)
+//
+// 为什么要单独测这一段:上面那些用例把边沿**直接**喂给解码器,
+// 而固件里中间还隔着一个环形队列(van_phy_gpio.cpp 的 ISR 只入队,
+// tick() 再排空)。这条路上有两个只有它会犯的错:
+//   ① 顺序/丢边沿 —— 环形缓冲写错下标会静默地错位;
+//   ② 忘了在总线空闲时调 finish() —— 帧永远关不掉,表现为"有边沿但没帧"。
+// 所以这里用**同一个边沿生成器**(feedFrameVia)走队列,再按固件的
+// 节奏(排空 + 空闲关帧)收尾,断言解出来的帧与直连那条路完全一致。
+// ============================================================
+
+// 把队列排空进解码器 —— 与 VanPhyGpio::tick() 的做法一致
+static uint16_t drainQueue(VanEdgeQueue& q, VanPhyWire& phy) {
+  VanEdgeQueue::Edge e;
+  uint16_t n = 0;
+  while (q.pop(&e)) {
+    phy.onEdge(e.t_us, e.level != 0);
+    ++n;
+  }
+  return n;
+}
+
+static void test_edge_queue_delivers_same_frame(void) {
+  Frame f;
+  f.ident = 0x824; f.cmd = 0xC; f.len = 2;
+  f.data[0] = 0x18; f.data[1] = 0xF8;
+
+  VanPhyWire phy;
+  VanSource src;
+  CaptureSink sink(&src);
+  VanEdgeQueue q;
+  q.reset();
+  phy.begin();
+  phy.setSink(&sink);
+
+  // 中断侧:只入队(注意 finish() 不在这一步 —— 真实固件里它由 tick 做)
+  uint32_t edge_count = 0;
+  feedFrameVia([&](uint32_t t, bool lv) { q.push(t, (uint8_t)(lv ? 1 : 0)); ++edge_count; },
+               phy, f, 1000);
+
+  // ★ 入队阶段不该有任何帧 —— 队列只是"记下边沿",一个都不该被解出来
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, sink.count, "排空前不该解出帧(ISR 不碰解码器)");
+  TEST_ASSERT_TRUE_MESSAGE(q.size() > 0, "队列里应当攒着边沿");
+  TEST_ASSERT_EQUAL_UINT32(edge_count, q.pushed());
+  TEST_ASSERT_EQUAL_UINT32(0, q.dropped());   // 一帧几百个沿,2048 装得下
+
+  // 主循环侧:排空 + 空闲关帧(与 VanPhyGpio::tick() 同一套)
+  const uint16_t drained = drainQueue(q, phy);
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(edge_count, drained, "排空的边沿数应与入队的一致");
+  TEST_ASSERT_TRUE_MESSAGE(q.empty(), "排空后队列应为空");
+  TEST_ASSERT_TRUE_MESSAGE(phy.framePending(), "排空后解析器手上应有一帧");
+  TEST_ASSERT_TRUE_MESSAGE(phy.finish(), "空闲关帧应真的收出一帧");
+
+  TEST_ASSERT_EQUAL_INT(1, sink.count);
+  TEST_ASSERT_EQUAL_HEX16(0x824, sink.last.iden);
+  TEST_ASSERT_EQUAL_HEX8(0xC, sink.last.cmd);
+  TEST_ASSERT_EQUAL_UINT8(2, sink.last.len);
+  TEST_ASSERT_EQUAL_UINT8(0x18, sink.last.data[0]);
+  TEST_ASSERT_EQUAL_UINT8(0xF8, sink.last.data[1]);
+  TEST_ASSERT_TRUE(sink.last.fcs_ok);
+  // 幂等:没有待收帧时再关一次不该多出帧(tick 每轮都会调)
+  TEST_ASSERT_FALSE(phy.finish());
+  TEST_ASSERT_EQUAL_INT(1, sink.count);
+}
+
+// 队列满了必须**丢新的并计数**,而不是覆盖未读数据或死循环
+static void test_edge_queue_overflow_counts_and_keeps_order(void) {
+  VanEdgeQueue q;
+  q.reset();
+
+  const uint16_t cap = VanEdgeQueue::kCapacity;
+  // 填到满:容量 N 的环形缓冲最多装 N-1 个(留一格区分空/满)
+  for (uint16_t i = 0; i < cap + 64; ++i) {
+    q.push(1000u + i, (uint8_t)(i & 1));
+  }
+  TEST_ASSERT_EQUAL_UINT16(cap - 1, q.size());
+  TEST_ASSERT_EQUAL_UINT32(65, q.dropped());   // cap+64 个进去,装下 cap-1,剩下丢掉
+  TEST_ASSERT_EQUAL_UINT32(cap + 64 - 65, q.pushed());
+
+  // 先入先出:读出来的第一项还是最早那个(没被覆盖)
+  VanEdgeQueue::Edge e;
+  TEST_ASSERT_TRUE(q.pop(&e));
+  TEST_ASSERT_EQUAL_UINT32(1000u, e.t_us);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)(0 & 1), e.level);
+  // 一路读完,时间戳应当连续递增(证明没有错位/重排)
+  uint32_t prev = e.t_us;
+  uint32_t n = 1;
+  while (q.pop(&e)) {
+    TEST_ASSERT_EQUAL_UINT32(prev + 1u, e.t_us);
+    prev = e.t_us;
+    ++n;
+  }
+  TEST_ASSERT_EQUAL_UINT32(cap - 1, n);
+  TEST_ASSERT_TRUE(q.empty());
+}
+
+// 会话之间的复位:清空队列与计数(切换数据源/重新抓帧时用)
+static void test_edge_queue_reset(void) {
+  VanEdgeQueue q;
+  q.reset();
+  q.push(10, 1);
+  q.push(20, 0);
+  TEST_ASSERT_EQUAL_UINT32(2, q.pushed());
+  q.reset();
+  TEST_ASSERT_TRUE(q.empty());
+  TEST_ASSERT_EQUAL_UINT32(0, q.pushed());
+  TEST_ASSERT_EQUAL_UINT32(0, q.dropped());
+  VanEdgeQueue::Edge e;
+  TEST_ASSERT_FALSE(q.pop(&e));
+}
+
 void register_van_phy_wire_tests(void) {
   RUN_TEST(test_finish_closes_pending_frame);
   RUN_TEST(test_golden_iden_cmd_through_chain);
@@ -304,4 +427,7 @@ void register_van_phy_wire_tests(void) {
   RUN_TEST(test_chain_preserves_iden_bits);
   RUN_TEST(test_chain_feeds_van_source);
   RUN_TEST(test_frame_to_packet_truncates);
+  RUN_TEST(test_edge_queue_delivers_same_frame);
+  RUN_TEST(test_edge_queue_overflow_counts_and_keeps_order);
+  RUN_TEST(test_edge_queue_reset);
 }

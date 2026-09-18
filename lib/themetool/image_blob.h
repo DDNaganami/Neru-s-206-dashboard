@@ -260,7 +260,18 @@ const uint8_t* imageBlobLoad(uint32_t* blob_len);
 //   改分区大小 → 这里和 tools/theme-editor/image-blob-build.js 的
 //   PARTITION_BYTES 都要改(JS 那边也有一份,用来给用户算占用)。
 #define IMAGE_PARTITION_LABEL "image"
+// 图片分区大小。**默认按经典 ESP32(4MB flash)的 1MB**;
+// 换到 S3 N16R8 时由 platformio.ini 的 [env:esp32s3] 用
+//   -DIMAGE_PARTITION_BYTES=(8u*1024u*1024u)
+// 覆盖成 8MB(分区表见 partitions-s3.csv,偏移与 4MB 那份相同)。
+//
+// ★ 为什么要一个可覆盖的默认值,而不是直接读分区表:
+//   这个常量在**宿主机**上也要用(image_load 的宿主机分支用它挡住过大的文件,
+//   打包器/测试也引用同一个口径)。分区表是设备端的东西,宿主机读不到。
+//   所以口径是"编译期常量 + 每个 env 各写各的",改动必须与 partitions*.csv 同步。
+#ifndef IMAGE_PARTITION_BYTES
 #define IMAGE_PARTITION_BYTES (1024u * 1024u)   // partitions.csv: 0x100000
+#endif
 #define IMAGE_BLOB_MAX_BYTES  IMAGE_PARTITION_BYTES
 
 // ============================================================

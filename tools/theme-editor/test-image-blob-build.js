@@ -294,6 +294,60 @@ section("刷写命令与 C 头文件");
 }
 
 // ------------------------------------------------------------
+section("分区表必须是纯 ASCII(否则 PlatformIO 在中文 Windows 上直接报错)");
+// ★ 这条守卫是踩出来的:2026-09-18 给 S3 加 partitions-s3.csv 时,
+//   注释里写了一个"★"(UTF-8 = E2 98 85)。PlatformIO 的
+//   builder/main.py 用 `open(partitions_csv)`(**不指定编码**)读它 →
+//   中文 Windows 上按 GBK 解码 → UnicodeDecodeError 0x85。
+//   症状很迷惑:固件**已经编译并链接成功**("Successfully created esp32s3 image"),
+//   只在最后一步 checkprogsize 里炸,看起来像"编译失败",其实是注释里一个星号。
+//   partitions.csv 的注释里本来就写着"keep this file pure ASCII",现在用机器盯着。
+{
+  const fs = require("fs");
+  const path = require("path");
+  const root = path.resolve(__dirname, "..", "..");
+  const files = ["partitions.csv", "partitions-s3.csv"];
+  for (const f of files) {
+    const p = path.join(root, f);
+    if (!fs.existsSync(p)) { ok(false, f + " 不存在"); continue; }
+    const buf = fs.readFileSync(p);
+    const bad = [];
+    for (let i = 0; i < buf.length; i++) if (buf[i] >= 0x80) bad.push(i);
+    ok(bad.length === 0,
+       f + " 必须纯 ASCII" + (bad.length
+         ? "(有 " + bad.length + " 个非 ASCII 字节,第一个在 offset " + bad[0] +
+           ":0x" + buf[bad[0]].toString(16).toUpperCase() + ")"
+         : ""));
+    // 顺带把 BOM 也挡住:CSV 开头的 BOM 会让 PlatformIO 把第一个字段读成空
+    ok(!(buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF), f + " 不能有 UTF-8 BOM");
+  }
+  // 两份分区表的 theme/image 偏移必须一致 —— 网页编辑器只印一套 esptool 命令,
+  // 偏移一旦分叉,其中一块板子就会刷到错误的地方(而且不报错)。
+  const parse = (f) => {
+    const out = {};
+    for (const line of fs.readFileSync(path.join(root, f), "utf8").split(/\r?\n/)) {
+      // subtype 有两种写法:nvs / ota / spiffs 这种**名字**,或 theme/image 那种 0x40/0x41
+      const m = /^([a-z0-9_]+),\s*data,\s*([0-9a-z]+),\s*(0x[0-9a-fA-F]+),\s*(0x[0-9a-fA-F]+),\s*$/i
+        .exec(line.trim());
+      if (m) out[m[1]] = { subtype: m[2].toLowerCase(), offset: m[3].toLowerCase(), size: m[4].toLowerCase() };
+    }
+    return out;
+  };
+  const a = parse("partitions.csv"), b = parse("partitions-s3.csv");
+  const need = ["theme", "image", "spiffs", "nvs", "otadata"];
+  for (const k of need) {
+    ok(!!a[k] && !!b[k], "两份分区表都有 " + k);
+    if (a[k] && b[k]) {
+      eq(b[k].offset, a[k].offset, k + " 的偏移两份必须一致(网页只印一套刷写命令)");
+      eq(b[k].subtype, a[k].subtype, k + " 的 subtype 两份必须一致");
+    }
+  }
+  // 大小可以不同(S3 那份就是要把 image 变大),但**必须更大**,否则加它没意义
+  ok(parseInt(b.image.size, 16) > parseInt(a.image.size, 16),
+     "S3 的 image 分区要比 4MB 那份大(" + b.image.size + " > " + a.image.size + ")");
+}
+
+// ------------------------------------------------------------
 section("页面里两个纯函数:名字截断与字节长度");
 // 从 image-editor.html 里抽出来跑,而不是抄一份 —— 抄一份就会漂移。
 // 为什么值得测:设备端 name 是 char[24],**按字节**算。

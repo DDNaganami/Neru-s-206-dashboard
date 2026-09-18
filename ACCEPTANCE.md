@@ -85,6 +85,38 @@
       少任何一条，格子上都是"点了没反应"。
       **教训**：给一条新弧配"能点出来的档"才算完 ——
       这与当初"惊喜档选不出来"是同一类问题，两次都是用户先看出来的。
+- [x] **万用表 / S3 板 / SN65HVD230 / OBD 一分二线到货后能立刻做的事**（2026-09-18）
+      到货当天做完三件"纯准备"，全部在宿主机上验证过，板子插上就能用：
+      · **S3 编译目标**：新增 `[env:esp32s3]`（N16R8：QIO flash + OPI 8MB PSRAM）
+        与 `partitions-s3.csv`（16MB 表，image 分区 **1MB → 8MB**）。
+        ★ 两份分区表的 **theme/image 偏移刻意相同**（0x210000 / 0x254000），
+        所以网页编辑器印的那套 esptool 命令**两块板通用**，不用记两套数字。
+        实测：`pio run -e esp32s3` 通过，RAM 37.1% / Flash 65.2%（app 分区 1MB）。
+      · **开机自检**（`src/main.cpp` 的 setup）：上电打印
+        `chip / flash / psram / heap / image 分区` 五行。它们是
+        "板子是不是 N16R8"、"PSRAM 起没起来"（双 480×480 缓冲的前提）、
+        "有没有烧错分区表"的唯一一眼判据。
+      · **VAN 硬件接收链路**（收发器一到就能抓车速，这是本次到货最大的解锁点）：
+        `van_edge_queue.h`（ISR→解码器之间的环形缓冲，2048 个边沿）、
+        `van_phy_gpio.{h,cpp}`（GPIO16 中断只入队；tick 排空 + 总线空闲 300µs 关帧）、
+        `main.cpp` 的 `VanLogSink`（每一帧按 **van_replay 的行格式**打到串口 ——
+        车上抓的日志能直接粘回来回放）。
+        开关 `-DVAN_PHY_GPIO=1`（已加进 `[env:esp32s3]`）；没开时串口会明说
+        `van phy: stub(没启用 GPIO 接收…)`，**不会静默地什么都不做**。
+      **实测（宿主机）**：native 105 例（103 通过 / 2 跳过；新增 3 条边沿队列用例：
+      队列路径与直连路径解出同一帧、溢出丢新且计数不覆盖已读数据、复位）；
+      Node 318+156+71+**194**+11 全绿；esp32dev / esp32s3 / pcpreview 三个目标都编过。
+      上电前的万用表量法与接线顺序见 `PINOUT.md` 的「开箱当天：先量，再接」。
+      **顺手抓掉两个真会咬人的坑**：
+      ① 给 `partitions-s3.csv` 写注释时用了"★"（UTF-8 = E2 98 85）——
+        PlatformIO 用 `open(csv)`（**不指定编码**）读它，中文 Windows 按 GBK 解码，
+        于是**固件已经链接成功**却在最后一步 checkprogsize 抛 UnicodeDecodeError，
+        看起来像"编译失败"。那个文件自己的注释里就写着"keep this file pure ASCII"，
+        我先违反了。现在 `test-image-blob-build.js` 有守卫：两份分区表必须纯 ASCII、
+        无 BOM，且 theme/image 偏移一致、S3 的 image 必须更大。
+      ② 开机自检用了 `ESP.*` 与 `esp_partition.h` —— pcpreview（宿主机）没有这些，
+        预览构建直接编不过。已用 `ARDUINO` 判定圈成设备专属
+        （`DASH_DEVICE_SELFTEST`），同一份 main.cpp 两端都能编。
 - [x] **右屏第 4 档从"惊喜"改成"超速"**（用户提出："这个惊喜挡测试的时候
       是无法选出来的，是做什么用的"）
       原来它是**急加速瞬态**：相邻两次调用速度差 > 15 km/h/s 就亮 400ms。

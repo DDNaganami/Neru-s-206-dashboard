@@ -1,0 +1,52 @@
+# ESP32-S3 N16R8 partition table (16MB flash) -- used by [env:esp32s3]
+#
+# WHY A SECOND TABLE INSTEAD OF EDITING partitions.csv
+#   The classic ESP32 dev board only has 4MB, so its table cannot grow.
+#   Both boards must keep working, and the 1MB "image" partition of the
+#   classic board is exactly what this project outgrew.
+#
+# NOTE: THEME / IMAGE OFFSETS ARE DELIBERATELY IDENTICAL TO partitions.csv
+#   0x210000 (theme) and 0x254000 (image) are the numbers the web editor
+#   prints in its esptool command. Keeping them equal means ONE set of
+#   flash commands works on both boards -- no "which board was this for?"
+#   moment at the car. If you ever move them here, you must move them in
+#   tools/theme-editor (both pages) and in the docs at the same time.
+#
+# WHAT THE EXTRA 15MB BUYS: image 1MB -> 8MB
+#   At 1MB a complete set was 8 faces of 152x152 + one 480x480 background
+#   (993KB, 97%). At 8MB the same layout has ~7MB of slack, which is what
+#   makes these possible at all:
+#     - 240x240 faces (169KB each) + 480x480 background  = 1.8MB  -> fits easily
+#     - several full-screen background variants           = 450KB each
+#     - a multi-frame animated background (the "GIF" question):
+#       480x480 RGB565 = 450KB/frame -> ~17 frames at 8MB, or ~70 frames
+#       at 0x0A/I4 palettised (112KB/frame). Storage was the first wall,
+#       not CPU -- see ARCHITECTURE/ACCEPTANCE notes on animation.
+#
+# WHY app SLOTS ARE STILL 1MB, NOT BIGGER
+#   The firmware is ~660KB. 1MB per slot is 1.5x headroom and keeping them
+#   EQUAL is mandatory for OTA ("not enough space for OTA" otherwise).
+#   Enlarging them would only eat the space the images want.
+#
+# NOTE: coredump is written at a FIXED offset by the Arduino core in some
+#   versions. If coredumps ever fail, move it elsewhere (any free offset works).
+#
+# CRITICAL: sizes must stay in sync with
+#   - lib/themetool/image_blob.h   (IMAGE_PARTITION_BYTES; overridden per-env via
+#                                   -DIMAGE_PARTITION_BYTES in platformio.ini)
+#   - tools/theme-editor/image-blob-build.js (PARTITION_BYTES -- the editor's
+#                                   budget display; raise it when you target S3)
+#
+# NOTE: keep this file pure ASCII. PlatformIO's CSV reader decodes it with the
+# system codepage (GBK on Chinese Windows), so non-ASCII comments break the build
+# with UnicodeDecodeError; a UTF-8 BOM breaks it differently (first field empty).
+#
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x100000,
+app1,     app,  ota_1,   0x110000, 0x100000,
+theme,    data, 0x40,    0x210000, 0x4000,
+spiffs,   data, spiffs,  0x214000, 0x40000,
+image,    data, 0x41,    0x254000, 0x800000,
+coredump, data, coredump,0xa54000, 0x10000,

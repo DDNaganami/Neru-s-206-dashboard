@@ -1,4 +1,11 @@
 #include <Arduino.h>
+// ★ 开机自检与 esp_partition 只有**设备端**才有(宿主机没有 ESP.* / esp_partition.h)。
+//   用 ARDUINO 判定:真 Arduino 框架(esp32dev / esp32s3)会定义它,
+//   pcpreview 的宿主机桩不定义 —— 于是同一份 main.cpp 两端都能编。
+#if defined(ARDUINO)
+#include <esp_partition.h>
+#define DASH_DEVICE_SELFTEST 1
+#endif
 #include "data_service.h"
 #include "dash_display.h"
 #include "dash_ui.h"
@@ -14,12 +21,47 @@
 // 没接 OBD 时传 nullptr,只跑假数据。
 static VehicleDataService g_data(nullptr);
 
-// VAN 物理层:现在是桩(无硬件);SN65HVD230 到货后换成 VanPhyWire
-// (见 van_phy_wire.h),把 GPIO 边沿时间戳喂进去即可,数据层不用动。
-// 数据源不是 VanSink,用 VanSourceSink 转一层(见 van_phy.h);
-// sink 必须在 g_data 之后构造,所以依赖的是它内部的 vanSource()。
-static VanPhyStub g_van_phy;
+// VAN 物理层:默认是桩(无硬件)。
+//   ★ 收发器(SN65HVD230)到货后:编译时加 -DVAN_PHY_GPIO=1
+//     (见 platformio.ini 的 [env:esp32s3]),RO 接 GPIO16,DE/RE 接 GND。
+//   换成 VanPhyGpio 之后,数据层一行都不用改 —— 这正是当初把它抽成
+//   VanPhy 接口的目的(见 van_phy.h)。
+// 数据源不是 VanSink,用 VanSourceSink 转一层;而我们要**打印**每一帧,
+// 所以在中间再插一层 VanLogSink(见下)。
 static VanSourceSink g_van_sink(&g_data.vanSource());
+
+#if defined(VAN_PHY_GPIO)
+#include "van_phy_gpio.h"
+static VanPhyGpio g_van_phy;
+#else
+static VanPhyStub g_van_phy;
+#endif
+
+// 打印每一帧 VAN,格式**故意与 van_replay 的行格式一致**:
+//     VAN 824 18 F8 27 10 00 00 00
+// 于是"车上抓到的串口日志"可以直接粘回设备的串口(或喂给宿主机测试)来回放 ——
+// 抓帧、分析、复现用的是同一份文本,不用转换。
+// 校验不过的帧单独用 '# ' 开头打印(它不能拿去回放,但"有没有收到东西"要看它)。
+class VanLogSink : public VanSink {
+public:
+  // 只要 824(车速/转速)这一帧?先全打 —— 反查协议时缺的就是"别的帧长什么样"。
+  void onPacket(const VanPacket& pkt) override {
+    if (!pkt.fcs_ok) {
+      Serial.printf("# VAN 校验失败 iden=%03X len=%u\n", (unsigned)pkt.iden, (unsigned)pkt.len);
+    } else {
+      Serial.printf("VAN %03X", (unsigned)pkt.iden);
+      for (uint8_t i = 0; i < pkt.len; ++i) Serial.printf(" %02X", (unsigned)pkt.data[i]);
+      Serial.printf("   # cmd=%u ack=%u\n", (unsigned)pkt.cmd, (unsigned)pkt.ack);
+    }
+    if (next_) next_->onPacket(pkt);   // 转发给数据源:打印归打印,数据照收
+  }
+  void setNext(VanSink* n) { next_ = n; }
+
+private:
+  VanSink* next_ = nullptr;
+};
+
+static VanLogSink g_van_log;
 
 static uint32_t last_ui_ms = 0;
 static uint32_t last_status_ms = 0;
@@ -54,8 +96,46 @@ void setup() {
   // 开机握手行:刷机后靠它确认固件真的跑起来了(见 ACCEPTANCE.md)。
   // 放在最前面 —— 即使后面的初始化有问题,至少能看到这一行。
   Serial.println("206 dash ok");
+
+  // ---- 板子自检(换板/换芯片后第一眼要看的就是这几行)----
+  // 为什么值得占几行:手里有经典 ESP32 和 S3 N16R8 两块板,
+  // 而"刷进去了但跑的是另一块板的固件"、"买到的是 N8R2 而不是 N16R8"
+  // 这类问题在串口上**一眼就能看出来**,不写就得靠猜。
+  //   · PSRAM 那一行是"双 480×480 屏能不能做"的判据:报 0 就是没起来,
+  //     要么板子不是 R8,要么 memory_type 配错了(见 platformio.ini 的 [env:esp32s3])。
+  //   · Flash 大小决定分区表能不能用:16MB 的表刷到 4MB 板子上会直接起不来。
+  // ★ 整段是设备专属的(ESP.* / esp_partition 宿主机没有),见文件头的
+  //   DASH_DEVICE_SELFTEST 判定 —— pcpreview 编这一步会直接编不过。
+#if defined(DASH_DEVICE_SELFTEST)
+  Serial.printf("chip  : %s rev%d, %d 核 @ %u MHz\n",
+                ESP.getChipModel(), (int)ESP.getChipRevision(), (int)ESP.getChipCores(),
+                (unsigned)getCpuFrequencyMhz());
+  Serial.printf("flash : %u MB (IDE 编译目标 %u MB)\n",
+                (unsigned)(ESP.getFlashChipSize() / (1024u * 1024u)),
+                (unsigned)(IMAGE_PARTITION_BYTES / (1024u * 1024u)));
+  Serial.printf("psram : %u KB 可用 / %u KB 总\n",
+                (unsigned)(ESP.getFreePsram() / 1024u), (unsigned)(ESP.getPsramSize() / 1024u));
+  Serial.printf("heap  : %u KB\n", (unsigned)(ESP.getFreeHeap() / 1024u));
+  // 分区表里的图片分区大小 —— 与编译期的口径对不上就说明烧错了分区表
+  {
+    const esp_partition_t* ip = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x41, "image");
+    if (ip) {
+      Serial.printf("image : 分区 %u KB @ 0x%06X(编译期口径 %u KB)%s\n",
+                    (unsigned)(ip->size / 1024u), (unsigned)ip->address,
+                    (unsigned)(IMAGE_PARTITION_BYTES / 1024u),
+                    (ip->size == IMAGE_PARTITION_BYTES) ? "" : "  ← 不一致,检查分区表!");
+    } else {
+      Serial.println("image : 分区不存在(检查分区表)");
+    }
+  }
+#endif  // DASH_DEVICE_SELFTEST
+
   g_data.begin();
-  g_van_phy.setSink(&g_van_sink);   // 物理层 → 数据源(转一层,见 van_phy.h)
+  // 物理层 → 打印层 → 数据源。打印层只旁观,不影响数据流
+  // (抓帧时那行文本就是回放格式,见 VanLogSink 的说明)。
+  g_van_log.setNext(&g_van_sink);
+  g_van_phy.setSink(&g_van_log);
   g_van_phy.begin();
   // 主题:先默认值(由 dash_ui_init 兜底),再尝试用 flash 里的主题文件覆盖。
   // 加载失败不影响启动 —— 降级到默认主题继续跑。
@@ -77,7 +157,14 @@ void setup() {
       Serial.println("image none: 无图片资源,背景用主题纯色");
     }
   }
-  Serial.println("van phy: stub");   // 物理层类型,换实驱动后改这一行
+  // 物理层类型:抓帧时第一眼要确认的就是这一行 ——
+  // 写着 stub 就说明这次编译**没有**启用 GPIO 接收(-DVAN_PHY_GPIO=1),
+  // 那样即使收发器接好了也不会有任何帧进来。
+#if defined(VAN_PHY_GPIO)
+  // 具体引脚与"空闲关帧"的阈值由 VanPhyGpio::begin() 自己打印(见 van_phy_gpio.cpp)
+#else
+  Serial.println("van phy: stub(没启用 GPIO 接收;要抓帧请用 -DVAN_PHY_GPIO=1 编译)");
+#endif
 }
 
 void loop() {

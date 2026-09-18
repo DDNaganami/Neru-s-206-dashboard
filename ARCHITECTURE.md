@@ -232,6 +232,25 @@
   直到要开 18/48 号字体时才炸出 `lv_font_montserrat_48 was not declared`。
   加上之后 RAM 反而从 37.5% 降到 32.7%（lv_conf.h 里 LV_MEM_SIZE=48KB
   比 LVGL 默认的 64KB 小），Flash 从 51.3% 升到 62.6%（两套字体点阵）。
+- **分区表 CSV 必须纯 ASCII**（`partitions.csv` / `partitions-s3.csv`）：
+  PlatformIO 的 `builder/main.py` 用 `open(partitions_csv)` **不指定编码**读它，
+  中文 Windows 上就是 GBK 解码 —— 注释里一个"★"（UTF-8 = E2 98 85）足以让
+  构建在最后一步 `checkprogsize` 抛 UnicodeDecodeError。症状极具误导性：
+  固件**已经编译并链接成功**（"Successfully created … image"），
+  看着却像编译失败。BOM 也不行（第一个字段会读成空）。
+  由 `tools/theme-editor/test-image-blob-build.js` 的一条守卫盯着。
+- **四个构建目标**（2026-09-18 起）：
+  | env | 板子 | 分区表 | 用途 |
+  |---|---|---|---|
+  | `esp32dev` | 经典 ESP32（4MB，无 PSRAM） | `partitions.csv` | 廉价回归；**没有** PSRAM/双屏 |
+  | `esp32s3` | **ESP32-S3 N16R8**（16MB + 8MB OPI PSRAM） | `partitions-s3.csv` | **实车与真屏**；`-DVAN_PHY_GPIO=1` 开硬件收帧 |
+  | `native` | 宿主机 | — | 单元测试（`pio test -e native`） |
+  | `pcpreview` | 宿主机 | — | 渲染落帧做像素核对 |
+  两份分区表的 theme/image **偏移相同**（0x210000 / 0x254000），
+  所以 esptool 命令两块板通用；只有 image 的大小不同（1MB vs 8MB）。
+  设备专属代码（`ESP.*`、`esp_partition.h`、GPIO 中断）一律用 `ARDUINO`
+  判定圈起来 —— pcpreview 用的是宿主机桩，不定义 `ARDUINO`，
+  少了这层判定预览构建会直接编不过（踩过）。
 
 测试（宿主机，不烧板）：
 - test/test_dashcore/ 为 native 单元测试（Unity，当前 95 例，2 例需环境变量否则跳过），
