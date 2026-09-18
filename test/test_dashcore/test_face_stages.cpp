@@ -187,8 +187,8 @@ static void test_rpm_stages_use_real_landmarks(void) {
   //   免得以后有人"顺手"把它改成 kRpmMax 让模拟看起来走到头。
   TEST_ASSERT_TRUE_MESSAGE(rows[4]->rpm < kRpmMax,
                            "转速·红区 不该取表盘上限 7000 —— 发动机到不了,取断油附近");
-  TEST_ASSERT_TRUE_MESSAGE(rows[4]->rpm >= 6000.0f,
-                           "转速·红区 必须落进红区档(>=6000)");
+  TEST_ASSERT_TRUE_MESSAGE(rows[4]->rpm >= 5800.0f,
+                           "转速·红区 必须落进红区档(>=5800,断油 6300 之下)");
   // 运动/高转取中间,而且要各自真的落在"运动"/"高转"那一档
   TEST_ASSERT_TRUE(rows[2]->rpm > kRpmCruiseNominal);
   TEST_ASSERT_TRUE(rows[3]->rpm > rows[2]->rpm);

@@ -133,7 +133,7 @@
   //      这就是"每屏一套独立表情"的可执行定义。
   //
   // 转速五档用的是**实车地标**(怠速 900 / 稳定巡航 2000 / 运动 4200 /
-  // 高转 5200 / 红区 6500≈断油)—— 所以表里那一行就是车上真会出现的那一格。
+  // 高转 5200 / 红区 6200≈断油 6300 下方)—— 所以表里那一行就是车上真会出现的那一格。
   // 车速五档 0 / 45 / 80 / 115 / 140:分别落在 静止/市区/快速路/高速/超速。
   // 温度两组各三档:水温 60/85/115、进气 20/40/65。
   // ★ 每屏 5 个状态、表里就 5 条 —— 每个状态都能被"点"出来。
@@ -145,7 +145,7 @@
     { group: "rpm", level: "mid",     rpm: 2000, speed: 0,   coolant: 85,  intake: 35, left: "Cruise",  right: "Idle" },
     { group: "rpm", level: "high",    rpm: 4200, speed: 0,   coolant: 85,  intake: 35, left: "Sport",   right: "Idle" },
     { group: "rpm", level: "vhigh",   rpm: 5200, speed: 0,   coolant: 85,  intake: 35, left: "High",    right: "Idle" },
-    { group: "rpm", level: "redline", rpm: 6500, speed: 0,   coolant: 85,  intake: 35, left: "Redline", right: "Idle" },
+    { group: "rpm", level: "redline", rpm: 6200, speed: 0,   coolant: 85,  intake: 35, left: "Redline", right: "Idle" },
     // 车速:只驱动右屏;左屏恒为怠速(转速一直是怠速)
     { group: "speed", level: "low",   rpm: 900, speed: 0,   coolant: 85, intake: 35, left: "Idle", right: "Idle"      },
     { group: "speed", level: "mid",   rpm: 900, speed: 45,  coolant: 85, intake: 35, left: "Idle", right: "City"      },

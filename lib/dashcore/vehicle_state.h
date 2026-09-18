@@ -34,6 +34,6 @@ static constexpr float kRpmMax = 7000.0f;
 
 // 实车转速地标(用户提供,用来定表情分档):
 //   点火怠速 900 / 稳定巡航 2000 / 表盘上限 7000
-//   (断油点约 6500,待实车核对 —— 它决定红区该从哪里开始报)
+//   (断油点 6300,用户实测 2026-09-18 —— 红区阈值按它定,见 expression.cpp)
 static constexpr float kRpmIdleNominal   = 900.0f;
 static constexpr float kRpmCruiseNominal = 2000.0f;

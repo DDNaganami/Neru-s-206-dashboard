@@ -267,11 +267,16 @@ for (const st of FS_JS.STAGES) {
   ok(st.rpm <= FS_JS.MAX.rpm, st.group + "/" + st.level + " 的转速 " + st.rpm + " 没超上限");
   ok(st.speed <= FS_JS.MAX.speed, st.group + "/" + st.level + " 的车速 " + st.speed + " 没超上限");
 }
-// 红区那一档必须**就在上限附近**(否则"红区"这一档在真车上永远看不到)
+// 红区那一档必须**是这台车真能到的地方**(否则"红区"这一档在真车上永远看不到)。
+// ★ 判据是"落在红区档内 + 不超表盘上限",**不是**"接近表盘上限":
+//   表盘 7000 而断油 6300(用户实测),7000 那一段发动机根本到不了 ——
+//   红区行取 6200(断油下方)才有现实对应。上面 C 侧那条用例同样这么钉。
 {
   const red = FS_JS.stagesOf("rpm").filter(s => s.level === "redline")[0];
-  ok(red.rpm >= FS_JS.MAX.rpm * 0.9,
-     "红区档的转速 " + red.rpm + " 应该接近表盘上限 " + FS_JS.MAX.rpm);
+  ok(red.rpm > 0 && red.rpm <= FS_JS.MAX.rpm,
+     "红区档的转速 " + red.rpm + " 要在表盘上限 " + FS_JS.MAX.rpm + " 之内");
+  ok(red.rpm >= 5800 && red.rpm < 6300,
+     "红区档的转速 " + red.rpm + " 要落在红区档内(>=5800)、且在断油 6300 之下");
   eq(red.left, "Redline", "红区档的左屏期望是红区脸");
 }
 
