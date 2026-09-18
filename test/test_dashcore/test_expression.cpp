@@ -269,6 +269,33 @@ void test_overspeed_hysteresis(void) {
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport, (uint8_t)right_of(127.0f, 2200));
 }
 
+// ★ 超速优先于阶梯(2026-09-18 审核提出"依赖枚举数值顺序"这个隐患)
+//
+// 先说清楚**真实语义**,再钉住那个隐患:
+//   · 迟滞位亮着(>130 进入 / <=127 才退)时,无论阶梯给哪一档都必须显示超速;
+//   · 一旦掉到 <=127,迟滞位就地清掉,**该显示什么由阶梯决定** ——
+//     所以"一帧从 140 掉到 50"应当显示**市区**(不再超速就该收警告),这不是洞。
+//     (换数据源时 face_reset() 会把三条记忆一起清掉,README/头文件都写了。)
+//   · 隐患在于:City 的槽位号**大于** Overspeed(新档位一律追加在末尾),
+//     所以"谁数值大取谁"这种比较式写法是错的 —— 现在改成直接 return,
+//     这条用例把"槽位号大小与警告优先无关"这个前提也钉住。
+void test_overspeed_wins_over_ladder(void) {
+  TEST_ASSERT_TRUE_MESSAGE((uint8_t)Face::City > (uint8_t)Face::Overspeed,
+                           "City 追加在 Overspeed 之后:所以不能靠'谁数值大取谁'实现警告优先");
+
+  face_reset();
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Overspeed, (uint8_t)right_of(140.0f, 1000));
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Overspeed, (uint8_t)right_of(129.0f, 1100),
+                                  "129 在迟滞区里 → 继续亮超速(此时阶梯给的是'高速')");
+  // 掉到 <=127:迟滞位清掉,由阶梯决定 —— 一帧掉到 50 显示市区,这是**对的**
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::City, (uint8_t)right_of(50.0f, 1200),
+                                  "不再超速就该收警告;此时显示市区(阶梯结论)");
+  // 反向:从市区直接上到 140 也不会残留
+  face_reset();
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::City, (uint8_t)right_of(50.0f, 2000));
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Overspeed, (uint8_t)right_of(140.0f, 2100));
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport, (uint8_t)right_of(120.0f, 2200));
+}
 // 一次"猛加速"不该改变任何东西 —— 这是旧"惊喜"档被删掉的原因,
 // 留一条测试防止有人按加速度把瞬态加回来。
 void test_acceleration_does_not_change_face(void) {
@@ -338,6 +365,7 @@ void test_face_names(void) {
 void register_expression_tests(void) {
   RUN_TEST(test_left_follows_rpm_only);
   RUN_TEST(test_face_ladder_hysteresis);
+  RUN_TEST(test_overspeed_wins_over_ladder);
   RUN_TEST(test_right_follows_speed_only);
   RUN_TEST(test_coolant_never_affects_faces);
   RUN_TEST(test_two_screens_can_differ);

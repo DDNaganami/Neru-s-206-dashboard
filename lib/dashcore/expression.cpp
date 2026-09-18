@@ -25,8 +25,8 @@
 //   红区  5800(5880 进 / 5720 退)  —— **断油 6300(用户实测)**,留 420 转提前量
 //
 // 车速五档（右屏）:
-//   静止/挪车 <30(33 进 / 27 退) / 市区 30(68 进 / 62 退) /
-//   快速路 65(98 进 / 92 退) / 高速 95..130 / 超速 >130(<=127 退，单独一条迟滞)
+//   静止/挪车 <30 / 市区 30(33 进 / 27 退) / 快速路 65(68 进 / 62 退) /
+//   高速 95(98 进 / 92 退) .. 130 / 超速 >130(<=127 退，单独一条迟滞，不进阶梯)
 //   65 与 95 都落在**限速值的空档**里（60↔70、90↔100），
 //   常见定速巡航点（50/80/110/120）不会贴着边界 —— 再加 3km/h 迟滞兜底。
 //
@@ -113,11 +113,15 @@ static Face speed_face(float speed_kmh) {
   else if (speed_kmh <= kSpeedOverBack) g_overspeed = false;
 
   g_speed_stage = ladderStep(speed_kmh, kSpeedThresholds, 3, kSpeedHyst, g_speed_stage);
-  Face f = kSpeedLadder[g_speed_stage];
-  // 迟滞位与阶梯结论**取更严的那个**:车还在 128~130 之间时阶梯可能已经
-  // 退回"高速",但警告应当继续亮到 127 以下。
-  if (g_overspeed && (uint8_t)f < (uint8_t)Face::Overspeed) f = Face::Overspeed;
-  return f;
+  // ★ 超速优先**直接返回**,不做"谁数值大取谁"的比较(2026-09-18 审核指出):
+  //   原先写的是 `if (g_overspeed && (uint8_t)f < (uint8_t)Face::Overspeed)`,
+  //   那等于把"警告优先"偷偷建立在**枚举数值顺序**上。而现在 City=6 是追加在
+  //   Overspeed=4 **后面**的 → 车速一帧从 140 掉到 50(换数据源、或收到一帧坏值)
+  //   时阶梯给 City(6),比较就失效,警告位还亮着却显示"市区"脸 ✗
+  //   (真车连续掉速必然经过 127 以下,所以这不是车上的洞 —— 但"依赖枚举顺序"
+  //    这种耦合迟早会在加档位时咬人,不如直接写清楚:警告优先。)
+  if (g_overspeed) return Face::Overspeed;
+  return kSpeedLadder[g_speed_stage];
 }
 
 FaceSet face_update(const VehicleState& s, uint32_t now) {
