@@ -26,5 +26,14 @@ void sim_update(VehicleState& s, uint32_t now_ms) {
   if (s.rpm > kRpmMax) s.rpm = kRpmMax;
 
   s.coolant_c = 85 + 8 * sinf(t * 0.05f);
+
+  // 进气温度:假数据里让它**从环境温度慢慢升到热浸**再回落 ——
+  // 这是真车上真实的形态(冷启动≈环境温度,堵车时进气被机舱烤热到 60~70℃),
+  // 而且这样能让速度表那条副弧在预览里真的从低到高走一遍。
+  // 用两条不同周期的波叠加:慢的当"环境温度",快的当"热浸/迎面风"。
+  const float ambient = 22.0f + 6.0f * sinf(t * 0.017f);   // 环境温度慢漂移
+  const float heatSoak = 9.0f * (0.5f * (sinf(t * 0.06f) + 1.0f));
+  s.intake_c = ambient + heatSoak;
+
   s.fuel_pct = 70;
 }

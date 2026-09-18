@@ -28,13 +28,15 @@ VehicleState VehicleDataService::update(uint32_t now_ms) {
   status_.speed = FieldSource::Sim;
   status_.rpm = FieldSource::Sim;
   status_.coolant = FieldSource::Sim;
+  status_.intake = FieldSource::Sim;
   status_.fuel = FieldSource::Sim;
   status_.gear = FieldSource::Sim;
   status_.speed_age_ms = UINT32_MAX;
   status_.rpm_age_ms = UINT32_MAX;
   status_.coolant_age_ms = UINT32_MAX;
+  status_.intake_age_ms = UINT32_MAX;
 
-  // 2) K 线 OBD:转速 / 水温(高优先级,按字段独立超时:
+  // 2) K 线 OBD:转速 / 水温 / 进气温度(高优先级,按字段独立超时:
   //    转速断了不影响水温继续用 OBD,反之亦然)
   obd_.tick(now_ms);
   if (obd_.enabled() && obd_.hasRpm() && fresh(obd_.lastRpmMs(), now_ms)) {
@@ -46,6 +48,14 @@ VehicleState VehicleDataService::update(uint32_t now_ms) {
     state_.coolant_c = obd_.coolant();
     status_.coolant = FieldSource::Obd;
     status_.coolant_age_ms = now_ms - obd_.lastCoolantMs();
+  }
+  // ★ 进气温度只有 OBD 这一个真源(206 没有 VAN 上的进气温度,VAN 落点也没这项);
+  //   拿不到就留在假数据上,和车速缺 VAN 时的处理一致。
+  //   它**不参与表情**(和冷却液一样只驱动弧 + 数字),所以回退不会造成"脸乱变"。
+  if (obd_.enabled() && obd_.hasIntake() && fresh(obd_.lastIntakeMs(), now_ms)) {
+    state_.intake_c = obd_.intake();
+    status_.intake = FieldSource::Obd;
+    status_.intake_age_ms = now_ms - obd_.lastIntakeMs();
   }
 
   // 3) VAN:车速(高优先级);转速作为 OBD 缺失时的补充

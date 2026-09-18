@@ -602,10 +602,10 @@ function cloneTheme(o) { return JSON.parse(JSON.stringify(o)); }
 function hexOf(n) { return "#" + (n & 0xFFFFFF).toString(16).padStart(6, "0").toUpperCase(); }
 function unhexOf(s) { return parseInt(String(s).replace("#", ""), 16) & 0xFFFFFF; }
 
-// 兜底 = 固件默认主题里"本页用得到的那部分"(底色 + 三条弧)。
+// 兜底 = 固件默认主题里"本页用得到的那部分"(底色 + 四条弧)。
 // 与 lib/themetool/ui_theme.h 的 theme_set_defaults() 一致，
 // 由 test-theme-json.js 逐字段对账(这几处副本不许跑偏)。
-// 字段名与主题里一样(kind: 0=车速 1=转速 2=水温)。
+// 字段名与主题里一样(kind: 0=车速 1=转速 2=水温 3=进气温度)。
 const ARC_FALLBACK = {
   bg_color: 0x141414,
   screens: [
@@ -617,11 +617,13 @@ const ARC_FALLBACK = {
     ] },
     { arcs: [
       { kind: 0, start_deg: 135, end_deg: 405, radius: 205, width: 24,
-        track_color: 0x232323, track_opa: 153, value_color: 0x39C5FF }    // 车速
+        track_color: 0x232323, track_opa: 153, value_color: 0x39C5FF },   // 车速
+      { kind: 3, start_deg: 0, end_deg: 180, radius: 168, width: 10,
+        track_color: 0x232323, track_opa: 153, value_color: 0xFFB020, reverse: 1 }  // 进气温度(镜像)
     ] }
   ]
 };
-const ARC_KIND_LABEL = ["车速", "转速", "水温"];
+const ARC_KIND_LABEL = ["车速", "转速", "水温", "进气温度"];
 const SCREEN_LABEL = ["左屏(转速表)", "右屏(速度表)"];
 
 // 当前主题对象(整份保留:读进来是什么样就什么样，只改本页管的字段) + 来源说明

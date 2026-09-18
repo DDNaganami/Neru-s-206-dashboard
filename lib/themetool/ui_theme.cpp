@@ -69,6 +69,10 @@ void theme_clamp(Theme& t) {
     t.coolant_min_c = 60.0f;
     t.coolant_max_c = 130.0f;
   }
+  if (t.intake_max_c <= t.intake_min_c) {
+    t.intake_min_c = 0.0f;
+    t.intake_max_c = 80.0f;
+  }
   // 开机动画时长在 boot_anim.cpp 里会当除数用,0 会直接除零崩掉。
   if (t.boot_fade_ms == 0)        t.boot_fade_ms = 1;
   if (t.boot_sweep_rise_ms == 0)  t.boot_sweep_rise_ms = 1;
@@ -88,7 +92,7 @@ void theme_clamp(Theme& t) {
     sc.show_face = sc.show_face ? 1 : 0;
     for (uint8_t i = 0; i < sc.arc_count; ++i) {
       ArcStyle& a = sc.arcs[i];
-      if ((uint8_t)a.kind > (uint8_t)ArcKind::Coolant) a.kind = ArcKind::Speed;
+      if ((uint8_t)a.kind > (uint8_t)ArcKind::Intake) a.kind = ArcKind::Speed;
       if (a.radius < 10)  a.radius = 10;
       if (a.radius > 240) a.radius = 240;
       if (a.width < 1)    a.width = 1;
@@ -109,8 +113,11 @@ void theme_clamp(Theme& t) {
   if (t.readout.unit_cy  > 119) t.readout.unit_cy  = 119;
   if (t.readout.coolant_cy < 200) t.readout.coolant_cy = 200;
   if (t.readout.coolant_cy > 470) t.readout.coolant_cy = 470;
+  if (t.readout.intake_cy  < 200) t.readout.intake_cy  = 200;
+  if (t.readout.intake_cy  > 470) t.readout.intake_cy  = 470;
   t.readout.show_units   = t.readout.show_units ? 1 : 0;
   t.readout.show_coolant = t.readout.show_coolant ? 1 : 0;
+  t.readout.show_intake  = t.readout.show_intake ? 1 : 0;
 }
 
 // theme_after_load 已并入 theme_parse_json(它直接对传进来的对象调 theme_clamp)。

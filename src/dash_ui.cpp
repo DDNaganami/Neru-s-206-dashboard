@@ -27,11 +27,13 @@ struct ScreenUi {
   // 数字读数(转速/速度大数字 + 单位 + 水温)
   lv_obj_t* digit_lbl = nullptr;
   lv_obj_t* unit_lbl = nullptr;
-  lv_obj_t* coolant_lbl = nullptr;
+  lv_obj_t* coolant_lbl = nullptr;       // 左屏副表:水温
+  lv_obj_t* intake_lbl = nullptr;        // 右屏副表:进气温度
   bool unit_set = false;                 // 单位文本写过没有(见 readout_apply)
   ArcKind digit_kind = ArcKind::Speed;   // 大数字跟的是哪条弧(建屏时定)
   int32_t digit_val = INT32_MIN;         // 上次显示的值:不变就不 set_text
   int32_t coolant_val = INT32_MIN;
+  int32_t intake_val = INT32_MIN;
 };
 
 static ScreenUi g_ui[2];
@@ -257,9 +259,20 @@ static bool screen_has_kind(const ScreenTheme& cfg, ArcKind k) {
   return false;
 }
 
+// 副表 = 不占大数字的"小表":水温(左屏)、进气温度(右屏)。
+// 它们只驱动自己那条内圈弧 + 屏底部一个数字。
+//
+// ★ 为什么要有这个判定函数,而不是到处写 `!= ArcKind::Coolant`:
+//   大数字的规则是"取该屏第一条**非副表**的弧"。加进气温度时如果只加
+//   `!= Coolant`,那么一条 [Intake, Speed] 顺序的屏会让速度表的大数字
+//   显示成进气温度 —— 不报错、只是读数变错,很难查。所以副表要有个统一定义。
+static bool is_aux_kind(ArcKind k) {
+  return k == ArcKind::Coolant || k == ArcKind::Intake;
+}
+
 static ArcKind primary_kind(const ScreenTheme& cfg) {
   for (uint8_t i = 0; i < cfg.arc_count && i < kMaxArcs; ++i) {
-    if (cfg.arcs[i].kind != ArcKind::Coolant) return cfg.arcs[i].kind;
+    if (!is_aux_kind(cfg.arcs[i].kind)) return cfg.arcs[i].kind;
   }
   return (cfg.arc_count > 0) ? cfg.arcs[0].kind : ArcKind::Speed;
 }
@@ -273,11 +286,13 @@ static const char* unit_text(ArcKind k) {
 }
 
 // 显示值。转速取到 10 位:OBD 的转速本身就在几十转上下抖,个位纯噪声。
+// 副表(水温/进气温度)都取整到 1℃ —— 它们是慢变量,小数位是噪声。
 static int32_t readout_value(ArcKind k, const ArcDashView& v) {
   switch (k) {
-    case ArcKind::Speed: return (int32_t)lroundf(v.speed_kmh);
-    case ArcKind::Rpm:   return (int32_t)(lroundf(v.rpm / 10.0f) * 10.0f);
-    default:             return (int32_t)lroundf(v.coolant_c);
+    case ArcKind::Speed:  return (int32_t)lroundf(v.speed_kmh);
+    case ArcKind::Rpm:    return (int32_t)(lroundf(v.rpm / 10.0f) * 10.0f);
+    case ArcKind::Intake: return (int32_t)lroundf(v.intake_c);
+    default:              return (int32_t)lroundf(v.coolant_c);
   }
 }
 
@@ -311,13 +326,22 @@ static void build_readout(lv_obj_t* parent, const ScreenTheme& cfg, ScreenUi& ui
                                      lv_color_hex(READOUT_UNIT_COLOR), READOUT_UNIT_CY);
   }
 
-  // 水温数字:该屏真的有水温弧、主题也允许,才建。
-  // 若这屏唯一那条弧就是水温(大数字已经在显示水温了),就别在底下重复一遍。
+  // 副表数字:该屏真的有这条弧、主题也允许,才建。
+  // 若这屏唯一那条弧就是副表(大数字已经在显示它了),就别在底下重复一遍。
   if (READOUT_SHOW_COOLANT && pk != ArcKind::Coolant &&
       screen_has_kind(cfg, ArcKind::Coolant)) {
     ui.coolant_lbl = make_readout_label(parent, READOUT_UNIT_FONT,
                                         lv_color_hex(READOUT_COOLANT_COLOR),
                                         READOUT_COOLANT_CY);
+  }
+  // 进气温度同上一套(右屏副表)。两条副表的位置字段是**分开的**
+  // (coolant_cy / intake_cy),所以万一有人把两条内圈弧放到同一屏,
+  // 也能各自挪开,不会叠在一起。
+  if (READOUT_SHOW_INTAKE && pk != ArcKind::Intake &&
+      screen_has_kind(cfg, ArcKind::Intake)) {
+    ui.intake_lbl = make_readout_label(parent, READOUT_UNIT_FONT,
+                                       lv_color_hex(READOUT_INTAKE_COLOR),
+                                       READOUT_INTAKE_CY);
   }
   // ★ 标签一律以空文本创建:开机动画期间 dash_ui_render 会早退,
   //   于是"扫表时数字栏是空的",扫完第一帧才出现 —— 这正是想要的效果。
@@ -346,6 +370,14 @@ static void readout_apply(ScreenUi& ui, const ArcDashView& v) {
       ui.coolant_val = cv;
       lv_label_set_text_fmt(ui.coolant_lbl, "%d\xC2\xB0""C", (int)cv);   // 88°C
       lv_obj_align(ui.coolant_lbl, LV_ALIGN_CENTER, 0, ts(READOUT_COOLANT_CY - 240));
+    }
+  }
+  if (ui.intake_lbl) {
+    const int32_t iv = (int32_t)lroundf(v.intake_c);
+    if (iv != ui.intake_val) {
+      ui.intake_val = iv;
+      lv_label_set_text_fmt(ui.intake_lbl, "%d\xC2\xB0""C", (int)iv);    // 34°C
+      lv_obj_align(ui.intake_lbl, LV_ALIGN_CENTER, 0, ts(READOUT_INTAKE_CY - 240));
     }
   }
 }
@@ -390,6 +422,9 @@ static float arc_progress(const ArcStyle& a, const ArcDashView& v) {
     case ArcKind::Rpm:     t = v.rpm_t; break;
     case ArcKind::Coolant:
       t = (v.coolant_c - kCoolantMinC) / (kCoolantMaxC - kCoolantMinC);
+      break;
+    case ArcKind::Intake:
+      t = (v.intake_c - kIntakeMinC) / (kIntakeMaxC - kIntakeMinC);
       break;
   }
   if (t < 0.0f) t = 0.0f;

@@ -100,18 +100,23 @@ const BG_OFF = 120, FACE_OFF = 190, TOL = 12;
 //   换个字号或改一个字就红。而"这一带里有没有画出足够多的字色像素"
 //   既能证明"读出来了",又不会因为字形细节误报。
 // 期望颜色来自主题默认值(ui_theme.h 的 theme_set_defaults):
-//   数字 0xFFFFFF(白)、单位 0x9AA0A6(灰)、水温 0x7CFF6B(绿)
+//   数字 0xFFFFFF(白)、单位 0x9AA0A6(灰)、水温 0x7CFF6B(绿)、进气温度 0xFFB020(琥珀)
 // ------------------------------------------------------------
 const READOUT_DIGIT   = { r: 0xFF, g: 0xFF, b: 0xFF };
 const READOUT_UNIT    = { r: 0x9A, g: 0xA0, b: 0xA6 };
 const READOUT_COOLANT = { r: 0x7C, g: 0xFF, b: 0x6B };
+const READOUT_INTAKE  = { r: 0xFF, g: 0xB0, b: 0x20 };
 
-// 水温**弧**的几何(默认主题):radius 168、width 10,LVGL 把带宽往里长 →
-// 弧带占半径 [158, 168]。
-// ★ 它和"水温数字"是同一个绿色,所以扫数字时必须按**半径**把它分开,
+// 副表(内圈)弧的几何(默认主题):两条都是 radius 168、width 10,
+// LVGL 把带宽往里长 → 弧带占半径 [158, 168]。
+// ★ 它和"副表数字"是同一个颜色,所以扫数字时必须按**半径**把它分开,
 //   光用矩形框不行 —— 实测踩过:弧从数字两侧绕过来,外接框从 40×13 变成 81×19。
 const COOLANT_ARC_INNER_R = 168 - 10;   // = 158
 const COOLANT_ARC_OUTER_R = 168;        // = 168
+// 进气温度弧与水温弧几何完全相同(这是产品契约,两条副表左右对称),
+// 所以共用同一组半径;分开起名只是让读数处读起来清楚。
+const INTAKE_ARC_INNER_R = COOLANT_ARC_INNER_R;
+const INTAKE_ARC_OUTER_R = COOLANT_ARC_OUTER_R;
 
 // 在矩形带里数"接近某颜色"的像素
 function countNear(img, x0, y0, x1, y1, want, tol) {
@@ -357,6 +362,8 @@ function main() {
     if (side === "left") {
       // 水温数字只在**转速表(左屏)**上 —— 这条同时钉住了"水温在哪一屏"
       addBand("水温带(绿字已画出)", BAND_COOLANT, READOUT_COOLANT, 0x40, 8);
+      // 左屏**不该有进气温度数字**:两条副表各在自己屏上,互串就是屏↔表映射错了
+      addBand("左屏不该有进气温度数字", BAND_COOLANT, READOUT_INTAKE, 0x30, undefined, 0);
 
       // 数字:只统计**水温弧内半径以内**的绿像素(弧和数字同为绿色,几何分家)
       const insideArc = (r) => r <= COOLANT_ARC_INNER_R - 3;
@@ -409,8 +416,58 @@ function main() {
         });
       }
     } else {
-      // 右屏(速度表)没有水温弧,就不该有水温数字
+      // 右屏(速度表)**不该有水温数字** —— 两条副表各在自己屏上:
+      // 左屏水温室温、右屏进气温度。互串了就说明屏↔表映射错了。
       addBand("右屏不该有水温数字", BAND_COOLANT, READOUT_COOLANT, 0x40, undefined, 0);
+
+      // ---- 进气温度(右屏副表,2026-09 加,颜色琥珀 0xFFB020)----
+      addBand("进气温度带(琥珀字已画出)", BAND_COOLANT, READOUT_INTAKE, 0x30, 8);
+
+      const insideArcIn = (r) => r <= INTAKE_ARC_INNER_R - 3;
+      const iBox = inkBox(img, 120, 340, 360, 430, READOUT_INTAKE, 0x30, insideArcIn);
+      checks.push({
+        name: "进气温度墨迹范围(弧内,表盘底部)", x: iBox.minX, y: iBox.minY,
+        got: { r: iBox.w, g: iBox.h, b: iBox.n },
+        expect: { r: 0, g: 0, b: 0 },
+        ok: iBox.n > 0 && iBox.minY >= 360 && iBox.maxY <= 402,
+        text: "外框 x[" + iBox.minX + ".." + iBox.maxX + "] y[" + iBox.minY + ".." + iBox.maxY +
+              "] 宽" + iBox.w + " 高" + iBox.h + " 命中" + iBox.n
+      });
+
+      const onArcIn = (r) => r >= INTAKE_ARC_INNER_R - 1 && r <= INTAKE_ARC_OUTER_R + 1;
+      const iaBox = inkBox(img, 120, 340, 360, 430, READOUT_INTAKE, 0x30, onArcIn);
+      const arcInnerYIn = 240 + INTAKE_ARC_INNER_R;
+      checks.push({
+        name: "进气温度弧在数字外侧绕行", x: 240, y: arcInnerYIn,
+        got: { r: iaBox.n, g: iBox.maxY, b: 0 },
+        expect: { r: 0, g: 0, b: 0 },
+        ok: iaBox.n > 0 && iBox.maxY < arcInnerYIn,
+        text: "弧带上命中 " + iaBox.n + " 像素；数字最低点 y=" + iBox.maxY +
+              " < 弧内沿 y=" + arcInnerYIn + "（留 " + (arcInnerYIn - iBox.maxY) + " 像素）"
+      });
+
+      // ★ 镜像:进气温度弧也是 reverse=1 —— 点亮区从**左端(9 点钟)**起涨。
+      //   仿真进气温度 22~37℃ → t=(22..37-0)/80 = 0.275..0.46 →
+      //   点亮区 [180-180t, 180] = 至少 [97°,180°],所以 170° 一定亮、15° 一定不亮。
+      {
+        const arcPtIn = (deg) => {
+          const rad = deg * Math.PI / 180;
+          const r = (INTAKE_ARC_INNER_R + INTAKE_ARC_OUTER_R) / 2;
+          return img.px(Math.round(240 + r * Math.cos(rad)),
+                        Math.round(240 + r * Math.sin(rad)));
+        };
+        const leftPtIn = arcPtIn(170);
+        const rightPtIn = arcPtIn(15);
+        const isLitIn = (c) => dist(c, READOUT_INTAKE) <= 0x50;
+        const litLeftIn = isLitIn(leftPtIn), litRightIn = isLitIn(rightPtIn);
+        checks.push({
+          name: "进气温度弧从左端起涨(镜像)", x: 240, y: 240,
+          got: leftPtIn, expect: READOUT_INTAKE,
+          ok: litLeftIn && !litRightIn,
+          text: "左端(170°) " + hex(leftPtIn) + (litLeftIn ? " = 点亮" : " = 未亮") +
+                "；右端(15°) " + hex(rightPtIn) + (litRightIn ? " = 点亮(方向反了)" : " = 轨道")
+        });
+      }
     }
   } else {
     // 开机扫表期间:数字栏必须是空的(标签还是空文本)

@@ -134,7 +134,7 @@ void readArc(Scan& s, ArcStyle& a) {
     uint32_t u = 0; double d = 0;
     if (keyIs(k, klen, "kind")) {
       if (s.uintVal(&u)) {
-        a.kind = (ArcKind)(u <= (uint32_t)ArcKind::Coolant ? u : 0u);
+        a.kind = (ArcKind)(u <= (uint32_t)ArcKind::Intake ? u : 0u);
       }
       return true;
     }
@@ -233,6 +233,8 @@ bool theme_parse_json(const char* json, uint32_t len, Theme& t) {
     if (keyIs(k, klen, "face_ink"))        { if (s.uintVal(&u)) t.face_ink = u; return true; }
     if (keyIs(k, klen, "coolant_min_c"))   { if (s.number(&d)) t.coolant_min_c = (float)d; return true; }
     if (keyIs(k, klen, "coolant_max_c"))   { if (s.number(&d)) t.coolant_max_c = (float)d; return true; }
+    if (keyIs(k, klen, "intake_min_c"))    { if (s.number(&d)) t.intake_min_c = (float)d; return true; }
+    if (keyIs(k, klen, "intake_max_c"))    { if (s.number(&d)) t.intake_max_c = (float)d; return true; }
     if (keyIs(k, klen, "boot_fade_ms"))        { if (s.uintVal(&u)) t.boot_fade_ms = u; return true; }
     if (keyIs(k, klen, "boot_sweep_start_ms")) { if (s.uintVal(&u)) t.boot_sweep_start_ms = u; return true; }
     if (keyIs(k, klen, "boot_stagger_ms"))     { if (s.uintVal(&u)) t.boot_stagger_ms = u; return true; }
@@ -267,13 +269,16 @@ bool theme_parse_json(const char* json, uint32_t len, Theme& t) {
         if (keyIs(rk, rkl, "digit_color"))   { if (s.uintVal(&u)) t.readout.digit_color = u; return true; }
         if (keyIs(rk, rkl, "unit_color"))    { if (s.uintVal(&u)) t.readout.unit_color = u; return true; }
         if (keyIs(rk, rkl, "coolant_color")) { if (s.uintVal(&u)) t.readout.coolant_color = u; return true; }
+        if (keyIs(rk, rkl, "intake_color"))  { if (s.uintVal(&u)) t.readout.intake_color = u; return true; }
         if (keyIs(rk, rkl, "digit_font"))    { if (s.number(&d)) t.readout.digit_font = (uint8_t)d; return true; }
         if (keyIs(rk, rkl, "unit_font"))     { if (s.number(&d)) t.readout.unit_font = (uint8_t)d; return true; }
         if (keyIs(rk, rkl, "digit_cy"))      { if (s.number(&d)) t.readout.digit_cy = (int32_t)d; return true; }
         if (keyIs(rk, rkl, "unit_cy"))       { if (s.number(&d)) t.readout.unit_cy = (int32_t)d; return true; }
         if (keyIs(rk, rkl, "coolant_cy"))    { if (s.number(&d)) t.readout.coolant_cy = (int32_t)d; return true; }
+        if (keyIs(rk, rkl, "intake_cy"))     { if (s.number(&d)) t.readout.intake_cy = (int32_t)d; return true; }
         if (keyIs(rk, rkl, "show_units"))    { if (s.uintVal(&u)) t.readout.show_units = (uint8_t)(u ? 1 : 0); return true; }
         if (keyIs(rk, rkl, "show_coolant"))  { if (s.uintVal(&u)) t.readout.show_coolant = (uint8_t)(u ? 1 : 0); return true; }
+        if (keyIs(rk, rkl, "show_intake"))   { if (s.uintVal(&u)) t.readout.show_intake = (uint8_t)(u ? 1 : 0); return true; }
         return false;
       });
       return true;

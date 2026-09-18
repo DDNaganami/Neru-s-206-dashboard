@@ -19,6 +19,42 @@ void test_sim_only(void) {
   TEST_ASSERT_TRUE(svc.status().speed == FieldSource::Sim);
   TEST_ASSERT_TRUE(svc.status().rpm == FieldSource::Sim);
   TEST_ASSERT_TRUE(svc.status().coolant == FieldSource::Sim);
+  // 进气温度也只有假数据源(206 的 VAN 上没有这一项)
+  TEST_ASSERT_TRUE(svc.status().intake == FieldSource::Sim);
+}
+
+// 进气温度(010F):OBD 接管 → 独立超时回退,且**不影响转速/水温**。
+// 它是速度表的副表,这条同时钉住"加水温表时踩过的那个坑":
+// 三路必须各记各的时间戳(旧实现共用时间戳 → 一路有数据就把另外两路也判成 OBD)。
+void test_obd_intake_takeover_per_field(void) {
+  FakeSerial fake;
+  VehicleDataService svc(&fake);
+  test_set_millis(0);
+  svc.begin();
+
+  uint32_t t = 1000;
+  svc.update(t);
+  TEST_ASSERT_TRUE(svc.status().intake == FieldSource::Sim);
+
+  // 推进状态机直到发出 010F(轮询表第 3 格,所以要等两轮)
+  for (int i = 0; i < 90 && !fake.sent("010F\r"); ++i) {
+    t += 50;
+    svc.update(t);
+  }
+  TEST_ASSERT_TRUE(fake.sent("010F\r"));
+
+  fake.feed("41 0F 3C\r");     // 0x3C = 60 → 20℃
+  t += 10;
+  const VehicleState st = svc.update(t);
+  TEST_ASSERT_TRUE(svc.status().intake == FieldSource::Obd);
+  TEST_ASSERT_EQUAL_FLOAT(20.0f, st.intake_c);
+  // 只喂了进气温度:转速/水温仍走假数据 —— 这就是"按字段独立"
+  TEST_ASSERT_TRUE(svc.status().rpm == FieldSource::Sim);
+  TEST_ASSERT_TRUE(svc.status().coolant == FieldSource::Sim);
+
+  // 断线 3.5 秒 → 进气温度也回退 Sim(不会有"停在 20℃ 不动"的僵尸值)
+  advance(svc, t, 3500);
+  TEST_ASSERT_TRUE(svc.status().intake == FieldSource::Sim);
 }
 
 void test_obd_rpm_takeover_per_field_and_fallback(void) {
@@ -105,6 +141,7 @@ void test_obd_rpm_beats_van(void) {
 
 void register_data_service_tests(void) {
   RUN_TEST(test_sim_only);
+  RUN_TEST(test_obd_intake_takeover_per_field);
   RUN_TEST(test_obd_rpm_takeover_per_field_and_fallback);
   RUN_TEST(test_van_speed_and_fallback);
   RUN_TEST(test_obd_rpm_beats_van);

@@ -25,8 +25,10 @@ void test_obd_init_sequence(void) {
   TEST_ASSERT_TRUE(drive_until_tx(fake, obd, t, "ATL0\r", 30));
   TEST_ASSERT_TRUE(drive_until_tx(fake, obd, t, "ATH0\r", 30));
   TEST_ASSERT_TRUE(drive_until_tx(fake, obd, t, "010C\r", 30));
-  // 轮询:010C 之后轮到 0105
+  // 轮询:010C → 0105 → 010F(进气温度)→ 回到 010C
   TEST_ASSERT_TRUE(drive_until_tx(fake, obd, t, "0105\r", 30));
+  TEST_ASSERT_TRUE(drive_until_tx(fake, obd, t, "010F\r", 30));
+  TEST_ASSERT_TRUE(drive_until_tx(fake, obd, t, "010C\r", 30));
 }
 
 void test_obd_rpm_coolant_parse(void) {
@@ -53,6 +55,45 @@ void test_obd_rpm_coolant_parse(void) {
   TEST_ASSERT_TRUE(obd.hasCoolant());
   TEST_ASSERT_EQUAL_FLOAT(20.0f, obd.coolant());
   TEST_ASSERT_EQUAL_UINT32(t, obd.lastCoolantMs());
+}
+
+// 进气温度(010F):与水温同形,单独喂一帧看它进没进状态。
+void test_obd_intake_parse(void) {
+  FakeSerial fake;
+  ObdSource obd(&fake);
+  test_set_millis(0);
+  obd.begin();
+
+  uint32_t t = 1000;
+  TEST_ASSERT_TRUE(drive_until_tx(fake, obd, t, "010F\r", 60));
+  TEST_ASSERT_FALSE(obd.hasIntake());          // 还没喂数据
+
+  fake.feed("41 0F 2A\r");                     // 0x2A = 42 → 2℃
+  t += 10;
+  obd.tick(t);
+  TEST_ASSERT_TRUE(obd.hasIntake());
+  TEST_ASSERT_EQUAL_FLOAT(2.0f, obd.intake());
+  TEST_ASSERT_EQUAL_UINT32(t, obd.lastIntakeMs());
+  // 三路互不干扰:喂了进气温度不等于喂了水温/转速
+  TEST_ASSERT_FALSE(obd.hasCoolant());
+  TEST_ASSERT_FALSE(obd.hasRpm());
+}
+
+// ★ ECU 不支持 010F 时的真实形态:ELM327 回 "NO DATA"。
+//   这条必须**什么都不改**(hasIntake 保持 false),否则会出现"进气 0℃"的假读数。
+void test_obd_intake_no_data_keeps_invalid(void) {
+  FakeSerial fake;
+  ObdSource obd(&fake);
+  test_set_millis(0);
+  obd.begin();
+
+  uint32_t t = 1000;
+  TEST_ASSERT_TRUE(drive_until_tx(fake, obd, t, "010F\r", 60));
+  fake.feed("NO DATA\r");
+  t += 10;
+  obd.tick(t);
+  TEST_ASSERT_FALSE(obd.hasIntake());
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, obd.intake());
 }
 
 void test_obd_bad_rpm_rejected(void) {
@@ -85,6 +126,8 @@ void test_obd_disabled(void) {
 void register_obd_source_tests(void) {
   RUN_TEST(test_obd_init_sequence);
   RUN_TEST(test_obd_rpm_coolant_parse);
+  RUN_TEST(test_obd_intake_parse);
+  RUN_TEST(test_obd_intake_no_data_keeps_invalid);
   RUN_TEST(test_obd_bad_rpm_rejected);
   RUN_TEST(test_obd_disabled);
 }

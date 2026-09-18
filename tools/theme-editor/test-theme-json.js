@@ -248,7 +248,9 @@ section("三处默认主题必须一致(ui_theme.h / theme-default.json / ARC_FA
   // ---- 1) ui_theme.h:把默认主题的几条弧抠出来 ----
   // 末尾的 reverse 是可选的(C++ 聚合初始化可以少写,缺省即 0)
   const arcRe = /([LR])\.arcs\[(\d+)\]\s*=\s*ArcStyle\{\s*ArcKind::(\w+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*lv_color_hex\((0x[0-9A-Fa-f]+)\)\s*,\s*(\d+)\s*,\s*lv_color_hex\((0x[0-9A-Fa-f]+)\)\s*(?:,\s*(\d+)\s*)?\}/g;
-  const kindOf = { Speed: 0, Rpm: 1, Coolant: 2 };
+  // kind 的数字**只能往后加**(主题 JSON 里存的就是这个数):
+  //   0=车速 1=转速 2=水温 3=进气温度(2026-09 新增)
+  const kindOf = { Speed: 0, Rpm: 1, Coolant: 2, Intake: 3 };
   const hArcs = [];
   let m;
   while ((m = arcRe.exec(hSrc)) !== null) {
@@ -266,18 +268,27 @@ section("三处默认主题必须一致(ui_theme.h / theme-default.json / ARC_FA
       reverse: m[11] === undefined ? 0 : Number(m[11])
     });
   }
-  ok(hArcs.length === 3, "ui_theme.h 里解析出 3 条默认弧(得到 " + hArcs.length + ")");
+  ok(hArcs.length === 4, "ui_theme.h 里解析出 4 条默认弧(得到 " + hArcs.length + ")");
   ok(hArcs.every(a => a.kind !== undefined), "弧类型都认识");
 
-  // 屏与表的对应是产品契约,顺手也钉一下(左=转速表+水温,右=速度表)
+  // 屏与表的对应是产品契约,顺手也钉一下
+  // (左 = 转速表 + 水温;右 = 速度表 + 进气温度,2026-09 起左右对称)
   {
     const left = hArcs.filter(a => a.screen === 0).sort((a, b) => a.slot - b.slot);
     const right = hArcs.filter(a => a.screen === 1).sort((a, b) => a.slot - b.slot);
     eq(left.length, 2, "左屏两条弧");
     eq(left[0].kind, 1, "左屏外弧 = 转速(法系车左=转速表)");
     eq(left[1].kind, 2, "左屏内弧 = 水温");
-    eq(right.length, 1, "右屏一条弧");
-    eq(right[0].kind, 0, "右屏 = 车速");
+    eq(right.length, 2, "右屏两条弧");
+    eq(right[0].kind, 0, "右屏外弧 = 车速");
+    eq(right[1].kind, 3, "右屏内弧 = 进气温度(与左屏水温对称)");
+    // 副表几何必须一模一样,只换屏与颜色 —— 否则两块表看着不像一套仪表
+    eq(right[1].radius, left[1].radius, "进气弧半径 = 水温弧半径");
+    eq(right[1].width, left[1].width, "进气弧宽度 = 水温弧宽度");
+    eq(right[1].start_deg, left[1].start_deg, "进气弧起点 = 水温弧起点");
+    eq(right[1].end_deg, left[1].end_deg, "进气弧终点 = 水温弧终点");
+    eq(right[1].reverse, left[1].reverse, "进气弧镜像方向 = 水温弧(都从左端起涨)");
+    ok(right[1].value_color !== left[1].value_color, "两条副弧颜色不同(一眼能分清)");
   }
 
   // 与 theme-default.json 对照(展开成同样的顺序:左屏外/内 → 右屏)

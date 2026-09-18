@@ -179,11 +179,30 @@ static void test_screen_gauge_mapping(void) {
   TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)ArcKind::Coolant, (uint8_t)d.screens[0].arcs[1].kind,
                                   "水温弧必须在左屏(转速表)上");
 
-  // 右屏 = 速度表
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, d.screens[1].arc_count,
-                                  "右屏应有一条弧(车速)");
+  // 右屏 = 速度表:外圈车速弧 + 内圈进气温度弧(2026-09 新增,与左屏对称)
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, d.screens[1].arc_count,
+                                  "右屏应有两条弧(车速 + 进气温度)");
   TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)ArcKind::Speed, (uint8_t)d.screens[1].arcs[0].kind,
-                                  "右屏必须是车速(法系车右=速度表)");
+                                  "右屏外弧必须是车速(法系车右=速度表)");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)ArcKind::Intake, (uint8_t)d.screens[1].arcs[1].kind,
+                                  "进气温度弧必须在右屏(速度表)上");
+
+  // ★ 副表几何必须与水温**完全一致**,只换屏、换颜色 ——
+  //   这样两块表看起来是同一套仪表的两个实例(用户要的"对称")。
+  //   颜色不同是刻意的:车速蓝 / 转速红 / 水温绿 / 进气琥珀。
+  const ArcStyle& cool = d.screens[0].arcs[1];
+  const ArcStyle& take = d.screens[1].arcs[1];
+  TEST_ASSERT_EQUAL_INT32(cool.start_deg, take.start_deg);
+  TEST_ASSERT_EQUAL_INT32(cool.end_deg, take.end_deg);
+  TEST_ASSERT_EQUAL_INT32(cool.radius, take.radius);
+  TEST_ASSERT_EQUAL_INT32(cool.width, take.width);
+  TEST_ASSERT_EQUAL_UINT8(cool.reverse, take.reverse);
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, take.reverse,
+                                  "进气温度弧也要镜像(从左端起涨),与水温一致");
+  TEST_ASSERT_TRUE_MESSAGE(take.value_color.red != cool.value_color.red ||
+                           take.value_color.green != cool.value_color.green ||
+                           take.value_color.blue != cool.value_color.blue,
+                           "进气温度弧不能与水温弧同色(两条弧要能一眼分清)");
 }
 
 // 屏 ↔ 表情图片角色的对应在 test_image_blob.cpp 里(那里才有 ImageRole)。

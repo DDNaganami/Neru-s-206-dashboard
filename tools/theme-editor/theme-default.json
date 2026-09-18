@@ -8,6 +8,8 @@
 
     "coolant_min_c": 60,
     "coolant_max_c": 130,
+    "intake_min_c": 0,
+    "intake_max_c": 80,
 
     "face": {
       "eye_l_x": 38,
@@ -30,13 +32,16 @@
       "digit_color": 0xFFFFFF,
       "unit_color": 0x9AA0A6,
       "coolant_color": 0x7CFF6B,
+      "intake_color": 0xFFB020,
       "digit_font": 0,
       "unit_font": 1,
       "digit_cy": 72,
       "unit_cy": 107,
       "coolant_cy": 384,
+      "intake_cy": 384,
       "show_units": 1,
-      "show_coolant": 1
+      "show_coolant": 1,
+      "show_intake": 1
     },
 
     "screens": [
@@ -68,7 +73,7 @@
         ]
       },
       {
-        "arc_count": 1,
+        "arc_count": 2,
         "show_face": 1,
         "arcs": [
           {
@@ -80,6 +85,17 @@
             "track_color": 0x232323,
             "track_opa": 153,
             "value_color": 0x39C5FF
+          },
+          {
+            "kind": 3,
+            "start_deg": 0,
+            "end_deg": 180,
+            "radius": 168,
+            "width": 10,
+            "track_color": 0x232323,
+            "track_opa": 153,
+            "value_color": 0xFFB020,
+            "reverse": 1
           }
         ]
       }

@@ -9,6 +9,11 @@ struct VehicleState {
   float speed_kmh = 0;
   float rpm = 0;
   float coolant_c = 20;
+  // 进气温度(OBD PID 010F)。2026-09 用户用蓝牙 ELM327 + EOBD 实测:
+  // 206 CC 的发动机 ECU 支持这一项,所以把它做成速度表上的副表
+  // (与转速表上的水温表对称)。它是**慢变量**、不参与表情(和冷却液一样),
+  // 只驱动一条弧 + 一个数字;缺数据时按字段独立回退(见 data_service)。
+  float intake_c = 20;
   float fuel_pct = 75;
   Gear gear = Gear::P;  // 屏不显示挡位（原表负责），字段保留给将来逻辑
   bool ign = true;

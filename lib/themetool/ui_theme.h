@@ -35,8 +35,11 @@ static inline float theme_scale() {
 }
 
 // ---- 圆弧定义 ----
-enum class ArcKind : uint8_t { Speed, Rpm, Coolant };
-static const uint8_t kMaxArcs = 3;
+// ★ 枚举值就是主题 JSON 里 arcs[].kind 的数字,**只能往后加、不能插队**
+//   (插队会让已经导出的 theme.json 里那几条弧换意思,而且不报错)。
+//   0/1/2 是历史值,3 = 进气温度(2026-09 新增)。
+enum class ArcKind : uint8_t { Speed, Rpm, Coolant, Intake };
+static const uint8_t kMaxArcs = 3;   // 每屏最多几条(不是总共)
 
 // 一条弧的样式。
 //
@@ -91,7 +94,8 @@ struct ScreenTheme {
 struct ReadoutTheme {
   uint32_t digit_color;     // 大数字颜色(转速/速度共用)
   uint32_t unit_color;      // 单位文字颜色(km/h / rpm)
-  uint32_t coolant_color;   // 水温数字颜色
+  uint32_t coolant_color;   // 水温数字颜色(左屏副表)
+  uint32_t intake_color;    // 进气温度数字颜色(右屏副表)
 
   uint8_t  digit_font;      // 0 = 48 号,1 = 18 号(见 readout_font())
   uint8_t  unit_font;       // 0 = 48 号,1 = 18 号
@@ -99,9 +103,11 @@ struct ReadoutTheme {
   int16_t  digit_cy;        // 大数字中心 y(480 基准;两屏共用)
   int16_t  unit_cy;         // 单位中心 y
   int16_t  coolant_cy;      // 水温数字中心 y(左屏底部)
+  int16_t  intake_cy;       // 进气温度数字中心 y(右屏底部 —— 与水温对称)
 
   uint8_t  show_units;      // 0 = 只显示数字不显示单位
   uint8_t  show_coolant;    // 0 = 不显示水温数字
+  uint8_t  show_intake;     // 0 = 不显示进气温度数字
 };
 
 // 字体选择:0 = 48 号(大),1 = 18 号(小)。
@@ -112,13 +118,16 @@ const lv_font_t* readout_font(uint8_t which);
 #define READOUT_DIGIT_COLOR   (g_theme.readout.digit_color)
 #define READOUT_UNIT_COLOR    (g_theme.readout.unit_color)
 #define READOUT_COOLANT_COLOR (g_theme.readout.coolant_color)
+#define READOUT_INTAKE_COLOR  (g_theme.readout.intake_color)
 #define READOUT_DIGIT_FONT    readout_font(g_theme.readout.digit_font)
 #define READOUT_UNIT_FONT     readout_font(g_theme.readout.unit_font)
 #define READOUT_DIGIT_CY      (g_theme.readout.digit_cy)
 #define READOUT_UNIT_CY       (g_theme.readout.unit_cy)
 #define READOUT_COOLANT_CY    (g_theme.readout.coolant_cy)
+#define READOUT_INTAKE_CY     (g_theme.readout.intake_cy)
 #define READOUT_SHOW_UNITS    (g_theme.readout.show_units)
 #define READOUT_SHOW_COOLANT  (g_theme.readout.show_coolant)
+#define READOUT_SHOW_INTAKE   (g_theme.readout.show_intake)
 
 // ---- 主题数据（全部运行时可改） ----
 // 字段顺序即序列化顺序,改动要在 theme_store.cpp 里同步（并升版本号）。
@@ -143,15 +152,21 @@ struct Theme {
   uint8_t mouth_o_x, mouth_o_y, mouth_o_size;
 
   // 量程
+  //   coolant:正常水温 85~105,表盘只画"有意义的窗口"
+  //   intake :进气温度从环境温度(冷启动)一路被机舱烤到 60~70(堵车热浸),
+  //            所以窗口取 0~80 —— 常温 20~30 落在 1/4~3/8,热浸顶到 3/4 以上,
+  //            一眼能看出"进气被烤热了没有"。冬天零下时弧趴在 0,
+  //            数字照实显示负数(与水温低于 60 时同理)。
   float coolant_min_c, coolant_max_c;
+  float intake_min_c, intake_max_c;
 
   // ------------------------------------------------------------
-  // 数字读数(转速/速度数字 + 单位 + 水温)
+  // 数字读数(转速/速度数字 + 单位 + 副表数字)
   //
   // 布局按实车(法系:左=转速表,右=速度表)与使用习惯定死:
   //   · 转速/速度的**大数字**放表盘正上方(y = 弧带最高点 23 到表情顶边 120 之间)
   //   · 单位(km/h、rpm)紧跟数字下方
-  //   · 水温数字放**转速表(左屏)底部**
+  //   · **副表数字放该屏底部**:左屏 = 水温,右屏 = 进气温度(左右对称)
   //   中央 240×240 留给表情图。
   //
   // 位置按 **480 基准**书写,渲染时乘 theme_scale()(与弧/表情同一套规矩)。
@@ -197,18 +212,23 @@ inline void theme_set_defaults(Theme& t) {
 
   t.coolant_min_c = 60.0f;
   t.coolant_max_c = 130.0f;
+  t.intake_min_c  = 0.0f;
+  t.intake_max_c  = 80.0f;
 
   // 数字读数。位置见 ReadoutTheme 的说明:干净可用的是 47..120 那 73 像素。
   t.readout.digit_color   = 0xFFFFFF;   // 白
   t.readout.unit_color    = 0x9AA0A6;   // 灰(单位不该抢数字的注意力)
   t.readout.coolant_color = 0x7CFF6B;   // 与水温弧同色,一眼能对上
+  t.readout.intake_color  = 0xFFB020;   // 与进气弧同色(琥珀 —— 速度表主色是蓝,不撞)
   t.readout.digit_font    = 0;          // 48 号
   t.readout.unit_font     = 1;          // 18 号
   t.readout.digit_cy      = 72;         // 48 号数字高约 50 → 占 47..97(紧贴弧带下沿)
   t.readout.unit_cy       = 107;        // 18 号高约 20 → 占 97..117(紧贴表情顶边)
   t.readout.coolant_cy    = 384;        // 表盘底部(弧带在那里是空的,居中放得下)
+  t.readout.intake_cy     = 384;        // 同上 —— 与水温**在各自屏上**同一行
   t.readout.show_units    = 1;
   t.readout.show_coolant  = 1;
+  t.readout.show_intake   = 1;
 
   t.boot_fade_ms        = 250;
   t.boot_sweep_start_ms = 250;
@@ -245,11 +265,23 @@ inline void theme_set_defaults(Theme& t) {
   L.arcs[1] = ArcStyle{ ArcKind::Coolant,   0, 180, 168, 10,
                         lv_color_hex(0x232323), 153, lv_color_hex(0x7CFF6B), 1 };
 
-  // 右屏 = 速度表:车速弧
+  // 右屏 = 速度表:车速弧 + 进气温度弧
+  //
+  // ★ 进气温度弧(2026-09 用户实测 OBD 010F 可用后加的)按"左右对称"设计:
+  //   它和水温弧用**完全相同的几何**(0→180、radius 168、width 10、reverse=1),
+  //   只是挂到另一块表上 —— 于是两块表看起来是同一套仪表的两个实例:
+  //     左(转速表):外圈转速弧(拱上) + 内圈水温弧(兜下)
+  //     右(速度表):外圈车速弧(拱上) + 内圈进气温度弧(兜下)
+  //   颜色用琥珀而不是绿色:速度表主色是蓝,绿色留给水温,
+  //   三种颜色分属三条弧,扫一眼就知道哪条是哪条。
+  // ★ 顺序很重要:车速弧必须是 arcs[0] —— 大数字显示"第一条非副表的弧",
+  //   把副表排前面会让速度表的大数字变成进气温度(dash_ui 的 primary_kind)。
   ScreenTheme& R = t.screens[1];
-  R.arc_count = 1; R.show_face = 1;
+  R.arc_count = 2; R.show_face = 1;
   R.arcs[0] = ArcStyle{ ArcKind::Speed,   135, 405, 205, 24,
                         lv_color_hex(0x232323), 153, lv_color_hex(0x39C5FF), 0 };
+  R.arcs[1] = ArcStyle{ ArcKind::Intake,    0, 180, 168, 10,
+                        lv_color_hex(0x232323), 153, lv_color_hex(0xFFB020), 1 };
 }
 
 // 全局主题**指针**。
@@ -310,6 +342,8 @@ void theme_clamp(Theme& t);
 #define MOUTH_O_SIZE        (g_theme.mouth_o_size)
 #define kCoolantMinC        (g_theme.coolant_min_c)
 #define kCoolantMaxC        (g_theme.coolant_max_c)
+#define kIntakeMinC         (g_theme.intake_min_c)
+#define kIntakeMaxC         (g_theme.intake_max_c)
 #define kScreens            (g_theme.screens)
 #define BOOT_FADE_MS        (g_theme.boot_fade_ms)
 #define BOOT_SWEEP_START_MS (g_theme.boot_sweep_start_ms)

@@ -147,7 +147,9 @@ if (typeof ThemeJson === "undefined") {
 // 主题数据模型 —— 字段名必须与 lib/themetool/theme_store.cpp 完全一致,
 // 否则导出的文件读不进去。改字段时两边一起改。
 // ============================================================
-const ARC_KIND_NAMES = ["车速", "转速", "水温"];
+// kind 的数字与 C 侧 ArcKind 一一对应,**只能往后加**(主题 JSON 里存的就是它):
+//   0=车速 1=转速 2=水温 3=进气温度
+const ARC_KIND_NAMES = ["车速", "转速", "水温", "进气温度"];
 
 function defaultTheme() {
   return {
@@ -158,6 +160,9 @@ function defaultTheme() {
     face_ink: 0x1A1A1A,
     coolant_min_c: 60,
     coolant_max_c: 130,
+    // 进气温度(OBD 010F):速度表的副表。0~80℃ 是"环境温度 → 堵车热浸"的窗口。
+    intake_min_c: 0,
+    intake_max_c: 80,
     face: {
       eye_l_x: 38, eye_r_x: 136, eye_y: 66,
       eye_normal_w: 26, eye_normal_h: 26,
@@ -173,26 +178,35 @@ function defaultTheme() {
       digit_color: 0xFFFFFF,
       unit_color: 0x9AA0A6,
       coolant_color: 0x7CFF6B,
+      intake_color: 0xFFB020,
       digit_font: 0,      // 0 = 48 号,1 = 18 号
       unit_font: 1,
       digit_cy: 72,
       unit_cy: 107,
       coolant_cy: 384,
+      intake_cy: 384,
       show_units: 1,
-      show_coolant: 1
+      show_coolant: 1,
+      show_intake: 1
     },
-    // ★ 左 = 转速表(带水温),右 = 速度表 —— 法系车(标致 206 实车)布局。
+    // ★ 左 = 转速表(带水温),右 = 速度表(带进气温度) —— 法系车(标致 206 实车)布局。
     //   别按"左车速右转速"的日德习惯改回去。
+    //
+    // ★ 这里曾经比 ui_theme.h 落后一版(水温弧写成 145..330、没有 reverse 字段),
+    //   于是"刚打开这一页"看到的弧和固件默认**不一样**,容易被当成固件错了。
+    //   现在两支副弧都是 0..180 + reverse=1(镜像,从左端起涨),与 C 侧逐字段一致。
     screens: [
       { arc_count: 2, show_face: 1, arcs: [
         { kind:1, start_deg:135, end_deg:405, radius:205, width:24,
-          track_color:0x232323, track_opa:153, value_color:0xFF5C5C },
-        { kind:2, start_deg:145, end_deg:330, radius:168, width:10,
-          track_color:0x232323, track_opa:153, value_color:0x7CFF6B }
+          track_color:0x232323, track_opa:153, value_color:0xFF5C5C, reverse:0 },
+        { kind:2, start_deg:0, end_deg:180, radius:168, width:10,
+          track_color:0x232323, track_opa:153, value_color:0x7CFF6B, reverse:1 }
       ]},
-      { arc_count: 1, show_face: 1, arcs: [
+      { arc_count: 2, show_face: 1, arcs: [
         { kind:0, start_deg:135, end_deg:405, radius:205, width:24,
-          track_color:0x232323, track_opa:153, value_color:0x39C5FF }
+          track_color:0x232323, track_opa:153, value_color:0x39C5FF, reverse:0 },
+        { kind:3, start_deg:0, end_deg:180, radius:168, width:10,
+          track_color:0x232323, track_opa:153, value_color:0xFFB020, reverse:1 }
       ]}
     ],
     boot_fade_ms: 250,

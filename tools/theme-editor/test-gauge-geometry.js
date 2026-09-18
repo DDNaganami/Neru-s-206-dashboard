@@ -221,6 +221,57 @@ section("水温弧:缺口在正上方(与转速弧相反)");
 }
 
 // ------------------------------------------------------------
+// ★ 进气温度弧(速度表的副表,2026-09 加)必须与水温弧**完全对称**。
+//
+// 用户的原话是"类似于水温表在转速表的位置" —— 也就是:
+//   左屏:外圈转速弧 + 内圈水温弧
+//   右屏:外圈车速弧 + 内圈进气温度弧
+// 所以这里逐项比对两条副弧的几何,只有屏号与颜色允许不同。
+// 这条不是"顺手加的"断言:副弧几何一旦跑偏,表现是"右屏那条弧怪怪的",
+// 不会报错,而且两块表放在车上很难同时看到去对比。
+section("进气温度弧 = 水温弧的镜像版(只换屏与颜色)");
+{
+  const t = TJ.themeObject(TJ.parseThemeJson(
+    fs.readFileSync(path.join(__dirname, "theme-default.json"), "utf8")));
+  const pick = (kind) => {
+    const out = [];
+    for (let s = 0; s < 2; s++) {
+      (t.screens[s].arcs || []).forEach((a, k) => { if (a.kind === kind) out.push({ s, k, a }); });
+    }
+    return out;
+  };
+  const cool = pick(2), take = pick(3);   // 2 = 水温,3 = 进气温度
+  eq(cool.length, 1, "默认主题里只有一条水温弧");
+  eq(take.length, 1, "默认主题里只有一条进气温度弧");
+  eq(cool[0].s, 0, "水温弧在左屏(转速表)");
+  eq(take[0].s, 1, "进气温度弧在右屏(速度表)");
+  eq(take[0].k, 1, "进气温度弧是右屏的第 2 条(排在外圈车速弧之后)");
+
+  const c = cool[0].a, i = take[0].a;
+  for (const f of ["start_deg", "end_deg", "radius", "width", "track_color", "track_opa"]) {
+    eq(i[f], c[f], "进气弧的 " + f + " 要与水温弧一致");
+  }
+  eq(i.reverse, 1, "进气弧也要镜像(从左端起涨)");
+  // 颜色必须不同:左屏绿、右屏琥珀 —— 三条弧扫一眼分得清
+  ok(i.value_color !== c.value_color, "进气弧颜色与水温弧不同");
+
+  // 缺口同样朝正上方(下半圆),与各自屏上的外圈弧反向
+  const gapCenter = ((i.end_deg + i.start_deg + 360) / 2) % 360;
+  const diff = Math.min(Math.abs(gapCenter - 270), 360 - Math.abs(gapCenter - 270));
+  ok(diff <= 20, "进气弧缺口朝正上方:实测 " + clockName(gapCenter));
+  const outerR = t.screens[1].arcs[0];
+  const outerGap = ((outerR.end_deg + outerR.start_deg + 360) / 2) % 360;
+  const outerDiff = Math.min(Math.abs(outerGap - 90), 360 - Math.abs(outerGap - 90));
+  ok(outerDiff <= 20, "车速弧缺口朝正下方(实测 " + clockName(outerGap) + ")");
+
+  // 镜像的几何含义:冷进气(20℃ → t=0.25)点亮区该在**左半边**
+  const tColdIntake = (20 - t.intake_min_c) / (t.intake_max_c - t.intake_min_c);
+  const litFrom = i.end_deg - (i.end_deg - i.start_deg) * tColdIntake;
+  const litPt = pointAt((litFrom + i.end_deg) / 2, i.radius);
+  ok(litPt.x < 240, "20℃ 进气时点亮区该在左半边(实测中心 x=" + Math.round(litPt.x) + ")");
+}
+
+// ------------------------------------------------------------
 console.log("\n" + "=".repeat(56));
 if (fail === 0) console.log("全部通过:" + pass + " 项断言");
 else {

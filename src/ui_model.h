@@ -6,6 +6,9 @@ struct ArcDashView {
   float speed_t;
   float rpm_t;
   float coolant_c;
+  // 进气温度(OBD 010F):速度表的副表,与转速表上的水温表对称。
+  // 副表**不参与表情**,所以这里只有"值",没有对应的 Face 字段。
+  float intake_c;
   float fuel_pct;
   uint8_t center_mode;
   float center_phase;
@@ -32,6 +35,7 @@ inline ArcDashView make_view(const VehicleState& s, uint32_t now_ms) {
   if (v.rpm_t > 1) v.rpm_t = 1;
 
   v.coolant_c = s.coolant_c;
+  v.intake_c = s.intake_c;
   v.fuel_pct = s.fuel_pct;
   v.speed_kmh = s.speed_kmh;
   v.rpm = s.rpm;
