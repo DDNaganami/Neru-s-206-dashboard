@@ -117,6 +117,27 @@
       ② 开机自检用了 `ESP.*` 与 `esp_partition.h` —— pcpreview（宿主机）没有这些，
         预览构建直接编不过。已用 `ARDUINO` 判定圈成设备专属
         （`DASH_DEVICE_SELFTEST`），同一份 main.cpp 两端都能编。
+- [x] **S3 第一次真正上电：固件在跑，而且立刻抓出一个真 bug**（2026-09-18 当天）
+      结论先说：**固件一直是好的**。白天"刷完串口一片空白"是刷写/调试通道的坑
+      （原生 USB 口的软复位 + pyserial 默认拉 DTR/RTS，见下面那一节），
+      换成板上 **UART 口（CH340）** 之后，复位后第一个字节就能看到完整开机日志：
+      ROM → app 启动 → 自检五行 → `BEACON` 每秒一步 → `SRC` 每 5 秒一行，
+      表情按模拟数据在 `sport/redline/cruise/idle` 之间正常推进。
+      自检当场抓出的问题：**`psram : 0 KB 可用 / 0 KB 总`** —— 漏了
+      `-DBOARD_HAS_PSRAM`（缺它时核心会主动把 `CONFIG_SPIRAM` `#undef` 掉），
+      补上后 `8189 KB` ✓。这正是"自检五行"当初加进来的理由：
+      换板子/换芯片后第一眼就能看出硬件到底认没认全。
+      顺带做完的三件事：
+      · 日志改**双通道**（`lib/dashcore/dash_log.h`）：USB-CDC 与 UART0 都发，
+        一根线插哪个口都看得见；串口贴帧回放也两个口都收。
+      · 加**示位标**（`BEACON`，esp_timer 驱动、每秒一行、带"走到第几步"）——
+        主循环卡死也照打，一次就能区分"没跑起来"和"卡在某一行"；
+        同时把上电后每秒重打完整自检那段刷屏删掉了（它会淹掉 VAN 帧）。
+      · 抓开机日志的脚本进了仓库：`tools/serial-capture/capture.py`
+        （把"DTR=IO0、RTS=EN、且必须在 open() 之前设"这套知识固化下来）。
+      **实测**：esp32dev / esp32s3 / pcpreview 三目标全 SUCCESS；
+      native 105 例（103 通过 / 2 跳过）；S3 上电后
+      `psram=8189KB flash=16MB image=8192KB`、heap 259KB。
 - [x] **右屏第 4 档从"惊喜"改成"超速"**（用户提出："这个惊喜挡测试的时候
       是无法选出来的，是做什么用的"）
       原来它是**急加速瞬态**：相邻两次调用速度差 > 15 km/h/s 就亮 400ms。
@@ -290,10 +311,15 @@
       `.pio/build/esp32dev/firmware.bin` 中。
       上电后还会多两行便于定位：`theme: ...` 和
       `image ok: N 张,...` / `image none: 无图片资源,背景用主题纯色`。
-- [ ] 刷到板子并观察上述输出（**未做：本机只有 COM1，无任何 USB 转串口设备，
-      板子未插。插上后 `pio run -e esp32dev -t upload` 即可，约 10 分钟**）。
-      要确认的行：`206 dash ok` / `theme: ...` / `image none: ...`（没刷图片时）
-      / `van phy: stub` / 每 5 秒的 `SRC ... | v=... vrpm ...C`（车速应从 0 扫到 210）。
+- [x] 刷到板子并观察上述输出（**2026-09-18 已在 S3 上确认**）：
+      `206 dash ok` / 自检五行 / `theme: 分区为空,用默认主题` /
+      `image: 镜像无效或未刷入,不用图片资源`（还没刷图片资源，属正常）/
+      `van phy: gpio 就绪 RX=GPIO16(RO)` / 每 5 秒的
+      `SRC speed=sim rpm=sim coolant=sim intake=sim | v=176.6km/h 5963rpm 87.0C 28.3C`
+      （车速按 42 秒周期扫 0→210 ✓）。表情跟着走：
+      `206 dash ok  spd= 58% rpm= 69% coolant=85C face=sport/sport`。
+      当时跑的还不是最终固件 —— 详见上面「S3 第一次真正上电」一条。
+      （经典 ESP32 那份 `esp32dev` 仍未上板实测，但它本来就是廉价回归目标。）
       若之后刷了 image.bin，这里应变成 `image ok: N 张,...` ——
       那是"分区表 + mmap + 格式"三者同时正确的证据。
 - [ ] 真屏到货：锁分辨率（改 ui_theme.h 的 THEME_DISPLAY_RES）→ 写实驱动
@@ -417,55 +443,117 @@ LVGL 就无法把样式对象折叠进 rodata（可写全局会阻止 const 折�
   `offsetof`/`sizeof` 断言、JS 侧用字节断言，把同一张表各钉一遍，
   往返测试再逐字节对账。
 
-## 板子开箱刷写（S3 原生 USB）踩过的三个坑
+## S3 板子开箱：为什么"刷成功但串口一片空白"（2026-09-18 全天实测）
 
-第一次刷板，`Upload SUCCESS` 之后串口监视器**一片空白**。三个原因各管一段，
-症状一模一样，所以必须一起记住（前两条已修，第三条仍待验证）：
+第一次刷板，`Upload SUCCESS` 之后串口监视器**一片空白**，看起来像固件没跑。
+真相是**四件事**叠在一起，其中三件与固件无关 —— 全部查清并已修：
 
-1. **`Serial` 绑到了 TinyUSB 的 `USBCDC`，写进去石沉大海。**
+1. **这块板子有两个 USB 口，插哪个口差别是天壤。** 设备管理器实测：
+
+   | 口 | 芯片 | 它到底是什么 |
+   |---|---|---|
+   | 标着 **UART** 的 | **CH340**，`VID_1A86:PID_7523` → `COM4` | **真 UART0** + **真 EN/IO0 复位线** |
+   | 标着 **USB** 的 | `VID_303A:PID_1001` | USB-Serial-JTAG（原生 USB，**不是** UART 桥） |
+
+   **结论：刷写、监视、排障一律走 UART 口。** 它的复位是真的（EN 拉低再放开），
+   所以刷完的 `--after hard_reset` 之后 app **真的会启动**；ROM、二级 bootloader、
+   panic 的日志也全在这条线上，复位后**第一个字节**都抓得到
+   （见 `tools/serial-capture/capture.py`）。
+
+2. **native USB 口那条路会把芯片留在 ROM 下载模式。**
+   USB-Serial-JTAG 的"复位"不是拉 EN 电线，而是一个**软复位请求**；
+   esptool 用 `USBJTAGSerialReset` 表达它（`tool-esptoolpy/esptool/reset.py`）：
+   ```
+   DTR=True   # Set IO0   ← IO0 拉低 = 下载启动
+   RTS=True   # Reset. Calls inverted to go through (1,1) instead of (0,0)
+   ...        # 最后 RTS/DTR 都 False
+   ```
+   实测后果：**每一次** esptool 复位（刷完的硬复位、监视、探测）都把芯片送进
+   `boot:0x0 (DOWNLOAD_BOOT)`，程序根本没机会跑。自证材料两条：
+   · 上传后立刻 `esptool --before no_reset read_mac` **秒同步** —— 只有还在
+     下载模式才可能；
+   · `GPIO_STRAP_REG(0x60004038)` = `0x00000000`，即"复位时 IO0 被判定为低"，
+     而 `GPIO_IN_REG` bit0 = 1、`IO_MUX_GPIO0_REG(0x60009004)` 的 `FUN_IE` = 1
+     —— IO0 现在**是高电平**。那个 0 是 esptool 自己造成的，不是板子的问题。
+
+3. **pyserial 打开串口时默认拉高 DTR/RTS**（`serialutil.py`：
+   `_rts_state = _dtr_state = True`）→ **开监视器这一下本身就是一次
+   "复位进下载模式"**。所以 `monitor_rts = 0` / `monitor_dtr = 0` 必须留着。
+   （经典 ESP32 那边不设这两行：它的 DTR/RTS 是真正的自动复位线，而且经典板子的
+   自动复位电路会让"两个都拉高"只是复位、不进下载。）
+   ★ 想"打开就复位、顺便看完整启动日志"，就得自己按顺序拉线 ——
+   `tools/serial-capture/capture.py` 干的就是这件事。
+
+4. **`Serial` 曾经绑到 TinyUSB 的 `USBCDC`，写进去石沉大海。**
    `cores/esp32` 里的映射与直觉相反：
    ```
    HWCDC.h :  #if ARDUINO_USB_MODE         → extern HWCDC Serial;   ← 要的是这条
    USBCDC.h:  #if CDC_ON_BOOT && !USB_MODE → extern USBCDC Serial;
    ```
-   也就是 **`ARDUINO_USB_MODE` 必须为 1**（板子定义 `esp32-s3-devkitc-1.json`
-   本来就写着）。我先前"顺手"覆盖成 0，`Serial` 就成了 TinyUSB —— 它在这块
-   板子上没接管 USB 外设，于是所有 printf 都没了，**而芯片其实跑得好好的**。
-   *教训：别再读代码猜宏，直接让编译器回答* —— 用
+   也就是 **`ARDUINO_USB_MODE` 必须为 1**（板子定义本来就写着）。我先前"顺手"
+   覆盖成 0，`Serial` 就成了 TinyUSB —— 它在这块板子上没接管 USB 外设，于是所有
+   printf 都没了，**而芯片其实跑得好好的**。
+   *教训：别读代码猜宏，让编译器回答* —— 用
    `static_assert(std::is_same<decltype(Serial), HWCDC>::value)` 这种探针，
    两个取值各编一次，答案立刻明确（本次就是这么定的案）。
-   现在 `platformio.ini` 里**只留** `-DARDUINO_USB_CDC_ON_BOOT=1`，
-   那两行 `-UARDUINO_USB_MODE` / `-DARDUINO_USB_MODE=0` **不要再加回来**。
+   现在只留 `-DARDUINO_USB_CDC_ON_BOOT=1`，那两行
+   `-UARDUINO_USB_MODE` / `-DARDUINO_USB_MODE=0` **不要再加回来**。
 
-2. **监视器把芯片按在复位态。** USB-Serial-JTAG 把 `RTS→EN`、`DTR→GPIO0`
-   （esptool 就是靠这个复位，见 `tool-esptoolpy/esptool/reset.py` 的
-   `USBJTAGSerialReset`，最后一步注释写着 `Chip out of reset`）。
-   而 pyserial **打开串口时默认把 RTS/DTR 都置位** → EN 一直低 → 屏幕空白。
-   `platformio.ini` 的 S3 段加 `monitor_rts = 0` / `monitor_dtr = 0` 解决。
-   （经典 ESP32 那边**故意不设**：USB 桥的 DTR/RTS 是自动复位线，
-   监视器打开时复位一次正好能看到完整启动日志。）
+### 定位这类"静默不启动"的手段（以后照这个顺序来）
 
-3. **上电后立刻打印的内容会丢**，因为 USB-CDC 在没有主机时没有缓冲。
-   第一版写成"等主机连上再补打"，结果更糟：`HWCDC` 的 `connected` 标志
-   **要靠数据流动才置位**（`HWCDC.cpp` 的 `SERIAL_IN_EMPTY` 中断里才置 true，
-   端口一打开反而被 `BUS_RESET` 清成 false）→ "不打就不连接、不连接就不打"
-   **死锁**。现在改成上电后头 20 秒**每秒无条件补打**自检、之后的 5 秒状态行
-   也无条件打印：监视器随时接上，最多 1 秒就能看到那几个数。
-   **永远不要**把串口打印挂在 `(bool)Serial` 这种判断上。
+1. **先看 UART0**（UART 口）。ROM 会打 `rst:` 和 `boot:` 两个数字：
+   `boot:0x8 (SPI_FAST_FLASH_BOOT)` = 正常从 flash 启动；`boot:0x0` = 下载启动。
+   这一行就把范围砍一半。
+2. **绕开 USB 拿"程序到底跑没跑"的铁证**：让固件在 `setup()` 第一行往 flash
+   某个角落写一行字，再用 esptool 读回来。串口空白时，这是唯一能区分
+   "根本没跑"和"跑了但 USB 不吐"的办法 —— 本次就是靠它把锅从固件上摘掉的。
+3. **再看 flash 里的实际内容**，不信磁盘上的文件：分区表逐项核对（`0x8000`）、
+   `boot_app0.bin` 与 framework 里的文件**逐字节**对比（`0xE000`）、
+   bootloader/app 的 `0xE9` 镜像头（注意 S3 的 bootloader 在 **0x0**，
+   不是经典 ESP32 的 0x1000）。
+4. **最后才怀疑固件**：`coredump` 分区全 `0xFF` = 没崩过；示位标
+   （`BEACON`，见 `src/main.cpp`）每秒报一次"走到第几步"，卡在哪一眼可见。
 
-**仍未解决（下一步要人按一下板子）**：上传完成后芯片**仍停在 ROM 下载模式**，
-从未运行过 app。证据是上传成功后立刻 `esptool --before no_reset read_mac`
-竟然能直接同步（`Stub running`）—— 只有还在下载模式才可能。已经排除的：
+### 顺带查出来的真 bug：PSRAM 根本没开
 
-| 猜想 | 怎么排除的 |
-|---|---|
-| 固件崩溃重启 | `coredump` 分区全 `0xFF`，没有任何转储 |
-| 分区表越界 / 写错 | 读回 flash 逐项核对与 `partitions-s3.csv` 完全一致；末地址 `0xA6400` ≤ bootloader 头声明的 16MB（`spi_size_code=4`） |
-| app 头损坏 | `0x10000` 处 magic = `0xE9` |
-| 端口选错 / 重新枚举 | `303A:1001` 只有一个且稳定在场 |
+自检第一次能打出真话时是 `psram : 0 KB 可用 / 0 KB 总`。原因不在板子
+（esptool 认到 `Embedded PSRAM 8MB (AP_3v3)`），而在
+`cores/esp32/esp32-hal-psram.h`：
+```c
+#ifndef BOARD_HAS_PSRAM
+#undef CONFIG_SPIRAM
+#endif
+```
+**没有 `-DBOARD_HAS_PSRAM`，核心会主动把 PSRAM 编掉**，`memory_type` 配得再对
+也没用。补上之后 `psram : 8189 KB 可用 / 8189 KB 总` ✓ —— 8MB PSRAM 是
+"双 480×480 整屏缓冲"的前提，这条一漏后面全白干。
 
-esptool 的两种复位（`--after hard_reset` / USB-Serial-JTAG 序列）都不让它离开
-下载模式，所以下一步是**按板子上的 RST 键（或拔插 USB）**再看监视器。
+### 日志改成双通道
+
+`lib/dashcore/dash_log.h`：`dash_logf()` 一次格式化、**两个口都写**
+（USB-CDC + UART0）。理由就是上面那个坑 —— 手头只有一根线时，插哪个口都得
+看得见；而且 UART 口是唯一能拿到 bootloader / panic 日志的通道。
+（经典 ESP32 上没有 `CDC_ON_BOOT`，`Serial` 与 `Serial0` 是同一个 UART0，
+所以那边按宏判断只写一次，不会重复。）
+
+**验证记录**（S3 N16R8 + CH340，2026-09-18）：
+```
+ESP-ROM:esp32s3-20210327
+rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)
+mode:DIO, clock div:1
+entry 0x403c98d0
+206 dash ok
+chip  : ESP32-S3 rev0, 2 核 @ 240 MHz
+flash : 16 MB
+psram : 8189 KB 可用 / 8189 KB 总
+heap  : 259 KB
+image : 分区 8192 KB @ 0x254000(编译期口径 8192 KB)
+van phy: gpio 就绪 RX=GPIO16(RO),空闲 300us 关帧
+theme: 分区为空,用默认主题
+image: 镜像无效或未刷入,不用图片资源
+BEACON  1  step=6(loop: 刚开始一轮)  uptime=1s heap=259KB psram=8189KB flash=16MB
+SRC speed=sim rpm=sim coolant=sim intake=sim | v=176.6km/h 5963rpm 87.0C 28.3C
+```
 
 ## 实车必验清单（van_wire 的未定项，到货后逐条确认）
 
@@ -507,6 +595,8 @@ esptool 的两种复位（`--after hard_reset` / USB-Serial-JTAG 序列）都不
 
 - `PURCHASE.md`：采购清单（含到货后的验证动作、安全提示）
 - `PINOUT.md`：引脚预案 + **「接线两段」**（VAN 到车上的接法、极性待定）
+- `tools/serial-capture/capture.py`：抓 UART 口日志，尤其是**复位后的完整开机日志**
+  （监视器做不到这件事，原因见上面「S3 板子开箱」那一节）
 - `tools/theme-editor/README.md`：两个编辑器（主题 / 图片）的用法、
   二进制格式、分区偏移、限制
 - `ARCHITECTURE.md`：模块划分与数据流

@@ -1,4 +1,5 @@
 #include "van_source.h"
+#include "dash_log.h"   // 日志同时打到 USB-CDC 与 UART0(见文件头说明)
 
 #if defined(ARDUINO)
 #include <Arduino.h>
@@ -44,9 +45,9 @@ void VanSource::configureSpeedFrame(uint16_t iden, uint8_t offset, float scale) 
 
 void VanSource::dumpRaw(const VanPacket& pkt) {
 #if defined(ARDUINO)
-  Serial.printf("VAN id=%03X len=%u:", pkt.iden, pkt.len);
-  for (uint8_t i = 0; i < pkt.len; ++i) Serial.printf(" %02X", pkt.data[i]);
-  Serial.println();
+  dash_logf("VAN id=%03X len=%u:", pkt.iden, pkt.len);
+  for (uint8_t i = 0; i < pkt.len; ++i) dash_logf(" %02X", pkt.data[i]);
+  dash_logf("\n");
 #else
   (void)pkt;  // 宿主机测试构建不链接 Serial
 #endif

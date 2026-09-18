@@ -1,5 +1,6 @@
 #include "image_blob.h"
 #include <string.h>
+#include "dash_log.h"   // 日志同时打到 USB-CDC 与 UART0(见文件头说明)
 
 // ============================================================
 // 图片镜像的解析与加载。设计与格式见 image_blob.h。
@@ -148,7 +149,7 @@ const uint8_t* imageBlobLoad(uint32_t* blob_len) {
       ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x41,
       IMAGE_PARTITION_LABEL);
   if (!part) {
-    Serial.println("image: 没有 image 分区,不用图片资源");
+    dash_logf("image: 没有 image 分区,不用图片资源\n");
     return nullptr;
   }
 
@@ -163,19 +164,19 @@ const uint8_t* imageBlobLoad(uint32_t* blob_len) {
   const esp_err_t err = esp_partition_mmap(
       part, 0, part->size, SPI_FLASH_MMAP_DATA, &mapped, &s_handle);
   if (err != ESP_OK) {
-    Serial.printf("image: mmap 失败 (%d)\n", (int)err);
+    dash_logf("image: mmap 失败 (%d)\n", (int)err);
     return nullptr;
   }
 
   ImageBlobHeader hdr;
   if (!imageBlobParse((const uint8_t*)mapped, part->size, &hdr)) {
     // 分区是空的(全 0xFF)或没刷过 —— 都属于正常情况,不算错误
-    Serial.println("image: 镜像无效或未刷入,不用图片资源");
+    dash_logf("image: 镜像无效或未刷入,不用图片资源\n");
     return nullptr;
   }
 
   if (blob_len) *blob_len = part->size;
-  Serial.printf("image: 已加载 %u 张图 (%u 字节数据)\n",
+  dash_logf("image: 已加载 %u 张图 (%u 字节数据)\n",
                 (unsigned)hdr.count, (unsigned)hdr.data_bytes);
   return (const uint8_t*)mapped;
 }

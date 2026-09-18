@@ -97,22 +97,31 @@ MUX 车实测特征（点火关着、BSI 醒着时，对车 GND）：
 |---|---|---|
 | 上电前 | 蜂鸣档量 **3V3 ↔ GND** | 不响（电容会让读数慢慢爬，等两秒再看） |
 | 上电后 | 直流档量 **3V3 ↔ GND** | **3.3V ±0.1**；低于 3.0 说明供电/线材有问题 |
-| 上电后 | 串口 115200 看开机自检 | `chip`/`flash`/`psram` 三行 —— 见下 |
+| 上电后 | **UART 口**（CH340，见下）115200 看开机自检 | `chip`/`flash`/`psram` 三行 —— 见下 |
+
+> ★ **两个 USB 口别插错**（2026-09-18 实测，坑了一整天，详见 `ACCEPTANCE.md`）：
+> 标着 **UART** 的那个口是板载 **CH340** —— 它给的是**真 UART0**（ROM、
+> bootloader、panic 的日志全在这里）和**真 EN/IO0 复位线**（所以刷完 app 真的会
+> 启动）。标着 **USB** 的那个是 S3 的原生 USB（USB-Serial-JTAG）：它那条"复位"
+> 是软复位请求，esptool 每次复位都会把芯片送进**下载模式**。
+> **刷写、监视、排障一律用 UART 口。** GPIO43/44 就是这条 UART0，别再挪作他用。
 
 开机自检是这一轮新加的（`src/main.cpp` 的 `setup()`），换板/换芯片后第一眼看它：
 
 ```
 206 dash ok
 chip  : ESP32-S3 rev0, 2 核 @ 240 MHz
-flash : 16 MB (IDE 编译目标 8 MB)
-psram : 8192 KB 可用 / 8192 KB 总
-heap  : 380 KB
+flash : 16 MB
+psram : 8189 KB 可用 / 8189 KB 总
+heap  : 259 KB
 image : 分区 8192 KB @ 0x254000(编译期口径 8192 KB)
 ```
 
-- **`psram` 必须是 8192 KB**：报 0 就说明要么板子不是 R8，要么
-  `board_build.arduino.memory_type` 配错了（见 `platformio.ini` 的 `[env:esp32s3]`）。
-  这一行直接决定"双 480×480 整屏缓冲"能不能做。
+- **`psram` 必须是 8000+ KB**：报 0 时**先查编译开关** `-DBOARD_HAS_PSRAM`
+  （缺了它，核心会主动把 `CONFIG_SPIRAM` 整个 `#undef` 掉 —— 这是 2026-09-18
+  真正踩到的原因，见 `platformio.ini` 的 `[env:esp32s3]`），再查板子是不是 R8、
+  `board_build.arduino.memory_type` 对不对。这一行直接决定"双 480×480 整屏缓冲"
+  能不能做。
 - **`flash` 必须是 16 MB**：报 4/8 MB 说明买到的不是 N16；
   16MB 的分区表刷到小 flash 上会直接起不来（刷之前先看这一行）。
 - **`image` 那行最后若出现"← 不一致,检查分区表!"**，说明烧进去的分区表与
@@ -121,10 +130,11 @@ image : 分区 8192 KB @ 0x254000(编译期口径 8192 KB)
 刷写与环境（本机是 ASCII 副本那一套，见 `ARCHITECTURE.md`）：
 
 ```powershell
-# 新环境:真屏/实车要用的那块板子
-python -m platformio run -e esp32s3 -t upload      # 会自动找串口,找不到加 -p COMx
-python -m platformio device list                    # 看串口号
-python -m platformio run -e esp32s3 -t uploadfs     # 以后刷图片/主题用(分区不变)
+# 新环境:真屏/实车要用的那块板子 —— 线插 UART 口
+python -m platformio device list                    # 看串口号(CH340 通常是 COM4)
+python -m platformio run -e esp32s3 -t upload --upload-port COM4
+# 想从第一个字节看开机日志(监视器做不到这件事,原因见 ACCEPTANCE.md):
+python tools/serial-capture/capture.py COM4
 ```
 
 ### ② SN65HVD230 模块：拆 120Ω + 认脚位

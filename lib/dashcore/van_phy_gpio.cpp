@@ -1,4 +1,5 @@
 #include "van_phy_gpio.h"
+#include "dash_log.h"   // 日志同时打到 USB-CDC 与 UART0(见文件头说明)
 
 // 只有设备端编译(见头文件说明:本文件依赖 attachInterrupt / esp_timer_get_time)
 #if defined(ARDUINO)
@@ -47,7 +48,7 @@ void VanPhyGpio::begin() {
   // CHANGE:上升+下降都要。VAN 是差分曼彻斯特(每个位都有跳变),
   // 只抓一个方向会丢一半槽。
   attachInterrupt(digitalPinToInterrupt(VAN_RX_PIN), van_isr_thunk, CHANGE);
-  Serial.printf("van phy: gpio 就绪 RX=GPIO%d(RO),空闲 %uus 关帧\n",
+  dash_logf("van phy: gpio 就绪 RX=GPIO%d(RO),空闲 %uus 关帧\n",
                 VAN_RX_PIN, (unsigned)kIdleCloseUs);
 }
 
@@ -75,7 +76,7 @@ void VanPhyGpio::tick(uint32_t now_ms) {
     const uint32_t qd = q_.dropped();
     static uint32_t last_edges = 0, last_qd = 0;
     if (st.edges != last_edges || qd != last_qd) {
-      Serial.printf("van: edges=%u frames=%u fcs_ok=%u dropped=%u(队列%u) 待收=%u\n",
+      dash_logf("van: edges=%u frames=%u fcs_ok=%u dropped=%u(队列%u) 待收=%u\n",
                     (unsigned)st.edges, (unsigned)st.frames, (unsigned)st.frames_fcs_ok,
                     (unsigned)st.frames_dropped, (unsigned)qd, (unsigned)wire_.pendingBytes());
       last_edges = st.edges;

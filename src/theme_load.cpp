@@ -1,4 +1,5 @@
 #include "theme_store.h"
+#include "dash_log.h"   // 日志同时打到 USB-CDC 与 UART0(见文件头说明)
 
 // ============================================================
 // 主题的"取文件"部分:设备端从 flash 主题分区读,宿主机从 THEME_FILE 读。
@@ -22,7 +23,7 @@ bool theme_load() {
       ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x40,
       THEME_PARTITION_LABEL);
   if (!part) {
-    Serial.println("theme: 没有 theme 分区,用默认主题");
+    dash_logf("theme: 没有 theme 分区,用默认主题\n");
     return false;
   }
 
@@ -31,7 +32,7 @@ bool theme_load() {
   static char buf[THEME_MAX_BYTES];
   const esp_err_t err = esp_partition_read(part, 0, buf, sizeof(buf) - 1);
   if (err != ESP_OK) {
-    Serial.printf("theme: 读分区失败 (%d),用默认主题\n", (int)err);
+    dash_logf("theme: 读分区失败 (%d),用默认主题\n", (int)err);
     return false;
   }
 
@@ -43,18 +44,18 @@ bool theme_load() {
   }
   buf[len] = '\0';
   if (len == 0) {
-    Serial.println("theme: 分区为空,用默认主题");
+    dash_logf("theme: 分区为空,用默认主题\n");
     return false;
   }
 
   Theme* slot = nullptr;
   theme_loaded_slot(&slot);
   if (!theme_parse_json(buf, len, *slot)) {
-    Serial.println("theme: 解析失败,用默认主题");
+    dash_logf("theme: 解析失败,用默认主题\n");
     return false;
   }
   theme_use_loaded();
-  Serial.printf("theme: 已加载 (%u 字节, bg=0x%06X, face=%d)\n",
+  dash_logf("theme: 已加载 (%u 字节, bg=0x%06X, face=%d)\n",
                 (unsigned)len, (unsigned)g_theme.bg_color,
                 (int)g_theme.face_size);
   return true;

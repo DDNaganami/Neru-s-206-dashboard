@@ -1,9 +1,11 @@
 #include <Arduino.h>
+#include "dash_log.h"   // 日志同时打到 USB-CDC 与 UART0(见文件头说明)
 // ★ 开机自检与 esp_partition 只有**设备端**才有(宿主机没有 ESP.* / esp_partition.h)。
 //   用 ARDUINO 判定:真 Arduino 框架(esp32dev / esp32s3)会定义它,
 //   pcpreview 的宿主机桩不定义 —— 于是同一份 main.cpp 两端都能编。
 #if defined(ARDUINO)
 #include <esp_partition.h>
+#include <esp_timer.h>   // 上电示位标(见 g_boot_stage / beacon_cb)
 #define DASH_DEVICE_SELFTEST 1
 #endif
 #include "data_service.h"
@@ -47,11 +49,11 @@ public:
   // 只要 824(车速/转速)这一帧?先全打 —— 反查协议时缺的就是"别的帧长什么样"。
   void onPacket(const VanPacket& pkt) override {
     if (!pkt.fcs_ok) {
-      Serial.printf("# VAN 校验失败 iden=%03X len=%u\n", (unsigned)pkt.iden, (unsigned)pkt.len);
+      dash_logf("# VAN 校验失败 iden=%03X len=%u\n", (unsigned)pkt.iden, (unsigned)pkt.len);
     } else {
-      Serial.printf("VAN %03X", (unsigned)pkt.iden);
-      for (uint8_t i = 0; i < pkt.len; ++i) Serial.printf(" %02X", (unsigned)pkt.data[i]);
-      Serial.printf("   # cmd=%u ack=%u\n", (unsigned)pkt.cmd, (unsigned)pkt.ack);
+      dash_logf("VAN %03X", (unsigned)pkt.iden);
+      for (uint8_t i = 0; i < pkt.len; ++i) dash_logf(" %02X", (unsigned)pkt.data[i]);
+      dash_logf("   # cmd=%u ack=%u\n", (unsigned)pkt.cmd, (unsigned)pkt.ack);
     }
     if (next_) next_->onPacket(pkt);   // 转发给数据源:打印归打印,数据照收
   }
@@ -66,33 +68,94 @@ static VanLogSink g_van_log;
 static uint32_t last_ui_ms = 0;
 static uint32_t last_status_ms = 0;
 
-// 上电后"每秒补打自检"的窗口长度(见 loop 里的说明:USB-CDC 的
-// connected 标志要靠数据流动才置位,所以不得不主动打)。
-static const uint32_t kBringupMs = 20000;
-
 // 串口离线回放 VAN 帧:一行 "VAN 824 18F82710000000" 喂一帧(见 van_replay.h),
 // 实车接收发器前先用抓到的帧联调,不用先焊板。
-static void van_replay_poll(uint32_t now) {
-  static char line[80];
-  static uint8_t len = 0;
-  while (Serial.available()) {
-    const char c = (char)Serial.read();
-    if (c == '\r' || c == '\n') {
-      if (len) {
-        line[len] = '\0';
-        VanPacket p{};
-        if (parseVanReplayLine(line, &p, now)) {
-          g_data.onVanPacket(p);
-        } else {
-          Serial.printf("VAN? %s\n", line);   // 解析失败回显,方便排错
-        }
-        len = 0;
+//
+// ★ 两个口**都收**:S3 上插原生 USB 口是 Serial(USB-CDC),插板载 CH340 那个
+//   UART 口是 Serial0(UART0)—— 手头只有一根线,插哪个口都得能贴帧
+//   (2026-09-18:就是把线插去了 UART 口,才有了这条)。
+//   一行只允许来自一个口,所以两个口各自维护自己的行缓冲(共用一个 len 会串行)。
+static void van_replay_feed(const char c, char* line, uint8_t& len, uint32_t now) {
+  if (c == '\r' || c == '\n') {
+    if (len) {
+      line[len] = '\0';
+      VanPacket p{};
+      if (parseVanReplayLine(line, &p, now)) {
+        g_data.onVanPacket(p);
+      } else {
+        dash_logf("VAN? %s\n", line);   // 解析失败回显,方便排错
       }
-    } else if (len < sizeof(line) - 1) {
-      line[len++] = c;
+      len = 0;
     }
+  } else if (len < 79) {
+    line[len++] = c;
   }
 }
+
+static void van_replay_poll(uint32_t now) {
+  static char line_usb[80];
+  static uint8_t len_usb = 0;
+  while (Serial.available()) {
+    van_replay_feed((char)Serial.read(), line_usb, len_usb, now);
+  }
+#if defined(ARDUINO) && defined(ARDUINO_USB_CDC_ON_BOOT) && (ARDUINO_USB_CDC_ON_BOOT == 1)
+  // 只有 CDC_ON_BOOT 时 Serial0 才是"另一个口";经典 ESP32 上两者是同一个 UART0
+  static char line_uart[80];
+  static uint8_t len_uart = 0;
+  while (Serial0.available()) {
+    van_replay_feed((char)Serial0.read(), line_uart, len_uart, now);
+  }
+#endif
+}
+
+// ---- 上电示位标(beacon):主循环卡死也照打 ----
+//
+// 为什么非要有这么个东西:USB-CDC 在**没有主机**时没有缓冲,setup() 里那几行
+// 开机日志一旦错过就永远看不到了。于是下面两种情况在串口上**长得一模一样**
+// (都是空白),完全无法区分:
+//     (a) 程序卡在某个初始化里(比如 LVGL 或某个驱动等硬件);
+//     (b) 芯片根本没跑我们的固件(还在 ROM 下载模式)。
+// 2026-09-18 就在这个岔路口上卡了很久。这个回调挂在 esp_timer 的
+// **独立任务**上,主循环哪怕死在某一行,它也照打;而且把"停在第几步"一起报出来,
+// 一次刷机就能定位。
+//
+// 只在前 40 秒打(靠计数器闭嘴,不去 stop 自己 —— 免得在回调里操作自身)。
+// 车上是没有 USB 主机的,过了这段就安静,不白占带宽。
+#if defined(DASH_DEVICE_SELFTEST)
+static volatile uint8_t g_boot_stage = 0;
+#define BOOT_STAGE(n) do { g_boot_stage = (uint8_t)(n); } while (0)
+static const char* const kStageNames[] = {
+    "还没进 setup",       // 0
+    "Serial 就绪",        // 1
+    "数据服务就绪",        // 2
+    "VAN 物理层就绪",      // 3
+    "主题+图片加载完",     // 4
+    "UI 初始化完",        // 5
+    "loop: 刚开始一轮",    // 6
+    "loop: 数据已更新",    // 7
+    "loop: UI 已 tick",   // 8
+    "loop: 已渲染一帧",    // 9
+};
+static const uint8_t kStageMax =
+    (uint8_t)(sizeof(kStageNames) / sizeof(kStageNames[0]) - 1u);
+
+static void beacon_cb(void*) {
+  static uint32_t n = 0;
+  if (++n > 40) return;
+  const uint8_t s = g_boot_stage;
+  // 自检里那几个关键数字(PSRAM / flash)也塞进这一行:监视器晚接上时,
+  // 开机那次完整自检已经错过了,而示位标还在打 → 一眼就能核对硬件。
+  dash_logf("BEACON %2u  step=%u(%s)  uptime=%us heap=%uKB psram=%uKB flash=%uMB\n",
+                (unsigned)n, (unsigned)s,
+                (s <= kStageMax ? kStageNames[s] : "?"),
+                (unsigned)(esp_timer_get_time() / 1000000),
+                (unsigned)(ESP.getFreeHeap() / 1024u),
+                (unsigned)(ESP.getPsramSize() / 1024u),
+                (unsigned)(ESP.getFlashChipSize() / (1024u * 1024u)));
+}
+#else
+#define BOOT_STAGE(n) do { } while (0)
+#endif
 
 // ---- 板子自检(换板/换芯片后第一眼要看的就是这几行)----
 // 为什么值得占几行:手里有经典 ESP32 和 S3 N16R8 两块板,
@@ -105,36 +168,43 @@ static void van_replay_poll(uint32_t now) {
 //   DASH_DEVICE_SELFTEST 判定 —— pcpreview 编这一步会直接编不过。
 #if defined(DASH_DEVICE_SELFTEST)
 static void print_selftest(const char* tag) {
-  Serial.printf("--- 自检(%s)---\n", tag);
-  Serial.printf("chip  : %s rev%d, %d 核 @ %u MHz\n",
+  dash_logf("--- 自检(%s)---\n", tag);
+  dash_logf("chip  : %s rev%d, %d 核 @ %u MHz\n",
                 ESP.getChipModel(), (int)ESP.getChipRevision(), (int)ESP.getChipCores(),
                 (unsigned)getCpuFrequencyMhz());
-  Serial.printf("flash : %u MB (IDE 编译目标 %u MB)\n",
-                (unsigned)(ESP.getFlashChipSize() / (1024u * 1024u)),
-                (unsigned)(IMAGE_PARTITION_BYTES / (1024u * 1024u)));
-  Serial.printf("psram : %u KB 可用 / %u KB 总\n",
-                (unsigned)(ESP.getFreePsram() / 1024u), (unsigned)(ESP.getPsramSize() / 1024u));
-  Serial.printf("heap  : %u KB\n", (unsigned)(ESP.getFreeHeap() / 1024u));
+  dash_logf("flash : %u MB\n", (unsigned)(ESP.getFlashChipSize() / (1024u * 1024u)));
+  // PSRAM 这一行是"双 480×480 屏能不能做"的判据。报 0 的**最常见**原因不是板子,
+  // 而是漏了 -DBOARD_HAS_PSRAM(核心会主动把 CONFIG_SPIRAM #undef 掉,
+  // 见 platformio.ini 的 [env:esp32s3])。所以这里连"编译期有没有开"一起报。
+  dash_logf("psram : %u KB 可用 / %u KB 总%s\n",
+                (unsigned)(ESP.getFreePsram() / 1024u), (unsigned)(ESP.getPsramSize() / 1024u),
+#if defined(BOARD_HAS_PSRAM)
+                ""
+#else
+                "  ← 编译期没开!检查 -DBOARD_HAS_PSRAM"
+#endif
+  );
+  dash_logf("heap  : %u KB\n", (unsigned)(ESP.getFreeHeap() / 1024u));
   // 分区表里的图片分区大小 —— 与编译期的口径对不上就说明烧错了分区表
   const esp_partition_t* ip = esp_partition_find_first(
       ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x41, "image");
   if (ip) {
-    Serial.printf("image : 分区 %u KB @ 0x%06X(编译期口径 %u KB)%s\n",
+    dash_logf("image : 分区 %u KB @ 0x%06X(编译期口径 %u KB)%s\n",
                   (unsigned)(ip->size / 1024u), (unsigned)ip->address,
                   (unsigned)(IMAGE_PARTITION_BYTES / 1024u),
                   (ip->size == IMAGE_PARTITION_BYTES) ? "" : "  ← 不一致,检查分区表!");
   } else {
-    Serial.println("image : 分区不存在(检查分区表)");
+    dash_logf("image : 分区不存在(检查分区表)\n");
   }
 }
 #endif  // DASH_DEVICE_SELFTEST
 
 void setup() {
-  Serial.begin(115200);
+  dash_log_begin(115200);
   delay(200);
   // 开机握手行:刷机后靠它确认固件真的跑起来了(见 ACCEPTANCE.md)。
   // 放在最前面 —— 即使后面的初始化有问题,至少能看到这一行。
-  Serial.println("206 dash ok");
+  dash_logf("206 dash ok\n");
 
   // ★ 设备端的 USB-CDC 是**没有主机的缓冲**的:监视器如果没在开机前打开,
   //   这几行就永远看不到了(实测踩过:刷完立刻开监视器,一片空白)。
@@ -145,12 +215,29 @@ void setup() {
   print_selftest("上电");
 #endif
 
+  // ★ 示位标定时器:立刻起,1 Hz(**在 setup 一开头就起**,因为它存在的意义
+  //   就是"后面的初始化万一卡住,也要有人替我们说话")。
+  BOOT_STAGE(1);
+#if defined(DASH_DEVICE_SELFTEST)
+  {
+    esp_timer_create_args_t args = {};
+    args.callback = &beacon_cb;
+    args.name = "dash_beacon";
+    esp_timer_handle_t t = nullptr;
+    if (esp_timer_create(&args, &t) == ESP_OK) {
+      esp_timer_start_periodic(t, 1000000);
+    }
+  }
+#endif
+
   g_data.begin();
+  BOOT_STAGE(2);
   // 物理层 → 打印层 → 数据源。打印层只旁观,不影响数据流
   // (抓帧时那行文本就是回放格式,见 VanLogSink 的说明)。
   g_van_log.setNext(&g_van_sink);
   g_van_phy.setSink(&g_van_log);
   g_van_phy.begin();
+  BOOT_STAGE(3);
   // 主题:先默认值(由 dash_ui_init 兜底),再尝试用 flash 里的主题文件覆盖。
   // 加载失败不影响启动 —— 降级到默认主题继续跑。
   theme_load();
@@ -159,16 +246,18 @@ void setup() {
   // 否则"刷了图片没反应"在设备上是完全静默的,到时候无从判断是
   // 分区表、mmap 还是格式的问题。接上后上电串口就会说明白。
   image_load();
+  BOOT_STAGE(4);
   dash_ui_init();
+  BOOT_STAGE(5);
   // 一行汇总:有没有图片资源一眼可见(没刷图片是正常情况,不是错误)。
   {
     const ImageBlobHeader* ih = image_blob_header();
     if (ih) {
-      Serial.printf("image ok: %u 张,数据 %u 字节,镜像 %u 字节\n",
+      dash_logf("image ok: %u 张,数据 %u 字节,镜像 %u 字节\n",
                     (unsigned)ih->count, (unsigned)ih->data_bytes,
                     (unsigned)image_blob_len());
     } else {
-      Serial.println("image none: 无图片资源,背景用主题纯色");
+      dash_logf("image none: 无图片资源,背景用主题纯色\n");
     }
   }
   // 物理层类型:抓帧时第一眼要确认的就是这一行 ——
@@ -177,42 +266,35 @@ void setup() {
 #if defined(VAN_PHY_GPIO)
   // 具体引脚与"空闲关帧"的阈值由 VanPhyGpio::begin() 自己打印(见 van_phy_gpio.cpp)
 #else
-  Serial.println("van phy: stub(没启用 GPIO 接收;要抓帧请用 -DVAN_PHY_GPIO=1 编译)");
+  dash_logf("van phy: stub(没启用 GPIO 接收;要抓帧请用 -DVAN_PHY_GPIO=1 编译)\n");
 #endif
 }
 
 void loop() {
   const uint32_t now = millis();
+  // 示位标报的"第几步"= 本轮**已经走到**的最后一步(不是累计值):
+  // 所以卡在哪一步,串口上看到的就是哪一步。
+  BOOT_STAGE(6);
   g_van_phy.tick(now);   // VAN 物理层解帧 → 喂给 data_service(当前为桩)
   van_replay_poll(now);  // 串口贴帧离线回放(和物理层等价,先到的先写)
   const VehicleState st = g_data.update(now);
+  BOOT_STAGE(7);
   dash_ui_tick(now);   // LVGL 心跳,每个循环都跑
   dash_display_poll(); // 设备上为空;pcpreview 落 BMP 帧
+  BOOT_STAGE(8);
 
   if (now - last_ui_ms >= 200) {
     last_ui_ms = now;
     dash_ui_render(make_view(st, now), now);
+    BOOT_STAGE(9);
   }
 
-  // ★ 上电后的"补打窗口":头 20 秒每秒打一次自检。
-  //
-  // 为什么不是"等主机连上再打"(第一版就是这么写的,结果更糟):
-  //   HWCDC 的 connected 标志**要靠数据流动才能置位** —— 看 cores/esp32/HWCDC.cpp:
-  //   SERIAL_IN_EMPTY 中断(host 把发出去的数据收走了)里才 connected = true;
-  //   而端口一打开(BUS_RESET)反而会把它清成 false。
-  //   所以"没连接就不打印"会变成死锁:不打 → 没人收 → 永远不 connected → 永远不打。
-  //   实测现象就是监视器一片空白,看起来跟固件没跑一样。
-  //   改成无条件重打:只要监视器接上,最多 1 秒就能看到这几行。
-  //   车上是没有 USB 主机的,那时这些字进环形缓冲后被丢掉 —— 代价可忽略。
-#if defined(DASH_DEVICE_SELFTEST)
-  {
-    static uint32_t last_bringup_ms = 0;
-    if (now < kBringupMs && (uint32_t)(now - last_bringup_ms) >= 1000) {
-      last_bringup_ms = now;
-      print_selftest("上电后 1Hz 补打,监视器随时接上都能看到");
-    }
-  }
-#endif
+  // ★ 上电后**不再重复打完整自检** —— 那是 2026-09-18 排查"串口一片空白"时
+  //   加的应急手段(当时既不知道 USB-CDC 没缓冲,也不知道监视器会把芯片按进
+  //   下载模式)。现在有两条可靠的日志通道(UART 口 + USB 口),而且示位标
+  //   每秒已经把那几个关键数字(heap/psram/flash)带出来了,再刷屏只是噪音:
+  //   实测整个自检每秒 5 行 × 20 秒,真正的 VAN 帧会被淹掉。
+  //   开机打一次(上面 setup 里)+ 40 秒示位标就够了。
 
   // 每 5 秒打印各字段当前由哪个源供给 + 当前数值(调试用)。
   // 数值是必须的:桩驱动丢弃画面,开机动画/换屏之前只能靠串口确认
@@ -221,7 +303,7 @@ void loop() {
   if (now - last_status_ms >= 5000) {
     last_status_ms = now;
     const DataSourceStatus& s = g_data.status();
-    Serial.printf("SRC speed=%s rpm=%s coolant=%s intake=%s | v=%.1fkm/h %.0frpm %.1fC %.1fC\n",
+    dash_logf("SRC speed=%s rpm=%s coolant=%s intake=%s | v=%.1fkm/h %.0frpm %.1fC %.1fC\n",
                   fieldSourceName(s.speed),
                   fieldSourceName(s.rpm),
                   fieldSourceName(s.coolant),

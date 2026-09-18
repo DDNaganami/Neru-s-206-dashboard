@@ -251,6 +251,18 @@
   设备专属代码（`ESP.*`、`esp_partition.h`、GPIO 中断）一律用 `ARDUINO`
   判定圈起来 —— pcpreview 用的是宿主机桩，不定义 `ARDUINO`，
   少了这层判定预览构建会直接编不过（踩过）。
+- **S3 目标上两件"少一个字就白干"的事**（2026-09-18 实测，详见 `ACCEPTANCE.md`）：
+  · `-DBOARD_HAS_PSRAM` 必须有：`cores/esp32/esp32-hal-psram.h` 在缺这个宏时
+    会 `#undef CONFIG_SPIRAM` —— **核心主动把 PSRAM 编掉**，
+    现象是自检报 `psram : 0 KB`，而 `memory_type` 配得再对也没用。
+  · **刷写/调试走 UART 口（板载 CH340）而不是原生 USB 口**：前者是真 UART0 +
+    真 EN/IO0 复位线（刷完 app 真的会跑，ROM/bootloader/panic 日志全在），
+    后者的复位是软复位请求，每次都把芯片留在 ROM 下载模式。
+    上传要指定口：`--upload-port COM4`；抓完整开机日志用
+    `python tools/serial-capture/capture.py COM4`。
+- **日志是双通道的**：`lib/dashcore/dash_log.h` 的 `dash_logf()` 一次格式化、
+  USB-CDC 与 UART0 各写一遍。所以插哪个 USB 口都看得见日志；经典 ESP32 上
+  `Serial` 与 `Serial0` 是同一个 UART0，按 `CDC_ON_BOOT` 判断只写一次。
 
 测试（宿主机，不烧板）：
 - test/test_dashcore/ 为 native 单元测试（Unity，当前 95 例，2 例需环境变量否则跳过），

@@ -7,6 +7,7 @@
 #include <lvgl.h>
 #include <Arduino.h>
 #include <math.h>
+#include "dash_log.h"   // 日志同时打到 USB-CDC 与 UART0(见文件头说明)
 
 // 表情槽位下标 = (uint8_t)Face —— 两者必须一样长,否则数组会越界
 static_assert((uint8_t)Face::Count == kFaceSlotCount,
@@ -496,7 +497,7 @@ void dash_ui_init() {
   }
 
   g_boot.start(millis());
-  Serial.println("206 dash boot");
+  dash_logf("206 dash boot\n");
 }
 
 void dash_ui_tick(uint32_t now_ms) {
@@ -514,7 +515,7 @@ void dash_ui_tick(uint32_t now_ms) {
     }
   } else if (!g_boot_done_printed) {
     g_boot_done_printed = true;
-    Serial.println("boot anim done");
+    dash_logf("boot anim done\n");
   }
 
   lv_timer_handler();
@@ -525,7 +526,7 @@ void dash_ui_render(const ArcDashView& v, uint32_t now) {
     last_ok_ms = now;
     // face= 打的是**左/右两个**:两屏表情各看各的表,只打一个就分不清
     // 是"转速档没生效"还是"车速档没生效"。
-    Serial.printf("206 dash ok  spd=%3.0f%% rpm=%3.0f%% coolant=%.0fC face=%s/%s\n",
+    dash_logf("206 dash ok  spd=%3.0f%% rpm=%3.0f%% coolant=%.0fC face=%s/%s\n",
                   v.speed_t * 100.0f, v.rpm_t * 100.0f, v.coolant_c,
                   face_name(v.face_left), face_name(v.face_right));
   }
