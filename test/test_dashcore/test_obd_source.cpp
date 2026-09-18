@@ -193,6 +193,102 @@ void test_obd_rate_meter(void) {
   TEST_ASSERT_EQUAL_FLOAT(0.0f, obd.rpmHz());
 }
 
+// ---- 轮询节奏:快路每轮、慢路每 N 轮 ----
+//
+// ★ 这两条用例是"降频"这个决定的**唯一**凭据,所以它们看的是**顺序**,
+//   不能只用 fake.sent()(那是"发过没有",顺序错了也照样通过)。
+//
+// ★ 驱动方式很讲究:必须**按刚发出的请求**喂对应的响应。第一版是把响应提前
+//   塞进去,结果请求还没发、响应先被解析掉 —— 状态机不认(不是当次请求),
+//   于是每格白等 250ms 超时,测出来的节奏是假的,两条用例一起挂。
+static int drive_answering(FakeSerial& fake, ObdSource& obd, uint32_t& t,
+                           const char* bitmap, char out[][8], int max_out) {
+  int n = 0;
+  size_t seen = 0;
+  int guard = 6000;
+  while (n < max_out && guard-- > 0) {
+    t += 10;
+    obd.tick(t);
+    const size_t end = fake.tx.find('\r', seen);
+    if (end == std::string::npos) continue;
+    const std::string req = fake.tx.substr(seen, end - seen);
+    seen = end + 1;
+    if (req.size() < 4 || req.compare(0, 2, "01") != 0) continue;  // AT 序列
+    if (req == "0100") { fake.feed(bitmap); continue; }            // 位图不是数据请求
+    snprintf(out[n], 8, "%s", req.c_str());
+    if (req == "010C") fake.feed("41 0C 1A F8\r");
+    else if (req == "0105") fake.feed("41 05 3C\r");
+    else if (req == "010F") fake.feed("41 0F 2A\r");
+    else if (req == "010D") fake.feed("41 0D 3C\r");
+    ++n;
+  }
+  return n;
+}
+
+void test_obd_poll_schedule_fast_and_slow(void) {
+  FakeSerial fake;
+  ObdSource obd(&fake);
+  test_set_millis(0);
+  obd.begin();
+  uint32_t t = 1000;
+
+  char req[32][8];
+  const int n = drive_answering(fake, obd, t, "41 00 BE 3E B8 13\r", req, 28);
+  TEST_ASSERT_TRUE(n >= 13);
+  // ★ 一个周期的样子(快路 = 0C + 0D,慢路 = 05 / 0F):
+  //    0C 0D 05 | 0C 0D 0F | 0C 0D | 0C 0D   ← 然后重复
+  const char* expect[] = {"010C", "010D", "0105", "010C", "010D", "010F",
+                          "010C", "010D", "010C", "010D",
+                          "010C", "010D", "0105"};
+  for (int k = 0; k < 13; ++k) {
+    TEST_ASSERT_EQUAL_STRING(expect[k], req[k]);
+  }
+}
+
+// 不支持车速时:快路只剩转速 —— 转速每周期的份额从"三路均分 1/3"变成 4/6
+void test_obd_poll_schedule_without_speed(void) {
+  FakeSerial fake;
+  ObdSource obd(&fake);
+  test_set_millis(0);
+  obd.begin();
+  uint32_t t = 1000;
+
+  char req[32][8];
+  const int n = drive_answering(fake, obd, t, "41 00 BE 16 B8 13\r", req, 24);
+  TEST_ASSERT_TRUE(n >= 8);
+  // 快路 = 0C;慢路摊在周期里:0C 05 | 0C 0F | 0C | 0C
+  const char* expect[] = {"010C", "0105", "010C", "010F",
+                          "010C", "010C", "010C", "0105"};
+  for (int k = 0; k < 8; ++k) {
+    TEST_ASSERT_EQUAL_STRING(expect[k], req[k]);
+  }
+  TEST_ASSERT_FALSE(fake.sent("010D\r"));
+}
+
+// ★ 收到响应就该**立刻**发下一个,别等满 250ms 超时。
+//   旧行为:每格固定 250(等)+间隔;新行为只有间隔(80ms)。
+void test_obd_response_exits_wait_early(void) {
+  FakeSerial fake;
+  ObdSource obd(&fake);
+  test_set_millis(0);
+  obd.begin();
+  uint32_t t = 1000;
+  TEST_ASSERT_TRUE(drive_until_tx(fake, obd, t, "0100\r", 40));
+  fake.feed("41 00 BE 16 B8 13\r");               // 不支持车速:快路只有 0C
+  TEST_ASSERT_TRUE(drive_until_tx(fake, obd, t, "010C\r", 40));
+  const size_t before = fake.tx.size();
+
+  fake.feed("41 0C 1A F8\r");
+  t += 10;
+  obd.tick(t);                                    // 响应进来 → 立刻离开等待态
+  // 只推进 100ms(间隔 80ms 已过):下一条就该发出去了
+  for (int k = 0; k < 10; ++k) { t += 10; obd.tick(t); }
+  TEST_ASSERT_TRUE(fake.tx.size() > before);
+  TEST_ASSERT_TRUE(fake.sent("0105\r"));
+  // 对照:同样 100ms 若还在等超时(250ms)就什么都不会发 ——
+  // 这条断言实际上钉住了"提前离开"这个改动(旧实现这里会失败)
+}
+
 void test_obd_rpm_coolant_parse(void) {
   FakeSerial fake;
   ObdSource obd(&fake);
@@ -291,6 +387,9 @@ void register_obd_source_tests(void) {
   RUN_TEST(test_obd_poll_table_follows_bitmap);
   RUN_TEST(test_obd_support_query_timeout_keeps_polling);
   RUN_TEST(test_obd_speed_parse);
+  RUN_TEST(test_obd_poll_schedule_fast_and_slow);
+  RUN_TEST(test_obd_poll_schedule_without_speed);
+  RUN_TEST(test_obd_response_exits_wait_early);
   RUN_TEST(test_obd_rate_meter);
   RUN_TEST(test_obd_rpm_coolant_parse);
   RUN_TEST(test_obd_intake_parse);

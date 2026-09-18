@@ -2,14 +2,22 @@
 #include "obd_protocol.h"
 
 static const uint32_t kStepTimeoutMs  = 300;  // 每步 AT 命令等待
-static const uint32_t kPollIntervalMs = 200;  // 两次 PID 请求间隔
-static const uint32_t kWaitTimeoutMs  = 250;  // 请求发出后的响应等待
+// 两次请求之间的间隔。★ 2026-09-18 从 200ms 收到 80ms:
+//   ELM327 在 38400 波特率上一条请求才 5 字节(≈1.3ms),响应十几字节;
+//   真正的瓶颈是 ECU 在 ISO 9141-2 上的响应时间(通常 20~50ms)。
+//   80ms 是"足够保守"的值:调太紧会表现为丢响应→走 250ms 超时→刷新率不升反降,
+//   所以这个数要和 SRC-Hz 一起看(见 obd_source.h)。
+static const uint32_t kPollIntervalMs = 80;
+static const uint32_t kWaitTimeoutMs  = 250;  // 请求发出后的响应等待(没响应才走这条)
 static const char* const kInitCmds[]  = {"ATZ", "ATE0", "ATL0", "ATH0"};
 
-// 基准轮询表:三轮一转。0x0C 转速最重要,放第一格。
-// 车速(0x0D)不在这里 —— 它是**条件**加入的(见 buildPollTable)。
-static const uint8_t kBasePollPids[] = {0x0C, 0x05, 0x0F};
-static const uint8_t kBasePollCount = 3;
+// 快路:每轮都问。0x0C 转速最重要,放第一格。
+static const uint8_t kFastBasePids[] = {0x0C};
+static const uint8_t kFastBaseCount = 1;
+// 慢路:每 kSlowEveryNTurns 轮问一次。两个都是慢变量(温度),
+// 用户 2026-09-18 确认"不需要太快的更新"。
+static const uint8_t kSlowPids[] = {0x05, 0x0F};
+static const uint8_t kSlowCount = 2;
 
 // -DOBD_SPEED_PID=0 强制关掉车速那一路(对比实验用:量"加/不加"两种刷新率)。
 // 默认(不定义或定义为 1)= 由 0100 位图决定。
@@ -35,28 +43,38 @@ void ObdSource::begin() {
   support_mask_ = 0;
   speed_supported_ = false;
   speed_polled_ = false;
-  poll_count_ = kBasePollCount;
-  for (uint8_t i = 0; i < kBasePollCount; ++i) poll_pids_[i] = kBasePollPids[i];
-  pid_slot_ = 0;
+  buildPollTable(false);   // 位图没回来之前:只跑快路的转速,慢路照旧每周期一次
   sendCmd(kInitCmds[0]);
   last_activity_ms_ = millis();
 }
 
+// 生成一个周期的请求序列(见 obd_source.h 头部那张图):
+//   每轮:把快路各问一遍;周期里前 slow_count 轮的末尾各插一个慢路。
+// 例(快路 2 路、N=4、慢路 2 个):0C 0D 05 | 0C 0D 0F | 0C 0D | 0C 0D
 void ObdSource::buildPollTable(bool with_speed) {
-  poll_count_ = 0;
-  for (uint8_t i = 0; i < kBasePollCount; ++i) {
-    poll_pids_[poll_count_++] = kBasePollPids[i];
-  }
+  uint8_t fast[2] = {kFastBasePids[0], 0};
+  uint8_t fast_count = kFastBaseCount;
 #if OBD_SPEED_PID_ALLOWED
-  if (with_speed && poll_count_ < sizeof(poll_pids_)) poll_pids_[poll_count_++] = 0x0D;
+  if (with_speed && fast_count < 2) fast[fast_count++] = 0x0D;
 #else
   (void)with_speed;
 #endif
-  speed_polled_ = false;
-  for (uint8_t i = 0; i < poll_count_; ++i) {
-    if (poll_pids_[i] == 0x0D) speed_polled_ = true;
+
+  schedule_count_ = 0;
+  for (uint8_t round = 0; round < kSlowEveryNTurns; ++round) {
+    for (uint8_t f = 0; f < fast_count; ++f) {
+      if (schedule_count_ < kScheduleMax) schedule_[schedule_count_++] = fast[f];
+    }
+    // 慢路摊在整个周期里(每个周期各问一次),而不是挤在一轮里
+    if (round < kSlowCount && schedule_count_ < kScheduleMax) {
+      schedule_[schedule_count_++] = kSlowPids[round];
+    }
   }
-  pid_slot_ = 0;
+  speed_polled_ = false;
+  for (uint8_t i = 0; i < schedule_count_; ++i) {
+    if (schedule_[i] == 0x0D) speed_polled_ = true;
+  }
+  slot_ = 0;
 }
 
 void ObdSource::sendCmd(const char* cmd) {
@@ -116,14 +134,17 @@ void ObdSource::tick(uint32_t now_ms) {
 
     case Phase::PollIdle:
       if (now_ms - last_activity_ms_ >= kPollIntervalMs) {
-        sendRequest(poll_pids_[pid_slot_]);
-        pid_slot_ = (uint8_t)((pid_slot_ + 1) % poll_count_);
+        waiting_pid_ = schedule_[slot_];
+        sendRequest(waiting_pid_);
+        slot_ = (uint8_t)((slot_ + 1) % schedule_count_);
         phase_ = Phase::PollWait;
         last_activity_ms_ = now_ms;
       }
       break;
 
     case Phase::PollWait:
+      // ★ 提前离开等待态:响应已经在 onPidValue 里认领过了(见那里的说明),
+      //   只有"没响应"才走到这个超时。
       if (now_ms - last_activity_ms_ >= kWaitTimeoutMs) {
         phase_ = Phase::PollIdle;
         last_activity_ms_ = now_ms;
@@ -170,6 +191,16 @@ void ObdSource::onSupportedPids(uint32_t mask) {
 }
 
 void ObdSource::onPidValue(uint8_t pid, uint16_t raw) {
+  // ★ 先认领响应:如果这一格问的正是它,就别再等满 kWaitTimeoutMs 了。
+  //   不认领会怎样(2026-09-18 实测的旧行为):每个请求固定花掉
+  //   250(等)+80(间隔)=330ms,不管 ECU 其实 30ms 就答完了 ——
+  //   白白扔掉三分之二的时间,K 线那条窄管子被浪费掉大半。
+  //   只认"当次请求的" PID:上一轮的残留响应(或别的模块的帧)不能算数。
+  if (phase_ == Phase::PollWait && pid == waiting_pid_) {
+    phase_ = Phase::PollIdle;
+    last_activity_ms_ = now_ms_;
+  }
+
   if (pid == 0x0C) {
     const float r = rpmFromRaw(raw);
     if (r < 0.0f || r > kRpmMaxValid) return;  // 坏帧丢弃
