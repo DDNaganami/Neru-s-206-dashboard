@@ -18,11 +18,33 @@ struct DataSourceStatus {
   uint32_t rpm_age_ms     = UINT32_MAX;
   uint32_t coolant_age_ms = UINT32_MAX;
   uint32_t intake_age_ms  = UINT32_MAX;
+
+  // OBD 各字段的**实测刷新率**(Hz,每秒结算一次)。
+  // 为什么放在 status 里:这是"K 线够不够用"的唯一判据,而 K 线是一条
+  // 排队共享的窄管子 —— 加一个 PID 会不会把别的字段拖慢,算不出来
+  // (ELM327 自身开销 + ECU 响应快慢都在里面),只能实测。见 obd_source.h。
+  float obd_rpm_hz     = 0.0f;
+  float obd_coolant_hz = 0.0f;
+  float obd_intake_hz  = 0.0f;
+  float obd_speed_hz   = 0.0f;
+
+  // 车速那条 OBD 通路的三个状态(别混,见 obd_source.h 的同名注释):
+  //   -1 = 还没问到 0100 位图(或没接 OBD) / 0 = ECU 说不支持 / 1 = 支持
+  int8_t obd_speed_supported = -1;
+  bool   obd_speed_polled    = false;   // 我们实际有没有排进轮询表
+  bool   obd_support_known   = false;   // 位图到底拿到了没
+  uint32_t obd_support_mask  = 0;       // 0100 位图原文(bit31..0 ↔ PID 01..20)
 };
 
 // 多源数据合并服务。
-// 优先级:车速 Van > Sim;转速/水温/进气温度 Obd > Van > Sim;油量/挡位 Sim。
+// 优先级:车速 Van > Obd > Sim;转速/水温/进气温度 Obd > Van > Sim;油量/挡位 Sim。
 // 高优先级源超过 3 秒无新数据自动回退下一源(行车中拔线/OBD 断连不黑屏)。
+//
+// ★ 车速为什么是 Van 优先(而不是 Obd 优先):
+//   K 线是**请求/应答**且排队共享,而车速和转速是最需要"跟手"的两条弧。
+//   VAN 上的车速是仪表在总线上**广播**的 —— 纯听,零 K 线成本,
+//   于是 K 线那个时隙可以留给转速。OBD 的 010D 是**兜底**:
+//   VAN 还没接/还没解出帧时,车速照样有真值(≈1Hz),而不是掉回假数据。
 //
 // ★ 进气温度(010F)与水温走同一套规则,但它**没有 VAN 备份源** ——
 //   206 的 VAN 上没有这一项。所以 OBD 一断,它就回到假数据值,

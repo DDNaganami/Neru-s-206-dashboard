@@ -18,6 +18,9 @@ static const PidSpec kSupportedPids[] = {
   {0x0C, 2},   // 转速  (A*256+B)/4
   {0x05, 1},   // 水温  A-40 ℃
   {0x0F, 1},   // 进气温度 A-40 ℃
+  {0x0D, 1},   // 车速  A km/h  ← 2026-09-18 加:是否有这一项由 0100 位图决定,
+               //   见 obd_source.cpp 的 buildPollTable(这里是"能不能解析",
+               //   那里是"要不要去问"—— 两件事分开,别混成一件)
 };
 static const uint8_t kSupportedPidCount =
     (uint8_t)(sizeof(kSupportedPids) / sizeof(kSupportedPids[0]));
@@ -76,4 +79,41 @@ bool parseObdLine(const char* line, uint8_t* pid_out, uint16_t* raw_out) {
     return true;
   }
   return false;
+}
+
+// ---- 0100 的"支持的 PID 位图" ----
+//
+// 为什么单独一个函数而不是塞进 parseObdLine:
+//   位图是 4 个数据字节,而真实 PID 里最多 2 个 —— 共用一条解析路径就必须
+//   在"这是位图还是数据"之间做判断,而两者的判别依据恰好就是 PID 本身。
+//   分开写,两边都简单,而且 parseObdLine 的"表驱动"语义不被污染(查表里没有
+//   0x00,所以位图天然会被它拒掉)。
+bool parseSupportedPids(const char* line, uint32_t* mask_out) {
+  if (!line || !mask_out) return false;
+
+  for (uint8_t i = 0; line[i] != '\0'; ++i) {
+    if (line[i] != '4' || line[i + 1] != '1') continue;
+
+    uint8_t j = (uint8_t)(i + 2);
+    const int pid = hexByte(line, j);
+    if (pid != 0x00) continue;               // 只认 0100 那张位图
+
+    uint32_t mask = 0;
+    for (int k = 0; k < 4; ++k) {
+      const int v = hexByte(line, j);
+      if (v < 0) return false;               // 位图不完整 = 残帧,别拿半个去猜
+      mask = (mask << 8) | (uint32_t)v;
+    }
+    *mask_out = mask;
+    return true;
+  }
+  return false;
+}
+
+bool pidSupported(uint32_t mask, uint8_t pid) {
+  if (pid < 0x01 || pid > 0x20) return false;
+  // PID 0x01 = 最高位(bit31)。这条映射写错就会得到一个"看起来合理"的错误答案
+  // (比如把 0x0D 判成不支持),所以它有专门的用例钉着:test_obd_supported_pids_bits。
+  const uint8_t idx = (uint8_t)(pid - 0x01);   // 0..31
+  return (mask & (1UL << (31 - idx))) != 0;
 }

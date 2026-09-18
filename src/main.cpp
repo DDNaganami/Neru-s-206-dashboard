@@ -21,6 +21,12 @@
 //   例: Serial1.begin(38400, SERIAL_8N1, OBD_RX_PIN, OBD_TX_PIN);
 //       static VehicleDataService g_data(&Serial1);
 // 没接 OBD 时传 nullptr,只跑假数据。
+//
+// ★ 换成 &Serial1 之后:串口会多两行,到车上第一眼看的就是它们 ——
+//     obd: ECU 位图 0x… -> 车速(010D)支持/不支持,车速轮询已开/关闭
+//     SRC-Hz rpm=… cool=… intake=… speed=…      ← 每个字段的**实测**刷新率
+//   0100 位图与"要不要给 010D 一个轮询时隙"的关系见 lib/dashcore/obd_source.h;
+//   车速级优先级(Van > Obd > Sim)见 data_service.h。
 static VehicleDataService g_data(nullptr);
 
 // VAN 物理层:默认是桩(无硬件)。
@@ -303,11 +309,27 @@ void loop() {
   if (now - last_status_ms >= 5000) {
     last_status_ms = now;
     const DataSourceStatus& s = g_data.status();
+
+    // OBD 的 0100 位图结论**只报一次** —— 到车上第一眼要看的就这一行:
+    // ECU 到底认不认 010D(车速),以及车速那一路开没开。
+    // 为什么值得单独一行:它决定了"要不要花时间做 VAN 抓帧"。
+    static bool support_announced = false;
+    if (!support_announced && s.obd_support_known) {
+      support_announced = true;
+      dash_logf("obd: ECU 位图 0x%08lX -> 车速(010D)%s,车速轮询%s\n",
+                    (unsigned long)s.obd_support_mask,
+                    s.obd_speed_supported ? "支持" : "不支持",
+                    s.obd_speed_polled ? "已开" : "关闭");
+    }
+
     dash_logf("SRC speed=%s rpm=%s coolant=%s intake=%s | v=%.1fkm/h %.0frpm %.1fC %.1fC\n",
                   fieldSourceName(s.speed),
                   fieldSourceName(s.rpm),
                   fieldSourceName(s.coolant),
                   fieldSourceName(s.intake),
                   st.speed_kmh, st.rpm, st.coolant_c, st.intake_c);
+    // 实测刷新率:判断"K 线够不够用"的唯一依据(见 obd_source.h 的时隙账)
+    dash_logf("SRC-Hz rpm=%.1f cool=%.1f intake=%.1f speed=%.1f\n",
+                  s.obd_rpm_hz, s.obd_coolant_hz, s.obd_intake_hz, s.obd_speed_hz);
   }
 }

@@ -57,8 +57,26 @@ VehicleState VehicleDataService::update(uint32_t now_ms) {
     status_.intake = FieldSource::Obd;
     status_.intake_age_ms = now_ms - obd_.lastIntakeMs();
   }
+  // ★ 车速的 OBD 兜底(010D):只在 ECU 支持、而且我们确实在问它的时候才有值。
+  //   这里**不判断**"VAN 有没有给"—— 下面的 VAN 段在后面,它会直接覆盖,
+  //   天然实现"Van > Obd"。顺序就是优先级,别把两段调过来。
+  if (obd_.enabled() && obd_.hasSpeed() && fresh(obd_.lastSpeedMs(), now_ms)) {
+    state_.speed_kmh = obd_.speed();
+    status_.speed = FieldSource::Obd;
+    status_.speed_age_ms = now_ms - obd_.lastSpeedMs();
+  }
+  // OBD 的实测刷新率与 0100 位图的结论(只读,不参与合并)
+  status_.obd_rpm_hz = obd_.rpmHz();
+  status_.obd_coolant_hz = obd_.coolantHz();
+  status_.obd_intake_hz = obd_.intakeHz();
+  status_.obd_speed_hz = obd_.speedHz();
+  status_.obd_support_known = obd_.speedSupportKnown();
+  status_.obd_support_mask = obd_.supportMask();
+  status_.obd_speed_polled = obd_.speedPolled();
+  status_.obd_speed_supported =
+      obd_.speedSupportKnown() ? (obd_.speedSupported() ? 1 : 0) : -1;
 
-  // 3) VAN:车速(高优先级);转速作为 OBD 缺失时的补充
+  // 3) VAN:车速(最高优先级);转速作为 OBD 缺失时的补充
   van_.tick(now_ms);
   if (van_.hasSpeed() && fresh(van_.lastUpdateMs(), now_ms)) {
     state_.speed_kmh = van_.speedKmh();
