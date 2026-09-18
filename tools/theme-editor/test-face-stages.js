@@ -59,16 +59,17 @@ const cppSpeedMax = Number((maxSpeedRe.exec(stateH) || [])[1]);
 // 解析 face_stages.h
 // ------------------------------------------------------------
 
-// kFaceStages 行:{"group", "level", 转速, 速度, 水温, Face::左, Face::右},
+// kFaceStages 行:{"group", "level", 转速, 速度, 水温, 进气温度, Face::左, Face::右},
+// ★ 列数变了要改这条正则(进气温度那一列是 2026-09 加的)。
 const stagesRe =
-  /\{\s*"(\w+)"\s*,\s*"(\w+)"\s*,\s*([\d.]+)f\s*,\s*([\d.]+)f\s*,\s*([\d.]+)f\s*,\s*Face::(\w+)\s*,\s*Face::(\w+)\s*\}/g;
+  /\{\s*"(\w+)"\s*,\s*"(\w+)"\s*,\s*([\d.]+)f\s*,\s*([\d.]+)f\s*,\s*([\d.]+)f\s*,\s*([\d.]+)f\s*,\s*Face::(\w+)\s*,\s*Face::(\w+)\s*\}/g;
 const cppStages = [];
 let m;
 while ((m = stagesRe.exec(stagesH)) !== null) {
   cppStages.push({
     group: m[1], level: m[2],
-    rpm: Number(m[3]), speed: Number(m[4]), coolant: Number(m[5]),
-    left: m[6], right: m[7]
+    rpm: Number(m[3]), speed: Number(m[4]), coolant: Number(m[5]), intake: Number(m[6]),
+    left: m[7], right: m[8]
   });
 }
 
@@ -106,7 +107,7 @@ const cppRightStates = parseStateList("kFaceRightStates");
 
 // 解析不出来就说明 face_stages.h 的排版被改了 —— 直接失败,别静默跳过
 section("face_stages.h 可解析");
-ok(cppStages.length === 11, "解析出 11 条阶段用例(得到 " + cppStages.length + ")");
+ok(cppStages.length === 14, "解析出 14 条阶段用例(得到 " + cppStages.length + ")");
 ok(cppFallback.length === 5, "解析出 5 行降级链(得到 " + cppFallback.length + ")");
 ok(cppRoleDims[0] === 2 && cppRoleDims[1] === 5,
    "角色编号表的维度是 [2][5](得到 [" + cppRoleDims.join("][") + "])");
@@ -114,7 +115,7 @@ ok(cppRoles.length === 2 && cppRoles[0].length === 5 && cppRoles[1].length === 5
    "解析出 2×5 的角色编号表");
 ok(!!cppLeftStates && cppLeftStates.length === 4, "解析出左屏状态表(4 个)");
 ok(!!cppRightStates && cppRightStates.length === 4, "解析出右屏状态表(4 个)");
-if (cppStages.length !== 11 || cppFallback.length !== 5 || cppRoles.length !== 2 ||
+if (cppStages.length !== 14 || cppFallback.length !== 5 || cppRoles.length !== 2 ||
     !cppLeftStates || !cppRightStates) {
   console.log("\n  ⚠ face_stages.h 里的表格排版被改动了。");
   console.log("    那几张表的书写格式是被本测试解析的:每行一条,");
@@ -161,7 +162,7 @@ section("两屏状态集合确实不同(左有红区、右有超速)");
 }
 
 // ------------------------------------------------------------
-section("11 条阶段用例:JS 镜像 == face_stages.h");
+section("14 条阶段用例:JS 镜像 == face_stages.h");
 eq(FS_JS.STAGES.length, cppStages.length, "条数");
 for (let i = 0; i < cppStages.length; i++) {
   const c = cppStages[i], j = FS_JS.STAGES[i];
@@ -176,7 +177,7 @@ for (let i = 0; i < cppStages.length; i++) {
 }
 
 section("分组结构");
-for (const g of ["rpm", "speed", "coolant"]) {
+for (const g of ["rpm", "speed", "coolant", "intake"]) {
   const rows = FS_JS.stagesOf(g);
   ok(rows.length >= 3, g + " 组至少 3 档");
   eq(rows[0].level, "low", g + " 第一档是 low");
@@ -184,6 +185,17 @@ for (const g of ["rpm", "speed", "coolant"]) {
 eq(FS_JS.stagesOf("rpm").length, 4, "转速组 4 档(含红区)");
 eq(FS_JS.stagesOf("speed").length, 4, "车速组 4 档(含超速)");
 eq(FS_JS.stagesOf("coolant").length, 3, "水温组 3 档");
+// ★ 进气温度那一组是用户当场抓出来的漏项:"阶段里面缺失了进气温度低中高的选项"。
+//   弧和读数加了、阶段表没加,结果是**模拟器里点不出来**那条弧 —— 表里没有它。
+eq(FS_JS.stagesOf("intake").length, 3, "进气温度组 3 档");
+{
+  const vals = FS_JS.stagesOf("intake").map(s => s.intake);
+  eq(vals.join(","), "20,40,65", "进气三档的取值(环境温度/常温行驶/堵车热浸)");
+  // 三档必须真的落在默认量程 0..80 内,而且彼此拉开 ——
+  // 否则格子上那条弧看起来"点了没反应"
+  ok(vals[0] >= 0 && vals[2] <= 80, "进气三档都落在默认量程 0..80 内");
+  ok(vals[1] - vals[0] >= 10 && vals[2] - vals[1] >= 10, "进气三档之间至少差 10℃");
+}
 // ★ 每屏 4 个状态 → 表里就该有 4 条:每个状态都能被"点"出来。
 //   (当年右屏第 4 档是"急加速惊喜",它不是按车速分档的,所以表里没有它 ——
 //    用户试用时问"这个档选不出来是做什么用的",改成超速后就补齐了。)
@@ -198,6 +210,7 @@ eq(FS_JS.stagesOf("rpm").length, FS_JS.SCREENS[0].states.length,
   eq(over.right, "Overspeed", "超速档的右屏期望是超速脸");
 }
 eq(FS_JS.group("coolant").faces, false, "水温组声明为不影响表情");
+eq(FS_JS.group("intake").faces, false, "进气温度组声明为不影响表情");
 
 // ------------------------------------------------------------
 // 量程上限(画弧进度用):网页镜像 == vehicle_state.h
@@ -234,6 +247,15 @@ for (const st of FS_JS.STAGES) {
   if (st.group !== "coolant") {
     eq(st.coolant, 85, st.group + "·" + st.level + " 的水温必须是正常值 85");
   }
+  // 进气温度同理:除了进气组自己,别的组都必须把进气钉在常温 35 ——
+  // 否则点"水温·高"时右屏那条进气弧也会跟着动,看不出是哪条在变
+  if (st.group !== "intake") {
+    eq(st.intake, 35, st.group + "·" + st.level + " 的进气温度必须是常温 35");
+  } else {
+    eq(st.rpm, 900, "进气·" + st.level + " 的转速必须是怠速 900");
+    eq(st.speed, 0, "进气·" + st.level + " 的车速必须是 0");
+    eq(st.coolant, 85, "进气·" + st.level + " 的水温必须是正常值 85");
+  }
 }
 
 section("每屏只被自己那一路驱动");
@@ -244,8 +266,9 @@ for (const st of FS_JS.STAGES) {
   } else if (st.group === "speed") {
     eq(st.left, "Idle", tag + " 不该动左屏(转速表)");
   } else {
-    eq(st.left, "Idle", tag + " 不该动左屏(水温不参与表情)");
-    eq(st.right, "Idle", tag + " 不该动右屏(水温不参与表情)");
+    // 温度组(水温 / 进气温度):两屏都不参与表情,只动各自的副弧与数字
+    eq(st.left, "Idle", tag + " 不该动左屏(温度不参与表情)");
+    eq(st.right, "Idle", tag + " 不该动右屏(温度不参与表情)");
   }
   // 期望的表情必须是那一屏真的有的状态
   ok(FS_JS.roleFor("left", st.left) !== null, tag + " 左屏期望 " + st.left + " 是左屏的状态");

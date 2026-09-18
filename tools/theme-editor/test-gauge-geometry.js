@@ -111,6 +111,19 @@ section("两个编辑器的角度换算没有偏移(LVGL 与 canvas 约定一致
       ok(sig && /reverse/.test(sig[1]), f + " 的 drawArc() 签名要带 reverse 参数");
       ok(/a\.reverse|\.reverse\b/.test(src), f + " 调用 drawArc 时要传 reverse");
     }
+
+    // ★ 副表(kind 2 = 水温 / kind 3 = 进气温度)都不许被当成"大数字的来源"。
+    //   两个编辑器的判定必须与固件 dash_ui.cpp 的 is_aux_kind() 同一套 ——
+    //   只排除 2 的话,一条 [进气, 车速] 顺序的屏会让速度表的大数字变成进气温度,
+    //   不报错、只是读数变错,很难查。
+    {
+      const pk = /function primaryKind\([^)]*\)\s*\{([\s\S]*?)\n\}/.exec(src);
+      if (pk) {
+        const b = stripComments(pk[1]);
+        ok(/!==\s*2/.test(b) && /!==\s*3/.test(b),
+           f + " 的 primaryKind() 要同时排除水温(2)与进气温度(3)");
+      }
+    }
   }
 }
 

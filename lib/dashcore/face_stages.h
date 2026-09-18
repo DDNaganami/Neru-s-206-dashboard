@@ -6,8 +6,8 @@
 // 表情阶段表 —— 固件与编辑器共用的**唯一事实来源**
 //
 // 这个文件回答四个问题:
-//   1. "转速低/中/高/红区"和"速度低/中/高/超速"这些阶段,
-//      **左右两屏各自**该显示哪张表情?(kFaceStages)
+//   1. "转速低/中/高/红区"、"速度低/中/高/超速"、"水温低/中/高"、
+//      "进气温度低/中/高"这些阶段,**左右两屏各自**该显示哪张表情?(kFaceStages)
 //   2. 每屏实际会产生哪几个状态?(kFaceLeftStates / kFaceRightStates)
 //   3. 某个状态没有导入图片时,退到哪张?(kFaceFallback)
 //   4. 槽位对应哪个图片角色编号?(kFaceRoleId)
@@ -17,7 +17,7 @@
 //   所以两边不可能悄悄跑偏 —— 改了这里,Node 那条测试会红。
 //
 // ★ 表格的书写格式是**被解析的**:每行必须保持
-//     {"group", "level", 转速, 速度, 水温, Face::左, Face::右},
+//     {"group", "level", 转速, 速度, 水温, 进气温度, Face::左, Face::右},
 //   两段字符串用双引号、数字用浮点、状态用 Face:: 前缀。
 //   加行/改数字都可以,但别改成别的排版。
 // ============================================================
@@ -27,28 +27,35 @@
 // ★★ 两组硬规则,都有测试钉住:
 //
 // ① **每组只变自己那一维**:速度组固定 rpm=900(怠速)、转速组固定 speed=0、
-//    非水温组固定水温 85。用户试用时抓出来的 ——
+//    非水温组固定水温 85、非进气组固定进气 35(正常行驶时的进气温度)。
+//    用户试用时抓出来的 ——
 //    点"速度·中"时转速表不能跟着动,否则画面里两个表同时变,
 //    根本看不出这一档改了什么。
 //    (第一版把速度组的转速写成 1500/2600 想"借转速凑表情",被当场看出来。)
 //
 // ② **只有该屏自己的那一路能改它的表情**:转速组的右屏必须恒为常态、
-//    速度组的左屏必须恒为常态;水温组**两屏都不许变**(水温不参与表情)。
+//    速度组的左屏必须恒为常态;水温组与进气温度组**两屏都不许变**
+//    (两个温度都只驱动"自己的副弧 + 自己的数字")。
 //    这正是"每屏一套独立表情"的可执行定义。
 //
-// 未被测的那两路取"正常值":车速 0、水温 85(正常运行温度)、转速 900(怠速)。
+// 未被测的那几路取"正常值":车速 0、水温 85(正常运行温度)、转速 900(怠速)、
+// 进气温度 35(常温行驶)。
 // **转速组的四档直接用实车地标**:点火怠速 900 / 稳定巡航 2000 /
 // 运动 4200 / 表盘上限 6000 —— 这样"表里那一行"就是"车上真会出现的那一格"。
 // 车速组的四档是 0 / 55 / 110 / 140:分别落在 常态/巡航/运动/超速 四档里。
-// ★ 四档 + 四档 = 8 条:每屏 4 个状态,每个状态都有一条能被点的用例
-//   (原来的"惊喜"是瞬态、列不进表,用户试用时发现"选不出来" —— 改成
-//   超速之后就补上了这一条,见 expression.cpp 顶部的说明)。
+// 温度两组各三档:水温 60/85/115(冷机/正常/偏热),
+// 进气 20/40/65(环境温度/常温行驶/堵车热浸)—— 取值都落在默认量程内,
+// 这样阶段模拟里那条副弧会真的走起来(而不是一直趴在 0)。
+//
+// ★ 每屏 4 个状态各自都有用例(转速 4 + 车速 4),外加温度两组各 3 条
+//   "只动副表、不动表情"的用例 —— 共 14 条。
 struct FaceStage {
-  const char* group;      // "rpm" | "speed" | "coolant"
+  const char* group;      // "rpm" | "speed" | "coolant" | "intake"
   const char* level;      // "low" | "mid" | "high" | "redline" | "over"
   float rpm;
   float speed_kmh;
   float coolant_c;
+  float intake_c;
   Face left;              // 左屏(转速表)该显示哪张
   Face right;             // 右屏(速度表)该显示哪张
 };
@@ -56,20 +63,27 @@ struct FaceStage {
 static const FaceStage kFaceStages[] = {
   // 转速:只驱动左屏;右屏恒为常态(车速一直是 0)
   // 四档 = 实车地标(怠速/巡航/运动/上限),阈值见 expression.cpp
-  {"rpm", "low", 900.0f, 0.0f, 85.0f, Face::Idle, Face::Idle},
-  {"rpm", "mid", 2000.0f, 0.0f, 85.0f, Face::Cruise, Face::Idle},
-  {"rpm", "high", 4200.0f, 0.0f, 85.0f, Face::Sport, Face::Idle},
-  {"rpm", "redline", 6000.0f, 0.0f, 85.0f, Face::Redline, Face::Idle},
+  {"rpm", "low", 900.0f, 0.0f, 85.0f, 35.0f, Face::Idle, Face::Idle},
+  {"rpm", "mid", 2000.0f, 0.0f, 85.0f, 35.0f, Face::Cruise, Face::Idle},
+  {"rpm", "high", 4200.0f, 0.0f, 85.0f, 35.0f, Face::Sport, Face::Idle},
+  {"rpm", "redline", 6000.0f, 0.0f, 85.0f, 35.0f, Face::Redline, Face::Idle},
   // 车速:只驱动右屏;左屏恒为常态(转速一直是怠速)
   // 140 而不是 131:超速那条要离阈值有距离,免得"阈值一改用例就擦边"
-  {"speed", "low", 900.0f, 0.0f, 85.0f, Face::Idle, Face::Idle},
-  {"speed", "mid", 900.0f, 55.0f, 85.0f, Face::Idle, Face::Cruise},
-  {"speed", "high", 900.0f, 110.0f, 85.0f, Face::Idle, Face::Sport},
-  {"speed", "over", 900.0f, 140.0f, 85.0f, Face::Idle, Face::Overspeed},
-  // 水温:两屏表情都不动,只影响水温弧与水温数字
-  {"coolant", "low", 900.0f, 0.0f, 60.0f, Face::Idle, Face::Idle},
-  {"coolant", "mid", 900.0f, 0.0f, 85.0f, Face::Idle, Face::Idle},
-  {"coolant", "high", 900.0f, 0.0f, 115.0f, Face::Idle, Face::Idle},
+  {"speed", "low", 900.0f, 0.0f, 85.0f, 35.0f, Face::Idle, Face::Idle},
+  {"speed", "mid", 900.0f, 55.0f, 85.0f, 35.0f, Face::Idle, Face::Cruise},
+  {"speed", "high", 900.0f, 110.0f, 85.0f, 35.0f, Face::Idle, Face::Sport},
+  {"speed", "over", 900.0f, 140.0f, 85.0f, 35.0f, Face::Idle, Face::Overspeed},
+  // 水温:两屏表情都不动,只影响水温弧与水温数字(左屏)
+  {"coolant", "low", 900.0f, 0.0f, 60.0f, 35.0f, Face::Idle, Face::Idle},
+  {"coolant", "mid", 900.0f, 0.0f, 85.0f, 35.0f, Face::Idle, Face::Idle},
+  {"coolant", "high", 900.0f, 0.0f, 115.0f, 35.0f, Face::Idle, Face::Idle},
+  // 进气温度:同样两屏表情都不动,只影响进气弧与进气数字(右屏)。
+  // ★ 这一组是 2026-09 加的:用户拿到蓝牙 ELM327 实测 OBD 支持 010F 之后,
+  //   先加了弧和读数,却漏了阶段表 —— 阶段模拟里没有"进气低/中/高"可点,
+  //   于是那条新弧在模拟器里根本走不起来。补上。
+  {"intake", "low", 900.0f, 0.0f, 85.0f, 20.0f, Face::Idle, Face::Idle},
+  {"intake", "mid", 900.0f, 0.0f, 85.0f, 40.0f, Face::Idle, Face::Idle},
+  {"intake", "high", 900.0f, 0.0f, 85.0f, 65.0f, Face::Idle, Face::Idle},
 };
 static const uint8_t kFaceStageCount =
     (uint8_t)(sizeof(kFaceStages) / sizeof(kFaceStages[0]));

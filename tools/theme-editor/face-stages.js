@@ -116,30 +116,38 @@
   //   ① 每组只变自己那一维:速度组固定 rpm=900(怠速)、转速组固定 speed=0。
   //      否则点"速度·中"时转速表跟着动,看不出这一档改了什么。
   //   ② **只有该屏自己的那一路能改它的表情**:转速组的右屏恒为常态、
-  //      速度组的左屏恒为常态、水温组两屏都不动。
+  //      速度组的左屏恒为常态、水温组与进气温度组两屏都不动。
   //      这就是"每屏一套独立表情"的可执行定义。
   //
   // 转速四档用的是**实车地标**(用户实测:点火怠速 900 / 稳定巡航 2000 /
   // 表盘上限 6000;运动取中间 4200)—— 所以表里那一行就是车上真会出现的那一格。
   // 车速四档 0 / 55 / 110 / 140:分别落在 常态/巡航/运动/超速。
+  // 温度两组各三档:水温 60/85/115、进气 20/40/65。
   // ★ 每屏 4 个状态、表里就 4 条 —— 每个状态都能被"点"出来。
   //   (当年右屏第 4 档是"急加速惊喜",它不是按车速分档的,所以表里没有它,
   //    用户试用时发现"这个档选不出来" —— 改成超速后就补齐了。)
   var STAGES = [
     // 转速:只驱动左屏;右屏恒为常态(车速一直是 0)
-    { group: "rpm", level: "low",     rpm: 900,  speed: 0,   coolant: 85,  left: "Idle",    right: "Idle" },
-    { group: "rpm", level: "mid",     rpm: 2000, speed: 0,   coolant: 85,  left: "Cruise",  right: "Idle" },
-    { group: "rpm", level: "high",    rpm: 4200, speed: 0,   coolant: 85,  left: "Sport",   right: "Idle" },
-    { group: "rpm", level: "redline", rpm: 6000, speed: 0,   coolant: 85,  left: "Redline", right: "Idle" },
+    { group: "rpm", level: "low",     rpm: 900,  speed: 0,   coolant: 85,  intake: 35, left: "Idle",    right: "Idle" },
+    { group: "rpm", level: "mid",     rpm: 2000, speed: 0,   coolant: 85,  intake: 35, left: "Cruise",  right: "Idle" },
+    { group: "rpm", level: "high",    rpm: 4200, speed: 0,   coolant: 85,  intake: 35, left: "Sport",   right: "Idle" },
+    { group: "rpm", level: "redline", rpm: 6000, speed: 0,   coolant: 85,  intake: 35, left: "Redline", right: "Idle" },
     // 车速:只驱动右屏;左屏恒为常态(转速一直是怠速)
-    { group: "speed", level: "low",  rpm: 900, speed: 0,   coolant: 85, left: "Idle", right: "Idle"      },
-    { group: "speed", level: "mid",  rpm: 900, speed: 55,  coolant: 85, left: "Idle", right: "Cruise"    },
-    { group: "speed", level: "high", rpm: 900, speed: 110, coolant: 85, left: "Idle", right: "Sport"     },
-    { group: "speed", level: "over", rpm: 900, speed: 140, coolant: 85, left: "Idle", right: "Overspeed" },
-    // 水温:两屏表情都不动,只影响水温弧与水温数字
-    { group: "coolant", level: "low",  rpm: 900, speed: 0, coolant: 60,  left: "Idle", right: "Idle" },
-    { group: "coolant", level: "mid",  rpm: 900, speed: 0, coolant: 85,  left: "Idle", right: "Idle" },
-    { group: "coolant", level: "high", rpm: 900, speed: 0, coolant: 115, left: "Idle", right: "Idle" }
+    { group: "speed", level: "low",  rpm: 900, speed: 0,   coolant: 85, intake: 35, left: "Idle", right: "Idle"      },
+    { group: "speed", level: "mid",  rpm: 900, speed: 55,  coolant: 85, intake: 35, left: "Idle", right: "Cruise"    },
+    { group: "speed", level: "high", rpm: 900, speed: 110, coolant: 85, intake: 35, left: "Idle", right: "Sport"     },
+    { group: "speed", level: "over", rpm: 900, speed: 140, coolant: 85, intake: 35, left: "Idle", right: "Overspeed" },
+    // 水温:两屏表情都不动,只影响水温弧与水温数字(左屏)
+    { group: "coolant", level: "low",  rpm: 900, speed: 0, coolant: 60,  intake: 35, left: "Idle", right: "Idle" },
+    { group: "coolant", level: "mid",  rpm: 900, speed: 0, coolant: 85,  intake: 35, left: "Idle", right: "Idle" },
+    { group: "coolant", level: "high", rpm: 900, speed: 0, coolant: 115, intake: 35, left: "Idle", right: "Idle" },
+    // 进气温度:同样两屏表情都不动,只影响进气弧与进气数字(右屏)
+    // ★ 这三条是 2026-09 补的:先加了弧和读数,却漏了阶段表 ——
+    //   用户当场发现"阶段里面缺失了进气温度低中高的选项",
+    //   于是那条新弧在阶段模拟里根本点不出来、也走不起来。
+    { group: "intake", level: "low",  rpm: 900, speed: 0, coolant: 85, intake: 20, left: "Idle", right: "Idle" },
+    { group: "intake", level: "mid",  rpm: 900, speed: 0, coolant: 85, intake: 40, left: "Idle", right: "Idle" },
+    { group: "intake", level: "high", rpm: 900, speed: 0, coolant: 85, intake: 65, left: "Idle", right: "Idle" }
   ];
 
   // 量程上限 —— 画弧进度要用,必须与固件一致:
@@ -157,6 +165,9 @@
     { key: "speed",   label: "车速", unit: "km/h", faces: true,
       levels: { low: "低", mid: "中", high: "高", over: "超速" } },
     { key: "coolant", label: "水温", unit: "°C",   faces: false,
+      levels: { low: "低", mid: "中", high: "高" } },
+    // 进气温度(OBD 010F):右屏的副表,与左屏水温对称 —— 同样不影响表情
+    { key: "intake",  label: "进气温度", unit: "°C", faces: false,
       levels: { low: "低", mid: "中", high: "高" } }
   ];
 
@@ -169,7 +180,10 @@
   }
   function stageValueText(st) {
     var g = group(st.group);
-    var v = st.group === "rpm" ? st.rpm : (st.group === "coolant" ? st.coolant : st.speed);
+    // ★ 按分组取各自那一维的值。写成三元链最容易漏:
+    //   加进气温度时如果忘了这里,格子上会显示车速(0 km/h)而不是进气温度。
+    var byGroup = { rpm: st.rpm, speed: st.speed, coolant: st.coolant, intake: st.intake };
+    var v = (st.group in byGroup) ? byGroup[st.group] : st.speed;
     return v + " " + (g ? g.unit : "");
   }
   // 该阶段某一屏该显示什么(状态名)

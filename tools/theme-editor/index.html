@@ -232,10 +232,10 @@ function unhex(s) { return parseInt(s.replace("#", ""), 16) & 0xFFFFFF; }
 // faceL / faceR 是**两屏各自的表情**(每屏一套独立状态机)。
 // 量程上限来自 face-stages.js(它由 test-face-stages.js 与 vehicle_state.h 对账),
 // 不在这里再抄一遍数字 —— 抄了就会在"改了固件忘了改预览"时静默跑偏。
-const SIM_MAX = { speed: FaceStages.MAX.speed, rpm: FaceStages.MAX.rpm, coolant: 130 };
+const SIM_MAX = { speed: FaceStages.MAX.speed, rpm: FaceStages.MAX.rpm, coolant: 130, intake: 80 };
 const SIM = {
-  speed_t: 0.55, rpm_t: 0.42, coolant_t: 0.6,
-  speed: 115, rpm: 2900, coolant: 88,
+  speed_t: 0.55, rpm_t: 0.42, coolant_t: 0.6, intake_t: 0.4,
+  speed: 115, rpm: 2900, coolant: 88, intake: 32,
   faceL: "Idle", faceR: "Idle"
 };
 
@@ -244,19 +244,24 @@ function simFromStage(st) {
   SIM.rpm = st.rpm;
   SIM.speed = st.speed;
   SIM.coolant = st.coolant;
+  SIM.intake = st.intake;
   SIM.rpm_t = Math.max(0, Math.min(1, st.rpm / SIM_MAX.rpm));
   SIM.speed_t = Math.max(0, Math.min(1, st.speed / SIM_MAX.speed));
   const lo = T.coolant_min_c, hi = T.coolant_max_c;
   SIM.coolant_t = Math.max(0, Math.min(1, (st.coolant - lo) / Math.max(1, hi - lo)));
+  // 进气温度按它自己的量程(默认 0..80)—— 与固件 arc_progress 的 kind 3 分支一致
+  const ilo = T.intake_min_c, ihi = T.intake_max_c;
+  SIM.intake_t = Math.max(0, Math.min(1, (st.intake - ilo) / Math.max(1, ihi - ilo)));
   SIM.faceL = st.left;
   SIM.faceR = st.right;
 }
 
 // 读数格式化 —— 必须与固件 dash_ui.cpp 的 readout_value()/unit_text() 一致:
-//   速度 = 四舍五入到 1 km/h;转速 = 四舍五入到 10 rpm;水温 = 四舍五入到 1 ℃
+//   速度 = 四舍五入到 1 km/h;转速 = 四舍五入到 10 rpm;温度 = 四舍五入到 1 ℃
 function readoutText(kind) {
   if (kind === 0) return { val: String(Math.round(SIM.speed)), unit: "km/h" };
   if (kind === 1) return { val: String(Math.round(SIM.rpm / 10) * 10), unit: "rpm" };
+  if (kind === 3) return { val: String(Math.round(SIM.intake)), unit: "°C" };
   return { val: String(Math.round(SIM.coolant)), unit: "°C" };
 }
 
@@ -314,6 +319,7 @@ function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, trackColor, trackOpac
 function valueT(kind, v) {
   if (kind === 0) return v.speed_t;      // 车速
   if (kind === 1) return v.rpm_t;        // 转速
+  if (kind === 3) return v.intake_t;     // 进气温度(速度表副表)
   return v.coolant_t;                    // 水温
 }
 
@@ -402,7 +408,11 @@ function drawReadoutLabel(ctx, W, cy480, text, fontPx, colorHex) {
 // 取第一条"不是水温"的弧;只有水温弧时就用第一条。
 function primaryKind(sc) {
   for (let i = 0; i < sc.arc_count && i < sc.arcs.length; i++) {
-    if (sc.arcs[i].kind !== 2) return sc.arcs[i].kind;
+    // ★ 副表 = 水温(2)或进气温度(3),都**不能**当大数字的来源 ——
+    //   与固件 dash_ui.cpp 的 is_aux_kind() 同一套规则。
+    //   只写 `!== 2` 的话,一条 [进气, 车速] 顺序的屏会让速度表的大数字
+    //   变成进气温度,而且不报错。
+    if (sc.arcs[i].kind !== 2 && sc.arcs[i].kind !== 3) return sc.arcs[i].kind;
   }
   return (sc.arc_count > 0 && sc.arcs.length > 0) ? sc.arcs[0].kind : 0;
 }
@@ -421,6 +431,13 @@ function drawReadout(ctx, W, theme, sc) {
   if (r.show_coolant && kind !== 2 && hasCoolant) {
     drawReadoutLabel(ctx, W, r.coolant_cy, Math.round(SIM.coolant) + "°C",
                      readoutFontPx(r.unit_font), hex(r.coolant_color));
+  }
+  // 进气温度数字:同上一套(右屏的副表)。两条副表的中心 y 是**分开的字段**
+  // (coolant_cy / intake_cy),所以万一放到同一屏也能各自挪开。
+  const hasIntake = sc.arcs.some((a, i) => i < sc.arc_count && a.kind === 3);
+  if (r.show_intake && kind !== 3 && hasIntake) {
+    drawReadoutLabel(ctx, W, r.intake_cy, Math.round(SIM.intake) + "°C",
+                     readoutFontPx(r.unit_font), hex(r.intake_color));
   }
 }
 

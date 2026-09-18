@@ -28,32 +28,34 @@ static FaceSet run_stage(const FaceStage& st) {
   return face_update(s, 1000);
 }
 
-// 10 条阶段用例逐条对账(左右两屏都比)
-// ★ 条数变了要改这里:4 转速 + 4 车速 + 3 水温 = 11。
+// 阶段用例逐条对账(左右两屏都比)
+// ★ 条数变了要改这里:4 转速 + 4 车速 + 3 水温 + 3 进气温度 = 14。
 //   (车速从 3 条变 4 条,是"惊喜"改成"超速"时补的 —— 原来第 4 档是瞬态,
-//    列不进表,用户试用时发现"这个档选不出来"。)
+//    列不进表,用户试用时发现"这个档选不出来";
+//    进气温度那 3 条也是同一个来路:先加了弧和读数却漏了阶段表,
+//    用户当场发现"阶段里面缺失了进气温度低中高的选项"。)
 static void test_stage_table(void) {
-  TEST_ASSERT_EQUAL_UINT8(11, kFaceStageCount);
+  TEST_ASSERT_EQUAL_UINT8(14, kFaceStageCount);
   for (uint8_t i = 0; i < kFaceStageCount; ++i) {
     const FaceStage& st = kFaceStages[i];
     const FaceSet got = run_stage(st);
-    char msg[160];
+    char msg[192];
     if (got.left != st.left) {
-      snprintf(msg, sizeof(msg), "%s/%s 左屏 rpm=%.0f spd=%.0f cool=%.0f got=%s want=%s",
-               st.group, st.level, st.rpm, st.speed_kmh, st.coolant_c,
+      snprintf(msg, sizeof(msg), "%s/%s 左屏 rpm=%.0f spd=%.0f cool=%.0f intake=%.0f got=%s want=%s",
+               st.group, st.level, st.rpm, st.speed_kmh, st.coolant_c, st.intake_c,
                face_name(got.left), face_name(st.left));
       TEST_FAIL_MESSAGE(msg);
     }
     if (got.right != st.right) {
-      snprintf(msg, sizeof(msg), "%s/%s 右屏 rpm=%.0f spd=%.0f cool=%.0f got=%s want=%s",
-               st.group, st.level, st.rpm, st.speed_kmh, st.coolant_c,
+      snprintf(msg, sizeof(msg), "%s/%s 右屏 rpm=%.0f spd=%.0f cool=%.0f intake=%.0f got=%s want=%s",
+               st.group, st.level, st.rpm, st.speed_kmh, st.coolant_c, st.intake_c,
                face_name(got.right), face_name(st.right));
       TEST_FAIL_MESSAGE(msg);
     }
   }
 }
 
-// ★ 每条用例的水温/转速/车速必须与**实测**结果自洽 —— 表是手写的,
+// ★ 每条用例的水温/转速/车速/进气温度必须与**实测**结果自洽 —— 表是手写的,
 //   写错一格就会被 run_stage 抓到(这条与 test_stage_table 互补:
 //   那条查"表 ↔ 状态机",这条查"表自己有没有自相矛盾")。
 static void test_stage_values_are_consistent(void) {
@@ -67,10 +69,23 @@ static void test_stage_values_are_consistent(void) {
     if (strcmp(st.group, "speed") == 0) {
       TEST_ASSERT_EQUAL_FLOAT_MESSAGE(900.0f, st.rpm, "速度组的转速必须是怠速 900");
     }
-    // 水温组:两屏表情都必须是不变的常态
-    if (strcmp(st.group, "coolant") == 0) {
+    // 两个温度组:两屏表情都必须是不变的常态,而且**各动各的副表** ——
+    // 水温组不该动进气温度、进气组不该动水温(否则看不出是哪条副弧在变)
+    if (strcmp(st.group, "coolant") == 0 || strcmp(st.group, "intake") == 0) {
       TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle, (uint8_t)st.left);
       TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle, (uint8_t)st.right);
+    }
+    if (strcmp(st.group, "coolant") == 0) {
+      TEST_ASSERT_EQUAL_FLOAT_MESSAGE(35.0f, st.intake_c, "水温组的进气温度必须是常温 35");
+    }
+    if (strcmp(st.group, "intake") == 0) {
+      TEST_ASSERT_EQUAL_FLOAT_MESSAGE(85.0f, st.coolant_c, "进气组的正常水温必须是 85");
+    }
+    // 非转速组/非速度组也要把这两个钉在"正常值"上,否则点温度档时
+    // 转速表或速度表会跟着动,而这正是用户明确要求过的"每组只变自己那一维"
+    if (strcmp(st.group, "intake") == 0) {
+      TEST_ASSERT_EQUAL_FLOAT_MESSAGE(900.0f, st.rpm, "进气组的转速必须是怠速 900");
+      TEST_ASSERT_EQUAL_FLOAT_MESSAGE(0.0f, st.speed_kmh, "进气组的速度必须是 0");
     }
   }
 }
@@ -78,7 +93,7 @@ static void test_stage_values_are_consistent(void) {
 // ★★ "每屏一套独立表情"的可执行定义:
 //    · 转速组的**右屏**必须恒为常态(车速一直是 0)
 //    · 速度组的**左屏**必须恒为常态(转速一直是怠速)
-//    · 水温组两屏都恒为常态
+//    · 两个温度组(水温 / 进气温度)两屏都恒为常态
 //    同时被驱动的那一屏必须真的**变**(低/中/高给出不同的脸)。
 static void test_only_own_gauge_moves_own_screen(void) {
   for (uint8_t i = 0; i < kFaceStageCount; ++i) {
@@ -92,7 +107,9 @@ static void test_only_own_gauge_moves_own_screen(void) {
       snprintf(msg, sizeof(msg), "速度·%s 让左屏(转速表)动了", st.level);
       TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Idle, (uint8_t)got.left, msg);
     } else {
-      snprintf(msg, sizeof(msg), "水温·%s 让表情动了(水温不该参与表情)", st.level);
+      // 温度组(水温 / 进气温度):两屏都不许动表情 ——
+      // 它们只驱动"自己那条副弧 + 自己那个数字"
+      snprintf(msg, sizeof(msg), "%s·%s 让表情动了(温度不参与表情)", st.group, st.level);
       TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Idle, (uint8_t)got.left, msg);
       TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Idle, (uint8_t)got.right, msg);
     }

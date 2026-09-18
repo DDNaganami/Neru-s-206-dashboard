@@ -736,6 +736,9 @@ function exportThemeJson() {
 function arcT(a, st) {
   if (a.kind === 1) return clamp01(st.rpm / FaceStages.MAX.rpm);
   if (a.kind === 2) return clamp01((st.coolant - COOLANT_LO) / (COOLANT_HI - COOLANT_LO));
+  // kind 3 = 进气温度(速度表副表)。★ 漏了这一行就是"阶段里点了进气档,
+  // 那条弧却不动" —— 因为它会掉进下面的 return,用**车速**去算(t=0)。
+  if (a.kind === 3) return clamp01((st.intake - INTAKE_LO) / (INTAKE_HI - INTAKE_LO));
   return clamp01(st.speed / FaceStages.MAX.speed);
 }
 
@@ -991,6 +994,8 @@ function drawScreen(cv, which, stage, faceKeyOverride) {
 //
 // 与固件一致:水温弧的进度按主题量程换算(这里是默认量程 60..130)
 const COOLANT_LO = 60, COOLANT_HI = 130;
+// 进气温度弧:默认量程 0..80(见 ui_theme.h 的 intake_min_c/max_c)
+const INTAKE_LO = 0, INTAKE_HI = 80;
 
 function clamp01(x) { return Math.max(0, Math.min(1, x)); }
 
