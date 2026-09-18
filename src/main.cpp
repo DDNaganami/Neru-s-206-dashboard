@@ -90,23 +90,18 @@ static void van_replay_poll(uint32_t now) {
   }
 }
 
-void setup() {
-  Serial.begin(115200);
-  delay(200);
-  // 开机握手行:刷机后靠它确认固件真的跑起来了(见 ACCEPTANCE.md)。
-  // 放在最前面 —— 即使后面的初始化有问题,至少能看到这一行。
-  Serial.println("206 dash ok");
-
-  // ---- 板子自检(换板/换芯片后第一眼要看的就是这几行)----
-  // 为什么值得占几行:手里有经典 ESP32 和 S3 N16R8 两块板,
-  // 而"刷进去了但跑的是另一块板的固件"、"买到的是 N8R2 而不是 N16R8"
-  // 这类问题在串口上**一眼就能看出来**,不写就得靠猜。
-  //   · PSRAM 那一行是"双 480×480 屏能不能做"的判据:报 0 就是没起来,
-  //     要么板子不是 R8,要么 memory_type 配错了(见 platformio.ini 的 [env:esp32s3])。
-  //   · Flash 大小决定分区表能不能用:16MB 的表刷到 4MB 板子上会直接起不来。
-  // ★ 整段是设备专属的(ESP.* / esp_partition 宿主机没有),见文件头的
-  //   DASH_DEVICE_SELFTEST 判定 —— pcpreview 编这一步会直接编不过。
+// ---- 板子自检(换板/换芯片后第一眼要看的就是这几行)----
+// 为什么值得占几行:手里有经典 ESP32 和 S3 N16R8 两块板,
+// 而"刷进去了但跑的是另一块板的固件"、"买到的是 N8R2 而不是 N16R8"
+// 这类问题在串口上**一眼就能看出来**,不写就得靠猜。
+//   · PSRAM 那一行是"双 480×480 屏能不能做"的判据:报 0 就是没起来,
+//     要么板子不是 R8,要么 memory_type 配错了(见 platformio.ini 的 [env:esp32s3])。
+//   · Flash 大小决定分区表能不能用:16MB 的表刷到 4MB 板子上会直接起不来。
+// ★ 整段是设备专属的(ESP.* / esp_partition 宿主机没有),见文件头的
+//   DASH_DEVICE_SELFTEST 判定 —— pcpreview 编这一步会直接编不过。
 #if defined(DASH_DEVICE_SELFTEST)
+static void print_selftest(const char* tag) {
+  Serial.printf("--- 自检(%s)---\n", tag);
   Serial.printf("chip  : %s rev%d, %d 核 @ %u MHz\n",
                 ESP.getChipModel(), (int)ESP.getChipRevision(), (int)ESP.getChipCores(),
                 (unsigned)getCpuFrequencyMhz());
@@ -117,19 +112,34 @@ void setup() {
                 (unsigned)(ESP.getFreePsram() / 1024u), (unsigned)(ESP.getPsramSize() / 1024u));
   Serial.printf("heap  : %u KB\n", (unsigned)(ESP.getFreeHeap() / 1024u));
   // 分区表里的图片分区大小 —— 与编译期的口径对不上就说明烧错了分区表
-  {
-    const esp_partition_t* ip = esp_partition_find_first(
-        ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x41, "image");
-    if (ip) {
-      Serial.printf("image : 分区 %u KB @ 0x%06X(编译期口径 %u KB)%s\n",
-                    (unsigned)(ip->size / 1024u), (unsigned)ip->address,
-                    (unsigned)(IMAGE_PARTITION_BYTES / 1024u),
-                    (ip->size == IMAGE_PARTITION_BYTES) ? "" : "  ← 不一致,检查分区表!");
-    } else {
-      Serial.println("image : 分区不存在(检查分区表)");
-    }
+  const esp_partition_t* ip = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x41, "image");
+  if (ip) {
+    Serial.printf("image : 分区 %u KB @ 0x%06X(编译期口径 %u KB)%s\n",
+                  (unsigned)(ip->size / 1024u), (unsigned)ip->address,
+                  (unsigned)(IMAGE_PARTITION_BYTES / 1024u),
+                  (ip->size == IMAGE_PARTITION_BYTES) ? "" : "  ← 不一致,检查分区表!");
+  } else {
+    Serial.println("image : 分区不存在(检查分区表)");
   }
+}
 #endif  // DASH_DEVICE_SELFTEST
+
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+  // 开机握手行:刷机后靠它确认固件真的跑起来了(见 ACCEPTANCE.md)。
+  // 放在最前面 —— 即使后面的初始化有问题,至少能看到这一行。
+  Serial.println("206 dash ok");
+
+  // ★ 设备端的 USB-CDC 是**没有主机的缓冲**的:监视器如果没在开机前打开,
+  //   这几行就永远看不到了(实测踩过:刷完立刻开监视器,一片空白)。
+  //   所以开机打一次,loop() 里"主机第一次连上"时再补打一次 —— 见 loop()。
+  //   这里只等 200ms(上面那句 delay),**不做**"等主机"的阻塞等待:
+  //   车上是没有 USB 主机的,阻塞等待会让每次上电都白等几秒。
+#if defined(DASH_DEVICE_SELFTEST)
+  print_selftest("上电");
+#endif
 
   g_data.begin();
   // 物理层 → 打印层 → 数据源。打印层只旁观,不影响数据流
@@ -180,16 +190,40 @@ void loop() {
     dash_ui_render(make_view(st, now), now);
   }
 
+  // ★ USB 主机是**开机之后**才连上的情况(实测:刷完立刻开监视器,一片空白)。
+  //   设备端 USB-CDC 在没主机时没有缓冲,开机那几行就是丢了。所以主机第一次
+  //   连上的那一刻补打一次自检 —— 之后任何时候打开监视器都看得到那几个数。
+  //   只在 HWCDC 模式下有意义(UART0 没有"连上"这个状态,见 platformio.ini)。
+#if defined(DASH_DEVICE_SELFTEST) && defined(ARDUINO_USB_MODE) && (ARDUINO_USB_MODE == 0)
+  {
+    static bool host_seen = false;
+    if (!host_seen && (bool)Serial) {   // HWCDC::operator bool() = 主机已连上
+      host_seen = true;
+      print_selftest("USB 已连上");
+    }
+  }
+#endif
+
   // 每 5 秒打印各字段当前由哪个源供给 + 当前数值(调试用)。
   // 数值是必须的:桩驱动丢弃画面,开机动画/换屏之前只能靠串口确认
   // 假数据弧确实在扫量程(见 ACCEPTANCE.md 的"假数据扫表"一条)。
+  // ★ 只在真有主机连着时打印:车上是没有 USB 主机的,那时候这行纯属白干
+  //   (格式化 + 写一个没人收的口)。
   if (now - last_status_ms >= 5000) {
     last_status_ms = now;
-    const DataSourceStatus& s = g_data.status();
-    Serial.printf("SRC speed=%s rpm=%s coolant=%s | v=%.1fkm/h %.0frpm %.1fC\n",
-                  fieldSourceName(s.speed),
-                  fieldSourceName(s.rpm),
-                  fieldSourceName(s.coolant),
-                  st.speed_kmh, st.rpm, st.coolant_c);
+#if defined(DASH_DEVICE_SELFTEST) && defined(ARDUINO_USB_MODE) && (ARDUINO_USB_MODE == 0)
+    const bool host_ready = (bool)Serial;   // HWCDC:主机没连上就是 false
+#else
+    const bool host_ready = true;           // UART0 没有"连上"这个状态
+#endif
+    if (host_ready) {
+      const DataSourceStatus& s = g_data.status();
+      Serial.printf("SRC speed=%s rpm=%s coolant=%s intake=%s | v=%.1fkm/h %.0frpm %.1fC %.1fC\n",
+                    fieldSourceName(s.speed),
+                    fieldSourceName(s.rpm),
+                    fieldSourceName(s.coolant),
+                    fieldSourceName(s.intake),
+                    st.speed_kmh, st.rpm, st.coolant_c, st.intake_c);
+    }
   }
 }
