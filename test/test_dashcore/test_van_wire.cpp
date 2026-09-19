@@ -5,7 +5,8 @@
 // [规范] Graham Auld 的 VAN 线路协议描述(经 morcibacsi/VanAnalyzer 转述):
 //   帧结构 SOF / IDEN 15TS / CMD 5TS / DATA / FCS 18TS / EOD / ACK / EOF
 //   编码 E-Manchester = 4B5B,每 5 个 TS 的第 5 个是编码位,解码时丢弃
-//   125 kbit/s → 1 TS = 8 µs
+//   槽时间:规范标称 125 kbit/s ⟹ 8.00µs,但**实车实测 8.25µs(≈121kbit/s)**,
+//   固件以实测值为唯一时基(van_wire.h 的 kTsNs);本文件的向量都从它换算
 //
 // [往返] 自己的编码器 → 字节级解析器,验证 IDEN/CMD 打包、FCS 反推、帧字节契约
 //

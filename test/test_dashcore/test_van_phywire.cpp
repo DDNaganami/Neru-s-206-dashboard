@@ -23,6 +23,10 @@ using namespace van;
 
 namespace {
 
+// 槽宽的 µs 视图:唯一时基 kTsNs 换算而来 —— 本文件不许再出现 8/8000 这类
+// 时基字面量,否则改 kTsNs 时夹具会**悄悄用旧时基**继续"通过"。
+constexpr uint32_t kTsUs = kTsNs / 1000u;   // 8250ns → 8µs(整数µs,见文件头说明)
+
 // 既记录又转发给 VanSource(验证数据层也认这个包)
 class CaptureSink : public VanSink {
  public:
@@ -39,10 +43,15 @@ class CaptureSink : public VanSink {
   VanSource* src_ = nullptr;
 };
 
-// 用编码器造一帧,把槽序列当边沿喂进去。1 TS = 8µs(125 kbit/s)。
+// 用编码器造一帧,把槽序列当边沿喂进去。1 TS = 8.25µs(实车实测 ≈121 kbit/s;
+// 规范的 125 kbit/s ⟹ 8.00µs 只是标称值,见 van_wire.h 的 kTsNs 说明)。
 //
 // 时基约定(踩了多次的坑,别再动):
-//   空闲沿放 base_us,帧首沿放在 base_us + 8000µs(= 1000 个槽)。
+//   槽宽 = kTsNs/1000 = 8µs(整数µs)。★ 故意用**截断**后的 8µs 而不是 8.25µs:
+//   真实固件那条路的边沿时间戳就是**整数µs**(esp_timer_get_time → µs 域),
+//   所以夹具必须复现这个量化误差。它每次只差 0.25µs/槽,而 pushEdge 是按
+//   "边沿到边沿"分别取整的,不会逐槽累积,8.25µs 的槽仍稳定算成 1 槽。
+//   空闲沿放 base_us,帧首沿放在 base_us + 1000×槽宽µs(= 1000 个槽)。
 //   - 空闲段必须是 10 的整数倍槽:4B5B 每 10 槽 = 1 字节,否则字节相位
 //     残留半个字节,整帧错位(实测解出 0x70 而不是 0x0F)。
 //   - 帧首沿不能与空闲沿同刻:Δt=0 会被钳成 1 个槽,吃掉帧的第一槽。
@@ -74,13 +83,13 @@ bool feedFrameVia(Emit emit, VanPhyWire& phy, const Frame& f, uint32_t base_us) 
     const bool sl = slots[i] != 0;
     if (sl == level) continue;
     level = sl;
-    emit(base_us + (origin_slot + i) * 8u, level);
+    emit(base_us + (origin_slot + i) * kTsUs, level);
   }
   // 帧后空闲:按槽展开,保证解码器能数到 8 个连续 recessive
   for (uint32_t i = 0; i < tail_slots; ++i) {
     if (level) continue;                           // 已经是 recessive 就不需要沿
     level = true;
-    emit(base_us + (origin_slot + n + i) * 8u, level);
+    emit(base_us + (origin_slot + n + i) * kTsUs, level);
   }
   // 收尾:显式结束本帧(唯一关帧入口)。返回是否真的收出一帧。
   return phy.finish();
@@ -242,7 +251,7 @@ static void test_finish_closes_pending_frame(void) {
     const bool sl = slots[i] != 0;
     if (sl == level) continue;
     level = sl;
-    phy.onEdge(base_us + (origin + i) * 8u, level);
+    phy.onEdge(base_us + (origin + i) * kTsUs, level);
   }
 
   // ---- 你要求的两行证据:finish 前 ----

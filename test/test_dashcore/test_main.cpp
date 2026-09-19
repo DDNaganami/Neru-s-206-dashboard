@@ -11,6 +11,7 @@ void register_van_source_tests(void);
 void register_van_replay_tests(void);
 void register_van_wire_tests(void);
 void register_van_phy_wire_tests(void);
+void register_van_real_capture_tests(void);
 void register_theme_store_tests(void);
 void register_image_blob_tests(void);
 void register_image_roundtrip_tests(void);
@@ -26,6 +27,7 @@ int main(void) {
   register_van_replay_tests();
   register_van_wire_tests();
   register_van_phy_wire_tests();
+  register_van_real_capture_tests();
   register_theme_store_tests();
   register_image_blob_tests();
   register_image_roundtrip_tests();

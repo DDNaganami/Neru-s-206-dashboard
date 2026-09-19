@@ -21,7 +21,12 @@
 //   Inter-frame     8 TS   帧间至少 8 TS recessive(不算帧内)
 //
 // 编码:E-Manchester(= 4B/5B)。每 4 个数据位编成 5 个 TS,第 5 位是
-// 编码位(E-Manchester bit),解码时必须丢弃。125 kbit/s 时 1 TS = 8 µs。
+// 编码位(E-Manchester bit),解码时必须丢弃。
+// ★ 槽时间用**实测值 8.25µs(≈121kbit/s)**,不是规范的 125kbit/s:
+//   2026-09-18/19 实车逻辑分析仪抓包(30s + 5min)拟合出槽时间 **8.250µs**,
+//   跳变间隔全部落在它的 1/2/3/4/5 倍上;125 kbit/s ⟹ 8.00µs 只是
+//   **规范标称值**,按它解码每 32 位就漂掉一个整槽 —— 这正是固件
+//   `frames=0` 的直接原因(实测 3.1% 偏差)。下面的 kTsNs 是唯一时基。
 // 由此得到一个很有用的性质:帧内最多 4 个连续 recessive,所以
 // 「8 个连续 recessive」只能出现在 ACK/EOF —— 帧尾判据无歧义。
 //
@@ -33,10 +38,14 @@
 
 namespace van {
 
-// 1 TS = 1/125000 s = 8 µs。时间一律用 ns 记,内部不依赖浮点,
-// 保证宿主机测试与 MCU 行为逐位一致。
-static const uint32_t kBitRateHz   = 125000u;
-static const uint32_t kTsNs        = 8000u;      // 一个 TS = 8000 ns
+// 时间一律用 ns 记,内部不依赖浮点,保证宿主机测试与 MCU 行为逐位一致。
+//
+// ★ 唯一的时基是 kTsNs —— 任何"边沿/槽 → 时间"的换算都必须用它:
+//   pushEdge 的 dt_ns → 槽数、测试夹具的槽宽、离线脚本的量化单元,全是它。
+//   **不要再从 kBitRateHz 反推时基**:kBitRateHz 只是规范标称值(125 kbit/s
+//   ⟹ 8.00µs),实车实测是 8.25µs;两者差 3.1%,照标称值解码必然漂槽。
+static const uint32_t kBitRateHz   = 125000u;    // ★ 仅规范标称:125 kbit/s ≠ 实测
+static const uint32_t kTsNs        = 8250u;      // 实车实测 ≈121 kbit/s:一个 TS = 8250 ns
 static const uint32_t kSlotsMax    = 2112u;      // SOF10+IDEN15+CMD5+224B*10+FCS18+EOD/ACK/EOF
 static const uint8_t  kDataMax     = 224u;       // 协议允许的数据上限
 // 常见 VAN-INFO 帧承载 28 字节;取 40 是为了同时兜住:
@@ -299,8 +308,8 @@ class BitDecoder {
   uint8_t  mSofBits = 0;           // SOF 匹配器已收的槽数(0..kSofSlots)
   uint16_t mSofAcc = 0;            // SOF 匹配器移位寄存器(低位是最后收到的槽)
   bool     mEofLatched = false;    // 本次空隙已报过(避免重复报)
-  // 帧间空隙超时(默认 1ms = 125 槽)。必须远大于帧内最长连续 recessive
-  // (全 1 数据字节是 10 槽 = 80µs),又远小于帧间空闲(实车常见 ms 级)。
+  // 帧间空隙超时(默认 1ms ≈ 121 槽)。必须远大于帧内最长连续 recessive
+  // (全 1 数据字节 = 10 槽 ≈ 82.5µs @8.25µs/槽),又远小于帧间空闲(实车常见 ms 级)。
   uint64_t mGapTimeoutNs = 1000000ull;
 
   uint8_t  mQueue[kQueueMax] = {0};

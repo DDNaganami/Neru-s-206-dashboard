@@ -269,7 +269,7 @@ BitDecoder::Ev BitDecoder::pushEdge(uint64_t ns, bool level) {
   //   "手上有没有待收帧"。曾经在这里 return EndOfFrame,结果 VanPhyWire::onEdge
   //   收到后抢先把帧收掉,而那一刻缓冲已被消费成空(实测
   //   `finish 前: frames=1 pending=0 bytes=0`)。
-  // 阈值必须远大于帧内最长连续 recessive(全 1 数据字节 = 10 槽 = 80µs)。
+  // 阈值必须远大于帧内最长连续 recessive(全 1 数据字节 = 10 槽 ≈ 82.5µs @8.25µs/槽)。
   if (dt_ns > mGapTimeoutNs) {
     const bool was_eof = mEofLatched;
     resync();                   // 只动解码器相位,不动 fp_ 的字节

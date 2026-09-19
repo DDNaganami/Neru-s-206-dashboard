@@ -198,18 +198,33 @@ def report(edges, tick_us):
 
     # ★ 关键判据:最短的一撮间隔是不是聚在某个基数的整数倍上
     #   注意 Manchester 类编码里**每个位有两个半槽**,所以最短的一撮可能是
-    #   半槽(4µs)而不是整槽(8µs)—— 两种都要报出来。
+    #   半槽(≈4.1µs)而不是整槽(≈8.25µs)—— 两种都要报出来。
+    #   ★ 用**实测**的 8.25µs(≈121kbit/s),不是规范标称的 8.00µs(125kbit/s):
+    #     2026-09-18/19 实车抓包拟合出槽时间 8.250µs,固件的 kTsNs 也按它改了。
+    #     以前这里只认 4.0/8.0/16.0,8.25µs 的抓包会被误判成"不是 VAN"。
     short = sorted(d for d in diffs if d < max(ds[0] * 2.5, 4.0))
     if short:
         base = short[len(short) // 2]
         print(f'\n★ 最短一撮的中位数 = {base:.2f}µs:')
-        for cand, name in ((4.0, '半槽 → 整槽 8µs → **125 kbit/s**(VAN comfort,'
-                                 '我们固件的假设)'),
-                           (8.0, '整槽 → **125 kbit/s**(VAN comfort,我们固件的假设)'),
-                           (16.0, '整槽 → **62.5 kbit/s**(VAN body)')):
+        # 先认**实测值**(8.25µs / 4.125µs),都没有才回退到规范标称值 ——
+        # 否则 8.25µs 的抓包会同时"命中"8.25 与 8.0 两条,读的人分不清哪个是实测
+        measured = ((4.125, '半槽 → 整槽 ≈8.25µs → **≈121 kbit/s**(VAN comfort,'
+                            '实测值,固件用的就是这个)'),
+                    (8.25, '整槽 → **≈121 kbit/s**(VAN comfort,实测值,固件用的就是这个)'),
+                    (16.0, '整槽 → **62.5 kbit/s**(VAN body)'))
+        nominal = ((4.0, '半槽 → 整槽 8µs → 125 kbit/s(规范**标称**,不是实车)'),
+                   (8.0, '整槽 → 125 kbit/s(规范**标称**,不是实车)'))
+        hit = False
+        for cand, name in measured:
             if abs(base - cand) < cand * 0.25:
                 print(f'   ≈ {cand}µs = {name} ✓')
-        if not any(abs(base - c) < c * 0.25 for c in (4.0, 8.0, 16.0)):
+                hit = True
+        if not hit:
+            for cand, name in nominal:
+                if abs(base - cand) < cand * 0.25:
+                    print(f'   ≈ {cand}µs = {name} ✓')
+                    hit = True
+        if not hit:
             print('   与 4/8/16µs 都不接近 → 这**不是 VAN**(或不是数字总线信号)')
 
     # 突发分组:间隔 > 20µs 当作"帧间空闲"
