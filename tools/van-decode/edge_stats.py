@@ -34,39 +34,51 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 
-def parse_pulseview_csv(path):
-    """返回 (采样率Hz 或 None, [(采样序号, 电平), ...])。
+def parse_csv(path):
+    """认两种 CSV —— 这两种是实际会遇到的:
 
-    PulseView 的 CSV 长这样(前面几行是带引号的元信息,然后是通道名,再是数据):
-        "Sample rate: 4 MHz"
-        "Channel 1"
-        0,1
-        1,1
-        2,0
-    有的版本第一列是时间而不是采样序号 —— 两种都认(靠"是不是整数"没法区分,
-    所以统一当采样序号,再由 --rate 换算;真要时间的话用 VCD 更省事)。
+    · **Saleae Logic 2**(用户的软件就是它):表头 `Time [s], Channel 0`,
+      数据行 `0.000000000000, 0`(默认**每个采样点一行**,数字很多但能读)。
+    · **PulseView**:头几行是带引号的元信息(含 `"Sample rate: 4 MHz"`),
+      数据行 `采样序号,电平`。
+
+    返回 `(tick_us, [(tick, level), ...])` —— tick × tick_us 就是绝对时间(µs)。
+    时间列的单位从表头方括号里认(s/ms/us/ns),这样两种软件都不用额外参数。
     """
     rate = None
+    unit_us = None
     rows = []
     with open(path, 'r', encoding='utf-8', errors='replace') as fh:
         for line in fh:
-            line = line.strip()
-            if not line:
+            s = line.strip()
+            if not s:
                 continue
-            m = re.search(r'[Ss]ample\s*rate[:=]?\s*([0-9.]+)\s*([kKmM]?)\s*Hz?', line)
+            m = re.search(r'[Ss]ample\s*rate[:=]?\s*([0-9.]+)\s*([kKmM]?)\s*Hz?', s)
             if m and rate is None:
-                mult = {'': 1, 'k': 1e3, 'm': 1e6}[m.group(2).lower()]
-                rate = float(m.group(1)) * mult
-            if line[0] in '";#-' or not line[0].isdigit():
-                continue                     # 元信息/通道名
-            parts = re.split(r'[,\t]', line.strip('"'))
+                rate = float(m.group(1)) * {'': 1, 'k': 1e3, 'm': 1e6}[m.group(2).lower()]
+            if unit_us is None and 'time' in s.lower():
+                h = re.search(r'\[\s*(fs|ps|ns|us|\u00b5s|ms|s)\s*\]', s, re.I)
+                if h:
+                    unit_us = {'fs': 1e-9, 'ps': 1e-6, 'ns': 1e-3, 'us': 1.0,
+                               '\u00b5s': 1.0, 'ms': 1e3, 's': 1e6}[h.group(1).lower()]
+                    continue                       # 表头本身不是数据
+            if not (s[0].isdigit() or s[0] in '-+.'):
+                continue                           # 通道名/元信息
+            parts = [p for p in re.split(r'[,\t]', s.strip('"')) if p.strip() != '']
+            if len(parts) < 2:
+                continue
             try:
-                sample = int(float(parts[0]))
+                t = float(parts[0])
                 level = int(float(parts[-1]))
             except ValueError:
-                continue                     # 通道名那一行
-            rows.append((sample, level))
-    return rate, rows
+                continue
+            rows.append((int(t * unit_us) if unit_us else int(t), level))
+
+    if unit_us is not None:                        # 时间列:已经换算成 µs 了
+        return 1.0, rows
+    if rate is None:
+        return None, rows                          # 调用方用 --rate 补
+    return 1e6 / rate, rows
 
 
 def parse_vcd(path):
@@ -205,29 +217,44 @@ def action_synth(slot_us=8.0, nbits=120, gap_us=400.0, nframes=6, rate_hz=4_000_
 def selftest():
     import os
     import tempfile
-    rate, rows = 4_000_000, action_synth()
     d = tempfile.mkdtemp(prefix='edgestats')
-    csv = os.path.join(d, '_selftest.csv')
-    with open(csv, 'w', encoding='utf-8') as fh:
+    rate = 4_000_000
+    rows = action_synth()                      # 8µs 位 → 每 4µs 一次跳变
+    checks = []
+
+    # 1) PulseView 风格:元信息写采样率,数据行是"采样序号,电平"
+    csv1 = os.path.join(d, 'pv.csv')
+    with open(csv1, 'w', encoding='utf-8') as fh:
         fh.write('"Sample rate: 4 MHz"\n"Channel 1"\n')
         for s, v in rows:
             fh.write(f'{s},{v}\n')
-    r2, rows2 = parse_pulseview_csv(csv)
-    ok1 = r2 == rate and len(rows2) == len(rows)
-    edges = edges_from_levels(rows2, 1e6 / rate)
-    diffs = sorted(edges[i + 1][0] - edges[i][0] for i in range(len(edges) - 1))
-    base = diffs[len(diffs) // 4]                    # 最短那一撮(半槽)
-    ok2 = abs(base - 4.0) < 0.3                      # 半槽 = 4µs
-    print(f'[{"OK " if ok1 else "FAIL"}] CSV 解析: 采样率={r2} 行数={len(rows2)}')
-    print(f'[{"OK " if ok2 else "FAIL"}] 半槽识别: {base:.2f}µs (期望 ≈4.00)')
+    tick_us, got1 = parse_csv(csv1)
+    checks.append(('PulseView CSV(采样序号+采样率)',
+                   abs(tick_us - 0.25) < 1e-9 and len(got1) == len(rows)))
+
+    # 2) Saleae Logic 2 风格:表头 "Time [s], Channel 0",时间列是秒
+    csv2 = os.path.join(d, 'l2.csv')
+    with open(csv2, 'w', encoding='utf-8') as fh:
+        fh.write('Time [s], Channel 0\n')
+        for s, v in rows:
+            fh.write(f'{s / rate:.12f}, {v}\n')
+    tick_us2, got2 = parse_csv(csv2)
+    e2 = edges_from_levels(got2, tick_us2)
+    d2 = sorted(e2[i + 1][0] - e2[i][0] for i in range(len(e2) - 1))
+    checks.append(('Logic 2 CSV(Time [s])',
+                   tick_us2 == 1.0 and abs(d2[len(d2) // 4] - 4.0) < 0.3))
+
+    for name, good in checks:
+        print(f'[{"OK " if good else "FAIL"}] {name}')
     print('\n--- 报告长这样(合成数据:8µs 位 → 每 4µs 一次跳变)---')
-    report(edges, 1e6 / rate)
+    report(edges_from_levels(got1, tick_us), tick_us)
     try:
-        os.remove(csv)
+        os.remove(csv1)
+        os.remove(csv2)
         os.rmdir(d)
     except OSError:
         pass
-    return 0 if (ok1 and ok2) else 1
+    return 0 if all(g for _, g in checks) else 1
 
 
 def main(argv):
@@ -246,11 +273,12 @@ def main(argv):
         tick_s, rows = parse_vcd(path)
         tick_us = (tick_s or 1e-9) * 1e6
     elif path.lower().endswith('.csv'):
-        rate, rows = parse_pulseview_csv(path)
-        if rate is None:
-            print('CSV 里没读到采样率,请加 --rate 4000000')
-            return 2
-        tick_us = 1e6 / rate
+        tick_us, rows = parse_csv(path)
+        if tick_us is None:
+            if not rate:
+                print('CSV 里既没有时间列表头、也没有采样率 —— 请加 --rate 4000000')
+                return 2
+            tick_us = 1e6 / rate
     else:
         rows = parse_simple(path)
         tick_us = 1.0                                # 纯文本按"微秒"当单位
