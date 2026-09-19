@@ -34,7 +34,7 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 
-def parse_csv(path):
+def parse_csv(path, col_idx=None):
     """认两种 CSV —— 这两种是实际会遇到的:
 
     · **Saleae Logic 2**(用户的软件就是它):表头 `Time [s], Channel 0`,
@@ -48,6 +48,10 @@ def parse_csv(path):
     rate = None
     unit_us = None
     rows = []
+    # 多通道导出的表头会列出全部 8 个通道(用户那份就是),所以要
+    # **自动挑出真正在跳变的那一列** —— 否则读到的是恒定的空通道,一个边沿都没有。
+    ncol = 0
+    cols = []                                      # cols[i] = [(tick, level), ...]
     with open(path, 'r', encoding='utf-8', errors='replace') as fh:
         for line in fh:
             s = line.strip()
@@ -61,7 +65,10 @@ def parse_csv(path):
                 if h:
                     unit_us = {'fs': 1e-9, 'ps': 1e-6, 'ns': 1e-3, 'us': 1.0,
                                '\u00b5s': 1.0, 'ms': 1e3, 's': 1e6}[h.group(1).lower()]
-                    continue                       # 表头本身不是数据
+                    # 表头里 "time" 以外还剩几个通道列?后面据此挑列
+                    ncol = len([p for p in re.split(r'[,\t]', s) if p.strip()]) - 1
+                    cols = [[] for _ in range(max(ncol, 0))]
+                    continue                           # 表头本身不是数据
             if not (s[0].isdigit() or s[0] in '-+.'):
                 continue                           # 通道名/元信息
             parts = [p for p in re.split(r'[,\t]', s.strip('"')) if p.strip() != '']
@@ -69,10 +76,28 @@ def parse_csv(path):
                 continue
             try:
                 t = float(parts[0])
-                level = int(float(parts[-1]))
+                tick = int(t * unit_us) if unit_us else int(t)
             except ValueError:
                 continue
-            rows.append((int(t * unit_us) if unit_us else int(t), level))
+            vals = parts[1:]
+            if not cols:
+                cols = [[] for _ in range(len(vals))]
+            for i, v in enumerate(vals[:len(cols)]):
+                try:
+                    cols[i].append((tick, int(float(v))))
+                except ValueError:
+                    pass
+
+    if cols:
+        # 挑跳变最多的那一列(空通道在导出里恒为 1,跳变数 0 ✓)
+        def changes(c):
+            return sum(1 for i in range(1, len(c)) if c[i][1] != c[i - 1][1])
+        best = max(range(len(cols)), key=lambda i: changes(cols[i]))
+        rows = cols[best]
+        if col_idx is None:
+            col_idx = best
+        elif col_idx < len(cols):
+            rows = cols[col_idx]
 
     if unit_us is not None:                        # 时间列:已经换算成 µs 了
         return 1.0, rows
@@ -265,15 +290,18 @@ def main(argv):
         return 2
     path = argv[1]
     rate = None
+    col = None
     for i, a in enumerate(argv):
         if a == '--rate' and i + 1 < len(argv):
             rate = float(argv[i + 1])
+        if a == '--col' and i + 1 < len(argv):
+            col = int(argv[i + 1])
 
     if path.lower().endswith('.vcd'):
         tick_s, rows = parse_vcd(path)
         tick_us = (tick_s or 1e-9) * 1e6
     elif path.lower().endswith('.csv'):
-        tick_us, rows = parse_csv(path)
+        tick_us, rows = parse_csv(path, col)
         if tick_us is None:
             if not rate:
                 print('CSV 里既没有时间列表头、也没有采样率 —— 请加 --rate 4000000')
