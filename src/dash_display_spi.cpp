@@ -26,6 +26,17 @@
 //   480×480×16bit ≈ 3.7Mbit,80MHz 下单屏 ~27fps、两屏共用一条总线 ~13fps。
 //   我们的 UI 日常是**局部刷新**(弧+表情+数字),够用;
 //   开机/换背景这种整屏切换会慢一点 —— 这正好是"开机画面走程序化扫表"的又一个理由。
+//
+// ------------------------------------------------------------
+// ★ 现在实配的是**验证板**:微雪 ESP32-S3-DualEye-Touch-LCD-1.28
+//   (ESP32-S3R8 + 两块 1.28" 240×240 圆屏 + CST816 触摸)。
+//   下面五段配置全部照微雪自己的资料填,出处写在每段注释里:
+//     · wiki 的 "Internal Hardware Connection"(LCD1/LCD2 两张表)
+//     · 官方例程 example/ESP32-S3-DualEye-Touch-LCD-1.28/ESP-IDF-5.5.1/
+//       06_Music_Player_Touch/main/LCD_Driver/GC9A01A/GC9A01A.c(引脚)
+//     · 例程调的是 espressif/esp_lcd_gc9a01,init 表在它的
+//       vendor_specific_init_default 里(本文件照抄成 kPanelInit)
+//   换最终那块 2.8" 屏时:**只改这五段**,运行时那段别动。
 // ============================================================
 
 #include "dash_display.h"
@@ -45,39 +56,104 @@
 //   而且不报错(SPI 屏没有"帧率不对"这种提示,只有画面不对)。
 // ------------------------------------------------------------
 
-// ---- 1) 引脚(占位值)■
-//   ★ 已占用:26-32 flash / 33-37 OPI PSRAM / 19-20 USB-JTAG / 43-44 UART0 /
-//     16 VAN RX;慎用 0/3/45/46(引导脚)。下面这些都在"可用池"里。
-//   共享总线:
-#define SPI_PIN_SCK   12
-#define SPI_PIN_MOSI  11
+// ---- 1) 引脚(微雪 ESP32-S3-DualEye-Touch-LCD-1.28)■
+//   来源:wiki "Internal Hardware Connection" 的 LCD1/LCD2 表 + 例程 GC9A01A.h。
+//   ★ 这块板**已经被板载外设占掉**的脚(照抄在这儿,免得手滑挑中):
+//     26-32 flash、33-37 OPI PSRAM、19-20 原生 USB(D_N/D_P)、
+//     43-44 UART0(dash_log 的 Serial0)、10-11 I2C(两块触摸 + ES8311/ES7210)、
+//     12-16 I2S 音频、17-18-21 TF 卡、0 BOOT 键、
+//     4-5(TP1 RST/INT)、2-3(TP2 SCL/SDA)、6-7(TP2 RST/INT)、1 电池 ADC。
+//     剩下能引出去的只有两条 SH1.0 14PIN 上的那几个(见 PINOUT/报告)。
+//   共享总线(两块屏的 CLK/DIN 就是同一对脚,板上并在一起):
+#define SPI_PIN_SCK   41
+#define SPI_PIN_MOSI  42
 #define SPI_HOST_ID   SPI2_HOST
-#define SPI_CLOCK_HZ  (40 * 1000 * 1000)    // 先 40MHz;线长/花屏就降到 20/10MHz
-//   每屏 4 根:[0]=左(转速) [1]=右(速度)
+#define SPI_CLOCK_HZ  (80 * 1000 * 1000)    // 例程就是 80MHz;线长/花屏就降到 40/20/10MHz
+//   每屏 4 根:[0]=左(LCD1,转速) [1]=右(LCD2,速度)
+//   ★★ DC 是**两块屏共用**的:板上把两个屏的 D/C 并到了 GPIO45
+//      (例程里只有 EXAMPLE_PIN_NUM_LCD_DC 一个宏,LCD2 也用它)。
+//      所以两条表里的 dc 填同一个数 —— 这**不是笔误**,别"修"成两根脚。
 struct SpiPanelPins { int cs; int dc; int rst; int bl; };
 static const SpiPanelPins kPanels[2] = {
-  {10,  9,  8,  7 },    // 左屏
-  {15, 14, 13, 21 },    // 右屏
+  {47, 45, 48, 46 },    // 左屏 LCD1:CS=47 RST=48 BL=46
+  {38, 45,  8, 39 },    // 右屏 LCD2:CS=38 RST=8  BL=39
 };
+//   注:45/46 是 ESP32-S3 的 strapping 脚,板子照样这么接(背光/DC),
+//   我们启动后再配成输出,和例程一致,不用管。
 
-// ---- 2) 初始化命令表(★ 待填:从卖家例程/spec 抄,不填点不亮)----
-//   格式:{命令, {数据...}, 数据长度, 延时ms}。下面留了两条**常见**示例并注释掉,
-//   不同 IC 的序列差别很大,别照抄 —— 但 0x11(SLPOUT)/0x29(DISPON) 几乎通用。
+// ---- 2) 初始化命令表(GC9A01A)----
+//   来源:espressif/esp_lcd_gc9a01 的 vendor_specific_init_default(例程用的就是它),
+//   顺序照 panel_gc9a01_init:SLPOUT → (MADCTL/COLMOD)→ 厂商表 → INVON → DISPON。
+//   格式:{命令, {数据...}, 数据长度, 延时ms}。data 上限 16 字节,最长的一条是 12。
+//   这块表**两块屏共用**;两屏唯一不同的那条 MADCTL 单独发(见 2b)。
 struct SpiInitCmd { uint8_t cmd; uint8_t data[16]; uint8_t len; uint16_t delay_ms; };
 static const SpiInitCmd kPanelInit[] = {
-  // 示例(★ 请替换成卖家给的那份):
-  // { 0x01, {0}, 0, 120 },                    // SWRESET
-  // { 0x3A, {0x55}, 1, 0 },                   // COLMOD = RGB565
-  // { 0x36, {0x00}, 1, 0 },                   // MADCTL(扫描方向,花屏先改这里)
-  // { 0x11, {0}, 0, 120 },                    // SLPOUT
-  // { 0x29, {0}, 0, 20 },                     // DISPON
+  { 0x11, {0},          0, 120 },   // SLPOUT(退出睡眠,等 120ms)
+  { 0x3A, {0x55},       1,   0 },   // COLMOD = RGB565,16bit/像素
+  // ↓ 以下 42 条 = GC9A01A 厂商初始化表(Enable Inter Register / 电源 / gamma / 面板)
+  { 0xFE, {0},          0,   0 },
+  { 0xEF, {0},          0,   0 },
+  { 0xEB, {0x14},       1,   0 },
+  { 0x84, {0x60},       1,   0 },
+  { 0x85, {0xFF},       1,   0 },
+  { 0x86, {0xFF},       1,   0 },
+  { 0x87, {0xFF},       1,   0 },
+  { 0x8E, {0xFF},       1,   0 },
+  { 0x8F, {0xFF},       1,   0 },
+  { 0x88, {0x0A},       1,   0 },
+  { 0x89, {0x23},       1,   0 },
+  { 0x8A, {0x00},       1,   0 },
+  { 0x8B, {0x80},       1,   0 },
+  { 0x8C, {0x01},       1,   0 },
+  { 0x8D, {0x03},       1,   0 },
+  { 0x90, {0x08, 0x08, 0x08, 0x08},                        4, 0 },
+  { 0xFF, {0x60, 0x01, 0x04},                              3, 0 },
+  { 0xC3, {0x13},       1,   0 },
+  { 0xC4, {0x13},       1,   0 },
+  { 0xC9, {0x30},       1,   0 },
+  { 0xBE, {0x11},       1,   0 },
+  { 0xE1, {0x10, 0x0E},                                    2, 0 },
+  { 0xDF, {0x21, 0x0C, 0x02},                              3, 0 },
+  { 0xF0, {0x45, 0x09, 0x08, 0x08, 0x26, 0x2A},            6, 0 },   // gamma
+  { 0xF1, {0x43, 0x70, 0x72, 0x36, 0x37, 0x6F},            6, 0 },
+  { 0xF2, {0x45, 0x09, 0x08, 0x08, 0x26, 0x2A},            6, 0 },
+  { 0xF3, {0x43, 0x70, 0x72, 0x36, 0x37, 0x6F},            6, 0 },
+  { 0xED, {0x1B, 0x0B},                                    2, 0 },
+  { 0xAE, {0x77},       1,   0 },
+  { 0xCD, {0x63},       1,   0 },
+  { 0x70, {0x07, 0x07, 0x04, 0x0E, 0x0F, 0x09, 0x07, 0x08, 0x03},  9, 0 },
+  { 0xE8, {0x34},       1,   0 },   // 4 dot inversion
+  { 0x60, {0x38, 0x0B, 0x6D, 0x6D, 0x39, 0xF0, 0x6D, 0x6D},        8, 0 },
+  { 0x61, {0x38, 0xF4, 0x6D, 0x6D, 0x38, 0xF7, 0x6D, 0x6D},        8, 0 },
+  { 0x62, {0x38, 0x0D, 0x71, 0xED, 0x70, 0x70, 0x38, 0x0F, 0x71, 0xEF, 0x70, 0x70}, 12, 0 },
+  { 0x63, {0x38, 0x11, 0x71, 0xF1, 0x70, 0x70, 0x38, 0x13, 0x71, 0xF3, 0x70, 0x70}, 12, 0 },
+  { 0x64, {0x28, 0x29, 0xF1, 0x01, 0xF1, 0x00, 0x07},              7, 0 },
+  { 0x66, {0x3C, 0x00, 0xCD, 0x67, 0x45, 0x45, 0x10, 0x00, 0x00, 0x00}, 10, 0 },
+  { 0x67, {0x00, 0x3C, 0x00, 0x00, 0x00, 0x01, 0x54, 0x10, 0x32, 0x98}, 10, 0 },
+  { 0x74, {0x10, 0x45, 0x80, 0x00, 0x00, 0x4E, 0x00},              7, 0 },
+  { 0x98, {0x3E, 0x07},                                    2, 0 },
+  { 0x99, {0x3E, 0x07},                                    2, 0 },
+  { 0x21, {0},          0,   0 },   // INVON(例程:esp_lcd_panel_invert_color(true))
+  { 0x29, {0},          0,  20 },   // DISPON
 };
 static const size_t kPanelInitCount = sizeof(kPanelInit) / sizeof(kPanelInit[0]);
 
-// ---- 3) 窗口命令与偏移(不同 IC 见注释)----
-//   ST7789/ILI9341/GC9A01/NV3041 都是 CASET=0x2A / RASET=0x2B / RAMWR=0x2C。
-//   偏移:有些屏的可寻址区比可视区大(ST7789 是 240×320 里挖 240×240),
-//        所以要在命令里加列/行偏移。480×480 的屏一般偏移为 0。
+// ---- 2b) 每屏 MADCTL(0x36)—— 两块屏**唯一**不一样的一条 ----
+//   位:MY=0x80 MX=0x40 MV=0x20 BGR=0x08。
+//   · BGR 来自例程的 .rgb_endian = LCD_RGB_ENDIAN_BGR;
+//   · MV 来自例程的 swap_xy(true)(Kconfig 默认就是 90° 那个分支);
+//   · 镜像的差异来自例程:LCD1 mirror(false,false) → 0x28,
+//     LCD2 mirror(true,true) → 0xE8(微雪另一份 xiaozhi 板级 config.h 也是
+//     DISPLAY2_MIRROR_X/Y = true,两份资料一致,所以先照抄)。
+//   待实测:0xE8 的 MX|MY 到底要不要,取决于我们把两块屏朝哪边装 ——
+//   画面**镜像/上下颠倒**时,第一个要动的就是这里。
+static const uint8_t kPanelMadctl[2] = { 0x28, 0xE8 };
+
+// ---- 3) 窗口命令与偏移 ----
+//   GC9A01A 与骨架里那族 IC 同款:CASET=0x2A / RASET=0x2B / RAMWR=0x2C(已核对
+//   esp_lcd_panel_commands.h 与例程 GC9A01A.c 的调用)。
+//   偏移 = 0:GC9A01A 的可寻址区**就是** 240×240,没有"大玻璃挖小窗"那回事
+//   (例程 GC9A01A.h 里 Offset_X/Offset_Y 也是 0)。
 #define LCD_CMD_CASET  0x2A
 #define LCD_CMD_RASET  0x2B
 #define LCD_CMD_RAMWR  0x2C
@@ -85,11 +161,14 @@ static const size_t kPanelInitCount = sizeof(kPanelInit) / sizeof(kPanelInit[0])
 #define SPI_ROW_OFFSET 0
 
 // ---- 4) 字节序 ----
-//   ★ 多数 SPI 屏期望 RGB565 **大端**,而 LVGL 产出的是小端 —— 不交换就是
-//     花屏/偏色(最经典的一个坑)。要交换就置 1(每帧多一次遍历,代价可接受)。
+//   保持 1:GC9A01 收 16 位像素是**先高字节**,而 LVGL 产出的 RGB565 是小端 ——
+//   不交换就是花屏/偏色(最经典的一个坑;esp_lvgl_port 处理 SPI 屏也是这一步)。
+//   实屏若颜色发蓝/发红,这里是第一顺位。
 #define SPI_SWAP_RGB565 1
 
 // ---- 5) 背光 ----
+//   两块屏的 BL 各一根(GPIO46 / GPIO39),例程也是**两个 LEDC 通道 + 5kHz**;
+//   这里通道 0/1 一块一块配(见 dash_display_init 末尾)。
 #define SPI_BL_LEDC_CH   LEDC_CHANNEL_0
 #define SPI_BL_DUTY_PCT  80     // 上电默认亮度(夜里想调暗:见文件末尾 TODO)
 
@@ -198,6 +277,8 @@ void dash_display_init() {
       continue;
     }
     panel_send_init(g_io[i]);
+    // MADCTL 两块屏不同(0x28 / 0xE8),不放进共用表 —— 见上面 2b。
+    esp_lcd_panel_io_tx_param(g_io[i], 0x36, &kPanelMadctl[i], 1);
 
     lv_display_t* d = lv_display_create(THEME_DISPLAY_RES, THEME_DISPLAY_RES);
     lv_display_set_user_data(d, (void*)(intptr_t)i);   // flush 里靠它找 io
@@ -241,7 +322,7 @@ lv_display_t* dash_display_right() { return g_disp[1]; }
 
 // 每秒报一次刷新量与**实际字节吞吐** —— 实屏调试时用来回答
 // "SPI 到底够不够用"(与 VAN 的 edges/frames 同一个思路)。
-// 换算:字节/秒 ÷ 2 ÷ 480 ÷ 480 ≈ 等效整屏帧率。
+// 换算:字节/秒 ÷ 2 ÷ THEME_DISPLAY_RES² ≈ 等效整屏帧率。
 void dash_display_poll() {
   static uint32_t last_ms = 0;
   static uint32_t last_flush[2] = {0, 0};
