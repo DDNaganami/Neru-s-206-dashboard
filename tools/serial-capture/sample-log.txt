@@ -1,0 +1,11 @@
+I (123) BOOT esp32s3
+van phy: gpio 就绪 RX=GPIO16(RO),空闲 300us 关帧
+van: edges=310 frames=0 fcs_ok=0 dropped=0(队列0) 待收=0
+VAN 824 18 F8 27 10 00 00 00   # cmd=1 ack=0
+VAN 8C4 01 02 03 04 05   # cmd=0 ack=1
+VAN 824 18 F8 28 10 00 00 00   # cmd=1 ack=0
+# VAN 校验失败 iden=824 len=3
+van: edges=4200 frames=12 fcs_ok=11 dropped=0(队列0) 待收=0
+SRC speed=van rpm=obd coolant=sim intake=sim | v=57.3km/h 2100rpm 88.0C 21.0C
+VAN 824 18 F8 29 10 00 00 00   # cmd=1 ack=0
+VAN 8A1 01 02 03   # cmd=0 ack=1

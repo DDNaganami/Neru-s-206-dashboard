@@ -66,7 +66,10 @@ for _stream in (sys.stdout, sys.stderr):
 # 每秒诊断(只在计数有变化时打,免得刷屏):
 #     van: edges=305 frames=0 fcs_ok=0 dropped=0(队列0) 待收=0
 _RE_VAN = re.compile(r'^VAN\s+([0-9A-Fa-f]{3,4})(?:\s+(.*))?$')
-_RE_VANBAD = re.compile(r'^#\s*VAN\s+校验失败\s+iden=([0-9A-Fa-f]+)')
+# ★ 只用 ASCII 锚点(`# `、`VAN`、`iden=`)匹配坏帧:"校验失败"这四个字是中文,
+# 而日志可能由**另一个工具**写出来(capture-van-nopy.ps1 在笔记本上跑,
+# 串口分块时中文标签有可能被切成两半) —— 靠 ASCII 锚点两种来源都能认。
+_RE_VANBAD = re.compile(r'^#\s*VAN\b.*?iden=([0-9A-Fa-f]+)')
 _RE_DIAG = re.compile(r'^van:\s*(.+)$')
 _RE_SRC = re.compile(r'^SRC\s+(.+)$')
 _RE_EDGES = re.compile(r'edges=(\d+)')

@@ -379,18 +379,43 @@ Micro-USB 公头**，USB-C 是可选规格 —— 下单时必须在规格里**�
    | `frames` 涨、`fcs_ok=0` | 解出帧但 CRC 不符 | ★ **这就是我们要的原始数据**（FCS 约定问题），继续抓 |
    | `dropped` 涨 | 串口/中断太密，主循环排空不及 | ★ 先把串口提到 921600 重刷再抓（见 E 节）；短期方案 RMT 在 `van_phy_gpio.cpp` 文末 |
 
-4. **记录**（10 分钟起步，越长越好；车速要覆盖怠速→加速→巡航→减速）：
-   **用一键脚本，别手敲 python** —— 它把三件容易漏的事都写死了：
-   `PYTHONPATH`（pyserial 3.5 只在 `.pio-pylibs` 里，系统 python 里没有，
-   实测 `ModuleNotFoundError`）、输出编码（PS 5.1 的 `>` 重定向会写成 UTF-16LE）、
-   端口/时长/路径。
+4. **记录**（10 分钟起步，越长越好；车速要覆盖怠速→加速→巡航→减速）。
+
+   **脚本有两种，看笔记本上有没有 Python：**
+
+   | 情况 | 用哪个 |
+   |---|---|
+   | 这台开发机（有 `.pio-pylibs`、仓库就在本地） | `capture-van.ps1` |
+   | **另一台笔记本**（不确定有没有 Python / pyserial） | **`capture-van-nopy.ps1`**（零依赖） |
+
+   ★ 2026-09-18 实测教训：抓帧往往是在**另一台笔记本**上做的，而那台机器上没有
+   这个仓库、也不一定装了 Python + pyserial —— 照抄开发机上的绝对路径会直接报
+   `-File 形式参数的实际参数"…"不存在`（那次就是这么栽的，跟中文路径无关）。
+   **把脚本拷过去就能用**，从开发机取文件的路径（纯 ASCII，好拷）：
+   `C:\Users\Public\206dash\Neru-s-206-dashboard\tools\serial-capture\`
 
    ```powershell
-   powershell -ExecutionPolicy Bypass -File C:\Users\张九思\206Dash\Neru-s-206-dashboard\tools\serial-capture\capture-van.ps1
-   #  默认 COM4 / 600 秒 → C:\Users\Public\206dash\van_capture_1.txt
-   #  抓够了就收工:  -UntilFrames 200      短一点: -Seconds 180
+   # 端口号先查一下(笔记本上多半不是 COM4):
+   [System.IO.Ports.SerialPort]::GetPortNames()
+
+   # A. 有 Python + pyserial(没有就 python -m pip install pyserial):
+   powershell -ExecutionPolicy Bypass -File <拷过去的目录>\capture-van.ps1 -Port COM5 -Seconds 600
+
+   # B. 什么都不想装(推荐):
+   powershell -ExecutionPolicy Bypass -File <拷过去的目录>\capture-van-nopy.ps1 -Port COM5 -Seconds 600
+   #    抓够了就收工:-UntilFrames 200      短一点:-Seconds 180
    ```
 
+   ★ `capture-van-nopy.ps1` 只用 Windows 自带的 PowerShell，**刻意不用串口终端**：
+   PuTTY / Tera Term / 串口助手 打开串口时会拉 DTR/RTS，而那两根线在板上接的正是
+   EN / IO0 —— 等于把芯片按住复位，屏幕上**一个字都不会有**，看着像固件坏了。
+   .NET 的 `SerialPort` 默认 `DtrEnable = RtsEnable = false` ✓ 与 `capture.py` 一致。
+   它把日志写到**脚本自己所在的目录**下的 `van_capture_1.txt`。
+   自测：`-SelfTest`（9 项）；手边没板子时用
+   `-ReplayFile sample-log.txt` 能把"分块→续行→统计→落盘"整条流水线跑一遍
+   （已验证写出文件与输入**逐字节一致**）。
+
+   两个脚本的日志格式完全一致、都是 UTF-8 无 BOM，拿回开发机都能分析/回放。
    屏幕上会有一条实时滚动的进度行（字节/好帧/坏帧/各 IDEN 计数），
    结束时直接给一张"这趟抓到了什么"的小结 —— **车上当场就知道有没有白跑**。
 5. **只抓，不动别的**：不要同时接 OBD / 不要开第二块设备 —— 一次只引入一个变量。
