@@ -12,3 +12,7 @@ preview/theme-broken.json
 preview/theme-trunc.json
 preview/run*.log
 preview/run*.err
+
+# Python 编译缓存(2026-09-18:之前被 git add -A 误带进仓库过一次)
+__pycache__/
+*.pyc
