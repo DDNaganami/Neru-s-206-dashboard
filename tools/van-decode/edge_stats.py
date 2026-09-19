@@ -44,6 +44,8 @@ def parse_csv(path, col_idx=None):
 
     返回 `(tick_us, [(tick, level), ...])` —— tick × tick_us 就是绝对时间(µs)。
     时间列的单位从表头方括号里认(s/ms/us/ns),这样两种软件都不用额外参数。
+    **秒/毫秒列按 4MHz 细网格保留**(tick=0.25µs):逻辑分析仪本来就是 4MHz
+    采的,直接取整会把 8.25µs 的槽时间截成 8µs,槽时间就量不出来了。
     """
     rate = None
     unit_us = None
@@ -76,7 +78,13 @@ def parse_csv(path, col_idx=None):
                 continue
             try:
                 t = float(parts[0])
-                tick = int(t * unit_us) if unit_us else int(t)
+                # 时间列是**秒**时不能直接 int():0.25µs 的量化会被截断成整数µs,
+                # 80µs 会变成 80 个"整µs"点 —— 槽时间就再也量不准了。
+                # 现成的时间列带上 4MHz 的细网格(×4),tick 改成 0.25µs。
+                if unit_us is not None and unit_us >= 1000.0:
+                    tick = int(round(t * unit_us * 4.0))
+                else:
+                    tick = int(t * unit_us) if unit_us else int(t)
             except ValueError:
                 continue
             vals = parts[1:]
@@ -100,6 +108,8 @@ def parse_csv(path, col_idx=None):
             rows = cols[col_idx]
 
     if unit_us is not None:                        # 时间列:已经换算成 µs 了
+        if unit_us >= 1000.0:
+            return 0.25, rows                       # 秒/毫秒列 → 保留 4MHz 细网格
         return 1.0, rows
     if rate is None:
         return None, rows                          # 调用方用 --rate 补
@@ -267,7 +277,7 @@ def selftest():
     e2 = edges_from_levels(got2, tick_us2)
     d2 = sorted(e2[i + 1][0] - e2[i][0] for i in range(len(e2) - 1))
     checks.append(('Logic 2 CSV(Time [s])',
-                   tick_us2 == 1.0 and abs(d2[len(d2) // 4] - 4.0) < 0.3))
+                   tick_us2 == 0.25 and abs(d2[len(d2) // 4] - 4.0) < 0.3))
 
     for name, good in checks:
         print(f'[{"OK " if good else "FAIL"}] {name}')
