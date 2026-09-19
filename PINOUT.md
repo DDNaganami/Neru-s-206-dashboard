@@ -25,7 +25,7 @@ K 线 OBD RX     18     UART1 ← ELM327 TX（38400 8N1，Serial1）
 K 线 OBD TX     17     UART1 → ELM327 RX
 VAN RX          16     UART2 ← SN65HVD230 RO
 VAN TX          15     UART2 → SN65HVD230 DI（纯监听可不接）
-VAN DE/RE       GND    SN65HVD230 收发使能：纯监听直接接地（或拆掉）
+VAN RS          GND    SN65HVD230 第 8 脚：接 GND = 高速模式（**不是 DE/RE**，接 VCC 会进待机收不到）
 
 约束：
 - 避开 strapping 脚（GPIO0/3/45/46）、flash 脚（GPIO26-32）、USB 脚（19/20）。
@@ -79,7 +79,7 @@ MUX 车实测特征（点火关着、BSI 醒着时，对车 GND）：
 | GND | ESP32 GND | |
 | **RO** | **GPIO16** | 收：解出的数据 → ESP32（对应 UART2 RX） |
 | **DI** | 不接 | 纯监听不需要发（主表已注明） |
-| **DE/RE** | **接 GND** | 强制收模式，免固件控制 |
+| **RS**（第 8 脚） | **接 GND** | 高速模式，免固件控制。★ SN65HVD230 只有 `RS`；若模块丝印写的是 `DE/RE`（TJA1050 那类），则 DE/RE 都接 GND |
 
 ⚠️ **先拆 120Ω 再接线**。模块上标 R1/120 的贴片电阻必须拆掉：不拆会在总线上
 并联出约 60Ω，阻抗失配 → 反射 → 误码率飙升。拆完用万用表确认。
@@ -288,3 +288,94 @@ Micro-USB 公头**，USB-C 是可选规格 —— 下单时必须在规格里**�
 - `PURCHASE.md`：采购清单（OBD 一分二在 T0，逻辑分析仪在 T1）
 - `ARCHITECTURE.md`：VAN 数据源与线路层的设计
 - `ACCEPTANCE.md`：实车必验清单（极性、IDEN、FCS 约定等）
+
+## 抓帧盒：用裸 S3 板 + SN65HVD230 去车上抓 VAN（2026-09-18）
+
+**它解决什么**：`ACCEPTANCE.md` 的实车必验清单第 1 条（FCS 约定、IDEN 到底是不是
+0x824、ACK 位行为）。那几条**只能靠真实原始数据定位** —— 之前拿公开抓包做全枚举
+（32768 个多项式 × 6 种字段拆解 × 位序/字节序）复现不出 FCS，所以必须自己抓。
+**它不需要屏**，用那块只有排针的 S3 裸板正好（带屏的整板留着调屏）。
+
+### A. 接线表（桌面先量，别直接上车）
+
+| 从 | 到 | 说明 |
+|---|---|---|
+| SN65HVD230 `VCC` | S3 **3V3** | 收发器吃 3.3V，**不是 5V** |
+| SN65HVD230 `GND` | S3 `GND` | 必须共地 |
+| SN65HVD230 `R` / `RO`（接收输出） | S3 **GPIO16** | 固件里 `VAN_RX_PIN=16`（`lib/dashcore/van_phy_gpio.cpp`） |
+| SN65HVD230 `RS` / `S`（第 8 脚） | **GND** | ★ 高速模式。**别接 VCC** —— 那是待机，一帧都收不到 |
+| SN65HVD230 `D` / `TXD`（发送输入） | 悬空 | 我们**只收不发**（听总线，不做节点） |
+| SN65HVD230 `CANH` / `H` | 仪表连接器 **5 或 10 脚**（线号 9004/9005，极性待实测） | 免破线用插接件端子 |
+| SN65HVD230 `CANL` / `L` | 另一个（5/10 里剩下的那根） | 先随便接，方向不对按下面第 4 步对调 |
+| 模块上的 **120Ω 终端电阻** | **拆掉** | 车总线两端已有终端，多一个会拉低幅度。见「开箱当天」那一节 |
+
+> ★ **`RS` 不是 `DE/RE`**：SN65HVD230 只有 RS（斜率/模式脚）。
+> 若你手上的模块丝印是 `DE`/`RE`（那是 TJA1050 那类），则 `DE→GND`（关发送）、
+> `RE→GND`（开接收）。**先看丝印再接线**，这两种接法完全不同。
+
+### B. 桌面自检（5 分钟，上车前必做）
+
+1. 断电：蜂鸣档量 **3V3 ↔ GND** 不响。
+2. 上电刷固件（线插 **UART 口**）：
+   `python -m platformio run -e esp32s3 -t upload --upload-port COM4`
+3. 抓开机日志：`python tools/serial-capture/capture.py COM4`
+   必须看到这一行 —— 看到 `van phy: stub` 就说明这次编译没开 GPIO 接收：
+   ```
+   van phy: gpio 就绪 RX=GPIO16(RO),空闲 300us 关帧
+   ```
+4. 断电量收发器供电：`VCC` 对 `GND` 应 ≈3.3V（上电时）。
+5. 桌上**没有总线**，所以 `van: edges=0` 是正常的（那行只在有动静时打印）。
+   RO 悬空时可能是 0V 或抖动 —— **以"上车后 edges 涨不涨"为准**，别在桌上纠结。
+
+### C. 上车步骤（顺序别改）
+
+1. **先用充电宝给 S3 供电，再接车**（避免笔记本与车 12V 共地环流，见 `PURCHASE.md` 第六节）。
+2. **认线**：仪表连接器 5/10 脚。用万用表直流档量这两根对地的电压 ——
+   应该在 **2~3V 之间且两根不相等**（差分总线的共模电平）。
+   若某根是 0V 或 12V，那是认错线了（那可能是电源或 K 线）**立刻停手**。
+3. 接 VAN_H/VAN_L，看串口每秒那行的四个数：
+
+   | 现象 | 含义 | 怎么办 |
+   |---|---|---|
+   | `edges=0` | 没信号 | 检查供电 / RS 有没有接 VCC / 线接错 |
+   | `edges` 涨、`frames=0` | 收到电平但解不出帧 | **先把 VAN_H/VAN_L 对调**（极性反了最常见） |
+   | `frames` 涨、`fcs_ok=0` | 解出帧但 CRC 不符 | ★ **这就是我们要的原始数据**（FCS 约定问题），继续抓 |
+   | `dropped` 涨 | 中断太密、主循环排空不及 | 记下来，长期方案是 RMT（见 `van_phy_gpio.cpp` 文末） |
+
+4. **记录**（10 分钟起步，越长越好；车速要覆盖怠速→加速→巡航→减速）：
+   ```powershell
+   python tools/serial-capture/capture.py COM4 600 > C:\Users\Public\206dash\van_capture_1.txt
+   ```
+5. **只抓，不动别的**：不要同时接 OBD / 不要开第二块设备 —— 一次只引入一个变量。
+6. 结束：**先断开 VAN 两根线，再断充电宝**。
+
+### D. 回来怎么分析（把原始数据变成结论）
+
+1. **先看完整性**：
+   ```powershell
+   Select-String -Path van_capture_1.txt -Pattern '^VAN ' | Measure-Object   # 帧数
+   Select-String -Path van_capture_1.txt -Pattern 'fcs_ok=1' | Measure-Object # 校验通过的比例
+   Select-String -Path van_capture_1.txt -Pattern 'edges=' | Select-Object -Last 5
+   ```
+2. **找车速帧**：车速是最会变的量。把日志按时间切片，找"**某个 IDEN 的
+   `data[2..3]` 随车速单调变化**"的那一条 —— 如果是 `0x824` 就与假设一致 ✓
+   如果 IDEN 是别的值，现场改一行就能用：
+   `VanSource::configureSpeedFrame(iden, offset, scale)`（API 已经在，见 `van_source.h`）。
+3. **FCS 约定**：拿"成对的真实数据"（同一 IDEN 的连续帧）重跑枚举 ——
+   上次是用公开抓包、只能猜字段边界；这次**字节边界是真的**，成功率完全不同。
+   枚举代码可直接复用 `test/test_dashcore/test_van_wire.cpp` 里那套。
+4. **ACK 位**：`Stats::ackDominant()` 与 `frames_dropped` 已经在统计，看它是否稳定。
+5. **桌面上回放验证**：把抓到的加速片段用 `tools/serial-capture/replay.py` 贴回设备，
+   看 `SRC speed=van` 与表情反应 —— 整条链在桌面就能验，不用再上车。
+6. **结论写进 `ACCEPTANCE.md`**：实车必验清单那 5 条逐条打勾或改写，
+   并把"抓到的原始文件"路径记下来（下次不用重抓）。
+
+### E. 已知的坑（都踩过或差点踩）
+
+- **`RS` 接到 VCC** → 收发器进待机，`edges` 恒为 0，看起来像"没接上"。
+- **120Ω 没拆** → 总线多一个终端，边沿变缓/幅度变小，解码时好时坏。
+- **VAN_H/L 接反** → `edges` 涨、`frames` 不涨（先对调，别急着改代码）。
+- **笔记本 + 车 12V 同时接** → 地环流（第六节），可能打坏 USB 口。
+- **拿 MCP2515 那类"CAN 模块"当控制器用** → 不需要：VAN 的 4B5B/E-Manchester/CRC
+  全在我们固件里做，`MCP2515` 不参与；只用模块上**收发器那半边**（RO→GPIO16）。
+- **同时接 OBD 抓帧** → 两个变量一起动，出了问题说不清是谁的。
