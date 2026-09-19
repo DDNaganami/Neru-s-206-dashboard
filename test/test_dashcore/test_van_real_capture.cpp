@@ -19,16 +19,21 @@
 //   实测:ns 与"截成整数µs"两种喂法解出**完全相同**的 62 帧 / 750 字节。
 //   所以这里就用整数µs —— 跑的是固件那条精度路径,不给自己开后门。
 //
-// ★★ 关于"哪些帧算数"(这条很关键,别误读成"槽时间又错了"):
+// ★★ 关于"哪些帧算数"(2026-09-19 更新,别按旧结论读):
 //   van_wire 的 FrameParser 只把 **FCS 校验通过**的帧算成 frames
 //   (parseFrameBytes 找不到吻合的 CRC-15 候选长度就返回 false)。
-//   而 CRC-15 多项式/覆盖范围**至今未定**(工作单 E 明确说不许动),
-//   所以实数帧的 FCS 对不上 ⇒ VanPhyWire::stats().frames 仍然是 0。
-//   本测试因此分两层断言:
-//     ① **字节层**(这条证明"槽时间改对了"):SOF 命中 62 次、750 个字节,
-//        并且存在 IDEN == 0x824 的报文。
-//     ② **包层**:只断言"一帧都没被 FCS 挡住时才算通过"是错的 ——
-//        这里把 FCS 的现状也钉住,免得以后有人以为 frames=0 是解码坏了。
+//   曾经这里写着"CRC-15 约定未定 ⇒ frames 恒为 0"——**那条已经作废**:
+//   FCS 约定已用这份抓包 + 5 分钟行驶抓包(共 17106+66 帧)定案:
+//     FCS = crc15_van_iso(poly 0x0F9D / init 0x7FFF / 输出取反 / MSB-first),
+//     覆盖 IDEN(12 位)+CMD(4 位)+全部数据;线上是 16 位大端字段
+//     = (crc << 1),最低位恒 0(那一位与 EOD 槽构成 E-Manchester 违约)。
+//   所以本测试现在分三层断言:
+//     ① **字节层**(证明槽时间/位解码这条链是对的):SOF 命中次数、字节数,
+//        并且存在 IDEN == 0x824 的报文;
+//     ② **整数µs 精度**:截成整数µs 喂进去结果与 ns 喂法完全一致;
+//     ③ **包层(FCS)**:整链必须真的收出帧 —— frames > 0、frames == fcs_ok,
+//        而且收出来的帧里必须有 IDEN=0x824 的车速帧。
+//        这条以前只能"钉住 frames=0 的现状",现在反过来钉"FCS 必须过"。
 // ============================================================
 #include <unity.h>
 #include <stdio.h>
@@ -242,16 +247,55 @@ static void test_real_capture_integer_us_resolution(void) {
 }
 
 // ============================================================
-// ③ 包层:VanPhyWire 整链 —— 钉住"frames=0 不是因为解码坏了,而是因为 FCS 未定"
-//    (用 ① 的 ns 精度喂,这样链条本身能走通)
+// ③ 包层:VanPhyWire 整链(µs 接口)——
+//    真实边沿 → SOF → 字节 → **FCS 通过** → frames 增加 → 回调出 VanPacket
+//
+// 这条是本次工作的收工判据:改之前 frames 恒为 0(FCS 约定错);
+// 改之后必须真的收出帧,而且要收出 0x824 那族车速帧。
 // ============================================================
-static void test_real_capture_vanphywire_fcs_is_the_blocker(void) {
+namespace {
+// 记录回调出来的包(实车链路上这个 sink 就是 VanSource)
+class PacketRecorder : public VanSink {
+ public:
+  int count = 0;
+  int iden824 = 0;
+  int ack_mismatch = 0;     // ACK 位与"该不该有 ACK"(cmd bit2=1 且 RTR=0)不符的帧数
+  int ack_miss = 0;         // 该有 ACK 却没认出来
+  int ack_extra = 0;        // 不该有 ACK 却认成有
+  uint16_t bad_iden = 0;
+  uint8_t bad_cmd = 0, bad_ack = 0;
+  char bad_list[96] = {0};   // 前几个不符的 (iden/cmd/ack),失败时打进消息里
+  int ack_seen = 0;
+  VanPacket last{};
+  void onPacket(const VanPacket& p) override {
+    last = p;
+    ++count;
+    if (p.iden == VanSource::kSpeedIden) ++iden824;
+    const bool expect = cmdExpectsAck(p.cmd);
+    if (expect) ++ack_seen;
+    if ((p.ack != 0) != expect) {
+      if (ack_mismatch == 0) { bad_iden = p.iden; bad_cmd = p.cmd; bad_ack = p.ack; }
+      ++ack_mismatch;
+      if (expect) ++ack_miss; else ++ack_extra;
+      if (strlen(bad_list) < 72) {
+        char t[24];
+        snprintf(t, sizeof(t), "%03X/%X/%u@%ums ", (unsigned)p.iden, (unsigned)p.cmd,
+                 (unsigned)p.ack, (unsigned)p.rx_ms);
+        strcat(bad_list, t);
+      }
+    }
+  }
+};
+}  // namespace
+
+static void test_real_capture_vanphywire_accepts_frames(void) {
   FILE* f = openCapture();
   TEST_ASSERT_NOT_NULL(f);
 
   VanPhyWire phy;
-  VanSource src;
+  PacketRecorder rec;
   phy.begin();
+  phy.setSink(&rec);
 
   char line[512];
   uint64_t last_ns = 0;
@@ -277,24 +321,47 @@ static void test_real_capture_vanphywire_fcs_is_the_blocker(void) {
   fclose(f);
 
   const VanPhyWire::Stats& st = phy.stats();
-  char msg[256];
+  char msg[320];
   snprintf(msg, sizeof(msg),
-           "真实抓包整链(µs 接口): 边沿 %d · finish %d 次 · edges=%u frames=%u fcs_ok=%u dropped=%u"
-           "(FCS 多项式未定 ⇒ frames 仍是 0;字节层能解出 0x824 由 ① 证明)",
+           "真实抓包整链(µs 接口): 边沿 %d · finish %d 次 · edges=%u frames=%u "
+           "fcs_ok=%u dropped=%u · 回调包 %d(其中 IDEN=0x824 有 %d 个, 应带 ACK 的 %d 个, "
+           "ACK 位不符 %d 个[少认 %d / 多认 %d, 首个 iden=0x%03X cmd=0x%X ack=%u] %s",
            rows, finishes, (unsigned)st.edges, (unsigned)st.frames,
-           (unsigned)st.frames_fcs_ok, (unsigned)st.frames_dropped);
+           (unsigned)st.frames_fcs_ok, (unsigned)st.frames_dropped,
+           rec.count, rec.iden824, rec.ack_seen, rec.ack_mismatch,
+           rec.ack_miss, rec.ack_extra, rec.bad_iden, rec.bad_cmd, rec.bad_ack,
+           rec.bad_list);
 
   TEST_ASSERT_GREATER_THAN_INT_MESSAGE(3000, rows, "CSV 没读到足够的边沿");
   TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)rows, st.edges, msg);
-  if (st.frames_fcs_ok == 0) {
-    // ★ 现状:没有 FCS 通过的帧时 frames 必须是 0。
-    //   这一条同时说明"frames=0"来自 FCS 未定(而不是边沿没进来 —— 上面那条已证)。
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0u, st.frames, msg);
-  }
+
+  // ★ 核心判据(本次工作的收工线):FCS 必须过 ⇒ 收到真实帧。
+  //   下面是**黄金值**(2026-09-19 实测跑出来的基线,别再放宽成 >0):
+  //     边沿 3998 · SOF 命中 62 次 · 收出帧 61(另有 1 帧被丢,是切片开头
+  //     那半帧/µs 截断的边界帧)· 回调包 61,其中 IDEN=0x824 车速帧 23 个。
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(61u, st.frames, msg);
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(61u, st.frames_fcs_ok, msg);
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(1u, st.frames_dropped, msg);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(61, rec.count, msg);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(23, rec.iden824, msg);
+  // 最后一帧必须是 FCS 通过的(回调出来的包不该有 fcs_ok=0)
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(1u, rec.last.fcs_ok, msg);
+  // ★ ACK 位:实测帧尾那 2 个槽只在 cmd bit2=1 且 RTR=0 的帧上出现(见
+  //   van_wire.h 的 cmdExpectsAck)。这份切片两种都有(0x824/0x8 无、0x464/0xC 有),
+  //   所以这一条能验证解码器认不认得出来 —— 旧实现恒为 0(等于没认)。
+  //
+  //   阈值不放 0 的原因(不是给实现开后门,是抓包本身的性质):
+  //   本测试按"边沿间隔 > 300µs"关帧(与固件 kIdleCloseUs 同款),而这份切片里
+  //   有**背靠背**的帧(实测相邻帧只隔 25µs),它们会被并进同一个缓冲 ——
+  //   解出来的第一帧是对的(FCS 全中),但 ack 位反映的是**最后**那一帧的帧尾。
+  //   实测:61 帧里 4 帧的 ack 位是这么来的(1 帧少认 / 3 帧多认);
+  //   旧实现是 51 帧不符。所以这里钉"≤6",既能挡住退化,也不假装那个合并问题不存在。
+  TEST_ASSERT_TRUE_MESSAGE(rec.ack_seen > 0, msg);
+  TEST_ASSERT_LESS_OR_EQUAL_INT_MESSAGE(6, rec.ack_mismatch, msg);
 }
 
 void register_van_real_capture_tests(void) {
   RUN_TEST(test_real_capture_bytes_yield_iden_0x824);
   RUN_TEST(test_real_capture_integer_us_resolution);
-  RUN_TEST(test_real_capture_vanphywire_fcs_is_the_blocker);
+  RUN_TEST(test_real_capture_vanphywire_accepts_frames);
 }

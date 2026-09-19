@@ -298,6 +298,41 @@ static void test_finish_closes_pending_frame(void) {
 }
 
 
+// ACK 位:整链必须认出"帧尾那 2 个槽"(实测结构见 van_wire.h 的 cmdExpectsAck/ackDominant)
+//   被应答的帧:尾部 = [≥2 dominant 的 EOD][1 recessive][1 dominant 的 ACK]
+//   未被应答  :尾部 = [≥2 dominant 的 EOD][recessive…]
+// ★ 旧实现恒为 ack=0(EOD 锚点一进窗口就被自己的 recessive 清掉,再也置不回来),
+//   所以这条用例以前根本不存在 —— 现在补上,防止 ACK 判据再退化。
+static void test_chain_ack_flag_follows_cmd(void) {
+  struct Case { uint8_t cmd; uint8_t expect_ack; const char* why; };
+  static const Case cases[] = {
+      {0xC, 1, "bit2=1 且 RTR=0(0xC):线上有 ACK 两槽 ⇒ ack=1"},
+      {0xE, 1, "0xE 同理(bit2=1, RTR=0)"},
+      {0x8, 0, "bit2=0(0x8):FCS 后没有 ACK 两槽 ⇒ ack=0"},
+      {0xF, 0, "RTR=1(0xF):请求帧同样没有 ACK 两槽 ⇒ ack=0"},
+  };
+  for (unsigned k = 0; k < sizeof(cases) / sizeof(cases[0]); ++k) {
+    Frame f;
+    f.ident = 0x824;
+    f.cmd = cases[k].cmd;
+    f.len = 3;
+    f.data[0] = 0x11; f.data[1] = 0x22; f.data[2] = 0x33;
+
+    VanPhyWire phy;
+    VanSource src;
+    CaptureSink sink(&src);
+    phy.begin();
+    phy.setSink(&sink);
+    TEST_ASSERT_TRUE(feedFrame(phy, f, 1000));
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "cmd=0x%X: %s(ack=%u)",
+             cases[k].cmd, cases[k].why, (unsigned)sink.last.ack);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, sink.count, msg);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(cases[k].expect_ack, sink.last.ack, msg);
+  }
+}
+
 static void test_frame_to_packet_truncates(void) {
   Frame f;
   f.ident = 0x824; f.cmd = 0xC;
@@ -507,6 +542,7 @@ void register_van_phy_wire_tests(void) {
   RUN_TEST(test_chain_consecutive_frames);
   RUN_TEST(test_chain_preserves_iden_bits);
   RUN_TEST(test_chain_feeds_van_source);
+  RUN_TEST(test_chain_ack_flag_follows_cmd);
   RUN_TEST(test_frame_to_packet_truncates);
   RUN_TEST(test_edge_queue_delivers_same_frame);
   RUN_TEST(test_idle_close_refuses_while_queue_has_edges);

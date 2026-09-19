@@ -2,29 +2,24 @@
 //
 // 数据来源分三类,可信度不同,测试里逐条标注:
 //
-// [规范] Graham Auld 的 VAN 线路协议描述(经 morcibacsi/VanAnalyzer 转述):
-//   帧结构 SOF / IDEN 15TS / CMD 5TS / DATA / FCS 18TS / EOD / ACK / EOF
-//   编码 E-Manchester = 4B5B,每 5 个 TS 的第 5 个是编码位,解码时丢弃
-//   槽时间:规范标称 125 kbit/s ⟹ 8.00µs,但**实车实测 8.25µs(≈121kbit/s)**,
-//   固件以实测值为唯一时基(van_wire.h 的 kTsNs);本文件的向量都从它换算
+// [实测] 2026-09-19 实车逻辑分析仪抓包(5 分钟 drive5min.csv,17106 帧;
+//   仓库内 1.2s 切片 66 帧,两条独立抓包互证)定案的帧结构:
+//   SOF 10 TS / IDEN 15 TS(= 3 个 4B5B 组 = 12 位)/ CMD 5 TS(= 1 组 = 4 位)/
+//   DATA 10n TS / FCS 20 TS(= 4 组 = 16 位 = 15 位 CRC + 1 个固定 0 位)/
+//   EOD = FCS 末字节的 bit0 与紧随的编码位(不额外占槽)/ ACK 2 TS(仅被应答的帧)
+//   编码 E-Manchester = 4B5B,每 5 个 TS 的第 5 个是编码位(**= 第 4 位的反相**),
+//   解码时丢弃;全帧恰好最后一组违反这条 = EOD。
+//   FCS = crc15_van_iso(0x0F9D/init 0x7FFF/输出取反/MSB-first),覆盖 IDEN+CMD+DATA。
+//   槽时间:实车实测 8.25µs(≈121kbit/s),规范标称 125kbit/s 是 8.00µs;
+//   固件以实测值为唯一时基(van_wire.h 的 kTsNs),本文件的向量都从它换算。
 //
 // [往返] 自己的编码器 → 字节级解析器,验证 IDEN/CMD 打包、FCS 反推、帧字节契约
 //
 // [鲁棒性] 坏帧不得被判为有效帧
 //
-// 尚未验证(必须实车确认,不要当成已通过):
-//   1) FCS 约定。拿 VanAnalyzer readme 里 5 帧真实导出(IDEN/CMD/DATA/FCS
-//      都公开)做了穷举:全枚举 15 位多项式(0x4000..0x7FFF)× 左移/右移两种
-//      实现 × 6 种 IDEN/CMD 拆解 × 常规/逐字节位反转/整帧反转 × 两种字节序
-//      —— 没有任何组合能复现这些帧的 FCS。说明公开描述至少有一处与线上
-//      行为不符,而 readme 只给了帧级字段、没给原始位流,无法再往下判定。
-//      判定动作:实车抓一帧原始位流 → 重新枚举定位 → 回来固化常量。
-//   2) 字节内位序(本实现按 VanAnalyzer 的 MSB-first)
-//   3) SOF 槽数(规范写 10 TS,VanAnalyzer 按 8 TS 整字节处理)
-//   4) 206 实车 IDEN 是否为本项目假设的 0x824(公开样例是 0x8C4)
-//   5) 位解码器 ↔ 帧解析器的整链闭环尚未用真实抓包回归:本机只能用
-//      合成波形,而合成波形的喂法(空闲段长度/槽对齐)会显著影响结果。
-//      实车抓到原始位流后应把它固化成黄金向量补上这条。
+// 真实位流那一层(边沿 → SOF → 字节 → FCS 通过)由
+// test_van_real_capture.cpp 用真实抓包回归(那里断言 frames 会随 FCS 通过而增加)。
+// 本文件只做"不过位解码器"的字节级/编码器级验证。
 #include <unity.h>
 #include <stdio.h>
 #include <string.h>
@@ -79,16 +74,22 @@ static void test_crc15_deterministic(void) {
 }
 
 // IDEN/CMD 的字节打包契约:12 位 IDEN 拆成两字节。
-// 断言值以"编码器实际产出"为准(见 test_known_bit_vector 的固定向量),
-// 不再手算移位 —— 之前手算与实现不一致,导致测试反复自相矛盾。
+// ★ 值按**实测**的线上字节流写死(2026-09-19 实车抓包,17106 帧):
+//     0x824 → 字节 0x82 0x48(真实抓包测试里一直印着这两个字节)
+//   旧断言(0xC4/0xC8 = "IDEN 低 8 位先行")是**错的**,与真实字节流对不上,
+//   现在按实测改掉 —— 这条以前只保证"自己和自己一致",所以没暴露。
 static void test_iden_byte_layout(void) {
   const uint16_t iden = 0x8C4;
   const uint8_t cmd = 0xC;
   const uint8_t b1 = idenByte1(iden);
   const uint8_t b2 = idenByte2(iden, cmd);
-  TEST_ASSERT_EQUAL_HEX8(0xC4, b1);                       // IDEN 低 8 位
+  TEST_ASSERT_EQUAL_HEX8(0x8C, b1);                       // IDEN 的 bit11..4
+  TEST_ASSERT_EQUAL_HEX8(0x4C, b2);                       // IDEN bit3..0 | CMD
   TEST_ASSERT_EQUAL_HEX16(iden, idenFromBytes(b1, b2));   // 往返是硬要求
   TEST_ASSERT_EQUAL_HEX8(cmd, cmdFromByte2(b2));          // CMD 可还原
+  // 车速帧那一组:必须解出 0x82 0x48 → 0x824(与真实抓包一致)
+  TEST_ASSERT_EQUAL_HEX8(0x82, idenByte1(0x824));
+  TEST_ASSERT_EQUAL_HEX8(0x48, idenByte2(0x824, 0x8));
 
   // 12 位有效:更高的位不得污染 IDEN
   const uint16_t iden_hi = 0xF8C4;
@@ -96,7 +97,9 @@ static void test_iden_byte_layout(void) {
 }
 
 // 编解码往返自洽:编码器写的 FCS 必须能被自己的解析器认回来。
-// (这不证明"和真车一致",只证明内部一致 —— 真实 FCS 约定见文件头说明)
+// ★ 现在这条不只"内部自洽"了:多项式/覆盖范围/字段序都是实测定案的
+//   (crc15_van_iso + 16 位大端字段),所以往返通过 = 编解码一致,
+//   而"与真车一致"由 test_van_real_capture.cpp 用真实抓包钉住。
 static void test_crc15_selfconsistent(void) {
   Frame f;
   f.ident = 0x8C4;
@@ -119,13 +122,13 @@ static void test_crc15_selfconsistent(void) {
   // ★ 按规范 0000111101 折 4B5B(丢第 5/10 位)得到的是 **0x0E**,不是 0x0F。
   //   0x0F 只是"前 8 个裸槽"这个巧合,别再拿它当 SOF 的证据。
   TEST_ASSERT_EQUAL_HEX8(0x0E, foldSofByte(slots, n));
-  TEST_ASSERT_EQUAL_HEX8(0xC4, bytes[0]);   // IDEN 0x8C4 的低字节
-  TEST_ASSERT_EQUAL_HEX8(0xC8, bytes[1]);   // IDENhi|CMD(以编码器实际产出为准)
+  TEST_ASSERT_EQUAL_HEX8(idenByte1(0x8C4), bytes[0]);   // 0x8C = IDEN bit11..4
+  TEST_ASSERT_EQUAL_HEX8(idenByte2(0x8C4, 0xC), bytes[1]);   // 0x4C
   TEST_ASSERT_EQUAL_HEX8(0x8A, bytes[2]);
   TEST_ASSERT_EQUAL_HEX8(0x22, bytes[3]);
   TEST_ASSERT_EQUAL_HEX8(0x5A, bytes[4]);
 
-  // 解析输入 = 从 IDENlo 到最后一个 FCS 字节。
+  // 解析输入 = 从 IDEN 字节到最后一个 FCS 字节。
   // 长度**按逻辑帧算**(IDEN/CMD 2 + 数据 + FCS 2),不要用 nb 推 ——
   // 帧尾补齐的槽会多出填充字节,用 nb 推会把填充当数据(nb-2 正好少一个)。
   const uint16_t logical = (uint16_t)(2 + f.len + 2);
@@ -159,8 +162,8 @@ static void test_parse_frame_bytes_iden_cmd(void) {
 
   // SOF 是 10 个裸槽,折 4B5B 得 0x0E(不是 0x0F);它不进字节流
   TEST_ASSERT_EQUAL_HEX8(0x0E, foldSofByte(slots, n));
-  TEST_ASSERT_EQUAL_HEX8(0x24, bytes[0]);   // IDEN 0x824 的低字节
-  TEST_ASSERT_EQUAL_HEX8(0xC8, bytes[1]);   // IDENhi|CMD,以编码器实际产出为准
+  TEST_ASSERT_EQUAL_HEX8(0x82, bytes[0]);   // IDEN 0x824 的 bit11..4(实测线上字节)
+  TEST_ASSERT_EQUAL_HEX8(0x4C, bytes[1]);   // IDEN bit3..0 | CMD
 
   Frame out;
   const bool ok = parseFrameBytes(&bytes[0], (uint16_t)(nb - 1), &out);
@@ -172,9 +175,10 @@ static void test_parse_frame_bytes_iden_cmd(void) {
   TEST_ASSERT_TRUE(out.fcs_ok);
 }
 
-// FCS 覆盖范围与字节序的隔离测试:
-// 直接按"IDENlo, IDENhi/CMD, data..."算 CRC,再确认编码器写出的末尾两字节
-// 就是它的某个字节序 —— 把"CRC 算错"和"帧字节布局错"分开定位。
+// FCS 覆盖范围与字段序的隔离测试:
+// 直接按"线上字节流(IDEN, IDEN/CMD, data...)"算 crc15_van_iso,再确认编码器
+// 写出的末尾两字节就是它的 16 位大端字段(= crc<<1,最低位恒 0)——
+// 把"CRC 算错"和"帧字节布局错"分开定位。
 static void test_fcs_placement(void) {
   Frame f;
   f.ident = 0x824;
@@ -189,17 +193,18 @@ static void test_fcs_placement(void) {
   const uint8_t nb = foldSlots(slots, n, bytes, sizeof(bytes));
   TEST_ASSERT_TRUE(nb >= 11);
 
-  // 期望的 CRC 覆盖范围:bytes[0..8] = IDENlo,IDENhi/CMD,7 字节数据
+  // 期望的 CRC 覆盖范围:bytes[0..8] = IDEN, IDEN/CMD, 7 字节数据
   // (SOF 已被 foldSlots 跳过,下标整体少 1)
-  const uint16_t calc = crc15(&bytes[0], 9);
+  const uint16_t calc = crc15_van_iso(&bytes[0], 9);
 
-  // 末尾两字节(bytes[9], bytes[10])必须是 calc 的某种字节序
-  const uint16_t le = (uint16_t)((bytes[10] << 8) | bytes[9]);    // 低字节先发
-  const uint16_t be = (uint16_t)((bytes[9] << 8) | bytes[10]);    // 高字节先发
+  // 末尾两字节 = 16 位大端字段:高字节先发,最低位是那个固定 0
+  const uint16_t field = (uint16_t)(((uint16_t)bytes[9] << 8) | bytes[10]);
   char msg[96];
-  snprintf(msg, sizeof(msg), "calc=0x%04X le=0x%04X be=0x%04X (bytes[9..10]=%02X %02X)",
-           calc, le, be, bytes[9], bytes[10]);
-  TEST_ASSERT_TRUE_MESSAGE(calc == le || calc == be, msg);
+  snprintf(msg, sizeof(msg), "calc=0x%04X field=0x%04X (bytes[9..10]=%02X %02X)",
+           calc, field, bytes[9], bytes[10]);
+  TEST_ASSERT_TRUE_MESSAGE(fcsFieldWellFormed(field), msg);       // 最低位必须是 0
+  TEST_ASSERT_EQUAL_HEX16_MESSAGE(calc, fcsCrcFromField(field), msg);
+  TEST_ASSERT_EQUAL_HEX16_MESSAGE(fcsFieldFromCrc(calc), field, msg);
 }
 
 // 固定向量:钉住编码器的**关键不变式**,而不是逐个字节的手算值
@@ -390,10 +395,10 @@ static void test_bit_decoder_idle_produces_no_bytes(void) {
 //   这个混淆让我前面误判了两轮:putByte(0x0F) 产出 0000111111,
 //   折回来同样是 0x0F,但第 9 槽是 1,matcher 永远对不上。
 //
-// 固定向量:ident = 0x824 → idenByte1 = 0x24
+// 固定向量:ident = 0x824 → idenByte1 = 0x82(实测线上字节)
 //   SOF 裸槽      : 0000111101
-//   putByte(0x24) : 0010 1 0100 1 = 0010101001
-//   头 16 槽      : 0000111101 001010
+//   putByte(0x82) : 1000 1 0010 1 = 1000100101
+//   头 16 槽      : 0000111101 100010
 //                   ^^^^规范 SOF^^^^ ^^IDEN 开头
 // ============================================================
 static void test_sof_first_16_slots(void) {
@@ -414,7 +419,7 @@ static void test_sof_first_16_slots(void) {
   char got[32];
   for (int i = 0; i < 16; ++i) got[i] = slots[i] ? '1' : '0';
   got[16] = '\0';
-  const char* want = "0000111101001010";
+  const char* want = "0000111101100010";
   char msg[96];
   snprintf(msg, sizeof(msg), "头 16 槽 = %s,期望 %s", got, want);
   TEST_ASSERT_EQUAL_STRING_MESSAGE(want, got, msg);

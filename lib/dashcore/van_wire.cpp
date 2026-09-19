@@ -7,7 +7,8 @@
 namespace van {
 
 // ---------------- CRC-15 ----------------
-// 多项式 x^15+x^14+x^10+x^8+x^7+x^4+x^3+1 → 位掩码 0x4599
+// ★ 这条是 **CAN-15**(0x4599),**不是** VAN 的 FCS —— 只留给历史测试当对照。
+//   校验真实帧一律用下面的 crc15_van_iso()。
 static const uint16_t kCrcPoly = 0x4599u;
 
 uint16_t crc15_extend(uint16_t crc, uint8_t byte) {
@@ -29,19 +30,23 @@ uint16_t crc15(const uint8_t* data, uint16_t len) {
   return crc;
 }
 
-// ---- VAN / TSS463 手册那条 CRC-15（本轮只加实现，不替换 crc15()）----
+// ---- VAN 的 FCS = 这一条(**已定案**,见 van_wire.h 的说明) ----
 // 多项式 x^15+x^11+x^10+x^9+x^8+x^7+x^4+x^3+x^2+1
 //   完整位掩码（含 x^15）= 0x8F9D；CRC 寄存器只有 15 位（bit0..14），
 //   x^15 是隐含最高位，所以参与异或的常量 = 0x8F9D & 0x7FFF = **0x0F9D**。
-//   ★ 手算掩码踩过坑：先算成 0x7F8D（漏了 x^15 那一位），被
-//     test_van_iso_poly_mask 当场抓住。位掩码一律用表达式算。
+//   ★ 手算掩码踩过坑：先算成 0x7F8D（漏了 x^15 那一位），被当时的掩码用例
+//     当场抓住。位掩码一律用表达式算(x^15 那一位不能凭记忆漏)。
 //   对照：sibling 的 0x4599 同样带 bit14，写法一致。
-// 初值 0x7FFF，发送前取反。
+// 初值 0x7FFF，输出取反(^0x7FFF)，MSB-first、不反射。
 //
-// ★ 它与 crc15() 都**复现不出**那 5 帧公开抓包的 FCS，详见
-//   test_van_wire.cpp 的 test_van_iso_crc_against_public_frames：
-//   把所有 15 位多项式 × 初值/取反/左右移 × 所有 FCS 分界全枚举了一遍，
-//   能同时打中 5 帧的组合数 = 0。也就是说问题不在"选哪条多项式"。
+// ★ 覆盖范围(实测定案，17106/17106 帧):IDEN(12 位)+CMD(4 位)+全部数据，
+//   按线上字节流喂进来 —— 即 [idenByte1, idenByte2, data...] 这 2+len 字节。
+//   不含 SOF、不含 FCS 自己。线上那个 16 位字段 = (crc << 1)，最低位恒 0。
+//
+// ★ 历史教训(写在这里免得有人再回头怀疑多项式):旧代码"复现不出公开抓包的
+//   FCS"时，把 32768 个多项式 × 初值/取反/左右移 × 6 种字段拆解全枚举了一遍，
+//   命中 0。原因不是多项式 —— 是**字段边界错了**(那时按 FCS 18 槽、IDEN 低位
+//   先行打包)。边界按实测切对以后，这条多项式在两个独立抓包上全中。
 static const uint16_t kCrcPolyVanIso = 0x0F9Du;
 static const uint16_t kCrcInitVanIso = 0x7FFFu;
 
@@ -68,8 +73,15 @@ CmdBits decodeCmd(uint8_t cmd) {
 }
 
 // ---------------- 帧字节解析 ----------------
-// 输入:[IDENlo, IDENhi/CMD, DATA..., FCS_a, FCS_b]
-// 数据长度未知,用 FCS 反推:逐个候选长度算 CRC-15,与末尾两字节比对。
+// 输入(线上字节流的原样,就是 BitDecoder 吐出来的那串):
+//   bytes[0]      = IDEN 的 bit11..4
+//   bytes[1]      = IDEN 的 bit3..0(高半字节)| CMD(低半字节)
+//   bytes[2..]    = 数据
+//   末尾 2 字节    = FCS 字段(16 位大端 = 15 位 CRC 后跟 1 个固定 0 位)
+// 数据长度未知,用 FCS 反推:**从长到短**逐个候选长度算 crc15_van_iso 与末尾
+// 两字节比对。长优先的理由:真实链路上缓冲里就是一整帧(帧尾 ACK/EOD 之后那
+// 半截字节会被 resync 丢掉),真长度总是最长的那条;反过来从短往长扫,每帧要
+// 试 n 个候选,假命中(2^-15 × 低位必须为 0)累积起来不可忽略。
 bool parseFrameBytes(const uint8_t* bytes, uint16_t n, Frame* out) {
   if (!bytes || !out || n < 4) return false;   // 2 字节头 + 2 字节 FCS 是下限
 
@@ -77,27 +89,25 @@ bool parseFrameBytes(const uint8_t* bytes, uint16_t n, Frame* out) {
   f.ident = idenFromBytes(bytes[0], bytes[1]);
   f.cmd   = cmdFromByte2(bytes[1]);
 
-  const uint8_t fcs_a = bytes[n - 2];
-  const uint8_t fcs_b = bytes[n - 1];
-  const uint16_t fcs_le = (uint16_t)((fcs_b << 8) | fcs_a);   // 低字节先到
-  const uint16_t fcs_be = (uint16_t)((fcs_a << 8) | fcs_b);   // 高字节先到
-
   // 头部 2 字节 + 尾部 2 字节固定,中间才是数据
   const uint16_t max_len = (uint16_t)(n - 4);
   const uint16_t try_len = (max_len > kDataDefault) ? kDataDefault : max_len;
   if (max_len > kDataDefault) f.overflow = true;
 
-  for (uint16_t len = 0; len <= try_len; ++len) {
-    const uint16_t covered = (uint16_t)(2 + len);   // IDENlo + IDENhi/CMD + data
-    const uint16_t calc = crc15(bytes, covered);
-    if (calc != fcs_le && calc != fcs_be) continue;
+  for (int32_t len = (int32_t)try_len; len >= 0; --len) {
+    const uint16_t covered = (uint16_t)(2 + len);       // IDEN + IDEN/CMD + data
+    const uint16_t field = (uint16_t)(((uint16_t)bytes[covered] << 8) |
+                                      (uint16_t)bytes[covered + 1u]);
+    if (!fcsFieldWellFormed(field)) continue;            // 最低位是那个固定 0
+    const uint16_t calc = crc15_van_iso(bytes, covered);
+    if (calc != fcsCrcFromField(field)) continue;
 
     f.len = (uint8_t)len;
-    for (uint16_t i = 0; i < len; ++i) f.data[i] = bytes[2 + i];
-    f.fcs_le   = (calc == fcs_le);
-    f.fcs      = calc;
+    for (uint16_t i = 0; i < (uint16_t)len; ++i) f.data[i] = bytes[2 + i];
+    f.fcs      = fcsCrcFromField(field);
     f.fcs_calc = calc;
     f.fcs_ok   = true;
+    f.fcs_le   = false;                                  // 字段序已定:16 位大端
     *out = f;
     return true;
   }
@@ -116,6 +126,10 @@ void BitDecoder::reset() {
   mDomRun = 0;
   mSinceEod = 0xFFu;
   mAckDominant = false;
+  mLastDomRun = 0;
+  mPrevDomRun = 0;
+  mLastDomGap = 0;
+  mCurGap = 0;
   mNeedResync = false;
   mArmed = false;
   mPhase = FramePhase::Idle;
@@ -134,6 +148,13 @@ void BitDecoder::resync() {
   mRecessiveRun = 0;
   mDomRun = 0;
   mSinceEod = 0xFFu;
+  // 帧间必须清掉帧尾形态:下一个帧的尾部要重新认,不能拿上一帧的 ACK 顶数
+  // (实测帧间空闲里全是 recessive,不清的话上一帧的 ack 会一直留着)。
+  mAckDominant = false;
+  mLastDomRun = 0;
+  mPrevDomRun = 0;
+  mLastDomGap = 0;
+  mCurGap = 0;
   mArmed = false;      // 等下一个 SOF 才重新开始解字节
   mPhase = FramePhase::Idle;
   mSofBits = 0;
@@ -156,6 +177,10 @@ BitDecoder::Snap BitDecoder::snap() const {
   s.recessive_run = mRecessiveRun;
   s.dom_run = mDomRun;
   s.since_eod = mSinceEod;
+  s.last_dom_run = mLastDomRun;
+  s.prev_dom_run = mPrevDomRun;
+  s.last_dom_gap = mLastDomGap;
+  s.cur_gap = mCurGap;
   s.ack_dominant = mAckDominant;
   s.armed = mArmed;
   s.has_level = mHasLevel;
@@ -295,21 +320,37 @@ BitDecoder::Ev BitDecoder::pushEdge(uint64_t ns, bool level) {
   for (uint32_t i = 0; i < slots; ++i) {
     if (prev_level) {
       ++mRecessiveRun;
-      if (mSinceEod != 0xFFu) {
-        if (mSinceEod < 4u) mAckDominant = false;   // ACK 窗口内全是 recessive
-        ++mSinceEod;
+      if (mSinceEod != 0xFFu) ++mSinceEod;   // 诊断用(ACK 判定已不靠它,见下)
+      // 一个 dominant 段刚刚结束 ⇒ 记成"最近一段",前一段顺位后移。
+      // 帧尾那两段(EOD ≥2、ACK =1,中间隔 1 个 recessive)就靠这三个数认。
+      if (mDomRun > 0u) {
+        mPrevDomRun = mLastDomRun;
+        mLastDomRun = mDomRun;
+        mLastDomGap = mCurGap;
+        mDomRun = 0;
       }
-      mDomRun = 0;
     } else {
-      // 恰好 2 个 dominant 落在两个 recessive 之间 = EOD(E-Manchester 违约),
-      // 这是识别帧尾 ACK 窗口的锚点。
+      // dominant 段开始:记下这一段之前的 recessive 间隔(ACK 与 EOD 的间隔 = 1)
+      if (mDomRun == 0u) mCurGap = (mRecessiveRun > 255u) ? 255u : (uint8_t)mRecessiveRun;
       ++mDomRun;
-      if (mSinceEod == 0xFFu && mRecessiveRun >= 2u && mDomRun == 1u) {
-        mSinceEod = 0;
-        mAckDominant = true;    // 本槽(ACK 第 1 位)就是 dominant
-      }
+      if (mSinceEod == 0xFFu && mRecessiveRun >= 2u && mDomRun == 1u) mSinceEod = 0;
       mRecessiveRun = 0;
     }
+    // ★ 帧尾 ACK 判据(实测):被应答的帧尾部 = [≥2 dominant 的 EOD][1 recessive]
+    //   [1 dominant 的 ACK];未被应答 = [≥2 dominant 的 EOD][recessive…]。
+    //   每槽重算一次,所以永远反映"到目前为止的帧尾形态"。
+    //   两种写法缺一不可:
+    //     ack_open —— ACK 那一段**还开着**(最后一条边沿刚把它的槽推进来,
+    //       后面的 recessive 要到下一条边沿才会被处理)。真实抓包走的就是这条:
+    //       帧尾最后一条边沿是 ACK 的下降沿,紧接着总线就空闲了。
+    //     ack_done —— ACK 那一段**已经关掉**(空闲的 recessive 槽被处理过了,
+    //       比如帧间空隙把尾巴一并推进来)。只看已完成的段。
+    //   ★ 曾经只写 ack_done:结果是**所有帧都认不出来**(实测 51/61 帧 ACK 位不符),
+    //     因为真实链路上永远停在 ack_open 那一态。
+    const bool ack_open = (mDomRun == 1u) && (mCurGap == 1u) && (mLastDomRun >= 2u);
+    const bool ack_done = (mDomRun == 0u) && (mLastDomRun == 1u) && (mLastDomGap == 1u) &&
+                          (mPrevDomRun >= 2u) && (mRecessiveRun >= 1u);
+    mAckDominant = ack_open || ack_done;
     // 帧内就解数据字节;不在帧内就走 SOF 槽级匹配。
     // sofFeed 命中时会先 onFrameStart() 再置 InFrame ——
     // 本沿剩下的槽因此会在"已武装"状态下被解成数据字节,顺序天然正确。
@@ -449,6 +490,13 @@ struct SlotWriter {
       putSlot(((kSofPattern >> b) & 1u) != 0, false);
     }
   }
+
+  // 把刚写的最后一个槽改成 dominant。专给 EOD 用:实测帧尾那一位是 dominant
+  // (putByte 写出来的是 recessive 编码位),它与 FCS 末字节的 bit0(恒 0)
+  // 构成一对 dominant = 一次 E-Manchester 违约。线上**不额外占槽**。
+  void patchLastSlotDominant() {
+    if (n > 0u && n <= cap) p[n - 1u] = 0u;
+  }
 };
 
 }  // namespace
@@ -459,7 +507,10 @@ uint32_t encodeFrame(const Frame& f, uint8_t* slots, uint32_t slots_cap) {
 
   SlotWriter w(slots, slots_cap);
 
-  // 帧结构:SOF(10 个裸槽) → IDENlo → (IDENhi|CMD) → DATA → FCS → EOD 违约 → ACK → EOF
+  // 帧结构(实测,见 van_wire.h 文件头):
+  //   SOF(10 裸槽) → IDEN 字节 → (IDEN/CMD) 字节 → DATA → FCS 2 字节
+  //   → EOD(FCS 末字节的编码位写成 dominant,不额外占槽)
+  //   → ACK 2 槽(仅 cmd 要求应答的帧) → EOF 8 槽 recessive
   // ★ SOF 不是 4B5B 字节:走 putSof() 写规范图案 0000111101。
   //   (曾经用 putByte(kSofByte),产出 0000111111,与规范差第 9 槽。)
   w.putSof();
@@ -473,22 +524,24 @@ uint32_t encodeFrame(const Frame& f, uint8_t* slots, uint32_t slots_cap) {
     body[2 + i] = f.data[i];
     w.putByte(f.data[i]);
   }
-  const uint16_t crc = crc15(body, (uint16_t)(2 + f.len));
-  w.putByte((uint8_t)(crc & 0xFFu));
-  w.putByte((uint8_t)((crc >> 8) & 0xFFu));
+  // FCS = crc15_van_iso(头 2 字节 + 数据),线上是 16 位大端字段:
+  //   15 位 CRC 后面跟 1 个**固定 0** 位(实测 17106/17106 帧成立)。
+  //   ★ 这里必须是 crc15_van_iso,不是 crc15(CAN-15 那条)—— 用错多项式
+  //     自己写的帧自己都验不过。
+  const uint16_t field = fcsFieldFromCrc(crc15_van_iso(body, (uint16_t)(2 + f.len)));
+  w.putByte((uint8_t)(field >> 8));
+  w.putByte((uint8_t)(field & 0xFFu));
+  // EOD:把 FCS 末字节的编码位(本该是 recessive)写成 dominant。
+  w.patchLastSlotDominant();
 
-  // EOD:一对 dominant = 一次 E-Manchester 违约,接在最后一个字节的槽位上
-  // (线上的 EOD 就是接着数据发的,不按字节补齐 —— 补齐会插入额外槽位,
-  //  使后面的字节全部错位)。
-  w.putSlot(false, false);
-  w.putSlot(false, false);
   // ACK:2 个槽,第 1 个 recessive、第 2 个 **dominant(表示已被应答)**。
-  // 这不是装饰:EOF 判据是"8 个连续 recessive",而某些数据的尾部本身就会
-  // 带出 8 个连续 recessive(实测 8A 22 5A 这帧的帧体里就有一段),
-  // 真实总线靠 ACK 位的 dominant 打破它。若把 ACK 写成不应答,就等于造了
-  // 一个真实总线上不存在的帧 —— 解码器会在帧中途误判帧尾。
-  w.putSlot(true, false);
-  w.putSlot(false, false);
+  // 实测:只有 cmd 要求应答的那些帧(0xC/0xE)线上才有这 2 槽;0x8/0xF 的帧
+  // 两槽都是 recessive ⇒ 直接并进空闲。多写这 2 槽就等于造了一个真实总线上
+  // 不存在的帧(帧长会多 2,帧长判据也就跟着错)。
+  if (cmdExpectsAck(f.cmd)) {
+    w.putSlot(true, false);
+    w.putSlot(false, false);
+  }
   // EOF:8 个连续 recessive,标记帧结束
   for (uint8_t i = 0; i < 8u; ++i) w.putSlot(true, false);
 
