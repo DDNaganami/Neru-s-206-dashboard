@@ -98,8 +98,9 @@
   206 实车 IDEN~~ —— **2026-09-19 已用真实抓包定案**（FCS = crc15_van_iso
   0x0F9D/init 0x7FFF/取反/MSB-first，覆盖 IDEN+CMD+DATA；SOF 就是 10 槽
   0000111101；线上 IDEN 12 位、字节流 `[IDEN>>4, (IDEN&0xF)<<4|CMD]`；
-  206 实车开车帧 IDEN=0x824）。**仍开着的是**：背靠背帧（间隔 < 300µs）
-  会被并进同一帧 —— 详见 ACCEPTANCE.md 文末那条定案记录。
+  206 实车开车帧 IDEN=0x824）。**背靠背帧那个尾巴已修**（2026-09-19）：关帧门限
+  按实测从 300µs 改成 **70µs** —— 帧内最长间隔 49.0µs < 70 < 帧间最短空闲
+  95.5µs（量法 `tools/van-decode/gap_stats.py`）。详见 ACCEPTANCE.md 文末那条。
 - van_phy_wire.h/.cpp：线路层接到 VanPhy 上的边缘解码器（**整链已回归**）。
   硬件侧只需在 RO 脚电平变化时调 `onEdge(t_us, level)`,不碰任何寄存器。
   **职责三分（改这里之前先看完这条）**：

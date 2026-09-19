@@ -56,7 +56,10 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 SOF = '0000111101'
-GAP_US = 60.0          # 帧间空闲门限:帧内最长连续同电平 = 4 槽 ≈ 33µs,取 60µs 很安全
+GAP_US = 60.0          # 帧间空闲门限:实测帧内最长同电平 = **6 槽 ≈ 49.0µs**
+                       # (17105 帧里的 1232 处),帧间最短 = 95.5µs;7~11 槽是空档,
+                       # 60µs 落在空档里(与固件 kIdleCloseUs=70 同一个区间,
+                       # 量法见 gap_stats.py)
 TS_NOMINAL_US = 8.25   # 实测槽时间(固件 kTsNs 同源);下面还会按帧重新最小二乘拟合
 
 # ---- 定案的 FCS 约定(van_wire.cpp 的 crc15_van_iso) ----

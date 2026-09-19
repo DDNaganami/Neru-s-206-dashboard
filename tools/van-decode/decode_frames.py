@@ -65,7 +65,15 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 QUANT_US = 2.0625        # µs:实测最小跳变间隔(跳变都落在它的整数倍上)
-IDLE_US = 17.0           # 帧间空闲门限(>2 个位槽)
+# 帧间空闲门限。**不是拍的,是量出来的**(tools/van-decode/gap_stats.py):
+#   · 帧内最长的一段同电平 = 49.0µs(6 个 8.25µs 的槽)—— 门限比它小会把帧切两半;
+#   · 最短的帧间空闲       = 95.5µs(12 槽)—— 门限比它大会把两帧并成一段;
+#   · 直方图里 7~11 槽(53.6~94.9µs)是空档,门限就取空档里:70µs(与固件的
+#     van_phy_gpio.cpp `kIdleCloseUs` 同一个值)。
+# ★ 这里曾经写的是 17.0"帧间空闲门限(>2 个位槽)",而 load_frames 里又乘了一次
+#   tick_us(时间戳已经是µs了)→ 实际门限是 17/0.25 = 68µs。也就是说文档写的 17µs
+#   从来没生效过,只是碰巧落在空档里才没出事。现在两边都改成 70µs 且不再二次换算。
+IDLE_US = 70.0
 SOF = [0, 0, 0, 0, 1, 1, 1, 1, 0, 1]   # 17106/17106 帧命中
 SOF_BITS, IDEN_BITS, CMD_BITS = 10, 15, 5
 ENC_SLOTS, ENC_DATA = 5, 4             # 4B5B:每 5 槽 = 4 个数据位(第 5 槽是编码位)
@@ -161,7 +169,11 @@ def speed_unit8(s):
 
 
 def load_frames(path, idle_us=IDLE_US):
-    """CSV → (帧列表, 起始 tick, tick 的 µs)。每帧是 [(tick, level), ...] 跳变表。"""
+    """CSV → (帧列表, 起始 tick, tick 的 µs)。每帧是 [(tick, level), ...] 跳变表。
+
+    ★ 时间戳单位:edges_from_levels() 已经把 tick 乘过 tick_us 了,所以 t 就是µs
+      —— **不要再乘 tick_us**(老代码在这里又乘了一次,17µs 的门限实际是 68µs)。
+    """
     tick_us, rows = es.parse_csv(path)
     edges = es.edges_from_levels(rows, tick_us)
     if not edges:
@@ -170,7 +182,7 @@ def load_frames(path, idle_us=IDLE_US):
     frames, cur = [], [edges[0]]
     last = edges[0][0]
     for t, lv in edges[1:]:
-        if (t - last) * tick_us > idle_us:
+        if t - last > idle_us:
             if len(cur) >= 6:
                 frames.append(cur)
             cur = []

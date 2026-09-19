@@ -426,7 +426,7 @@ static void test_edge_queue_delivers_same_frame(void) {
 // 只看"距最后一条已喂边沿多久"就关帧,**没看队列里还有没有边沿**。
 // ============================================================
 static void test_idle_close_refuses_while_queue_has_edges(void) {
-  const uint32_t idle = 300;
+  const uint32_t idle = 70;              // = 固件的 kIdleCloseUs(van_phy_gpio.cpp)
   // 有半截帧 + 队列非空 + "早就该算空闲了" → ★ 不许关(旧判据这里会关,于是截帧)
   TEST_ASSERT_FALSE(vanIdleCloseReady(true, /*queue_empty=*/false,
                                       /*now_us=*/100000, /*last_edge_us=*/99000, idle));
@@ -473,7 +473,7 @@ static void test_idle_close_does_not_truncate_split_frame(void) {
   // 若判据不看队列就会当场关帧 → 这一帧永远收不出来
   const uint32_t now_us = last_edge_us + 10000;
   TEST_ASSERT_FALSE_MESSAGE(vanIdleCloseReady(phy.framePending(), q.empty(),
-                                              now_us, last_edge_us, 300),
+                                              now_us, last_edge_us, 70),
                             "队列里还有边沿,不许关帧");
   TEST_ASSERT_EQUAL_INT_MESSAGE(0, sink.count, "这时不该有任何帧被收出来");
 
@@ -484,7 +484,7 @@ static void test_idle_close_does_not_truncate_split_frame(void) {
   }
   TEST_ASSERT_TRUE(q.empty());
   TEST_ASSERT_TRUE(vanIdleCloseReady(phy.framePending(), q.empty(),
-                                     last_edge_us + 400, last_edge_us, 300));
+                                     last_edge_us + 400, last_edge_us, 70));
   TEST_ASSERT_TRUE(phy.finish());
   TEST_ASSERT_EQUAL_INT(1, sink.count);
   TEST_ASSERT_TRUE(sink.last.fcs_ok);
@@ -536,6 +536,157 @@ static void test_edge_queue_reset(void) {
   TEST_ASSERT_FALSE(q.pop(&e));
 }
 
+// ============================================================
+// 背靠背帧:帧间空闲**刚过**关帧门限时,必须解成**两帧**
+//
+// 为什么单独一条(2026-09-19 实测,gap_stats.py + drive5min.csv):
+//   旧门限 300µs 会把间隔 < 300µs 的两帧并进同一个解析器缓冲 —— 丢一帧,
+//   剩下的那个包 ack 还会取自后一帧的帧尾。真实抓包里 17105 个帧边界有
+//   **481 个 < 300µs**(2.81%),就是这么丢的。
+//   门限改成 70µs 的依据是**量出来的两个数**:帧内最大间隔 49.0µs(6 槽)
+//   < 70 < 帧间最小空闲 95.5µs(12 槽)。见 van_phy_gpio.cpp 的 kIdleCloseUs。
+//
+// 边沿流走**固件那条路**(入队 → 排空 → 判据关帧),帧间空闲取
+// kIdleCloseUs + 1µs —— 这是这条用例的临界点:tick 哪怕只在空闲的最后一刻
+// 才来问,也必须答"能关"。(真机上 tick 是主循环里跑的,只有落在帧间空闲那段
+// 时间里才关得掉;所以门限离最小帧间空闲越远,能关掉的机会越大 —— 这也是
+// 门限不能贴着 95.5µs 取的原因。)
+// ============================================================
+namespace {
+
+// 一条边沿流(µs + 电平)。两帧的边沿不多(每帧 ~70 槽),256 够。
+struct EdgeStream {
+  uint32_t t_us[256];
+  uint8_t level[256];
+  int n = 0;
+  int f2_first = 0;          // 第二帧的第一条边沿在流里的下标
+  uint32_t f1_last_us = 0;   // 第一帧的最后一条边沿(帧间空闲从它开始算)
+  void add(uint32_t t, uint8_t lv) {
+    if (n < (int)(sizeof(t_us) / sizeof(t_us[0]))) { t_us[n] = t; level[n] = lv; ++n; }
+  }
+};
+
+// 一帧的槽序列 → 边沿(只在电平变化时出沿)。约定与 feedFrameVia 完全一致。
+void appendSlots(EdgeStream* es, const uint8_t* slots, uint32_t n,
+                 uint32_t t0_us, bool* level) {
+  for (uint32_t i = 0; i < n; ++i) {
+    const bool sl = slots[i] != 0;
+    if (sl == *level) continue;
+    *level = sl;
+    es->add(t0_us + i * kTsUs, (uint8_t)(sl ? 1 : 0));
+  }
+}
+
+// 两帧背靠背:帧1 → 帧间空闲 gap_us → 帧2。返回 false 表示编码器出错/流溢出。
+// ★ gap_us 按**边沿到边沿**算(固件判据量的就是这个):帧1 的最后一条边沿是
+//   它自带那 8 槽 EOF 的**起始沿**(encodeFrame 末尾已经写了 EOF,所以电平在
+//   帧体结束时就回到 recessive 了)。
+bool buildBackToBack(const Frame& f1, const Frame& f2, uint32_t gap_us, EdgeStream* es) {
+  const uint32_t kEofSlots = 8u;                  // encodeFrame 末尾自带的 EOF 槽数
+  uint8_t s1[512], s2[512];
+  const uint32_t n1 = encodeFrame(f1, s1, sizeof(s1));
+  const uint32_t n2 = encodeFrame(f2, s2, sizeof(s2));
+  if (n1 == 0 || n2 == 0) return false;
+
+  const uint32_t f1_t0 = 1000u + 1000u * kTsUs;   // 帧前空闲 1000 槽(10 的整数倍)
+  bool level = true;                              // 总线空闲 = recessive
+  es->add(1000u, 1);                              // 空闲沿
+
+  appendSlots(es, s1, n1, f1_t0, &level);
+  if (!level) return false;                       // 帧体末尾必须已回到 recessive(自带 EOF)
+  es->f1_last_us = f1_t0 + (n1 - kEofSlots) * kTsUs;
+
+  const uint32_t f2_t0 = es->f1_last_us + gap_us;
+  es->f2_first = es->n;
+  appendSlots(es, s2, n2, f2_t0, &level);
+  if (!level) return false;
+  return es->n < (int)(sizeof(es->t_us) / sizeof(es->t_us[0]));
+}
+
+// 把边沿流喂进"固件那条路",并在两帧之间的空闲处按判据问一次能否关帧。
+// idle_close_us = 被测的门限。包数与丢帧数从 sink/dropped_out 读。
+void driveTwoFrames(const EdgeStream& es, uint32_t idle_close_us,
+                    CaptureSink* sink, uint16_t* dropped_out) {
+  VanPhyWire phy;
+  *sink = CaptureSink(nullptr);     // 只数包,不转发给数据层
+  VanEdgeQueue q;
+  q.reset();
+  phy.begin();
+  phy.setSink(sink);
+
+  uint32_t last_edge_us = 0;
+  for (int i = 0; i < es.n; ++i) {
+    // ★ 帧2 的第一条边沿还没进来之前,是主循环**唯一**能关掉帧1的时刻
+    //   (= tick 落在帧间空闲的最后一刻)。这一刻答"不能关",两帧就并成一段。
+    if (i == es.f2_first) {
+      const uint32_t now_us = es.t_us[es.f2_first];
+      if (vanIdleCloseReady(phy.framePending(), q.empty(), now_us, last_edge_us,
+                            idle_close_us)) {
+        phy.finish();
+      }
+    }
+    q.push(es.t_us[i], es.level[i]);
+    VanEdgeQueue::Edge e;
+    while (q.pop(&e)) {                 // 主循环排空(与 VanPhyGpio::tick 一致)
+      last_edge_us = e.t_us;
+      phy.onEdge(e.t_us, e.level != 0);
+    }
+  }
+  // 末尾:总线彻底空闲(远超任何门限),把最后一帧关掉
+  if (vanIdleCloseReady(phy.framePending(), q.empty(), last_edge_us + 10000u,
+                        last_edge_us, idle_close_us)) {
+    phy.finish();
+  }
+  if (dropped_out) *dropped_out = (uint16_t)phy.stats().frames_dropped;
+}
+
+}  // namespace
+
+static void test_back_to_back_frames_decode_as_two(void) {
+  // 与 van_phy_gpio.cpp 的 kIdleCloseUs 对齐(设备端 TU 编不进来,只能这么钉)
+  const uint32_t kIdleCloseUs = 70;
+
+  Frame f1;
+  f1.ident = 0x824; f1.cmd = 0xC; f1.len = 2;   // cmd=0xC ⇒ 帧尾有 ACK 两槽(末槽 dominant)
+  f1.data[0] = 0x11; f1.data[1] = 0x22;
+  Frame f2;
+  f2.ident = 0x464; f2.cmd = 0xC; f2.len = 2;
+  f2.data[0] = 0x33; f2.data[1] = 0x44;
+
+  const uint32_t gap_us = kIdleCloseUs + 1u;    // 帧间空闲**刚好过门限**
+  EdgeStream es;
+  TEST_ASSERT_TRUE_MESSAGE(buildBackToBack(f1, f2, gap_us, &es),
+                           "合成边沿流失败(编码器?)");
+  TEST_ASSERT_TRUE(es.n > 8);
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(gap_us,
+      es.t_us[es.f2_first] - es.f1_last_us, "帧间空闲没落在要求的间隔上");
+
+  // ---- 1) 固件现在的门限:两帧必须解成两帧 ----
+  CaptureSink got(nullptr);
+  uint16_t dropped = 0;
+  driveTwoFrames(es, kIdleCloseUs, &got, &dropped);
+
+  char msg[176];
+  snprintf(msg, sizeof(msg),
+           "背靠背(帧间 %uµs,门限 %uµs): 收出 %d 帧 · 丢 %u(应 2 帧:0x824 + 0x464)",
+           (unsigned)gap_us, (unsigned)kIdleCloseUs, got.count, (unsigned)dropped);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(2, got.count, msg);
+  TEST_ASSERT_EQUAL_HEX16_MESSAGE(0x464, got.last.iden, msg);   // 最后一个是帧2
+  TEST_ASSERT_TRUE_MESSAGE(got.last.fcs_ok, msg);
+
+  // ---- 2) 反例:旧门限 300µs 下同一段边沿只解出 1 帧(= 这正是被修掉的 bug)----
+  //    钉住它有两个作用:① 证明这条用例真的挡得住"把门限放大"的回退;
+  //    ② 把"并帧 = 丢一帧"写成可执行的证据。
+  CaptureSink old_sink(nullptr);
+  uint16_t old_dropped = 0;
+  driveTwoFrames(es, 300u, &old_sink, &old_dropped);
+  char msg2[176];
+  snprintf(msg2, sizeof(msg2),
+           "旧门限 300µs 下同一条边沿流应收出 1 帧(丢一帧):实收 %d 帧 · iden=0x%03X",
+           old_sink.count, (unsigned)old_sink.last.iden);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, old_sink.count, msg2);
+}
+
 void register_van_phy_wire_tests(void) {
   RUN_TEST(test_finish_closes_pending_frame);
   RUN_TEST(test_golden_iden_cmd_through_chain);
@@ -547,6 +698,7 @@ void register_van_phy_wire_tests(void) {
   RUN_TEST(test_edge_queue_delivers_same_frame);
   RUN_TEST(test_idle_close_refuses_while_queue_has_edges);
   RUN_TEST(test_idle_close_does_not_truncate_split_frame);
+  RUN_TEST(test_back_to_back_frames_decode_as_two);
   RUN_TEST(test_edge_queue_overflow_counts_and_keeps_order);
   RUN_TEST(test_edge_queue_reset);
 }

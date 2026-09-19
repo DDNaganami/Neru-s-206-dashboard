@@ -47,8 +47,12 @@ using namespace van;
 
 namespace {
 
-// 与 van_phy_gpio.cpp 的 kIdleCloseUs 对齐(那边是固定 300µs,不随时基缩放)
-const uint32_t kIdleCloseUs = 300;
+// 与 van_phy_gpio.cpp 的 kIdleCloseUs 对齐(那边是设备端 TU,宿主机编不进来)。
+// ★ 改这个值必须**同时**改固件那份,并重跑本文件的三条用例:
+//   门限决定"哪些帧被并进同一个缓冲",黄金值会跟着变。
+//   70µs 的依据(实测)见 van_phy_gpio.cpp 的注释与 tools/van-decode/gap_stats.py:
+//   帧内最大间隔 49.0µs < 70 < 帧间最小空闲 95.5µs。
+const uint32_t kIdleCloseUs = 70;
 
 // CSV 时间列是秒、量化在 **0.25µs** 网格上 ⇒ 小数部分最多 6 位。
 // 按字符串拆开算,全程整数:浮点在这里只会引入不必要的舍入。
@@ -306,7 +310,7 @@ static void test_real_capture_vanphywire_accepts_frames(void) {
     uint64_t t_ns = 0;
     uint8_t lv = 0;
     if (!parseRow(line, &t_ns, &lv)) continue;
-    // 空闲判据与固件同款:两条边沿间隔 > 300µs ⇒ 上一帧结束,调一次 finish()
+    // 空闲判据与固件同款:两条边沿间隔 > kIdleCloseUs(70µs)⇒ 上一帧结束,调一次 finish()
     if (has_last && (uint32_t)((t_ns - last_ns) / 1000ull) > kIdleCloseUs) {
       ++finishes;
       phy.finish();
@@ -337,27 +341,28 @@ static void test_real_capture_vanphywire_accepts_frames(void) {
 
   // ★ 核心判据(本次工作的收工线):FCS 必须过 ⇒ 收到真实帧。
   //   下面是**黄金值**(2026-09-19 实测跑出来的基线,别再放宽成 >0):
-  //     边沿 3998 · SOF 命中 62 次 · 收出帧 61(另有 1 帧被丢,是切片开头
-  //     那半帧/µs 截断的边界帧)· 回调包 61,其中 IDEN=0x824 车速帧 23 个。
-  TEST_ASSERT_EQUAL_UINT32_MESSAGE(61u, st.frames, msg);
-  TEST_ASSERT_EQUAL_UINT32_MESSAGE(61u, st.frames_fcs_ok, msg);
+  //     边沿 3998 · 收出帧 **66**(另有 1 帧被丢,是切片开头那半帧/µs 截断的
+  //     边界帧)· 回调包 66,其中 IDEN=0x824 车速帧 **24** 个。
+  //   ★ 这组数字是**关帧门限改成 70µs 之后**的:同一份切片在旧门限 300µs 下
+  //     只有 61 帧 / 23 个 0x824 —— 差的 5 帧正是背靠背帧被并帧丢掉的
+  //     (切片里实测有 5 个帧边界 < 300µs;见 kIdleCloseUs 的实测说明)。
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(66u, st.frames, msg);
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(66u, st.frames_fcs_ok, msg);
   TEST_ASSERT_EQUAL_UINT32_MESSAGE(1u, st.frames_dropped, msg);
-  TEST_ASSERT_EQUAL_INT_MESSAGE(61, rec.count, msg);
-  TEST_ASSERT_EQUAL_INT_MESSAGE(23, rec.iden824, msg);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(66, rec.count, msg);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(24, rec.iden824, msg);
   // 最后一帧必须是 FCS 通过的(回调出来的包不该有 fcs_ok=0)
   TEST_ASSERT_EQUAL_UINT8_MESSAGE(1u, rec.last.fcs_ok, msg);
   // ★ ACK 位:实测帧尾那 2 个槽只在 cmd bit2=1 且 RTR=0 的帧上出现(见
   //   van_wire.h 的 cmdExpectsAck)。这份切片两种都有(0x824/0x8 无、0x464/0xC 有),
   //   所以这一条能验证解码器认不认得出来 —— 旧实现恒为 0(等于没认)。
   //
-  //   阈值不放 0 的原因(不是给实现开后门,是抓包本身的性质):
-  //   本测试按"边沿间隔 > 300µs"关帧(与固件 kIdleCloseUs 同款),而这份切片里
-  //   有**背靠背**的帧(实测相邻帧只隔 25µs),它们会被并进同一个缓冲 ——
-  //   解出来的第一帧是对的(FCS 全中),但 ack 位反映的是**最后**那一帧的帧尾。
-  //   实测:61 帧里 4 帧的 ack 位是这么来的(1 帧少认 / 3 帧多认);
-  //   旧实现是 51 帧不符。所以这里钉"≤6",既能挡住退化,也不假装那个合并问题不存在。
+  //   ★ 这一条现在钉 **0**(以前只能钉 ≤6):门限 70µs 之后不再并帧,
+  //     每个包的 ack 都取自它**自己**那一帧的帧尾。旧门限 300µs 下实测有 4 帧的
+  //     ack 取自后一帧(1 少认 / 3 多认),因为两帧被并进同一个缓冲 ——
+  //     并帧这个坑现在由这一条钉住:门限再被放大就会立刻变红。
   TEST_ASSERT_TRUE_MESSAGE(rec.ack_seen > 0, msg);
-  TEST_ASSERT_LESS_OR_EQUAL_INT_MESSAGE(6, rec.ack_mismatch, msg);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, rec.ack_mismatch, msg);
 }
 
 void register_van_real_capture_tests(void) {
