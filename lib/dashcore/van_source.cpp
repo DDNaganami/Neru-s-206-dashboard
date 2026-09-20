@@ -5,7 +5,10 @@
 #include <Arduino.h>
 #endif
 
-const float VanSource::kSpeedScale = 0.01f;
+// ★ 车速定标 = 1.0:1 计数 = 1 km/h(字段是**单字节**,见 van_source.h 的实测说明)。
+//   历史值是 0.01(把 data[2..3] 当 16 位 x100 km/h 读)—— 那条来自公开文档,
+//   与两份实车抓包都对不上,已按实测改掉。
+const float VanSource::kSpeedScale = 1.0f;
 const float VanSource::kRpmScale   = 0.125f;
 
 // 值域钳制:总线噪声/坏帧不会把 UI 打飞
@@ -15,16 +18,17 @@ static const float kRpmMaxValid   = 9000.0f;
 void VanSource::onPacket(const VanPacket& pkt) {
   if (pkt.iden != speed_iden_) return;
 
-  if (speed_offset_ + 1 < pkt.len) {
-    const uint16_t raw =
-        (uint16_t)(pkt.data[speed_offset_] << 8) | pkt.data[speed_offset_ + 1];
-    const float v = raw * speed_scale_;
+  // 车速是**单字节**(data[speed_offset_])。上限 300 只在有人把 scale 调大时
+  // 才可能触发;正常 8 位字段最大 255 km/h,天然在范围内。
+  if (speed_offset_ < pkt.len) {
+    const float v = (float)pkt.data[speed_offset_] * speed_scale_;
     if (v >= 0.0f && v <= kSpeedMaxValid) {
       speed_kmh_ = v;
       speed_valid_ = true;
       last_update_ms_ = pkt.rx_ms;
     }
   }
+  // 转速是 16 位大端(data[0..1]),x8 ⇒ 原始值 = rpm * 8。
   if (kRpmOffset + 1 < pkt.len) {
     const uint16_t raw =
         (uint16_t)(pkt.data[kRpmOffset] << 8) | pkt.data[kRpmOffset + 1];

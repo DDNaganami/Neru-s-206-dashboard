@@ -96,7 +96,7 @@ void test_van_speed_and_fallback(void) {
   p.iden = VanSource::kSpeedIden;
   p.len = 7;
   p.data[0] = 0x18; p.data[1] = 0xF8;  // 799 rpm
-  p.data[2] = 0x27; p.data[3] = 0x10;  // 100.0 km/h
+  p.data[2] = 0x64;                    // 100 km/h(★ 单字节,1 计数 = 1 km/h)
   p.rx_ms = t;
   svc.onVanPacket(p);
 
@@ -130,7 +130,7 @@ void test_obd_rpm_beats_van(void) {
   p.iden = VanSource::kSpeedIden;
   p.len = 7;
   p.data[0] = 0x10; p.data[1] = 0x00;  // 512 rpm
-  p.data[2] = 0x13; p.data[3] = 0x88;  // 50 km/h
+  p.data[2] = 0x32;                    // 50 km/h
   p.rx_ms = t;
   svc.onVanPacket(p);
   svc.update(t);
@@ -172,7 +172,7 @@ void test_speed_priority_van_obd_sim(void) {
   p.iden = VanSource::kSpeedIden;
   p.len = 7;
   p.data[0] = 0x18; p.data[1] = 0xF8;
-  p.data[2] = 0x27; p.data[3] = 0x10;          // 100.0 km/h
+  p.data[2] = 0x64;                            // 100 km/h(单字节)
   p.rx_ms = t;
   svc.onVanPacket(p);
   st = svc.update(t);

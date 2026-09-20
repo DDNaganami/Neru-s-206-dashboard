@@ -106,6 +106,16 @@ FILE* openCapture() {
   return f;
 }
 
+// 车速字段切片(行驶中,0x824 帧 12 个,车速 13→14 km/h)。
+// 为什么单独要一份:原来那份 sample-diffmanchester.csv 是**停车**抓的,
+// 车速字段全 0 —— "车速读得对"这条在那里证明不了。
+FILE* openSpeedCapture() {
+  FILE* f = fopen("tools/van-decode/sample-speed-824.csv", "rb");
+  if (!f) f = fopen("../tools/van-decode/sample-speed-824.csv", "rb");
+  if (!f) f = fopen("../../tools/van-decode/sample-speed-824.csv", "rb");
+  return f;
+}
+
 // 按 SOF 分帧收集字节:onFrameStart() 由解码器在 SOF 命中那一刻回调,
 // 于是"上一帧的字节"在这里被结账。不做任何 CRC 判断 —— 这一层只看位解码。
 class FrameCollector : public ByteSink {
@@ -271,9 +281,11 @@ class PacketRecorder : public VanSink {
   char bad_list[96] = {0};   // 前几个不符的 (iden/cmd/ack),失败时打进消息里
   int ack_seen = 0;
   VanPacket last{};
+  VanSource* forward = nullptr;   // 非空 ⇒ 收到的包转交给数据源(实车链路就是这样)
   void onPacket(const VanPacket& p) override {
     last = p;
     ++count;
+    if (forward) forward->onPacket(p);
     if (p.iden == VanSource::kSpeedIden) ++iden824;
     const bool expect = cmdExpectsAck(p.cmd);
     if (expect) ++ack_seen;
@@ -365,8 +377,91 @@ static void test_real_capture_vanphywire_accepts_frames(void) {
   TEST_ASSERT_EQUAL_INT_MESSAGE(0, rec.ack_mismatch, msg);
 }
 
+// ============================================================
+// ④ 车速字段的**常量**钉在真实行驶抓包上(2026-09-20 定案)
+//
+// 要走这条的原因:`VanSource::kSpeedOffset` 曾经指向 data[2..3] 的 16 位
+// x100 km/h 读法(来自公开文档),而实车抓包显示车速是 **data[2] 单字节、
+// 1 计数 = 1 km/h**。光靠合成用例挡不住这种"整段字段布局改了"的回退,
+// 所以这里直接用一份**行驶中**的真边沿切片跑完整链:
+//   真边沿 → SOF → 4B5B → FCS → VanPacket → VanSource → speedKmh()/rpm()
+// 黄金值是**离线算出来再写死**的(工具:tools/van-decode/,复现步骤见
+// ACCEPTANCE.md 那条 0x824 记录),不是从被测代码反推的:
+//   切片 tools/van-decode/sample-speed-824.csv(0.6s / 2168 条边沿,取自
+//   10 分钟行驶抓包 t=259.30..259.90s 的**行驶段**)
+//     整段收出 **33 帧**(全部 FCS 通过),其中 IDEN=0x824 的车速帧 **12** 个;
+//     0x824 第一帧 data = 50 D8 0D 4B 56 E2 DF ⇒ rpm 2587.0 / speed 13
+//     0x824 末帧   data = 55 C4 0E 55 57 1A F3 ⇒ rpm 2744.5 / speed 14
+//   同一段里车速**单调从 13 涨到 14**、转速从 2587 涨到 2744 —— 两件事
+//   一起发生,正是"加速中"的形态(不是巧合的常数)。
+//
+// ★ 这条同时挡两类回退:
+//   · 把 kSpeedScale 改回 0.01 或把 kSpeedOffset 换成 16 位读法 ⇒ speed 立刻错;
+//   · 把 kRpmOffset/kRpmScale 改掉 ⇒ rpm 立刻错。
+// ============================================================
+static void test_speed_field_constant_pinned_on_real_capture(void) {
+  FILE* f = openSpeedCapture();
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, "打不开 tools/van-decode/sample-speed-824.csv"
+                                  "(测试的工作目录不是项目根?)");
+
+  VanPhyWire phy;
+  VanSource src;                 // ★ 被测对象:固件里那个数据源
+  PacketRecorder rec;            // VanSink → 转交 VanSource(实车链路上就是它)
+  phy.begin();
+  phy.setSink(&rec);
+  rec.forward = &src;
+  src.begin();
+
+  char line[512];
+  uint64_t last_ns = 0;
+  bool has_last = false;
+  int rows = 0;
+  while (fgets(line, sizeof(line), f)) {
+    uint64_t t_ns = 0;
+    uint8_t lv = 0;
+    if (!parseRow(line, &t_ns, &lv)) continue;
+    if (has_last && (uint32_t)((t_ns - last_ns) / 1000ull) > kIdleCloseUs) {
+      phy.finish();
+    }
+    phy.onEdge((uint32_t)(t_ns / 1000ull), lv != 0);
+    last_ns = t_ns;
+    has_last = true;
+    ++rows;
+  }
+  phy.finish();
+  fclose(f);
+
+  const VanPhyWire::Stats& st = phy.stats();
+  char msg[288];
+  snprintf(msg, sizeof(msg),
+           "车速常量钉真实抓包(sample-speed-824.csv): 边沿 %d · frames=%u "
+           "fcs_ok=%u 回调包=%d(其中 0x824 有 %d 个)· 末值 speed=%.4f rpm=%.4f"
+           "(黄金值: 全部 33 帧 / 0x824 12 帧 / speed=14.0 / rpm=2744.5)",
+           rows, (unsigned)st.frames, (unsigned)st.frames_fcs_ok, rec.count,
+           rec.iden824, src.speedKmh(), src.rpm());
+
+  TEST_ASSERT_GREATER_THAN_INT_MESSAGE(1500, rows, "切片没读到足够的边沿");
+  // 切片里所有报文族共 33 帧(0x824 占 12 个),全部 FCS 通过
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(33u, st.frames, msg);
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(33u, st.frames_fcs_ok, msg);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(33, rec.count, msg);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(12, rec.iden824, msg);
+  // ★ 车速:单字节 data[2],1 计数 = 1 km/h。末帧 data[2]=0x0E ⇒ 14.0
+  TEST_ASSERT_TRUE_MESSAGE(src.hasSpeed(), msg);
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(14.0f, src.speedKmh(), msg);
+  // ★ 转速:16 位大端 data[0..1] × 0.125。末帧 0x55C4=21956 ⇒ 2744.5
+  TEST_ASSERT_TRUE_MESSAGE(src.hasRpm(), msg);
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(2744.5f, src.rpm(), msg);
+  // 常量本身也钉一份(改常量就会在这里变红,不用等到算错值)
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(2u, VanSource::kSpeedOffset, msg);
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(1.0f, VanSource::kSpeedScale, msg);
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0u, VanSource::kRpmOffset, msg);
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(0.125f, VanSource::kRpmScale, msg);
+}
+
 void register_van_real_capture_tests(void) {
   RUN_TEST(test_real_capture_bytes_yield_iden_0x824);
   RUN_TEST(test_real_capture_integer_us_resolution);
   RUN_TEST(test_real_capture_vanphywire_accepts_frames);
+  RUN_TEST(test_speed_field_constant_pinned_on_real_capture);
 }

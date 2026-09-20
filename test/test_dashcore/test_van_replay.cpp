@@ -7,12 +7,12 @@
 
 void test_parse_spaced(void) {
   VanPacket p{};
-  TEST_ASSERT_TRUE(parseVanReplayLine("VAN 824 18 F8 27 10 00 00 00", &p, 1000));
+  TEST_ASSERT_TRUE(parseVanReplayLine("VAN 824 18 F8 64 10 00 00 00", &p, 1000));
   TEST_ASSERT_EQUAL_UINT16(0x824, p.iden);
   TEST_ASSERT_EQUAL_UINT8(7, p.len);
   TEST_ASSERT_EQUAL_UINT8(0x18, p.data[0]);
   TEST_ASSERT_EQUAL_UINT8(0xF8, p.data[1]);
-  TEST_ASSERT_EQUAL_UINT8(0x27, p.data[2]);
+  TEST_ASSERT_EQUAL_UINT8(0x64, p.data[2]);
   TEST_ASSERT_EQUAL_UINT8(0x10, p.data[3]);
   TEST_ASSERT_EQUAL_UINT32(1000, p.rx_ms);
   TEST_ASSERT_EQUAL_UINT8(0x8, p.cmd);      // 省略 CMD 时按 EXT=1
@@ -20,7 +20,7 @@ void test_parse_spaced(void) {
 
 void test_parse_compact_lowercase(void) {
   VanPacket p{};
-  TEST_ASSERT_TRUE(parseVanReplayLine("van82418f82710000000", &p, 2000));
+  TEST_ASSERT_TRUE(parseVanReplayLine("van82418f86410000000", &p, 2000));
   TEST_ASSERT_EQUAL_UINT16(0x824, p.iden);
   TEST_ASSERT_EQUAL_UINT8(7, p.len);
 }
@@ -80,7 +80,7 @@ void test_replay_feeds_data_service(void) {
   svc.begin();
 
   VanPacket p{};
-  TEST_ASSERT_TRUE(parseVanReplayLine("VAN 824 18F82710000000", &p, 1000));
+  TEST_ASSERT_TRUE(parseVanReplayLine("VAN 824 18F86400000000", &p, 1000));
   svc.onVanPacket(p);
 
   const VehicleState st = svc.update(1000);

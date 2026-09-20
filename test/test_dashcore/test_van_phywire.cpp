@@ -196,8 +196,8 @@ static void test_chain_preserves_iden_bits(void) {
 static void test_chain_feeds_van_source(void) {
   Frame f;
   f.ident = 0x824; f.cmd = 0xC; f.len = 7;
-  // 18 F8 → 799rpm;车速 2710 = 10000 → 100.00 km/h(定标 0.01)
-  const uint8_t d[7] = {0x18, 0xF8, 0x27, 0x10, 0x00, 0x00, 0x00};
+  // 18 F8 → 799 rpm;车速 = data[2] = 0x64 = 100 km/h(★ 单字节,1 计数 = 1 km/h)
+  const uint8_t d[7] = {0x18, 0xF8, 0x64, 0x00, 0x00, 0x00, 0x00};
   memcpy(f.data, d, 7);
 
   VanPhyWire phy;

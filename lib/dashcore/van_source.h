@@ -3,12 +3,33 @@
 
 // VAN 总线数据源:接收原始帧,提取车速与转速。
 //
-// 车速/转速帧(PSA VAN,VAN-INFO 网络,307 实测 / 206 适用,待实车验证):
-//   IDEN 0x824,BSI → Dashboard,7 字节:
-//     data[0..1] = 转速 x8(大端)     例 18 F8 → 6392/8 = 799 rpm
-//     data[2..3] = 车速 x100 km/h(大端) 例 00 00 → 0 km/h
-//     data[4..6] = 序号
-//   来源: morcibacsi/psa_van_bus_packet_descriptions (github)
+// ★ 车速/转速帧的字段已用**两份实车抓包**定案(2026-09-20;复现工具见
+//   ACCEPTANCE.md 文末那条记录与 tools/van-decode/):
+//     IDEN 0x824 / CMD 0x8,BSI → Dashboard,7 个数据字节:
+//       data[0..1] = 转速 x8(大端,16 位)  例 1C A2 = 7330 → 7330/8 = 916.25 rpm
+//       data[2]    = 车速,单位 km/h(1 计数 = 1 km/h;**单字节**)
+//       data[3]    = 未知(与 data[2] 反相相关,疑似同量的低分辨率副本)
+//       data[4..5] = 里程/位移累计量(16 位大端,**单调不减**,只在行驶时增长)
+//       data[6]    = 帧序号(滚动计数)
+//   为什么这三条可信(不是照抄公开文档):
+//     · 字节边界与位序是**往返自检**过的 —— 用固件自己的 encodeFrame() 造帧、
+//       再用同一套边界读回来,7 个数据字节逐字节一致;且 FCS(crc15_van_iso,
+//       覆盖 IDEN+CMD+DATA)在**怠速抓包 1704/1704 帧、行驶抓包 34051/34051 帧**
+//       全中 ⇒ 字节流就是线上字节流,没有别的自洽读法。
+//     · 转速:点火瞬间 raw 从恒 0 跳到 6152(=769rpm,起动机拖动),峰值 10692
+//       (=1336rpm),随后稳定在 **均值 7237.6 / sd 215**(=904.7rpm,sd 26.9);
+//       地面真值怠速 900rpm ⇒ 偏差 0.52%。除以 4 会得 1809rpm(差 101%),排除。
+//       行驶抓包 5988..47100(=748..5888rpm),仍在断油 6300 以下 ⇒ 量程自洽。
+//     · 车速:data[2] 在**所有 5 个停车窗口**(位移累计量完全不动)内恒为 0/1/2;
+//       行驶段与位移累计量的增长率(dS/dt)回归得 R²=0.994(残差 σ=0.70),
+//       ∫data[2]dt 与 ΔS 的分段比值恒定在 0.037 m/count(10 段一致)
+//       ⇒ 它是**速率**而不是累计量,且两条独立积分量互相印证。
+//       |Δdata[2]|/Δt 的 p99 = 19.9 km/h/s < 21.6 km/h/s(乘用车加速度上限)。
+//   ★ 仍未定:1 计数是否**恰好** 1 km/h 没有地面真值(BT 蓝牙日志那两份的
+//     "车速"列全是 0 —— 车没动,见 ACCEPTANCE.md)。本轮取最自然读法 1 km/h,
+//     并把字段位置钉死;绝对标度要等一次"表显定速"的标定跑。
+//   来源(仅作背景,字段布局以实测为准):
+//     morcibacsi/psa_van_bus_packet_descriptions (github)
 //
 // 物理层(SN65HVD230 模块 + VanBus 库,或 RMT 驱动)由外部接好,
 // 把收到的原始帧转成 VanPacket 喂给 onPacket()。
@@ -43,14 +64,16 @@ public:
   uint32_t lastUpdateMs() const { return last_update_ms_; }
 
   // 实车帧格式与默认常量不符时,先用这个在运行时改,确认后写回常量
+  // ★ 语义见 onPacket():speed_offset 指向**单字节**车速,scale 只做乘法
+  //   (默认 1.0f ⇒ 1 计数 = 1 km/h)。
   void configureSpeedFrame(uint16_t iden, uint8_t speed_offset, float speed_scale);
 
   static void dumpRaw(const VanPacket& pkt);  // 嗅探模式
 
   static const uint16_t kSpeedIden   = 0x824;
-  static const uint8_t  kSpeedOffset = 2;       // data[2..3]
-  static const float    kSpeedScale;            // 0.01(÷100)
-  static const uint8_t  kRpmOffset   = 0;       // data[0..1]
+  static const uint8_t  kSpeedOffset = 2;       // data[2],**单字节** km/h
+  static const float    kSpeedScale;            // 1.0(1 计数 = 1 km/h)
+  static const uint8_t  kRpmOffset   = 0;       // data[0..1],16 位大端
   static const float    kRpmScale;              // 0.125(÷8)
 
 private:
