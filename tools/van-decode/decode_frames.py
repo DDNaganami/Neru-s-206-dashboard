@@ -44,6 +44,9 @@
   · 所以下一步必须做一次**标定跑**:表显稳在 20/40/60/80km/h 各几秒,
     斜率给标度、截距给零偏、最高点给量程 —— 一次全定。
     记录格式见 ACCEPTANCE.md「标定记录格式」。
+  ★ 2026-09-20 更新:这条定速跑**不再要求** —— 刻度先按 1 计数 = 1 km/h 上屏,
+    用表盘脸的档位(30/65/95/130)复核;以后顺手有 OBD 日志时采几个 010D 散点即可定标
+    (见 ACCEPTANCE.md 文末「上屏定标决定」)。
 
 用法:
     python tools/van-decode/decode_frames.py 抓包.csv
@@ -309,7 +312,8 @@ def main(argv):
                  '(= 0x824,固件认的 IDEN ✓)' if key[0] == SPEED_IDEN_DEC else '(✗ 与 0x824 不符!)'))
 
     vals = vals_raw
-    # 下面**只打印原始计数**:标度(km/h / 位)与零偏都还没标定,不许在这里内置任何换算。
+    # 下面**只打印原始计数**:绝对刻度没有地面真值(2026-09-20 起按 1.0 上屏),
+    # 不许在这里内置任何换算 —— 要和 km/h 对照就用表盘,或采 OBD 010D 散点。
     per = len(mem) / span
     print('\n   报文率 %.1fHz · 视图=%s · 原始计数 %d..%d(%d 个不同值)'
           % (per, view, min(vals), max(vals), len(set(vals))))
@@ -319,8 +323,9 @@ def main(argv):
         buck[int(ts[k])] = v          # 后到的覆盖前面的 → 每秒末值
     line = ['%ds:%d' % (t, buck[t]) for t in sorted(buck) if t % 4 == 0]
     print('     ' + ' '.join(line))
-    print('   ★ 标度与零偏均**未标定**:这里只有原始计数,不给 km/h。'
-          '标定跑后按 ACCEPTANCE.md「标定记录格式」记录并离线拟合')
+    print('   ★ 这里只有原始计数,不给 km/h:绝对刻度按 1 计数 = 1 km/h 上屏'
+          '(2026-09-20 决定),用表盘脸的档位复核;有 OBD 010D 散点再按 '
+          'ACCEPTANCE.md「标定记录格式」定标')
     return 0
 
 

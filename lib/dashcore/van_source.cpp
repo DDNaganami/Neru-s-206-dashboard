@@ -8,6 +8,7 @@
 // ★ 车速定标 = 1.0:1 计数 = 1 km/h(字段是**单字节**,见 van_source.h 的实测说明)。
 //   历史值是 0.01(把 data[2..3] 当 16 位 x100 km/h 读)—— 那条来自公开文档,
 //   与两份实车抓包都对不上,已按实测改掉。
+// 1.0 = 1 km/h/计数:实测比例自洽,绝对刻度待表盘复核(2026-09-20 决定,不再要求定速跑)
 const float VanSource::kSpeedScale = 1.0f;
 const float VanSource::kRpmScale   = 0.125f;
 
