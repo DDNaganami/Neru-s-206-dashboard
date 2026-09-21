@@ -77,6 +77,8 @@ struct ScreenTheme {
 //   水温只有转速表有。放全局一份比每屏复制一遍更不容易写歪。
 //
 // 位置都是 **480 基准**坐标,乘 theme_scale() 后使用;圆心在 (240,240)。
+// 字号也随分辨率走,但不是乘小数而是查表(见文件末尾 kReadoutFontTier):
+// 所以下面的竖直排布在**每个分辨率上**是同一套比例,墨迹实测值按比例缩。
 // 竖直排布(480 基准,按 `radius` = **外沿**的语义算 —— 见 ArcStyle):
 //   外弧带(radius 205 / width 24):外沿 y=35、**内沿 y=59**
 //   数字中心   y = digit_cy        ← 默认 72,48 号墨迹实测 y[55..88]
@@ -97,8 +99,12 @@ struct ReadoutTheme {
   uint32_t coolant_color;   // 水温数字颜色(左屏副表)
   uint32_t intake_color;    // 进气温度数字颜色(右屏副表)
 
-  uint8_t  digit_font;      // 0 = 48 号,1 = 18 号(见 readout_font())
-  uint8_t  unit_font;       // 0 = 48 号,1 = 18 号
+  // ★ 字号存的是**档位编号**(0=大数字档、1=单位/副表档),不是点数 ——
+  //   点数由 THEME_DISPLAY_RES 查 kReadoutFontTier 决定(见文件末尾那张表)。
+  //   所以同一份 theme.json 在 240 与 480 上都成立:480 上 48/18 号,
+  //   240 上 24/10 号。**不要把点数写进主题文件** —— 那样换屏就废。
+  uint8_t  digit_font;      // 0 = 大数字档
+  uint8_t  unit_font;       // 1 = 单位/副表档
 
   int16_t  digit_cy;        // 大数字中心 y(480 基准;两屏共用)
   int16_t  unit_cy;         // 单位中心 y
@@ -110,8 +116,9 @@ struct ReadoutTheme {
   uint8_t  show_intake;     // 0 = 不显示进气温度数字
 };
 
-// 字体选择:0 = 48 号(大),1 = 18 号(小)。
+// 字体选择:0 = 大数字档,1 = 单位/副表档。
 // 用编号而不是直接存指针,是为了让主题能存进 JSON(指针没法序列化)。
+// ★ 点数由分辨率决定(见文件末尾 kReadoutFontTier),这里只收编号。
 const lv_font_t* readout_font(uint8_t which);
 
 // 存档:数字读数的转发宏(与其它主题字段同一套用法)
@@ -354,3 +361,56 @@ void theme_clamp(Theme& t);
 #define BOOT_FACE_START_MS  (g_theme.boot_face_start_ms)
 #define BOOT_FACE_BLINK_MS  (g_theme.boot_face_blink_ms)
 #define BOOT_TOTAL_MS       (g_theme.boot_total_ms)
+
+// ============================================================
+// 字号随分辨率(2026-09-20,240×240 那块板点出来的)
+//
+// 症状:几何(弧/表情/读数位置)早就跟着 THEME_DISPLAY_RES 缩了,但**字没有** ——
+//   240 屏上 48 号数字横着 240 像素除以字宽 = 5 个字就占满整屏,读数是糊的。
+//
+// 规矩(与弧/表情同一条,只是字体没法乘小数):
+//   · 主题里存的仍是**档位**(digit_font / unit_font),档位不变;
+//   · 点数 = 该档在 480 基准的点数 × theme_scale(),再**向下取到 LVGL 现成的字号**。
+//     48 × 0.5 = 24、18 × 0.5 = 9 → 取 10(往大取一档,9 号不在 LVGL 的表里)。
+//   · 表里挑的是"这一档在这个屏上该多大"的点数,不是分辨率分支 ——
+//     以后加 360 或 800 的屏,只在这张表后面加一行,别去 dash_ui 里写 if。
+//
+// 为什么不用 LVGL 的字体缩放:lv_font 的缩放版要额外开 LV_FONT_FMT_TXT 之类,
+//   而且小字号缩出来是糊的;直接用现成点阵更清楚,代价只是多两份字体数据。
+//
+// 实测(固件落帧量墨迹,与 test_readout_defaults_fit_gap 的 480 口径同一套):
+//     480:大数字 48 号墨迹高 34(cy=72 → 55..88)、单位 18 号高 13(cy=107 → 104..117)
+//     240:同一块地方只有 61×0.5 ≈ 30 像素高(外弧带内沿 59→29.5、表情顶边 120→60),
+//          24 号墨迹高约 17(cy=36 → 约 28..44)、10 号高约 7(cy=53.5 → 约 50..57)
+// ★ 240 那几个**还没在实屏上量过**(屏刚点亮,owner 会看):
+//   量出来比预期大或小,只改上面这张表的一个数 —— 位置与几何都不用动。
+// ============================================================
+static const uint8_t kReadoutFontTierCount = 2;   // 0=大数字 1=单位/副表
+static const uint8_t kReadoutResTierCount  = 2;   // 0=480 基准 1=240
+
+// [分辨率档][字号档] = 点阵点数。
+//   480 那列是**原始设计值**,240 那列 = 原始值 × 0.5(向下取到现成字号)。
+//   constexpr 而不是 static const:下面的 static_assert 要在编译期读它 ——
+//   写成 static const 会得到 "not usable in a constant expression"。
+static constexpr uint8_t kReadoutFontPx[kReadoutResTierCount][kReadoutFontTierCount] = {
+  // 大数字   单位/副表
+  {    48,       18   },   // 480 基准(THEME_BASE_RES)
+  {    24,       10   },   // 240×240,微雪 DualEye-Touch-LCD-1.28
+};
+
+// constexpr:两个宏都是编译期常量,所以这张表也是 —— 数组下标是编译期算出来的。
+static constexpr uint8_t readout_res_tier() {
+  return (THEME_DISPLAY_RES * 2 <= THEME_BASE_RES) ? 1u : 0u;
+}
+static constexpr uint8_t readout_font_px(uint8_t which) {
+  return kReadoutFontPx[readout_res_tier()][which < kReadoutFontTierCount ? which : 0u];
+}
+
+// 这张表只有两档字号,少一档就会读到别的档去(不报错,只是字不对) —— 钉住。
+static_assert(kReadoutFontTierCount == 2,
+              "字号档只有 0=大数字 / 1=单位:加档要同步 theme_clamp 的上限判断");
+static_assert(kReadoutFontPx[0][0] == 48 && kReadoutFontPx[0][1] == 18,
+              "480 那列必须是原始设计值(48 / 18),否则老屏上的字会变大小");
+static_assert(kReadoutFontPx[1][0] < kReadoutFontPx[0][0] &&
+              kReadoutFontPx[1][1] < kReadoutFontPx[0][1],
+              "小屏那列必须比 480 那列小,否则这次改动等于没做");

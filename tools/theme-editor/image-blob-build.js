@@ -59,6 +59,7 @@
       label: "经典 ESP32(4MB flash)",
       partitionBytes: 1024 * 1024,
       partitionsCsv: "partitions.csv",
+      faceTier: "res480",          // 屏仍是 480×480 → 画布上限 320 / 推荐 300
       // 面板大于这个就别指望装了(给 UI 提示用,不作为硬闸门)
       hint: "image 分区 1MB:192×192 能放下一整套表情,240×240 放不下全部"
     },
@@ -67,7 +68,23 @@
       label: "ESP32-S3 N16R8(16MB flash)",
       partitionBytes: 8 * 1024 * 1024,
       partitionsCsv: "partitions-s3.csv",
+      faceTier: "res480",          // 最终那块 2.8" 屏仍是 480×480
       hint: "image 分区 8MB:240×240 一整套表情 + 480×480 背景都放得下"
+    },
+    // ★ 现在**实配**的那块验证板(微雪 ESP32-S3-DualEye-Touch-LCD-1.28)。
+    //   它和 s3 是同一块 MCU、同一份分区表、同样的 8MB image 分区 —— 差别只有**屏**:
+    //   两块板载 240×240 圆屏(GC9A01A),固件用 -DTHEME_DISPLAY_RES=240 编译。
+    //   所以分区大小与 s3 相同,而**表情画布上限完全不同**(见 FACE_SIZE_TIERS):
+    //   按 480 那档做 300×300 的图导进 240 屏会盖住两条副弧(而且不报错)。
+    //   分区表的对账(下面 test 里读 csv 那节)按 partitionsCsv 走,两块板共用一份。
+    s3_240: {
+      id: "s3_240",
+      label: "ESP32-S3 微雪双屏 240×240(1.28\")",
+      partitionBytes: 8 * 1024 * 1024,
+      partitionsCsv: "partitions-s3.csv",
+      faceTier: "res240",          // ★ 屏是 240×240 → 画布上限 160 / 推荐 152
+      hint: "屏是 240×240:表情最大 160、推荐 152(再大就盖住内圈副弧);" +
+            "背景别按 480 做 —— 240 的图铺不满整屏,弧带那一圈会露底色"
     }
   };
   var DEFAULT_TARGET = "classic";
@@ -75,6 +92,15 @@
   function targetInfo(id) {
     var t = TARGETS[id || DEFAULT_TARGET];
     if (!t) throw new Error("未知的目标板:" + id);
+    // 画布几何跟着**分辨率档**走(与 image 分区大小是两件事)。
+    // 这里解析一次挂上去,调用方(网页/测试)就不用记两个字段的关系。
+    if (!t.faceTierInfo) {
+      var tier = null;
+      for (var i = 0; i < FACE_SIZE_TIERS.length; i++) {
+        if (FACE_SIZE_TIERS[i].id === t.faceTier) { tier = FACE_SIZE_TIERS[i]; break; }
+      }
+      t.faceTierInfo = tier || FACE_SIZE_TIERS[0];
+    }
     return t;
   }
   function partitionBytesFor(id) { return targetInfo(id).partitionBytes; }
@@ -131,14 +157,58 @@
   //   （向下对齐到 4，留 6px 余量）。再大就会**盖住内圈那两条副弧**，
   //   而且不会报错 —— 只有把图导进去才看得出来，所以这里当硬闸门用。
   // 推荐 **300**：半径 150，离 163 还有 13px，是"画质 / 空间"的甜点。
-  var ARC_INNER_MOST_RADIUS = 163;   // = 168 - 10/2（内圈副弧的内沿）
-  var FACE_CANVAS_MAX = 320;         // = floor(2*163 / 4)*4 = 324 → 取 320
-  var FACE_SIZE_RECOMMENDED = 300;
+  //
+  // ★ 上限**按目标板**取（2026-09-20 加，240×240 那块验证板逼出来的）：
+  //   240 屏上整套几何是 480 的 0.5 倍（theme_scale()），副弧内沿只有
+  //   (168 - 10/2) × 0.5 = 81.5 —— 一张 300×300（半径 150）的表情图
+  //   在 240 屏上**比整块屏还大**，会盖住两条弧和一圈表盘。
+  //   所以每个分辨率档各有一行 faceInnerMostRadius，两个上限都**由它算出来**，
+  //   不另抄数字（抄的那份迟早和 theme-default.json 分叉）。
+  // ============================================================
+  // 内圈副弧的**内沿半径**，按设计基准分辨率分档。
+  //   480 档：168 - 10/2 = 163（480 基准，见 theme-default.json）
+  //   240 档：上面那套 × 240/480 = 81.5 → 取 81（半径取整不往外套）
+  // ★ 这两个数必须与 ui_theme.h 的 arcs[1] 几何一致；test-image-blob-build.js
+  //   会拿 theme-default.json 的弧几何逐档对账（改了一边忘了另一边会被抓住）。
+  // 画布上限的算法(两档共用,别各抄一个数):
+  //   上限 = 内沿直径 - 余量,再向下对齐到 4;余量 4 是为了不"正好贴住"副弧
+  //   (弧线两端有圆头,贴住看着就是压上去了)。
+  //   480 档:floor((2×163 - 4)/4)*4 = **320**(老值,一个字节没变)
+  //   240 档:floor((2×81  - 4)/4)*4 = **160**
+  var FACE_CANVAS_MARGIN = 4;
+  var FACE_SIZE_TIERS = [
+    { id: "res480", label: "480×480 屏（480 基准几何）", faceInnerMostRadius: 163,
+      faceCanvasMax: 320, faceSizeRecommended: 300 },
+    { id: "res240", label: "240×240 屏（微雪 1.28\" 那块）", faceInnerMostRadius: 81,
+      faceCanvasMax: 160, faceSizeRecommended: 152 }
+  ];
+  // 兼容老名字：默认档 = 480（加了 240 之后，老的“320 / 300 / 163”三个常量
+  // 仍然指向 480 那一档，行为一个字节都没变；要用别的档请走 *For(目标板)）。
+  var FACE_CANVAS_MAX = FACE_SIZE_TIERS[0].faceCanvasMax;
+  var FACE_SIZE_RECOMMENDED = FACE_SIZE_TIERS[0].faceSizeRecommended;
+  var ARC_INNER_MOST_RADIUS = FACE_SIZE_TIERS[0].faceInnerMostRadius;
   // 一整套表情 = 每屏 5 档 × 2 屏
   var FACE_COUNT_PER_SET = 10;
 
+  // 目标板 → 分辨率档。image 分区大小与画布几何是**两件事**，所以分两个字段：
+  //   经典板 / S3 都是 480×480 那块屏（320 画布），
+  //   s3_240 是现在实配的微雪双屏验证板（160 画布）。
+  //   ★ 这两个字段写在下面的 TARGETS 里（targetInfo 会把 faceTier 解析成对象）。
+
+  function faceTierInfo(id) {
+    return targetInfo(id).faceTierInfo;
+  }
+  function faceCanvasMaxFor(id) { return faceTierInfo(id).faceCanvasMax; }
+  function faceSizeRecommendedFor(id) { return faceTierInfo(id).faceSizeRecommended; }
+  function arcInnerMostRadiusFor(id) { return faceTierInfo(id).faceInnerMostRadius; }
+
   function faceCanvasMax() { return FACE_CANVAS_MAX; }
   function faceSizeRecommended() { return FACE_SIZE_RECOMMENDED; }
+
+  // 经典板(1MB)的默认表情输出宽度：它**不是**几何上限(320)也不是推荐值(300)，
+  // 而是"一整套 10 张 + 一张满屏背景还塞得进 1MB"的最大尺寸(见 README 那张表)。
+  // 放在这里而不是写死在页面里，是为了让 test-image-blob-build.js 能拿它算占用。
+  var FACE_TIER_LEGACY_DEFAULT = 128;
 
   function bytesPerPixel(cf) {
     switch (cf) {
@@ -430,13 +500,20 @@
     PARTITION_BYTES: PARTITION_BYTES,
     TARGETS: TARGETS, DEFAULT_TARGET: DEFAULT_TARGET,
     targetInfo: targetInfo, partitionBytesFor: partitionBytesFor,
-    // 表情的几何约束(见上面那段说明):画布上限 320、推荐 300、一套 10 张
+    // 表情的几何约束(见上面那段说明):默认档(480)画布上限 320、推荐 300、
+    // 一套 10 张;240 那档是 160 / 152 —— 按目标板取用 *For(targetId)。
+    FACE_SIZE_TIERS: FACE_SIZE_TIERS,
     ARC_INNER_MOST_RADIUS: ARC_INNER_MOST_RADIUS,
     FACE_CANVAS_MAX: FACE_CANVAS_MAX,
     FACE_SIZE_RECOMMENDED: FACE_SIZE_RECOMMENDED,
     FACE_COUNT_PER_SET: FACE_COUNT_PER_SET,
+    FACE_TIER_LEGACY_DEFAULT: FACE_TIER_LEGACY_DEFAULT,
+    faceTierInfo: faceTierInfo,
     faceCanvasMax: faceCanvasMax,
     faceSizeRecommended: faceSizeRecommended,
+    faceCanvasMaxFor: faceCanvasMaxFor,
+    faceSizeRecommendedFor: faceSizeRecommendedFor,
+    arcInnerMostRadiusFor: arcInnerMostRadiusFor,
     CF: CF, ROLE: ROLE, ROLE_NAMES: ROLE_NAMES,
     bytesPerPixel: bytesPerPixel,
     packedBytesPerPixel: packedBytesPerPixel,

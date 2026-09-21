@@ -47,6 +47,85 @@ eq(IB.HEADER_SIZE, 1420, "镜像头大小(12 + 32×44)");
 eq(IB.PARTITION_BYTES, 1024 * 1024, "image 分区大小(partitions.csv: 0x100000)");
 eq(IB.CF.RGB565, 0x12, "LV_COLOR_FORMAT_RGB565");
 
+// ------------------------------------------------------------
+section("表情画布按**屏的分辨率**分档(480 / 240)");
+// ★ 为什么值得测(2026-09-20,owner 实屏报上来的):
+//   现在实配的板子是 240×240 双圆屏,而画布上限一直是按 480 基准几何算的 320。
+//   一张 300×300 的图(半径 150)在 240 屏上比整块屏还大 —— 会盖住内圈两条副弧,
+//   而且**不报错**,只有刷进去才看得出来。所以上限必须跟屏走。
+//   这两条同时钉住"数值互相自洽"和"和固件/主题文件的弧几何一致"。
+{
+  const ThemeJson = require("./theme-json.js");
+  const fs = require("fs");
+  const root = require("path").resolve(__dirname, "..", "..");
+  const theme = ThemeJson.parseThemeJson(
+    fs.readFileSync(require("path").join(__dirname, "theme-default.json"), "utf8")).theme;
+
+  eq(IB.FACE_SIZE_TIERS.length, 2, "只有两个分辨率档(480 与 240)");
+  eq(IB.FACE_SIZE_TIERS[0].id, "res480", "第 0 档 = 480 基准");
+  eq(IB.FACE_SIZE_TIERS[1].id, "res240", "第 1 档 = 240×240");
+
+  // ① 每档的上限都必须**由内圈副弧内沿半径**兜住:画布不越过那条弧,
+  //    而且是 4 的倍数(输入框 step=4)。具体值再单独钉一遍(②下面的 eq)。
+  //    为什么不用"公式"钉:480 档历史上取的是 320(= floor(326/4)*4 再让 2px),
+  //    那是已经实测定稿、S3/480 的行为**不许变**的数,所以不能反推成一个统一公式。
+  for (const t of IB.FACE_SIZE_TIERS) {
+    ok(t.faceCanvasMax <= t.faceInnerMostRadius * 2,
+       t.id + ":画布(" + t.faceCanvasMax + ")不能超过内沿直径(" +
+       t.faceInnerMostRadius * 2 + "),否则盖住副弧");
+    eq(t.faceCanvasMax % 4, 0, t.id + ":画布上限要是 4 的倍数");
+    ok(t.faceSizeRecommended <= t.faceCanvasMax,
+       t.id + ":推荐值不能超过上限");
+    ok(t.faceCanvasMax - t.faceSizeRecommended >= 4,
+       t.id + ":推荐值要离上限留一点余量(留 " +
+       (t.faceCanvasMax - t.faceSizeRecommended) + "px)");
+  }
+  // ② 两档的具体数值:480 那档是**老值,不许动**;240 那档是这次新加的。
+  eq(IB.FACE_SIZE_TIERS[0].faceCanvasMax, 320, "480 档画布上限仍是 320");
+  eq(IB.FACE_SIZE_TIERS[0].faceSizeRecommended, 300, "480 档推荐值仍是 300");
+  eq(IB.FACE_SIZE_TIERS[1].faceCanvasMax, 160, "240 档画布上限 160(内沿直径 162)");
+  eq(IB.FACE_SIZE_TIERS[1].faceSizeRecommended, 152, "240 档推荐值 152(与 480 档同样留 8px)");
+
+  // ③ 内沿半径必须能从 theme-default.json 的副弧几何直接算出来:
+  //      内沿 = radius - width/2
+  //    240 档 = 上面那套 × 240/480(theme_scale())。
+  //    ★ 这两个数分别对应固件 ui_theme.h 的 arcs[1](radius 168 / width 10)
+  //      与 esp32s3-spi 那个 env 的 -DTHEME_DISPLAY_RES=240。
+  //      改了主题里的副弧几何却没改颜色档,这里会红。
+  const coolantArc = theme.screens[0].arcs.find(a => a.kind === 2);
+  ok(!!coolantArc, "theme-default.json 里有水温弧(kind 2)");
+  const inner480 = coolantArc.radius - Math.floor(coolantArc.width / 2);
+  eq(IB.FACE_SIZE_TIERS[0].faceInnerMostRadius, inner480,
+     "480 档的内沿半径 = " + coolantArc.radius + " - " + coolantArc.width + "/2");
+  eq(IB.FACE_SIZE_TIERS[1].faceInnerMostRadius, Math.floor(inner480 * 240 / 480),
+     "240 档的内沿半径 = 480 那套 × 240/480(theme_scale())");
+
+  // ④ 老常量的语义一个字节都不许变(网页里那三处引用还在用它们)
+  eq(IB.FACE_CANVAS_MAX, 320, "FACE_CANVAS_MAX 仍是 480 档的 320");
+  eq(IB.FACE_SIZE_RECOMMENDED, 300, "FACE_SIZE_RECOMMENDED 仍是 480 档的 300");
+  eq(IB.ARC_INNER_MOST_RADIUS, 163, "ARC_INNER_MOST_RADIUS 仍是 480 档的 163");
+  eq(IB.faceCanvasMax(), IB.FACE_CANVAS_MAX, "无参数的 faceCanvasMax() = 480 档");
+  eq(IB.faceSizeRecommended(), IB.FACE_SIZE_RECOMMENDED, "无参数的 faceSizeRecommended() = 480 档");
+
+  // ⑤ 目标板 → 分辨率档的映射:经典板与 S3 是 480 那块屏,240 验证板是 240
+  eq(IB.TARGETS.classic.faceTier, "res480", "经典板 = 480 屏");
+  eq(IB.TARGETS.s3.faceTier, "res480", "S3(最终 2.8\" 屏)= 480 屏");
+  eq(IB.TARGETS.s3_240.faceTier, "res240", "微雪双屏验证板 = 240 屏");
+  eq(IB.faceCanvasMaxFor("s3_240"), 160, "240 档的画布上限");
+  eq(IB.faceSizeRecommendedFor("s3_240"), 152, "240 档的推荐值");
+  eq(IB.arcInnerMostRadiusFor("s3_240"), 81, "240 档的内沿半径");
+  eq(IB.faceCanvasMaxFor("s3"), 320, "S3 仍是 320");
+  eq(IB.faceSizeRecommendedFor("s3"), 300, "S3 仍是 300");
+  eq(IB.faceCanvasMaxFor("classic"), 320, "经典板同样是 480 屏 → 320");
+  eq(IB.faceCanvasMaxFor(), IB.FACE_CANVAS_MAX, "不传参数用默认目标板(经典板 = 480 档)");
+  // 两块板共用一份分区表(同一块 S3 板,只有屏不同)—— 分区大小必须一致,
+  // 不然"按目标板选大小"这件事在页面上会给出两个不同的分母。
+  eq(IB.TARGETS.s3_240.partitionBytes, IB.TARGETS.s3.partitionBytes,
+     "s3_240 与 s3 是同一块板(同一份 partitions-s3.csv)");
+  eq(IB.TARGETS.s3_240.partitionsCsv, "partitions-s3.csv", "240 那块板的分区表");
+  throws(() => IB.faceCanvasMaxFor("esp32c3"), "未知目标板要报错,不能悄悄按默认算");
+}
+
 section("角色编号必须与 image_blob.h 的 ImageRole 一致");
 // 两屏各自独立、状态集合还不一样(左有红区、右有惊喜),编号错位会让
 // "右屏显示成左屏的表情"这种问题查很久
@@ -347,9 +426,14 @@ section("分区表必须是纯 ASCII(否则 PlatformIO 在中文 Windows 上直�
   const expected = { classic: a.image.size, s3: b.image.size };
   for (const id of Object.keys(IB.TARGETS)) {
     const t = IB.TARGETS[id];
-    ok(!!expected[id], id + " 在分区表里有 image 行");
-    if (expected[id]) {
-      eq("0x" + t.partitionBytes.toString(16), expected[id],
+    // ★ 几块板可以共用同一份分区表(经典板是 partitions.csv;S3 的两块 ——
+    //   480 那块与微雪 240 那块 —— 共用 partitions-s3.csv)。
+    //   所以这里按**各自的 partitionsCsv** 找期望值,而不是要求每个 id 都有一行。
+    const csv = id === "classic" ? a : b;
+    const exp = csv.image.size;
+    ok(!!exp, id + " 的分区表(" + t.partitionsCsv + ")里有 image 行");
+    if (exp) {
+      eq("0x" + t.partitionBytes.toString(16), exp,
          id + " 的 image 分区大小必须与 " + t.partitionsCsv + " 一致");
     }
     eq(IB.partitionBytesFor(id), t.partitionBytes, "partitionBytesFor(" + id + ") 要对上");
@@ -410,21 +494,27 @@ section("页面:导入时的默认输出尺寸(只缩不放 + 按角色设上限
 //   导入时的默认输出宽度**写死一个数**,不管原图多大也不管角色。
 //   用户按建议做好的图导进去却被放大,占用直接翻倍到报溢出,
 //   而缩略图看起来一样大,他只能看到"我明明做的是那个尺寸,怎么还溢出"。
-// 现在的规则(2026-09-18 重排):上限**按角色**取,而且**从共享常量读**:
-//   表情 → min(原图, FACE_CANVAS_MAX),S3 上默认给推荐值 300、经典板给 128
+// 现在的规则(2026-09-18 重排,2026-09-20 按分辨率分档):上限**按角色**取,
+//   而且**从共享常量读**:
+//   表情 → min(原图, 该目标板的推荐值):480 屏 300、240 屏 152、
+//          经典板(1MB 装不下 300)128
 //   背景 → min(原图, 480)
-//   再向下对齐到 4。保证不会放大,也保证不会超过几何上限(320:再大盖住副弧)。
+//   再向下对齐到 4。保证不会放大,也保证不会超过几何上限(480 屏 320 / 240 屏 160:
+//   再大盖住副弧)。
 section("页面与共享常量没有分叉");
 {
   const html = require("fs").readFileSync(__dirname + "/image-editor.html", "utf8");
   // ★ 页面里**不许**再出现写死的表情上限 —— 一律问 ImageBlob 的常量。
   //   这条是"改了共享常量但页面没跟上"的唯一守卫(那种错不报错,只是导出的图不对)。
-  ok(html.indexOf("ImageBlob.FACE_CANVAS_MAX") >= 0,
-     "页面用 ImageBlob.FACE_CANVAS_MAX(不写死 320)");
-  ok(html.indexOf("ImageBlob.FACE_SIZE_RECOMMENDED") >= 0,
-     "页面用 ImageBlob.FACE_SIZE_RECOMMENDED(不写死 300)");
-  ok(html.indexOf("ImageBlob.ARC_INNER_MOST_RADIUS") >= 0,
-     "页面用 ImageBlob.ARC_INNER_MOST_RADIUS(不写死 163)");
+  ok(html.indexOf("ImageBlob.faceCanvasMaxFor") >= 0,
+     "页面用 ImageBlob.faceCanvasMaxFor(按目标板取,不写死 320)");
+  ok(html.indexOf("ImageBlob.faceSizeRecommendedFor") >= 0,
+     "页面用 ImageBlob.faceSizeRecommendedFor(按目标板取,不写死 300)");
+  ok(html.indexOf("ImageBlob.arcInnerMostRadiusFor") >= 0,
+     "页面用 ImageBlob.arcInnerMostRadiusFor(按目标板取,不写死 163)");
+  // 老常量仍在共享模块里(480 档),但不能被页面当成"唯一的上限"用
+  ok(IB.FACE_CANVAS_MAX === 320 && IB.FACE_SIZE_RECOMMENDED === 300,
+     "老常量仍在(480 档),行为不变");
   const fm = /function pickDefaultSize\(([\s\S]*?)\n\}/.exec(html);
   if (!fm) throw new Error("image-editor.html 里找不到 pickDefaultSize");
   // ★ 用真的共享常量 + 真的页面函数跑一遍(不复制逻辑)。
@@ -436,57 +526,83 @@ section("页面与共享常量没有分叉");
   const makePick = (target) => new Function(
     "ImageBlob", "FACE_ROLES", "curTarget",
     fm[0] + "\nreturn pickDefaultSize;")(IB, roles, target);
-  const pick = makePick("s3");          // S3:表情默认给推荐值 300
+  const pick = makePick("s3");               // 480 屏:表情默认给推荐值 300
   const pickClassic = makePick("classic");   // 经典板:放不下 300,默认 128
+  const pick240 = makePick("s3_240");        // 240 屏:推荐 152、上限 160
 
   eq(pick(152, 3), 152, "★ 152×152 的表情源图输出还是 152(不许放大)");
   eq(pick(100, 3), 100, "比上限小的源图按原尺寸");
-  eq(pick(480, 3), IB.FACE_SIZE_RECOMMENDED,
-     "480 的表情源图缩到推荐值(不是缩小到 240 —— 那是旧策略)");
-  eq(pick(800, 3), IB.FACE_SIZE_RECOMMENDED, "大图缩到推荐值");
+  eq(pick(480, 3), IB.faceSizeRecommendedFor("s3"),
+     "480 的表情源图缩到 480 屏的推荐值 300(不是缩小到 240 —— 那是旧策略)");
+  eq(pick(800, 3), IB.faceSizeRecommendedFor("s3"), "大图缩到推荐值");
   eq(pick(10, 3), 8, "极小的图向下对齐到 4 的倍数,不会反而放大");
-  eq(pick(0, 3), IB.FACE_SIZE_RECOMMENDED, "拿不到原图宽度时按推荐值");
+  eq(pick(0, 3), IB.faceSizeRecommendedFor("s3"), "拿不到原图宽度时按推荐值");
   eq(pick(480, 1), 480, "★ 背景可以到 480(它不需要躲开弧)");
   eq(pick(800, 1), 480, "背景大图缩到 480");
-  eq(pickClassic(480, 3), 128,
+  eq(pickClassic(480, 3), IB.FACE_TIER_LEGACY_DEFAULT,
      "经典板(1MB)放不下 10 张 300,表情默认 128(一整套 + 背景 ≈ 0.93MB)");
   eq(pickClassic(480, 1), 480, "经典板的背景同样可以到 480");
+  // ★ 240 屏(现在实配的那块板):一张 300×300 的图导进来会盖住副弧,
+  //   所以默认与上限都必须按 240 档走 —— 这是这次加档要解决的那件事。
+  eq(pick240(480, 3), 152, "240 屏:大表情源图缩到推荐值 152");
+  eq(pick240(800, 3), 152, "240 屏:更大的源图同样是 152");
+  eq(pick240(100, 3), 100, "240 屏:小图仍按原尺寸,不放大");
+  eq(pick240(0, 3), 152, "240 屏:拿不到原图宽度时按推荐值");
+  ok(pick240(480, 3) <= IB.faceCanvasMaxFor("s3_240"),
+     "240 屏的默认输出(152)必须 ≤ 240 档上限(160)");
+  // 背景在 240 屏上照样按 480 封顶:多出来的是浪费空间,但不是错误,
+  // 而且"背景要铺满屏"这条在 240 上意味着 240 就够(页面提示里会讲)。
+  eq(pick240(800, 1), 480, "240 屏:背景仍按 480 封顶(几何上不越界)");
 
-  // ★ 不变式一:对任何尺寸都"只缩不放"(下限 8 那次除外)
+  // ★ 不变式一:对任何尺寸、任何目标板都"只缩不放"(下限 8 那次除外)
   let grew = [];
-  for (let n = 8; n <= 900; n++) {
-    if (pick(n, 3) > n) grew.push(n + "→" + pick(n, 3));
-    if (pick(n, 1) > n) grew.push("bg:" + n + "→" + pick(n, 1));
+  for (const tgt of Object.keys(IB.TARGETS)) {
+    const p = makePick(tgt);
+    for (let n = 8; n <= 900; n++) {
+      if (p(n, 3) > n) grew.push(tgt + ":" + n + "→" + p(n, 3));
+      if (p(n, 1) > n) grew.push(tgt + ":bg:" + n + "→" + p(n, 1));
+    }
   }
   eq(grew.length, 0, "8..900 里没有任何尺寸被放大" + (grew.length ? ": " + grew.slice(0, 5) : ""));
 
-  // ★ 不变式二:表情的默认输出**永远不超几何上限**(超了就会盖住副弧)
-  for (let n = 8; n <= 900; n++) {
-    if (pick(n, 3) > IB.FACE_CANVAS_MAX) {
-      ok(false, "表情默认输出 " + pick(n, 3) + " 超过了画布上限 " + IB.FACE_CANVAS_MAX);
-      break;
-    }
+  // ★ 不变式二:**每一块板**上表情的默认输出都不超它自己那档的几何上限
+  //   (超了就会盖住副弧;240 那块板正是为此才要分档)
+  for (const tgt of Object.keys(IB.TARGETS)) {
+    const p = makePick(tgt);
+    const cap = IB.faceCanvasMaxFor(tgt);
+    let bad = 0;
+    for (let n = 8; n <= 900; n++) if (p(n, 3) > cap) bad++;
+    eq(bad, 0, tgt + ":表情默认输出永远 ≤ 画布上限 " + cap);
   }
-  ok(true, "表情默认输出永远 ≤ 画布上限 " + IB.FACE_CANVAS_MAX);
 }
 
   // ★ 用户那次的实际账:经典板(1MB)按新推荐值 128 必须装得下
   const n = IB.FACE_COUNT_PER_SET;
-  const setClassic = IB.HEADER_SIZE + n * (128 * 128 * 3);
+  const setClassic = IB.HEADER_SIZE + n * (IB.FACE_TIER_LEGACY_DEFAULT * IB.FACE_TIER_LEGACY_DEFAULT * 3);
   const bg480 = 480 * 480 * 2;
   ok(setClassic + bg480 <= IB.PARTITION_BYTES,
-     n + " 张 128×128 表情 + 一张 480×480 背景 = " + (setClassic + bg480) +
+     n + " 张 " + IB.FACE_TIER_LEGACY_DEFAULT + "×" + IB.FACE_TIER_LEGACY_DEFAULT +
+     " 表情 + 一张 480×480 背景 = " + (setClassic + bg480) +
      " 字节,占 1MB 分区 " + (100 * (setClassic + bg480) / IB.PARTITION_BYTES).toFixed(1) + "%");
   // 经典板放不下推荐的 300 —— 这正是"要用满 5 档就上 S3"的依据
   const setClassic300 = IB.HEADER_SIZE + n * (300 * 300 * 3);
   ok(setClassic300 > IB.PARTITION_BYTES,
      n + " 张 300×300 表情 = " + setClassic300 + " 字节,经典板 1MB 确实放不下");
   // ★ S3(8MB)上推荐的 300×300 一整套 + 480 背景必须放得下(3.0MB 左右)
-  const setS3 = IB.HEADER_SIZE + n * (IB.FACE_SIZE_RECOMMENDED * IB.FACE_SIZE_RECOMMENDED * 3) + bg480;
+  const setS3 = IB.HEADER_SIZE + n * (IB.faceSizeRecommendedFor("s3") * IB.faceSizeRecommendedFor("s3") * 3) + bg480;
   ok(setS3 <= IB.partitionBytesFor("s3"),
-     "S3:" + n + " 张 " + IB.FACE_SIZE_RECOMMENDED + "×" + IB.FACE_SIZE_RECOMMENDED +
+     "S3:" + n + " 张 " + IB.faceSizeRecommendedFor("s3") + "×" + IB.faceSizeRecommendedFor("s3") +
      " + 480 背景 = " + setS3 + " 字节,占 8MB 分区 " +
      (100 * setS3 / IB.partitionBytesFor("s3")).toFixed(1) + "%");
+  // ★ 240×240 那块验证板:推荐 152 一整套 + 一张 240 背景,在 8MB 里几乎不占地方
+  const rec240 = IB.faceSizeRecommendedFor("s3_240");
+  const bg240 = 240 * 240 * 2;
+  const set240 = IB.HEADER_SIZE + n * (rec240 * rec240 * 3) + bg240;
+  ok(set240 <= IB.partitionBytesFor("s3_240"),
+     "240 板:" + n + " 张 " + rec240 + "×" + rec240 + " + 一张 240 背景 = " + set240 +
+     " 字节,占 8MB 分区 " + (100 * set240 / IB.partitionBytesFor("s3_240")).toFixed(1) + "%");
+  ok(set240 < setS3,
+     "240 档那一套(" + set240 + ")必须比 480 档(" + setS3 + ")小 —— 屏小就该更省");
 
 // ------------------------------------------------------------
 section("RGB565A8(带透明):布局与尺寸契约");

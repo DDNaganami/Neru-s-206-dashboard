@@ -344,6 +344,70 @@ static void test_reverse_defaults_to_zero(void) {
   TEST_ASSERT_EQUAL_UINT8(0, t.screens[0].arcs[0].reverse);
 }
 
+// ★ 240×240 那块板(微雪 DualEye-Touch-LCD-1.28)上的字号必须跟着分辨率缩。
+//
+// 症状(owner 实屏报的):几何早就乘 theme_scale() 缩了一半,但**字没有** ——
+// 48 号数字在 240 宽的屏上五个字符就占满整行,读数糊成一片。
+// 现在点数由 THEME_DISPLAY_RES 查表得到(kReadoutFontPx),这里钉住、
+// 并用与 480 同一条几何契约复算一遍:同一条竖直带里,缩一半的字仍然放得下。
+//
+// 口径与 test_readout_defaults_fit_gap 完全一样(480 基准,圆心 240):
+//   外弧带内沿 = 240 - (205 - 24) = 59;表情图顶边 = 120;可用带高 61。
+//
+// 墨迹高用**实测比例**:48 号数字实测墨迹 34px(cy=72 → 55..88),
+// 而它的 line_height 是 52 —— 也就是说**墨迹只有行高的约 0.7 倍**。
+// 这里按 0.7 估,理由:宁可估宽(估宽了反而更容易暴露"压到表情"),
+// 实测那条在 test_readout_defaults_fit_gap 里钉着(它用 34/13 两个实测数)。
+static int32_t inkHalf(int32_t px) { return (px * 7 + 5) / 20; }   // ≈ 0.35 × 字号
+
+static void test_readout_font_scales_with_resolution(void) {
+  // ① 点数表:480 那列是原始设计值,小屏那列必须更小
+  TEST_ASSERT_TRUE_MESSAGE(readout_font_px(0) <= 48,
+                           "大数字档不能超过 480 基准的 48 号");
+  TEST_ASSERT_TRUE_MESSAGE(readout_font_px(1) <= 18,
+                           "单位档不能超过 480 基准的 18 号");
+
+  // 本机编译分辨率决定用哪一列 —— native 默认 480,240 那份由 env 的
+  // -DTHEME_DISPLAY_RES=240 决定,这里两种都自洽(测试对两档都跑一遍)。
+  const bool is240 = (readout_res_tier() == 1);
+
+  const int32_t inner480 = 59;                 // 外弧带内沿(480 基准)
+  const int32_t faceTop480 = 120;              // 表情图顶边(480 基准)
+  // 位置跟着 theme_scale() 走(与 dash_ui.cpp 的 ts() 同一套换算)
+  const int32_t digitCy = is240 ? 36 : 72;     // 72 × 240/480
+  const int32_t unitCy  = is240 ? 53 : 107;    // 107 × 240/480 ≈ 53.5
+
+  // ② 两档各自钉死点数:480 = 48/18(原始设计),240 = 24/10(×0.5 后取现成字号)
+  if (is240) {
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(24, readout_font_px(0), "240 档大数字 = 48 × 240/480");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(10, readout_font_px(1),
+                                    "240 档单位 = 18 × 0.5 = 9,取 LVGL 现成的 10 号");
+  } else {
+    TEST_ASSERT_EQUAL_UINT8(48, readout_font_px(0));
+    TEST_ASSERT_EQUAL_UINT8(18, readout_font_px(1));
+  }
+
+  // ③ 竖直带里放得下:数字不许明显骑到弧带上,单位不许被表情压住。
+  //    480 上数字允许蹭 4 像素(实测 55 对 59,刻意接受),240 上按同样比例给 2。
+  const int32_t innerLimit = is240 ? (inner480 / 2 - 2) : (inner480 - 6);
+  const int32_t faceLimit  = is240 ? (faceTop480 / 2 - 2) : (faceTop480 - 2);
+  const int32_t digitTop = digitCy - inkHalf((int32_t)readout_font_px(0));
+  const int32_t unitBottom = unitCy + inkHalf((int32_t)readout_font_px(1));
+
+  TEST_ASSERT_TRUE_MESSAGE(digitTop >= innerLimit, "数字墨迹明显骑到弧带上了");
+  TEST_ASSERT_TRUE_MESSAGE(unitBottom <= faceLimit, "单位墨迹会被表情图压住");
+  TEST_ASSERT_TRUE_MESSAGE(digitTop < digitCy && digitCy < unitCy,
+                           "数字要在单位上方,且都在自己中心附近");
+
+  // ④ 字号档位越界必须兜底(绝不能返回空指针 —— LVGL 拿到 NULL 字体会崩)
+  TEST_ASSERT_NOT_NULL(readout_font(0));
+  TEST_ASSERT_NOT_NULL(readout_font(1));
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(readout_font_px(0), readout_font_px(99),
+                                  "越界档位要回落到 0 档,而不是读越界");
+  TEST_ASSERT_EQUAL_PTR_MESSAGE(readout_font(0), readout_font(99),
+                                "越界档位要拿到 0 档那张字体,不能是空指针");
+}
+
 void register_theme_store_tests(void) {
   RUN_TEST(test_parse_full_theme);
   RUN_TEST(test_parse_partial_keeps_defaults);
@@ -357,6 +421,7 @@ void register_theme_store_tests(void) {
   RUN_TEST(test_parse_readout_missing_keeps_defaults);
   RUN_TEST(test_clamp_readout);
   RUN_TEST(test_readout_defaults_fit_gap);
+  RUN_TEST(test_readout_font_scales_with_resolution);
   RUN_TEST(test_coolant_arc_is_mirrored);
   RUN_TEST(test_reverse_defaults_to_zero);
 }

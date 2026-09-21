@@ -3,11 +3,17 @@
 
 // 数字读数用哪号字体。
 // 用编号而不是指针:指针没法存进 JSON,而主题要从 flash 的 JSON 加载。
-// 打开的字号见 include/lv_conf.h(48 / 18 / 14)。
+//
+// ★ 点数是**分辨率派生**的(2026-09-20):同一份主题在 240 屏上必须跟着变小,
+//   否则 48 号字在 240 宽的屏上五个字符就占满整行(owner 实屏反馈"数字太大")。
+//   点数表只有一处:kReadoutFontPx(见 ui_theme.h 末尾那张表)。
 const lv_font_t* readout_font(uint8_t which) {
-  switch (which) {
-    case 0: return &lv_font_montserrat_48;
-    case 1: return &lv_font_montserrat_18;
+  if (which >= kReadoutFontTierCount) which = 0;   // 与 theme_clamp 同一套兜底
+  switch (readout_font_px(which)) {
+    case 48: return &lv_font_montserrat_48;
+    case 24: return &lv_font_montserrat_24;
+    case 10: return &lv_font_montserrat_10;
+    case 18:
     default: return &lv_font_montserrat_18;
   }
 }
@@ -102,10 +108,12 @@ void theme_clamp(Theme& t) {
     }
   }
 
-  // 数字读数:钳住字号编号与位置。
+  // 数字读数:钳住字号档位与位置。
   // 位置越界不会崩,但会把数字画到屏外或糊在弧上 —— 所以挡在合理区间内。
-  if (t.readout.digit_font > 1) t.readout.digit_font = 0;
-  if (t.readout.unit_font  > 1) t.readout.unit_font  = 1;
+  // ★ 档位上限跟着 kReadoutFontTierCount 走(以前是写死的 `> 1`,
+  //   加一档字号就会静默退回 0 号 —— 大字变小字,不报错)。
+  if (t.readout.digit_font >= kReadoutFontTierCount) t.readout.digit_font = 0;
+  if (t.readout.unit_font  >= kReadoutFontTierCount) t.readout.unit_font  = 1;
   // 竖直位置:0..480 之内;数字中心别低到 120 以下(那里是表情区)
   if (t.readout.digit_cy < 10)  t.readout.digit_cy = 10;
   if (t.readout.digit_cy > 115) t.readout.digit_cy = 115;
