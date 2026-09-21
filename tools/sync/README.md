@@ -65,6 +65,9 @@
 $s = 'tools\sync\sync-to-laptop.ps1'   # 在仓库根目录执行;也可以写全路径
 
 # 0) 自检:不碰网络。改了脚本先跑这个
+#    (最后两项会起两个干净的 powershell.exe -NoProfile 子进程,在 C:\ProgramData\206dash-selftest*
+#     里把 zip/同步那条路真跑一遍 —— 只有干净会话才复现得出"类型找不到"这类毛病;
+#     子进程的原样输出会打出来给你看,场地目录留着不删,想看就进去看)
 powershell -ExecutionPolicy Bypass -File $s -SelfTest
 
 # 1) 探路:Radmin 通了吗 / 445 通吗 / 共享能写吗(会打一张判决表 + 一句“怎么办”)
@@ -87,7 +90,7 @@ Start-ScheduledTask   -TaskName 206dash-sync-to-laptop                       # �
 (Get-ScheduledTask -TaskName 206dash-sync-to-laptop).Actions                 # 看它到底跑什么
 ```
 
-退出码:`0` 成功 / `2` 参数不对 / `3` 探路没过 / `4` robocopy 失败 / `5` 自检没过。
+退出码:`0` 成功 / `2` 参数不对 / `3` 探路没过 / `4` robocopy 失败 / `5` 自检没过 / `6` 数据成功但快照失败。
 
 ## 同步过去什么
 
@@ -97,6 +100,11 @@ Start-ScheduledTask   -TaskName 206dash-sync-to-laptop                       # �
 | `tools\` | `capture-van-nopy.ps1`、`obd-log.ps1` —— 笔记本上拿到就能直接跑 |
 | `206dash-transfer.zip` | 现成的传输包(桌机上有就带,没有就跳过) |
 | `repo-snapshot.zip` | **脚本现场打包**的源码快照(不含 `.git`/`.pio`),给没装 git 的机器用 |
+
+★ 顺序是**先数据、后快照**:第 1 遍 `robocopy /MIR` 把 `data/`、`tools/`(和 `206dash-transfer.zip`)送过去,
+第 2 遍才打 `repo-snapshot.zip` 并用 `/E /IS` 补传(只加这一个文件、不清目标)。
+快照是锦上添花、数据是不可再生的 —— 所以快照打不出来只算**警告**,脚本继续跑完,
+最后用退出码 `6` 收场(计划任务的“上次结果”看得出来这次不完美,但笔记本上的数据是新的)。
 
 目标目录是**镜像**(`robocopy /MIR`):桌机没有的文件,笔记本那边会被删掉。
 所以那个文件夹是脚本的地盘,**别往里放自己的东西**。桌机上的源文件永远不会被删。
