@@ -627,3 +627,39 @@ ESP32-S3 本身没有视频输出，它靠 **LCD_CAM 外设（RGB 并口）** �
 2. 同时用数显卡尺量：**孔径、台阶、表玻到表盘的间隙、能容纳的总厚度**
 3. 间隙与尺寸定下来再买 **2.8" 裸屏 ×1**（+ 转接板打样或让店家做排针版）
 4. 一块屏的驱动跑通了，再买第二块 ✓（两个 `lv_display` 轮流刷的框架那时也已经写好）
+
+## 十一之二、圆屏候选：能接哪条路（2026-09-21）
+
+**先给决定性的一条**：480×480 圆屏主流全是 **RGB 并口 + ST7701S**，FPC **40pin / 0.5mm**（2.1" 与 2.8" 都是 40pin）；
+那根 SPI **只做初始化、不能送像素**（[Adafruit 5792](https://www.adafruit.com/product/5792) 原文 "you cannot draw pixels over SPI"）→
+**欧美常见货里没有「480×480 + 纯 SPI」**。唯一能让 DualEye 走到底的是**国产 QSPI 模组**（TDO/冠显，立创现货），但它只写「QSPI/SPI 接口」，**IC 与例程没读到 → 待确认**。
+
+| 候选（型号） | Ø / 标称 | 分辨率 | 驱动 IC | 接口 | 含什么 / 价 |
+|---|---|---|---|---|---|
+| [Adafruit 5792](https://www.adafruit.com/product/5792) `TL021WVC02CT-B1323` | Ø53 / 2.1" | 480×480 | ST7701S | RGB666 + 3线SPI（仅初始化） | **裸屏 + 40pin FPC，无驱动板**，带 CST826 触摸 $39.95；无触摸版 [5806](https://www.adafruit.com/product/5806) |
+| [Dwin `LI48480T028BA3098`](http://my.dwin-global.com/2-8-inch-circular-ips-tft-lcd-module-480x480-rgb-24bit-300-bright-li48480t028ba3098-product/) | AA Ø70.13 / 2.8" | 480×480 | ST7701S | RGB 24bit | 裸屏，**40pin / 0.5mm**，LED×4 @12V/20mA，300cd/m² |
+| [Ronbo 2.1" 圆屏](https://fr.made-in-china.com/co_ronboelectronics/product_New-Product-TFT-Display-St7701s-480X480-3spi-18RGB-2-1-Inch-Round-TFT-Display_yyuegninug.html) | 2.1" | 480×480 | ST7701S | 3SPI + 18bit RGB | 裸屏 **$6.50/片**（2~99 片档）；FPC 脚数页面自相矛盾 → 待确认 |
+| **[TDO `TS021WVC02NP-B1323B`](https://item.szlcsc.com/58799605.html)**（立创 C55111244） | 2.1" | 480×480 | 待确认（疑 ST77922） | **QSPI/SPI** | 模组 ¥92.08；带触摸 CP 版 [C55111245](https://item.szlcsc.com/58799606.html) ¥129.19；带不带转接板待确认 |
+| [TDO `TS034WVS02CP-B1477A`](https://item.szlcsc.com/58799609.html) | 3.4" | 480×480 | 待确认 | QSPI/SPI + 触摸 | ¥121.80；3.4" 塞 Ø89 只剩 1.5mm/边 ✗（见上表） |
+| [微雪 1.85" 屏](https://docs.waveshare.com/ESP32-S3-Touch-LCD-1.85) | Ø≈47 / 1.85" | **360×360** | ST77916 | QSPI（SDA0-3 + SCK + CS） | 只有整板（ESP32-S3-Touch-LCD-1.85），非单卖裸屏；**< 2.1" 且不是 480** |
+
+> 「QSPI 480×480」为什么可信：[乐鑫 esp_lcd_st77922](https://components.espressif.com/components/espressif/esp_lcd_st77922) 写明 SPI/QSPI/MIPI-DSI，并内置 `ST77922_480_480_PANEL_60HZ_RGB_TIMING`；
+> 但该组件要 IDF 5.x，本项目现在这版精简 esp_lcd 里没有它。
+
+**两条路，各一句**：
+
+- **DualEye 当最终板**：只有买到 TDO 那种 QSPI/SPI 480×480 圆屏、且这块板能跑 4 线 QSPI（精简版 esp_lcd 支不支持 QSPI panel IO **待确认**）才成立；
+  走不通就只剩 240×240（Ø32，太小）或 1.85"/360×360 → **等于放弃 480×480**（弧半径 205/168、表情画布 320、字号档位全要重做）。
+- **裸 S3 当最终板**：2.1"（Ø53，每边留 18mm）或 2.8"（Ø70.13，每边留 9mm）RGB 480×480 都能保住现有几何，代价是 **IDF 5.x + 转接板 + ≥21 根线**；
+  RGB565 本身就要 16 数据 + PCLK/DE/HSYNC/VSYNC = **20 根信号**（模组 40pin FPC 里还含初始化 SPI、背光、电源）——
+  DualEye 的 18PIN FPC 是**主板↔副板的板对板排线**（微雪只写改 R12 + 改配置做三屏，[wiki 第 17/18 项](https://docs.waveshare.com/ESP32-S3-DualEye-Touch-LCD-1.28)），含电源/背光，塞不下这 20 根。
+
+**下单前必须在车上量的（这三项仓库里都没有数）**：
+
+| 量什么 | 卡在哪 | 现状 |
+|---|---|---|
+| 表玻 → 表盘纸净厚度 | 屏模块**总厚**必须 ≤ 它（红线 50） | **未量**（ARCHITECTURE 275 写「待量」） |
+| 台阶面 → 表盘纸深度 | 40pin FPC 座 + 转接板能不能藏进 Ø100 台阶 | **未量** |
+| 表盘后方净空 | FPC 出线方向 + 屏背面元件有没有地方弯 | **未量** |
+
+已量、下单前复测一次即可：Ø89 孔、Ø100 台阶（台阶宽 5.5mm）、两表圆心距 95mm。
