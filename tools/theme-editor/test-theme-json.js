@@ -358,6 +358,263 @@ section("三处默认主题必须一致(ui_theme.h / theme-default.json / ARC_FA
 }
 
 // ------------------------------------------------------------
+// ★ 读数颜色:图片编辑器那一份副本 vs 固件
+//
+// 这一节是给"owner 换了白底图,屏上的字看不见"那条反馈加的。颜色字段本身
+// 早就有了(固件 + 主题编辑器都支持),缺的是**图片编辑器**那一页 ——
+// 用户正是在那一页换底图、对着底图看效果,所以那一页必须能改、能立刻看见。
+//
+// 于是页面里多出两份副本:四个默认色(ARC_FALLBACK.readout)与预览用的
+// 位置/字号表(READOUT_LAYOUT / READOUT_FONT_PX)。抄错的后果与老规矩一样:
+// **不报错**,只是"预览里的字和真车不是一个颜色/字号"—— 而预览正是这一页
+// 唯一能看的东西。所以这里把它们逐个对到 ui_theme.h / dash_ui.cpp 上。
+// ------------------------------------------------------------
+section("读数颜色:图片编辑器 vs ui_theme.h / dash_ui.cpp");
+{
+  const repo = path.resolve(__dirname, "..", "..");
+  const hSrc = fs.readFileSync(path.join(repo, "lib", "themetool", "ui_theme.h"), "utf8");
+  const cSrc = fs.readFileSync(path.join(repo, "src", "dash_ui.cpp"), "utf8");
+  const imgSrc = fs.readFileSync(path.join(__dirname, "image-editor.html"), "utf8");
+
+  // ---- 1) 固件默认值(唯一事实来源) ----
+  const fw = {};
+  const fwRe = /t\.readout\.(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)/g;
+  let r;
+  while ((r = fwRe.exec(hSrc)) !== null) fw[r[1]] = Number(r[2]);
+  const FW_KEYS = ["digit_color", "unit_color", "coolant_color", "intake_color",
+                   "digit_font", "unit_font", "digit_cy", "unit_cy", "coolant_cy",
+                   "intake_cy", "show_units", "show_coolant", "show_intake"];
+  eq(Object.keys(fw).length, FW_KEYS.length,
+     "ui_theme.h 里解析出 " + FW_KEYS.length + " 个读数默认值(得到 " +
+     Object.keys(fw).length + ")");
+
+  const COLOR_KEYS = ["digit_color", "unit_color", "coolant_color", "intake_color"];
+  eq(fw.digit_color, 0xFFFFFF, "固件默认:大数字白");
+  eq(fw.unit_color, 0x9AA0A6, "固件默认:单位灰");
+  eq(fw.coolant_color, 0x7CFF6B, "固件默认:水温数字 = 水温弧色");
+  eq(fw.intake_color, 0xFFB020, "固件默认:进气温度数字 = 进气弧色");
+  // ★ 这四个数就是"向后兼容"的**定义**:老主题没有 readout 时,固件与编辑器
+  //   都用它们 —— 所以它们一改,"老主题看起来和今天一样"这句话就不成立了。
+  //   改这里必须是有意的(并且要重新想一遍老主题的观感)。
+
+  // ---- 2) 固件真的把颜色用在读数标签上(dash_ui.cpp) ----
+  for (const k of COLOR_KEYS) {
+    ok(cSrc.indexOf("lv_color_hex(READOUT_" + k.toUpperCase() + ")") >= 0,
+       "dash_ui.cpp 用 " + k + " 建读数标签");
+  }
+
+  // ---- 3) theme-default.json(给人当模板的那份) ----
+  const tpl = TJ.themeObject(TJ.parseThemeJson(
+    fs.readFileSync(path.join(__dirname, "theme-default.json"), "utf8")));
+  ok(!!tpl.readout, "theme-default.json 里有 readout 段");
+  for (const k of COLOR_KEYS) eq(tpl.readout[k], fw[k], "theme-default.json 的 " + k);
+
+  // ---- 4) image-editor.html 的 ARC_FALLBACK.readout ----
+  const fb = /const ARC_FALLBACK\s*=\s*\{([\s\S]*?)\n\};/.exec(imgSrc);
+  ok(!!fb, "在 image-editor.html 里找到 ARC_FALLBACK");
+  const fbObj = new Function("return {" + fb[1].replace(/\/\/[^\n]*/g, "") + "};")();
+  ok(!!fbObj.readout, "ARC_FALLBACK 里有 readout 段");
+  for (const k of COLOR_KEYS) eq(fbObj.readout[k], fw[k], "ARC_FALLBACK 的 " + k);
+  eq(Object.keys(fbObj.readout).length, COLOR_KEYS.length,
+     "ARC_FALLBACK.readout 只放四个颜色(位置/开关走 READOUT_LAYOUT,不混进导出的文件)");
+
+  // ---- 5) 把页面里的读数逻辑抠出来真跑一遍 ----
+  //   抠的必须是**页面自己那段源码**(不是在这里抄一份),否则这一节就只是
+  //   在测一份复制品 —— 页面改了它却还是绿的。
+  const grab = (re, what) => {
+    const g = re.exec(imgSrc);
+    ok(!!g, "在 image-editor.html 里找到 " + what);
+    return g ? g[0] : "";
+  };
+  const pageSrc = [
+    grab(/function hexOf\(n\)\s*\{[^\n]*\}/, "hexOf()"),
+    grab(/function ensureReadout\(t\)\s*\{[\s\S]*?\n\}/, "ensureReadout()"),
+    grab(/const READOUT_LAYOUT\s*=\s*\{[\s\S]*?\n\};/, "READOUT_LAYOUT"),
+    grab(/const READOUT_FONT_PX\s*=\s*\{[^\n]*\};/, "READOUT_FONT_PX"),
+    grab(/const AUX_OF_SCREEN\s*=\s*\[[^\n]*\];/, "AUX_OF_SCREEN"),
+    grab(/function readoutLayout\(r\)\s*\{[\s\S]*?\n\}/, "readoutLayout()"),
+    grab(/function readoutFontPx\(which\)\s*\{[\s\S]*?\n\}/, "readoutFontPx()"),
+    grab(/function readoutText\(kind, st\)\s*\{[\s\S]*?\n\}/, "readoutText()"),
+    grab(/function unitText\(kind\)\s*\{[\s\S]*?\n\}/, "unitText()"),
+    grab(/function auxText\(kind, st\)\s*\{[^\n]*\}/, "auxText()"),
+    grab(/function primaryKindOf\(sc\)\s*\{[\s\S]*?\n\}/, "primaryKindOf()"),
+    grab(/function screenHasKind\(sc, kind\)\s*\{[\s\S]*?\n\}/, "screenHasKind()"),
+    grab(/function drawReadoutLabel\(ctx, W, cy480, text, fontPx, colorHex\)\s*\{[\s\S]*?\n\}/,
+         "drawReadoutLabel()"),
+    grab(/function drawReadout\(ctx, W, which, sc, st\)\s*\{[\s\S]*?\n\}/, "drawReadout()"),
+    "const ARC_FALLBACK = {" + fb[1] + "};"
+  ].join("\n");
+  // previewSide()(240 那块板还是 480 档)与 gTheme(当前主题)在页面里是全局量,
+  // 这里当参数注进去 —— 于是同一段源码能在两种屏上各跑一遍。
+  // apiFrom(previewSideStub, theme) → 页面那几个函数的对象。
+  const apiFrom = new Function("previewSide", "gTheme",
+    pageSrc + "\nreturn { ensureReadout: ensureReadout, readoutLayout: readoutLayout," +
+    " readoutFontPx: readoutFontPx, readoutText: readoutText, unitText: unitText," +
+    " auxText: auxText, primaryKindOf: primaryKindOf, screenHasKind: screenHasKind," +
+    " drawReadout: drawReadout, READOUT_LAYOUT: READOUT_LAYOUT," +
+    " READOUT_FONT_PX: READOUT_FONT_PX, ARC_FALLBACK: ARC_FALLBACK };");
+  const makeApi = (boardPx, theme) => apiFrom(() => boardPx, theme);
+  const P480 = makeApi(480, fbObj);
+  const P240 = makeApi(240, fbObj);
+  const api = P480;
+
+  // 预览用的位置/开关 = 固件默认值(本页不提供这些控件,只求"画得一样")
+  eq(Object.keys(api.READOUT_LAYOUT).length, 7, "READOUT_LAYOUT 七个字段");
+  for (const k of ["digit_cy", "unit_cy", "coolant_cy", "intake_cy",
+                   "show_units", "show_coolant", "show_intake"]) {
+    eq(api.READOUT_LAYOUT[k], fw[k], "READOUT_LAYOUT." + k + " = 固件默认值");
+  }
+
+  // 字号表 = ui_theme.h 末尾那张 kReadoutFontPx(480 → 48/18、240 → 24/10)
+  const tbl = /kReadoutFontPx\[kReadoutResTierCount\]\[kReadoutFontTierCount\]\s*=\s*\{([\s\S]*?)\n\};/
+    .exec(hSrc);
+  ok(!!tbl, "解析 ui_theme.h 的 kReadoutFontPx 表");
+  const rows = [];
+  const rowRe = /\{\s*(\d+)\s*,\s*(\d+)\s*\}/g;
+  while ((r = rowRe.exec(tbl[1])) !== null) rows.push([Number(r[1]), Number(r[2])]);
+  eq(rows.length, 2, "字号表两档(480 / 240)");
+  eq(JSON.stringify(api.READOUT_FONT_PX[480]), JSON.stringify(rows[0]), "480 档字号 = 固件表");
+  eq(JSON.stringify(api.READOUT_FONT_PX[240]), JSON.stringify(rows[1]), "240 档字号 = 固件表");
+  eq(P480.readoutFontPx(0), rows[0][0], "480 画布:大数字点数");
+  eq(P480.readoutFontPx(1), rows[0][1], "480 画布:单位点数");
+  eq(P240.readoutFontPx(0), rows[1][0], "240 画布:大数字点数");
+  eq(P240.readoutFontPx(1), rows[1][1], "240 画布:单位点数");
+
+  // 文本格式 = dash_ui.cpp 的 readout_value() / unit_text()
+  const utBlock = /static const char\* unit_text\(ArcKind k\)\s*\{[\s\S]*?\n\}/.exec(cSrc);
+  ok(!!utBlock, "在 dash_ui.cpp 里找到 unit_text()");
+  ok(/ArcKind::Speed:\s*return "km\/h"/.test(utBlock[0]), "固件:车速单位 km/h");
+  ok(/ArcKind::Rpm:\s*return "rpm"/.test(utBlock[0]), "固件:转速单位 rpm");
+  ok(/default:\s*return ""/.test(utBlock[0]),
+     "固件:水温/进气温度**没有单位行**(default 返回空串)");
+  eq(api.unitText(0), "km/h", "页面:车速单位");
+  eq(api.unitText(1), "rpm", "页面:转速单位");
+  eq(api.unitText(2), "", "页面:水温当大数字时单位行是空的(与固件一致)");
+  eq(api.unitText(3), "", "页面:进气温度当大数字时单位行也是空的");
+  {
+    const st = { speed: 62.4, rpm: 2734, coolant: 87.6, intake: 31.4 };
+    eq(api.readoutText(0, st), "62", "车速取整到 1");
+    eq(api.readoutText(1, st), "2730", "转速取到 10 位(OBD 的个位是噪声)");
+    eq(api.readoutText(2, st), "88", "水温取整到 1℃");
+    eq(api.readoutText(3, st), "31", "进气温度取整到 1℃");
+    eq(api.auxText(2, st), "88°C", "副表那一行 = 数字 + °C(与固件 \"%d°C\" 一致)");
+  }
+
+  // ---- 6) 向后兼容:老主题(没有 readout)预览出来和今天一模一样 ----
+  {
+    const oldTheme = JSON.parse(JSON.stringify(fbObj));
+    delete oldTheme.readout;
+    const a = makeApi(480, oldTheme);
+    const filled = a.ensureReadout(oldTheme);        // 页面读主题文件时就是这么补的
+    for (const k of COLOR_KEYS) eq(filled[k], fw[k], "老主题补上的 " + k + " = 固件默认色");
+    eq(Object.keys(filled).length, COLOR_KEYS.length,
+       "只补四个颜色,不往用户文件里塞位置/字号");
+
+    // readout 里只有位置(拿主题编辑器改过位置)时,颜色照样补齐、位置不动
+    const partial = { readout: { digit_cy: 90 } };
+    a.ensureReadout(partial);
+    eq(partial.readout.digit_color, fw.digit_color, "只有位置的老主题也补上颜色");
+    eq(partial.readout.digit_cy, 90, "用户写过的位置不动");
+
+    // 预览画在哪:主题里没写就用固件默认值,而且**不写回主题对象**
+    const lay = a.readoutLayout({});
+    eq(lay.digit_cy, fw.digit_cy, "没写位置 → 预览用固件默认位置");
+    eq(lay.show_units, fw.show_units, "没写开关 → 预览用固件默认开关");
+    const untouched = {};
+    a.readoutLayout(untouched);
+    eq(Object.keys(untouched).length, 0,
+       "readoutLayout() 不往主题里写东西(兜底不会混进导出的 theme.json)");
+  }
+
+  // ---- 7) 预览真的按这些颜色画字("改了颜色,预览跟着变"的机器证明) ----
+  {
+    const STAGE = { speed: 62.4, rpm: 2734, coolant: 87.6, intake: 31.4 };
+    // 只实现 drawReadoutLabel 用到的那几个 canvas 方法 + 记下每一次 fillText。
+    // canvasW = 画布宽度,boardPx = 目标板的屏宽(阶段模拟那排小图是 200 宽的
+    // 画布画**设备屏**的缩略图,所以这两个数必须分开传 —— 合成一个就测不出
+    // "缩两次"那个 bug)。
+    const render = (theme, which, canvasW, boardPx) => {
+      const calls = [];
+      const ctx = {
+        fillStyle: "", font: "", textAlign: "", textBaseline: "",
+        save() {}, restore() {},
+        fillText(text, x, y) {
+          calls.push({ text: text, x: x, y: y, color: ctx.fillStyle, font: ctx.font });
+        }
+      };
+      apiFrom(() => boardPx, theme)
+        .drawReadout(ctx, canvasW, which, theme.screens[which], STAGE);
+      return calls;
+    };
+
+    const def = P480.ARC_FALLBACK;
+    const left = render(def, 0, 480, 480);
+    eq(left.length, 3, "左屏默认画三行:大数字 + 单位 + 水温");
+    eq(left[0].text, "2730", "左屏大数字 = 转速");
+    eq(left[0].color, "#FFFFFF", "大数字用 digit_color");
+    eq(left[1].text, "rpm", "左屏单位");
+    eq(left[1].color, "#9AA0A6", "单位用 unit_color");
+    eq(left[2].text, "88°C", "左屏底部 = 水温");
+    eq(left[2].color, "#7CFF6B", "水温数字用 coolant_color");
+
+    const right = render(def, 1, 480, 480);
+    eq(right.length, 3, "右屏默认画三行:大数字 + 单位 + 进气温度");
+    eq(right[0].text, "62", "右屏大数字 = 车速");
+    eq(right[1].text, "km/h", "右屏单位");
+    eq(right[2].text, "31°C", "右屏底部 = 进气温度");
+    eq(right[2].color, "#FFB020", "进气温度数字用 intake_color");
+
+    // ★ 白底图那一幕:把四个颜色改成深色 → 预览里画出来的就必须是深色
+    const dark = JSON.parse(JSON.stringify(def));
+    dark.readout.digit_color = 0x101010;
+    dark.readout.unit_color = 0x202020;
+    dark.readout.coolant_color = 0x303030;
+    dark.readout.intake_color = 0x404040;
+    const dl = render(dark, 0, 480, 480), dr = render(dark, 1, 480, 480);
+    eq(dl[0].color, "#101010", "改成深色的大数字 → 预览里就是深色");
+    eq(dl[1].color, "#202020", "改成深色的单位 → 预览里就是深色");
+    eq(dl[2].color, "#303030", "改成深色的水温 → 预览里就是深色");
+    eq(dr[2].color, "#404040", "改成深色的进气温度 → 预览里就是深色");
+
+    // 位置与字号:cy 是 480 基准、按画布缩;字号是**设备屏上的点数**,只缩一次
+    eq(dl[0].y, fw.digit_cy, "480 画布:数字中心 y = digit_cy");
+    eq(dl[1].y, fw.unit_cy, "480 画布:单位中心 y = unit_cy");
+    ok(/^48px/.test(dl[0].font), "480 画布:大数字 48 号(得到 " + dl[0].font + ")");
+    ok(/^18px/.test(dl[1].font), "480 画布:单位 18 号(得到 " + dl[1].font + ")");
+    const l240 = render(def, 0, 240, 240);
+    eq(l240[0].y, fw.digit_cy * 240 / 480, "240 画布:数字中心 y 按 480→240 缩(36)");
+    ok(/^24px/.test(l240[0].font),
+       "240 画布:大数字 **24 号**(查 240 档、只缩一次;得到 " + l240[0].font + ")");
+    ok(/^10px/.test(l240[1].font), "240 画布:单位 10 号(得到 " + l240[1].font + ")");
+    // 阶段模拟那排小图固定 200 宽,是"设备屏缩到 200":
+    //   480 档设备 → 48×200/480 = 20 号;240 档设备 → 24×200/240 = 20 号
+    //   (字号缩**两次**的话这里会得到 8 号 —— 那一行就是钉这个的)
+    const small480 = render(def, 0, 200, 480);
+    ok(/^20px/.test(small480[0].font),
+       "200 宽小图(480 档设备):48 × 200/480 = 20 号(得到 " + small480[0].font + ")");
+    const small240 = render(def, 0, 200, 240);
+    ok(/^20px/.test(small240[0].font),
+       "200 宽小图(240 档设备):24 × 200/240 = 20 号(得到 " + small240[0].font + ")");
+
+    // 开关关掉就不该画:show_units=0 → 只剩大数字 + 水温
+    const noUnit = JSON.parse(JSON.stringify(def));
+    noUnit.readout.show_units = 0;
+    const nu = render(noUnit, 0, 480, 480);
+    eq(nu.length, 2, "show_units=0 → 不画单位那一行");
+    eq(nu[0].text, "2730", "关掉单位后第一行还是大数字");
+    // show_coolant=0 → 左屏只剩大数字 + 单位
+    const noCool = JSON.parse(JSON.stringify(def));
+    noCool.readout.show_coolant = 0;
+    eq(render(noCool, 0, 480, 480).length, 2, "show_coolant=0 → 不画水温那一行");
+
+    // 副表弧搬到没有它的屏上就不该画(与固件的"哪屏有那条弧才画"一致)
+    const onlyRpm = { screens: [ { arcs: [ { kind: 1 } ] }, { arcs: [ { kind: 0 } ] } ] };
+    const one = render(onlyRpm, 0, 480, 480);
+    eq(one.length, 2, "左屏只有转速弧 → 只画大数字 + 单位,没有水温行");
+  }
+}
+
+// ------------------------------------------------------------
 console.log("\n" + "=".repeat(56));
 if (fail === 0) console.log("全部通过:" + pass + " 项断言");
 else {

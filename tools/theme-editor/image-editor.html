@@ -83,7 +83,7 @@
   .stage-cell .r{font-size:11px;color:var(--dim);margin-top:2px;text-align:left}
   .stage-cell .miss{color:var(--warn)}
   .stage-cell .none{color:#ff9c9c}
-  /* 三条弧的配色编辑:一行一条弧,色块 + 色号 + 不透明度 */
+  /* 弧的配色编辑:一行一条弧,色块 + 色号 + 不透明度 */
   .arc-edit{margin:8px 0 12px;padding:8px 10px;border:1px solid var(--line);border-radius:6px}
   .arc-edit .ttl{color:var(--text);font-size:12px;margin-bottom:6px}
   .arc-edit .row label{flex:0 0 92px}
@@ -94,6 +94,17 @@
                              font:12px Consolas,monospace}
   .arc-edit input[type=range]{flex:1;min-width:0}
   .arc-edit .val{width:34px;text-align:right;color:var(--dim);font-size:12px}
+  /* 读数颜色:一块管四处文字,每处一行(色块 + 色号) */
+  .ro-edit{margin:8px 0 12px;padding:8px 10px;border:1px solid var(--line);border-radius:6px}
+  .ro-edit .ttl{color:var(--text);font-size:12px;margin-bottom:6px}
+  .ro-edit .ro-head{margin:10px 0 2px;color:var(--dim);font-size:12px}
+  .ro-edit .row label{flex:0 0 108px}
+  .ro-edit .ro-sub{color:var(--dim);font-size:11px;margin-left:116px;margin-top:-2px}
+  .ro-edit input[type=color]{width:38px;height:24px;border:1px solid var(--line);
+                             background:#0e1016;border-radius:4px;padding:0;cursor:pointer}
+  .ro-edit input[type=text]{width:78px;background:#0e1016;border:1px solid var(--line);
+                            color:var(--text);border-radius:4px;padding:3px 5px;
+                            font:12px Consolas,monospace}
 </style>
 </head>
 <body>
@@ -117,7 +128,7 @@
     </section>
 
     <section>
-      <h2>2 · 尺寸与配色</h2>
+      <h2>2 · 尺寸与配色 / 读数颜色</h2>
       <div class="row">
         <label>预览底色</label>
         <input type="color" id="bg-color" value="#141414">
@@ -136,12 +147,16 @@
         <button id="btn-reset-theme" class="tiny">用固件默认</button>
       </div>
       <div id="arc-editors"></div>
+      <div id="readout-editors"></div>
       <div class="hint" id="arc-source" style="color:var(--dim);font-size:12px"></div>
       <div class="hint" style="color:var(--dim);font-size:12px">
-        这里的颜色就是**主题里的那三条弧**：改完点「导出 theme.json」，
+        这里的颜色就是**主题里那四条弧 + 四处读数文字**：改完点「导出 theme.json」，
         用 esptool 刷进 <code>theme</code> 分区就生效（固件不用重编译）。
-        本页只写<b>弧与底色</b>；五官、开机时长、数字读数那些字段缺失时固件用默认值 ——
-        要调它们请用<b>主题编辑器</b>（两页共用同一份配色，不会互相覆盖）。<br>
+        <b>换了底图看不见字就是在这里改</b>：底色深就把读数改成浅色，底色浅就改成深色 ——
+        右边的预览会立刻跟着变，所以**预览就是这里的把关人**（颜色和底图太接近，
+        预览里一眼就看得出来）。<br>
+        本页只写<b>底色、四条弧、读数颜色</b>；五官、开机时长、读数位置/字号那些字段缺失时
+        固件用默认值 —— 要调它们请用<b>主题编辑器</b>（两页共用同一份配色，不会互相覆盖）。<br>
         注意：配色属于 <b>theme 分区</b>，图片属于 <b>image 分区</b>，是两次刷写。
       </div>
       <div class="row">
@@ -627,10 +642,12 @@ function setSize(item, w) {
 //     · 主题编辑器改完 → 本页刷新后读到的就是那一份
 //   谁也没有"自己的一份默认值"，所以不会互相覆盖。
 //
-// ★ 本页导出的 theme.json 只包含它动过的字段(底色 + 三条弧)。
+// ★ 本页导出的 theme.json 只包含它动过的字段(底色 + 四条弧 + 读数颜色)。
 //   固件对缺失字段一律用默认值(主题格式的设计，见 theme_store.cpp)，
 //   所以这个文件**直接刷也安全** —— 拿主题编辑器导出的完整文件来读、
 //   改完再导出，那就还是完整的。
+//   ★ 读数那一段是**新加的**:老主题文件里没有它,本页补上固件默认色
+//     (见 ensureReadout),所以拿旧主题在这一页预览/导出,画面与今天一致。
 // ------------------------------------------------------------
 const THEME_KEY = "206dash.theme";      // 与主题编辑器共用同一个键
 const THEME_KEY_V1 = "206dash.theme.v1"; // 旧记录(整份主题、没有基线)的备份位
@@ -639,12 +656,25 @@ function cloneTheme(o) { return JSON.parse(JSON.stringify(o)); }
 function hexOf(n) { return "#" + (n & 0xFFFFFF).toString(16).padStart(6, "0").toUpperCase(); }
 function unhexOf(s) { return parseInt(String(s).replace("#", ""), 16) & 0xFFFFFF; }
 
-// 兜底 = 固件默认主题里"本页用得到的那部分"(底色 + 四条弧)。
+// 兜底 = 固件默认主题里"本页用得到的那部分"(底色 + 四条弧 + 读数颜色)。
 // 与 lib/themetool/ui_theme.h 的 theme_set_defaults() 一致，
 // 由 test-theme-json.js 逐字段对账(这几处副本不许跑偏)。
 // 字段名与主题里一样(kind: 0=车速 1=转速 2=水温 3=进气温度)。
 const ARC_FALLBACK = {
   bg_color: 0x141414,
+  // ★ 读数(屏上的字)的颜色。**为什么这一页必须有这几个数**:
+  //   背景图是用户自己换的,换一张白底图之后默认的浅色字(数字白、单位灰)
+  //   就整片看不见(owner 实屏报的)。所以"改字的颜色"必须在这一页就能做 ——
+  //   这一页正是对着底图看效果的地方。
+  //   readout 里其余字段(字号档位/中心 y/显示开关)不在这份兜底里:
+  //   本页不管它们、也不写进导出的文件,缺失时由**固件**用默认值
+  //   (预览画在哪见下面的 READOUT_LAYOUT)。
+  readout: {
+    digit_color:   0xFFFFFF,   // 大数字(转速/速度)
+    unit_color:    0x9AA0A6,   // 单位(km/h / rpm)
+    coolant_color: 0x7CFF6B,   // 水温数字(左屏底部) —— 与水温弧同色
+    intake_color:  0xFFB020    // 进气温度数字(右屏底部) —— 与进气弧同色
+  },
   screens: [
     { arcs: [
       { kind: 1, start_deg: 135, end_deg: 405, radius: 205, width: 24,
@@ -662,6 +692,43 @@ const ARC_FALLBACK = {
 };
 const ARC_KIND_LABEL = ["车速", "转速", "水温", "进气温度"];
 const SCREEN_LABEL = ["左屏(转速表)", "右屏(速度表)"];
+// 每屏的"副表"读数(与固件 dash_ui.cpp 的 is_aux_kind() 同一套定义):
+// 副表数字只在**有那条副弧、且它不是这屏大数字**时才有独立文字。
+// kind 2 = 水温,3 = 进气温度。
+const AUX_OF_SCREEN = [ { kind: 2, key: "coolant" }, { kind: 3, key: "intake" } ];
+
+// ------------------------------------------------------------
+// 读数"画在哪儿"和"画多大" —— 只给**预览**用,**不进主题文件**
+//
+// 这一页不提供位置/字号/显示开关的控件(那几个字段要对着几何调,归主题编辑器),
+// 所以这里只需要"主题里没写时按固件默认值画"这一套兜底:
+//   · READOUT_LAYOUT  ← ui_theme.h 的 theme_set_defaults() 里那几行
+//   · READOUT_FONT_PX ← 同一文件末尾的 kReadoutFontPx(480 → 48/18、240 → 24/10)
+// 两处都由 test-theme-json.js 对着 ui_theme.h 逐个数对账 —— 抄错了不会报错,
+// 只会画成"和真车不一样",那种错只能靠对账挡住。
+// ------------------------------------------------------------
+const READOUT_LAYOUT = {
+  digit_cy: 72, unit_cy: 107, coolant_cy: 384, intake_cy: 384,
+  show_units: 1, show_coolant: 1, show_intake: 1
+};
+// [分辨率档][字号档] = 点数。档位 0 = 大数字、1 = 单位/副表(主题里存的是**档位**)
+const READOUT_FONT_PX = { 480: [48, 18], 240: [24, 10] };
+
+// 主题里写了就用主题的,没写就用固件默认值 —— **只读,不改主题对象**
+// (所以这份兜底不会混进导出的 theme.json,见 ensureReadout 的说明)
+function readoutLayout(r) {
+  const v = (k) => (typeof r[k] === "number" ? r[k] : READOUT_LAYOUT[k]);
+  return { digit_cy: v("digit_cy"), unit_cy: v("unit_cy"),
+           coolant_cy: v("coolant_cy"), intake_cy: v("intake_cy"),
+           show_units: v("show_units"), show_coolant: v("show_coolant"),
+           show_intake: v("show_intake") };
+}
+// 字号档位 → 点数。分辨率档取**当前预览画布**那一档(240 那块板 / 480 档)——
+// 与固件 readout_font() 的"点数由 THEME_DISPLAY_RES 查表"是同一条规矩。
+function readoutFontPx(which) {
+  const row = READOUT_FONT_PX[previewSide() === 240 ? 240 : 480];
+  return row[which === 1 ? 1 : 0];
+}
 
 // 当前主题对象(整份保留:读进来是什么样就什么样，只改本页管的字段) + 来源说明
 let gTheme = cloneTheme(ARC_FALLBACK);
@@ -674,6 +741,26 @@ let gThemeBase = null;
 // 底色跟着主题走:预览按它合成透明度
 function themeBgHex() {
   return typeof gTheme.bg_color === "number" ? hexOf(gTheme.bg_color) : "#141414";
+}
+
+// ★ 读数那一段:只保证**本页管的四个颜色**存在,其余字段一个都不补。
+//
+//   为什么不整套补齐(与其它字段的处理方式故意不同):
+//     这一页导出的 theme.json 固件会**原样吃**(缺失字段 = 固件默认值),
+//     所以"补上一份本页猜的默认值"没有好处,反而有两个坏处:
+//       ① 把 480 基准的中心 y、字号档位抄进文件,以后固件改默认值会被这份文件挡住
+//          （和旧 localStorage 记录挡住新默认值是同一个坑,见 mergeDefaults 那段）;
+//       ② 本页不提供那几个字段的控件,抄进来的数就成了"看不出来源的数"。
+//     因此这里只在**缺颜色**时补颜色(背景色也是同一套做法,见 applyThemeObject)。
+//   老 theme.json(没有 readout、或 readout 里只有位置)在这里得到的四个颜色
+//   就是**固件默认色** —— 所以拿旧主题预览、导出,画面与今天完全一样(向后兼容)。
+function ensureReadout(t) {
+  if (!t.readout || typeof t.readout !== "object") t.readout = {};
+  const fb = ARC_FALLBACK.readout;
+  for (const k of Object.keys(fb)) {
+    if (typeof t.readout[k] !== "number") t.readout[k] = fb[k];
+  }
+  return t.readout;
 }
 
 // 写回本机(两页共用的那一份)。存储不可用(隐私模式)时静默跳过，不影响使用。
@@ -695,6 +782,7 @@ function applyThemeObject(t) {
   // 只保证本页要用到的字段存在
   gTheme = t;
   if (typeof gTheme.bg_color !== "number") gTheme.bg_color = ARC_FALLBACK.bg_color;
+  ensureReadout(gTheme);            // 四个读数颜色(缺了会走固件默认色)
   if (!Array.isArray(gTheme.screens)) gTheme.screens = cloneTheme(ARC_FALLBACK.screens);
   for (let s = 0; s < 2; s++) {
     if (!gTheme.screens[s]) gTheme.screens[s] = cloneTheme(ARC_FALLBACK.screens)[s];
@@ -741,8 +829,8 @@ function restoreSavedTheme() {
       return "legacy";
     }
     gThemeBase = rec.base || null;
-    // ★ 三方合并:本页知道的字段(底色 + 三条弧)里，"用户没改过的"跟着当前默认值走;
-    //   其它字段原样保留(它们来自主题编辑器)
+    // ★ 三方合并:本页知道的字段(底色 + 四条弧 + 读数颜色)里，"用户没改过的"
+    //   跟着当前默认值走;其它字段原样保留(它们来自主题编辑器)
     const merged = gThemeBase
       ? ThemeJson.mergeDefaults(gThemeBase, rec.theme, ARC_FALLBACK)
       : rec.theme;
@@ -825,7 +913,8 @@ function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, valueColor, trackColo
 }
 
 // ---- 配色控件(与主题编辑器同一套字段名与交互) ----
-function arcColorRow(parent, label, get, set) {
+// 一行:色块 + 色号(手打也行)。"色块拖到哪、预览就立刻变到哪"。
+function colorRow(parent, label, get, set) {
   const row = document.createElement("div");
   row.className = "row";
   const lb = document.createElement("label");
@@ -851,6 +940,10 @@ function arcColorRow(parent, label, get, set) {
   row.append(lb, c, t);
   parent.appendChild(row);
 }
+
+// 弧那一块沿用旧名字(两处调用点都在这页里,改名字没有收益):
+// 一行颜色控件现在**弧和读数共用** —— 两边要的就是同一种交互。
+function arcColorRow(parent, label, get, set) { colorRow(parent, label, get, set); }
 
 function arcOpaRow(parent, get, set) {
   const row = document.createElement("div");
@@ -937,12 +1030,64 @@ function buildArcSourceLine() {  const el = document.getElementById("arc-source"
   }
 }
 
-// 主题变过之后统一刷新:底色选择器、配色控件、预览
+// ------------------------------------------------------------
+// 读数(屏上的字)的颜色 —— 本页新增的一整块
+//
+// 为什么必须有:背景图是**用户自己换的**。owner 换了一张白底图,而读数默认是
+//   浅色(数字白、单位灰)—— 字直接看不见,而且**没有任何报错**。
+//   这两个编辑器的分工是"这一页对着底图看效果",所以"字的颜色"就得在这一页改,
+//   而不是推给主题编辑器(推过去的结果是用户得先学会导出另一个文件 —— 见上面那段)。
+//
+// 只做**颜色**:字号档位/中心 y/显示开关仍归主题编辑器(那几个字段需要看几何,
+//   本页预览里也没有可拖的把手)。这里一行行写明"这行字在屏上哪儿"。
+// ------------------------------------------------------------
+function buildReadoutEditors() {
+  const box = document.getElementById("readout-editors");
+  if (!box) return;
+  box.innerHTML = "";
+  const r = ensureReadout(gTheme);
+
+  const wrap = document.createElement("div");
+  wrap.className = "ro-edit";
+  const ttl = document.createElement("div");
+  ttl.className = "ttl";
+  ttl.textContent = "读数颜色（屏上的字）";
+  wrap.appendChild(ttl);
+
+  const head = document.createElement("div");
+  head.className = "ro-head";
+  head.textContent = "通用（两屏都有）";
+  wrap.appendChild(head);
+
+  // 数字与单位**共用一个字号档**却各有各的颜色 —— 单位默认比数字暗
+  // (灰 0x9AA0A6),所以底图一换,先看不见的往往是单位那行。
+  colorRow(wrap, "大数字", () => r.digit_color, v => r.digit_color = v);
+  colorRow(wrap, "单位 km/h · rpm", () => r.unit_color, v => r.unit_color = v);
+
+  const head2 = document.createElement("div");
+  head2.className = "ro-head";
+  head2.textContent = "副表数字（各自屏的底部）";
+  wrap.appendChild(head2);
+
+  // ★ 水温与进气温度是**两个独立的颜色字段**(主题里 coolant_color / intake_color),
+  //   虽然它们都用"子表档"的字号 —— 别把这两个合并成一个控件。
+  colorRow(wrap, "水温（左屏）", () => r.coolant_color, v => r.coolant_color = v);
+  colorRow(wrap, "进气温度（右屏）", () => r.intake_color, v => r.intake_color = v);
+  const sub = document.createElement("div");
+  sub.className = "ro-sub";
+  sub.textContent = "显示开关 / 字号 / 位置 → 主题编辑器";
+  wrap.appendChild(sub);
+
+  box.appendChild(wrap);
+}
+
+// 主题变过之后统一刷新:底色选择器、配色控件(弧 + 读数)、预览
 function applyThemeToUi() {
   theme.bg = themeBgHex();
   const bg = document.getElementById("bg-color");
   if (bg) bg.value = theme.bg;
   buildArcEditors();
+  buildReadoutEditors();
   refresh();
 }
 // 从图片列表里取某个角色的第一张（按 order 最小）
@@ -983,6 +1128,96 @@ function blitCentered(ctx, item, cx, cy, cw, ch) {
   ctx.drawImage(tmp, Math.round(cx - item.w / 2), Math.round(cy - item.h / 2));
 }
 
+// 这一屏的"大数字"跟哪一路:第一条**非副表**弧(与固件 dash_ui.cpp 的 primary_kind()
+// 同一套规则 —— 副表定义见 AUX_OF_SCREEN)。副表弧排在前面时,大数字不能跟着它走。
+function primaryKindOf(sc) {
+  const arcs = (sc && sc.arcs) || [];
+  const count = (sc && sc.arc_count === undefined) ? arcs.length : sc.arc_count;
+  for (let i = 0; i < count && i < arcs.length; i++) {
+    if (arcs[i].kind !== 2 && arcs[i].kind !== 3) return arcs[i].kind;
+  }
+  return arcs.length ? arcs[0].kind : 0;
+}
+
+function screenHasKind(sc, kind) {
+  const arcs = (sc && sc.arcs) || [];
+  const count = (sc && sc.arc_count === undefined) ? arcs.length : sc.arc_count;
+  for (let i = 0; i < count && i < arcs.length; i++) {
+    if (arcs[i].kind === kind) return true;
+  }
+  return false;
+}
+
+// 读数文本与固件 dash_ui.cpp 的 readout_value() **同一套格式**:
+//   车速取整、转速取到 10 位(OBD 的个位是噪声)、温度取整到 1℃。
+function readoutText(kind, st) {
+  if (kind === 0) return String(Math.round(st.speed));
+  if (kind === 1) return String(Math.round(st.rpm / 10) * 10);
+  if (kind === 3) return String(Math.round(st.intake));
+  return String(Math.round(st.coolant));
+}
+
+// 大数字下面那一行单位,与固件 dash_ui.cpp 的 unit_text() 同一套:
+//   车速 km/h、转速 rpm;**水温/进气温度没有单位行**(它们的 °C 跟副表那一行写)。
+// ★ 这里漏掉这条就会画出一个固件上根本不存在的 "°C" —— 而"预览要能当真车的依据"
+//   正是这一页存在的理由。
+function unitText(kind) {
+  if (kind === 0) return "km/h";
+  if (kind === 1) return "rpm";
+  return "";
+}
+
+// 副表那一行的文本:数字 + °C,与固件 readout_apply() 的 "%d°C" 一致(88°C)
+function auxText(kind, st) { return readoutText(kind, st) + "°C"; }
+
+// 画一行读数。两套比例**故意不是一个数**,别合成一个:
+//   · 位置:cy480 是 **480 基准**的中心 y(与固件 lv_obj_align 同一套)。固件乘一次
+//     theme_scale()、画布再缩一次,两次相乘正好 = 画布宽/480 —— 只跟画布宽有关。
+//   · 字号:fontPx 给的是**设备屏上的点数**(由分辨率档查表,见 readoutFontPx)——
+//     240 那块板上就是 24 点,不是 48。画布只缩一次,所以是 画布宽/设备屏宽。
+//   把两者合成一个比例的话,240 那块板的画布上字会小一半(12 点乘两次 0.5 = 6 点,
+//   被 max(7,…) 夹到 7 点)—— 字小到看不出颜色,这一页也就白改了。
+// ★ 字体是浏览器自带的,与 LVGL 的 montserrat **不是同一套字形** ——
+//   位置和字号可信,字宽只是近似(与主题编辑器那边的口径一致)。
+function drawReadoutLabel(ctx, W, cy480, text, fontPx, colorHex) {
+  const sPos = W / 480, sFont = W / previewSide();
+  ctx.save();
+  ctx.font = Math.max(7, Math.round(fontPx * sFont)) +
+             "px Montserrat, 'Segoe UI', 'Microsoft YaHei', sans-serif";
+  ctx.fillStyle = colorHex;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, W / 2, cy480 * sPos);
+  ctx.restore();
+}
+
+// 这一屏的读数(与固件 build_readout()/readout_apply() 同一套取舍):
+//   · 大数字 + 单位:两屏都有(show_units 关掉就不画单位)
+//   · 副表数字:该屏**真的有那条副弧**、且它不是这屏的大数字时才画
+//     (水温弧在转速表上,所以左屏的大数字已经是水温了,不会在底部再写一遍)
+function drawReadout(ctx, W, which, sc, st) {
+  const r = ensureReadout(gTheme);   // 四个颜色(缺了走固件默认色)
+  const L = readoutLayout(r);        // 位置/开关:本页不管它们,缺了走固件默认值
+  const pk = primaryKindOf(sc);
+  // ★ 字号查的是**与固件同一张表**(readoutFontPx → ui_theme.h 的 kReadoutFontPx),
+  //   拿到的是设备屏上的点数;按画布缩那一步在 drawReadoutLabel 里。
+  const digitPx = readoutFontPx(0), unitPx = readoutFontPx(1);
+
+  drawReadoutLabel(ctx, W, L.digit_cy, readoutText(pk, st), digitPx, hexOf(r.digit_color));
+  const u = unitText(pk);
+  if (L.show_units && u) {
+    drawReadoutLabel(ctx, W, L.unit_cy, u, unitPx, hexOf(r.unit_color));
+  }
+
+  const aux = AUX_OF_SCREEN[which];
+  if (!aux || pk === aux.kind || !screenHasKind(sc, aux.kind)) return;
+  if (aux.kind === 2 && !L.show_coolant) return;
+  if (aux.kind === 3 && !L.show_intake) return;
+  const cy = aux.kind === 2 ? L.coolant_cy : L.intake_cy;
+  const color = aux.kind === 2 ? r.coolant_color : r.intake_color;
+  drawReadoutLabel(ctx, W, cy, auxText(aux.kind, st), unitPx, hexOf(color));
+}
+
 // 预览哪一屏:480×480 里按用途贴图
 //   背景 → 弧线 → 表情（左右屏各取自己那一套,缺图按降级链退）
 // 注意:**没有"开机画面"预览** —— 开机画面是程序化扫表动画(boot_anim.cpp),
@@ -994,6 +1229,9 @@ function drawScreen(cv, which, stage, faceKeyOverride) {
   ctx.fillRect(0, 0, cv.width, cv.height);
 
   const cx = cv.width / 2, cy = cv.height / 2;
+  // 这一屏的弧配置(读数与弧都要用 —— 所以在 if 外面取一次:
+  // 放在 if 里的话"关掉弧线预览"会把读数一起弄没,而且 sc 出了块就看不见了)
+  const sc = gTheme.screens[which] || ARC_FALLBACK.screens[which];
 
   // 1. 背景图（铺在弧线下面；两屏共用一张）
   const bgItem = pick(ImageBlob.ROLE.Background);
@@ -1002,7 +1240,6 @@ function drawScreen(cv, which, stage, faceKeyOverride) {
   // 2. 弧线（进度按当前阶段算:转速看转速、左屏内弧看水温、右屏看车速）
   //    颜色/半径/角度就是**当前主题**里的那一份(本页可改、可导出),与真车一致
   if (document.getElementById("show-arcs").checked) {
-    const sc = gTheme.screens[which] || ARC_FALLBACK.screens[which];
     const count = sc.arc_count === undefined ? sc.arcs.length : sc.arc_count;
     for (let i = 0; i < count && i < sc.arcs.length; i++) {
       const a = sc.arcs[i];
@@ -1016,7 +1253,14 @@ function drawScreen(cv, which, stage, faceKeyOverride) {
     }
   }
 
-  // 3. 表情图（最上层）
+  // 3. 读数文字(弧之上、表情之下 —— 与固件的创建顺序一致:
+  //    读数标签在弧**之后**建,而表情图是最上层)
+  //    ★ 这一步是这次才加的:以前预览里**根本不画读数**,
+  //      于是"换了一张白底图,字看不见"在页面上完全看不出来 ——
+  //      而这正是用户要调读数颜色的理由。"预览就是这里的把关人"靠的就是它。
+  drawReadout(ctx, cv.width, which, sc, stage);
+
+  // 4. 表情图（最上层）
   // ★ **每屏各取各的状态**:左屏看 stage.left、右屏看 stage.right ——
   //   这就是"每屏一套独立表情"在预览里的体现。
   const faceKey = faceKeyOverride || FaceStages.faceOf(stage, which);
@@ -1645,7 +1889,7 @@ document.getElementById("btn-reset-theme").addEventListener("click", () => {
   gThemeSource = "固件默认主题（已恢复）";
   try { localStorage.removeItem(THEME_KEY); } catch { /* ignore */ }
   applyThemeToUi();
-  say("已恢复固件默认配色（底色 + 三条弧的颜色/不透明度）。");
+  say("已恢复固件默认配色（底色 + 四条弧 + 四处读数文字颜色）。");
 });
 
 // 载入已有 bin（方便在已有资源上继续改）
@@ -1672,7 +1916,9 @@ const hadSavedTheme = restoreSavedTheme();
 applyThemeToUi();
 say("就绪。\n" +
     "1) 加图片  2) 选「用途」（背景 / 表情）  3) 导出 image.bin\n" +
-    "左上「仪表配色」可以直接改三条弧的颜色，改完点「导出 theme.json」刷到 theme 分区。\n" +
+    "左上「仪表配色」可以直接改四条弧的颜色，以及**读数文字**（大数字/单位/水温/进气）的颜色，\n" +
+    "改完点「导出 theme.json」刷到 theme 分区。\n" +
+    "★ 换了底图之后字看不见，就在这里改读数颜色 —— 右边的预览会立刻跟着变（预览就是把关人）。\n" +
     "（配色和图片是两个分区，要各刷一次；两页共用同一份配色，不会互相覆盖。）\n" +
     "右下「表情阶段模拟」可以逐档看转速/车速/水温各档下会显示哪张表情。" +
     (hadSavedTheme === "legacy"
