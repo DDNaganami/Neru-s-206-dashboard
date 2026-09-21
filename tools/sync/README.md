@@ -1,4 +1,4 @@
-# tools/sync —— 桌机 → 笔记本 自动同步
+# tools/sync —— 桌机 → 笔记本 同步(SSH 路线)
 
 这一套只干一件事:**把不能进 git 的大文件,从台式机同步到笔记本**。
 
@@ -7,135 +7,148 @@
   双向比不自动同步还危险。
 - 代码和文档**不走这条路**,走 `git push`。这里只搬“git 装不下 / 不该装”的东西。
 
-## 实测过的网络情况(2026-09-21)
+## ★ SMB / robocopy 那条路**已废弃**(2026-09-21)
 
-| 项 | 结果 |
+现在用的只有 SSH。`sync-to-laptop.ps1` 和它的计划任务 `206dash-sync-to-laptop`
+**都不再用了**,别再照着老文档去配共享。
+
+为什么废:这台桌机连笔记本的共享一律 `System error 5 / 拒绝访问`,
+不管共享权限怎么给都一样;新加一条 Windows 凭据也救不回来
+(`Test-Path \\26.253.1.139\206dash-sync` 始终 False,笔记本那边 `C:\206dash-sync` 一直是 0 个文件)。
+根因是本机的**登录会话 / 凭据库**问题 —— 换别的手段查下去不划算,所以整条路放弃,改走 SSH。
+
+> 老脚本 `sync-to-laptop.ps1` 还留在仓库里(没删,免得丢历史),但**不要再用**。
+> 它的 robocopy `/MIR` 目标是 `C:\206dash-sync`;新路线**不往那个目录写任何东西**
+> (`C:\206dash-sync` 现在就是个空壳,可以当它不存在)。
+
+## 现在用哪条路:SSH(实测可用)
+
+两台机器之间只有 SSH 这条链是验证过的:
+
+```powershell
+# 手工验证:能连上、能在笔记本上跑命令
+ssh -i "$env:USERPROFILE\.ssh\dsh_laptop" 张九思@26.253.1.139 "echo ok"
+# 搬文件
+scp -i "$env:USERPROFILE\.ssh\dsh_laptop" <本地文件> "张九思@26.253.1.139:C:\206dash-data"
+```
+
+| 项 | 值 |
 |---|---|
-| 台式机 Radmin 地址 | `26.177.134.224` |
-| 笔记本 Radmin 地址 | **`26.253.1.139`**(脚本里 `-LaptopHost` 的默认值) |
-| `ping 26.253.1.139` | 通(往返 2 ms) |
-| TCP **445** | 开 ✔ —— 所以 SMB 这条路能用,**不需要**再上 Syncthing |
-| TCP 139 / 22 / 22000 / 873 | 139 开;22、22000、873 关 |
-| `\\26.253.1.139\c$` | 当时打不开,原因是**笔记本上还没有 `C:\Users\Public\206dash-sync` 这个文件夹**(不是权限被拒) |
+| 私钥 | `C:\Users\张九思\.ssh\dsh_laptop`(脚本里 `-SshKey` 的默认值) |
+| 笔记本 Radmin 地址 | `26.253.1.139`(`-Laptop` 默认值 `张九思@26.253.1.139`) |
+| 笔记本主机名 | `MikamoNeru`(脚本会打出来,认一下是不是这台) |
+| 笔记本仓库 | `C:\Users\张九思\Documents\PlatformIO\Projects\Neru-s-206-dashboard` |
+| 数据目标 | `C:\206dash-data`(`-LaptopData` 默认值) |
 
-换机器、或者 Radmin 重新分配了地址:**改 `-LaptopHost`**,或改脚本里那个默认值。
-
-## 第一次使用前的两步
-
-1. **笔记本上确认 Radmin 已连接**:两台机器都要在线、进同一个 Radmin 网络。
-   笔记本上 `ipconfig` 应该能看到一个 `26.x.x.x` 的地址(就是上面那个 `26.253.1.139`)。
-   台式机这边可以先自测:`ping 26.253.1.139` 或
-   `powershell -ExecutionPolicy Bypass -File sync-to-laptop.ps1 -Test`。
-2. **目标机上要有一个能写的文件夹**。两条路,选一条:
-
-   **A. 命名共享(推荐;不需要两台机器账号一致)**
-   在**笔记本**上:
-   ```powershell
-   # 1) 建文件夹(名字随意,这里和共享名一致最好记)
-   New-Item -ItemType Directory -Force -Path 'C:\206dash-sync'
-   # 2) 共享出去,并给当前账号读/写(需要管理员 PowerShell)
-   net share 206dash-sync=C:\206dash-sync /GRANT:"$env:USERNAME",FULL
-   ```
-   也可以右键文件夹 → 属性 → 共享 → 加上自己 → 权限选“读/写”。
-   以后同步都带上共享名:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File sync-to-laptop.ps1 -ShareName 206dash-sync
-   ```
-
-   **B. 管理共享 `c$`(不用建共享,但要求两台机器账号同名同密码)**
-   两台机器用**同一个用户名 + 同一个密码**的本地账号登录,这样 `\\26.253.1.139\c$`
-   免密可用。之后必须在笔记本上把目标文件夹建出来:
-   ```powershell
-   # 在笔记本上执行
-   New-Item -ItemType Directory -Force -Path 'C:\Users\Public\206dash-sync'
-   ```
-   然后直接跑(默认就是这条路):
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File sync-to-laptop.ps1
-   ```
-
-   账号实在不想统一,就用本次性的凭据(不落盘):
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File sync-to-laptop.ps1 -ShareName 206dash-sync -Credential (Get-Credential)
-   ```
+**密钥路径不对 / Radmin 没连 / 笔记本 sshd 没跑** —— 脚本预检会一句话说清是哪一个,
+并且因为用了 `BatchMode=yes`,它**永远不会弹密码提示**(计划任务里弹提示 = 永远卡住)。
 
 ## 命令
 
 ```powershell
-$s = 'tools\sync\sync-to-laptop.ps1'   # 在仓库根目录执行;也可以写全路径
+$s = 'tools\sync\sync-ssh.ps1'      # 在仓库根目录执行;也可以写全路径
 
-# 0) 自检:不碰网络。改了脚本先跑这个
-#    (最后两项会起两个干净的 powershell.exe -NoProfile 子进程,在 C:\ProgramData\206dash-selftest*
-#     里把 zip/同步那条路真跑一遍 —— 只有干净会话才复现得出"类型找不到"这类毛病;
-#     子进程的原样输出会打出来给你看,场地目录留着不删,想看就进去看)
+# 0) 自检:不碰网络,改了脚本先跑这个
 powershell -ExecutionPolicy Bypass -File $s -SelfTest
 
-# 1) 探路:Radmin 通了吗 / 445 通吗 / 共享能写吗(会打一张判决表 + 一句“怎么办”)
+# 1) 探路:通道 + 笔记本仓库状态 + 数据目录现有文件(只读,什么都不改)
 powershell -ExecutionPolicy Bypass -File $s -Test
-powershell -ExecutionPolicy Bypass -File $s -Test -ShareName 206dash-sync
 
-# 2) 真同步(默认会先自动探路,探不通就不传)
-powershell -ExecutionPolicy Bypass -File $s -ShareName 206dash-sync
+# 2) 真同步(默认参数就够)
+powershell -ExecutionPolicy Bypass -File $s
 
-# 3) 挂计划任务:登录时 + 每 30 分钟(任务名 206dash-sync-to-laptop)
-powershell -ExecutionPolicy Bypass -File $s -ShareName 206dash-sync -Register
-powershell -ExecutionPolicy Bypass -File $s -EveryMinutes 10 -ShareName 206dash-sync -Register  # 改成 10 分钟
+# 3) 挂计划任务:登录时 + 每 30 分钟(任务名 206dash-sync-ssh)
+powershell -ExecutionPolicy Bypass -File $s -Register
+powershell -ExecutionPolicy Bypass -File $s -Unregister     # 不想要了
 
-# 4) 不想要自动同步了
-powershell -ExecutionPolicy Bypass -File $s -Unregister
+# 4) 只想看它打算干什么,什么都不动
+powershell -ExecutionPolicy Bypass -File $s -WhatIf
 
 # 计划任务常用操作
-Get-ScheduledTask -TaskName 206dash-sync-to-laptop | Get-ScheduledTaskInfo   # 上次结果/下次时间
-Start-ScheduledTask   -TaskName 206dash-sync-to-laptop                       # 立刻跑一次
-(Get-ScheduledTask -TaskName 206dash-sync-to-laptop).Actions                 # 看它到底跑什么
+Get-ScheduledTask -TaskName 206dash-sync-ssh | Get-ScheduledTaskInfo   # 上次结果/下次时间
+Start-ScheduledTask   -TaskName 206dash-sync-ssh                       # 立刻跑一次
 ```
 
-退出码:`0` 成功 / `2` 参数不对 / `3` 探路没过 / `4` robocopy 失败 / `5` 自检没过 / `6` 数据成功但快照失败。
+退出码:`0` 全成功 / `2` 参数不对 / `3` 通道不通 / `4` 仓库那步失败 /
+`5` 自检没过 / `6` 数据传完了但仓库没成。计划任务的“上次结果”看这个码就知道断在哪。
 
 ## 同步过去什么
 
-| 笔记本上 | 内容 |
-|---|---|
-| `data\` | `van_capture_dm.csv`、`drive5min.csv`(真车抓包)、`image-v3.bin`、`theme-user.json`(烧机那两个) |
-| `tools\` | `capture-van-nopy.ps1`、`obd-log.ps1` —— 笔记本上拿到就能直接跑 |
-| `206dash-transfer.zip` | 现成的传输包(桌机上有就带,没有就跳过) |
-| `repo-snapshot.zip` | **脚本现场打包**的源码快照(不含 `.git`/`.pio`),给没装 git 的机器用 |
+| 桌机上 | 笔记本上 | 说明 |
+|---|---|---|
+| `C:\Users\Public\206dash\van_capture_dm.csv` | `C:\206dash-data\` | 真车抓包 |
+| `C:\Users\Public\206dash\drive5min.csv` | `C:\206dash-data\` | 真车抓包 |
+| `C:\Users\Public\206dash\image-v3.bin` | `C:\206dash-data\` | 烧机字库 |
+| `C:\Users\Public\206dash\theme-user.json` | `C:\206dash-data\` | 烧机主题 |
+| `C:\Users\Public\206dash\206dash-transfer.zip` | `C:\206dash-data\` | 现成的传输包,**有就带、没有就跳过** |
+| 仓库(代码) | 笔记本的同名 checkout | 桌机 `git push` → 笔记本 `git fetch` + `merge --ff-only origin/main` |
 
-★ 顺序是**先数据、后快照**:第 1 遍 `robocopy /MIR` 把 `data/`、`tools/`(和 `206dash-transfer.zip`)送过去,
-第 2 遍才打 `repo-snapshot.zip` 并用 `/E /IS` 补传(只加这一个文件、不清目标)。
-快照是锦上添花、数据是不可再生的 —— 所以快照打不出来只算**警告**,脚本继续跑完,
-最后用退出码 `6` 收场(计划任务的“上次结果”看得出来这次不完美,但笔记本上的数据是新的)。
+### 只发“大小不一样”的(土办法 rsync)
 
-目标目录是**镜像**(`robocopy /MIR`):桌机没有的文件,笔记本那边会被删掉。
-所以那个文件夹是脚本的地盘,**别往里放自己的东西**。桌机上的源文件永远不会被删。
+**Windows 上没有 `rsync`**,而整包重传 30~60 MB 不值得,所以脚本自己做了个最朴素的版本:
+
+1. 先问笔记本:`C:\206dash-data` 里每个文件多少字节(一次 SSH 往返问完)
+2. 桌机上逐个比大小:
+   - 笔记本上没有 → 传
+   - 大小不同 → 传
+   - **大小一样 → 跳过**(不比时间戳、不比哈希)
+3. 传完再问一次笔记本,核对大小;对不上才算失败
+
+所以第二次跑几乎是瞬间结束(全跳过)。代价是:**只比大小,内容不同但大小刚好一样就发现不了** ——
+对这几个文件(抓包 CSV、字库 bin)够用,毕竟它们只会整份重生成,不会被改成同样大小的另一份。
+
+### 仓库那步会**先看一眼笔记本有没有本地改动**
+
+笔记本的 checkout 如果有本地改动(`git status --porcelain` 非空,含未跟踪文件),
+脚本**直接停下不碰它**,只报出来 —— 它**不会** `stash` / `reset` / `clean`。
+那些命令会把别人没提交的工作弄丢,而这是台在用的开发机。
+处理办法:在笔记本上把这些改动提交掉或者挪走,再同步。
+
+数据文件不受这个影响(它们进的是 `C:\206dash-data`,和仓库无关),继续照传。
+
+最后两边的 HEAD 哈希都会打出来,对不上一眼就能看见。
 
 ## 故意不同步什么(这是重点)
 
 | 不同步 | 为什么 |
 |---|---|
-| `.pio` / `.pio-core` / `.tools` | 共 186 MB+ 的编译缓存和工具链,机器相关,传过去既慢又没用 —— 这是这类脚本最经典的一个坑 |
-| `.git` | 代码走 `git push`,不需要再搬一次仓库 |
+| `.pio` / `.pio-core` / `.tools` | 共 186 MB+ 的编译缓存和工具链,机器相关,传过去既慢又没用 |
+| `.git` 目录本身 | 代码走 `git push`,不需要再搬一次仓库 |
 | `__pycache__` / 各种 venv | 编译缓存,机器相关 |
-| `probe` / `stale-tmp-tests` | 台机上的临时试验品,笔记本用不上(它们都留在桌机上,没有被动过) |
+| `C:\Users\Public\206dash` 里其它几十个文件 | 只挑上表那 5 个;**散落的脚本和日志不进同步** |
 | 笔记本 → 桌机的任何东西 | 单向。笔记本上的新数据要**人工**拷回来 |
+| `C:\206dash-sync` | 那是老 robocopy `/MIR` 的镜像目标(会删文件),已废弃 |
 
 ## 出问题先看这里
 
-先跑 `-Test`,它会把原因分成三类,每类给一句能照做的事:
-
-| 判决里看到 | 意思 | 下一步 |
+| 看到什么 | 意思 | 下一步 |
 |---|---|---|
-| `SMB 端口 445` FAIL | Radmin 没连 / 防火墙没放行“文件和打印机共享” / 笔记本没开共享 | 笔记本上确认 Radmin 在线;防火墙放行文件共享;`net share` 看一眼 |
-| `共享可读` FAIL,提示“文件夹不存在” | 445 和权限都没问题,只是那个文件夹还没建 | 笔记本上按上面 A 或 B 建好文件夹(或共享) |
-| `共享可读` FAIL,提示“UNC 被拒” | 账号/权限问题 | 把共享权限给当前账号,或两台机器同名同密码,或加 `-Credential` |
-| `共享可写` FAIL | 共享是只读的 | 笔记本上把共享权限从“只读”改成“读/写” |
-| `ping` 只有 WARN | 对方防火墙吞了 ICMP,但 SMB 还能走 | 不用管,看 445 那行 |
+| `通道不通` | SSH 没连上 | 它会给三行:① Radmin 通不通 ② 笔记本 `sshd` 服务在不在 ③ 私钥路径对不对 —— 按顺序查 |
+| 笔记本仓库 `有 N 项本地改动` | checkout 不干净,脚本拒绝动它 | 在笔记本上提交或挪走那些文件(未跟踪的也算) |
+| `两边 HEAD 不一致` | 笔记本没快进到最新 | 看上面 `MERGE:` 那几行;多半是被本地改动挡住了 |
+| `传完大小不对` | 文件没传完整 | 再跑一次;已经传好的会被大小比较跳过,不会重传 |
+| 退出码 `6` | 数据是新的,但仓库没同步成功 | 看仓库那步的报错;数据可以放心 |
 
-其它:
+计划任务:
 
-- **robocopy 退出码**是位标志:`0`(没事可做)/ `1`(复制了)/ `2`(清了多余)/ `3`(1+2)
-  **都算成功**;`≥8` 才是失败。脚本已经翻译好了,别被 `1` 吓到。
-- **`-Credential` 不能配计划任务**:计划任务没法安全地存密码。想让自动同步带凭据,
-  先把两台机器的账号统一(方案 B),再 `-Register`。
-- **`-Register` 被策略拦**:开一个管理员 PowerShell 再跑那条命令。平时(探路/同步)不需要管理员。
-- 同步中途断了是安全的:下次跑会接着传(`/MIR` 只补差异)。桌机这边的源文件始终只读。
+- `-Register` 被策略拦 → 开一个**管理员** PowerShell 再跑那条命令(平时同步不需要管理员)。
+- 任务跑的是带**默认参数**的本脚本;要改目标/密钥就改脚本里的默认值,别在任务里塞参数。
+
+## 为什么远端命令要编成 base64(改脚本的人必读)
+
+**Windows OpenSSH 会把命令行重新拼一遍再交给远端,内层引号活不下来。**
+实测 `ssh host 'if (x) { Write-Output "$($_.Name)" }'` 到了笔记本上双引号已经没了,
+PowerShell 直接报“表达式只能作为管道的第一个元素”。
+
+所以脚本里所有远端命令都是:本地把 PowerShell 正文编成 **UTF-16LE + base64**,
+用 `powershell -EncodedCommand <b64>` 发过去。传输层只剩 `[A-Za-z0-9+/=]`,
+中文路径也不会被改写(本机 8.3 短名是关的,取不到 `ZHANGJ~1`,
+中文路径能过去**全靠**这一层)。`-SelfTest` 里有断言:解回来的字符串必须和原文逐字节相等。
+
+另外两个坑,都在自检里守着:
+
+- 生成远端脚本必须用**单引号** here-string(`@'...'@`)。双引号版本会在本地就把
+  `$_.Name` 展开掉(实测展成了 `powershell.exe|292864`)。
+- 调外部程序要用 `Invoke-Native`。`$ErrorActionPreference='Stop'` 之下,
+  PowerShell 5.1 会把外部程序写到 stderr 的**正常输出**当终止性错误 ——
+  `git push` 明明返回 0、只说了句 "Everything up-to-date",脚本就死在那儿了。
