@@ -180,7 +180,9 @@ Write-Host ""
 Write-Host "  测试镜像: $binPath"
 Write-Host "  对账清单: $manPath"
 Write-Host ""
-Write-Host "  真机刷写(图片分区,0x254000 = 1MB):" -ForegroundColor Cyan
+Write-Host "  真机刷写(图片分区 @ 0x254000;端口/chip 按板子改):" -ForegroundColor Cyan
 Write-Host "    python -m esptool --chip esp32 --port COM3 --baud 921600 write_flash 0x254000 image.bin"
+Write-Host "    ★ 微雪双屏 240 那块板:--chip esp32s3 --port COM5,并且要带三路径 PYTHONPATH"
+Write-Host "      (完整命令与验收步骤见 README 的「微雪双屏 240×240」一节;成功以 Hash of data verified. 为准)"
 Write-Host ""
 Write-Host "  图形界面(拖图片、导 bin): tools\theme-editor\image-editor.html"

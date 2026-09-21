@@ -41,23 +41,43 @@ const int kMaxItems = kImageMaxCount;
 // 这里按最坏情况 700 字节行宽 → 700*3+2 = 2102,取 2200。
 // ★ 曾经按"700 字节"直译成 1400,于是 snprintf 写越界、堆被踩坏,
 //   测试进程以 exit 3 崩掉 —— 崩溃日志完全看不出和缓冲区有关。
-const uint32_t kRowCap = 64;
+//
+// ★ kRowCap 从 64 提到 256(2026-09-20,微雪 240 那块板逼出来的):
+//   现在实配的板子是 240×240 圆屏,一张**满屏背景**就是 240 行,而 64 行的
+//   上限会让 manifest 解析直接报"第 1 张的行数超过上限 64" ——
+//   报出来像是 manifest 格式错,其实是行缓冲太小,而且这块板根本没法用
+//   这条往返测试核对(480 那档的满屏背景是 480 行,同样超)。
+//   256 = 240 屏背景的行数 + 余量;32 项 × 256 行 × 2200 字符 ≈ 18MB,
+//   宿主机上可以接受(原先 64 行是 4.5MB)。
+//   480×480 的满屏背景(480 行)仍超出这个上限 —— 要核那种镜像得再加,
+//   但"最坏情况算清楚再改"比"随手放大"重要,所以先按实配的板子定。
+const uint32_t kRowCap = 256;
 const uint32_t kRowChars = 2200;
 
-// 角色编号 → 中文名,和 JS 的 ROLE_NAMES 是同一张表。
+// 角色编号 → 中文名,和 JS 的 ROLE_NAMES(image-blob-build.js)是同一张表。
 // 两边对不上就说明有人只改了一边 —— 这正是要测的。
-// 表里**只列在用角色**:保留编号(2/5/7/9/10/11/14/15/16/19/20)不参与往返测试。
+//
+// ★ 这张表**只列在用角色**:保留编号(2/5/7/9/10/11/14/15/16/19/20)不参与往返测试。
+// ★ 2026-09-20 修:这张表曾经漏了 21/22(高转/市区),而且有四个名字与 JS 分叉
+//   (JS 写"怠速/静止/快速路/高速",这里写"常态/常态/巡航/运动")——
+//   后果是**往返测试必然失败**:manifest 里写的是 JS 那张表的名字,
+//   这里拿 C 的名字去比,`TEST_ASSERT_EQUAL_STRING` 直接红。
+//   而"一套 10 张表情"里正好有 21/22,所以越是照文档导全套图,越会撞上。
+//   现在逐条对齐 JS 的 ROLE_NAMES,并且**不许再只改一边**:
+//   往 image_blob.h 加角色时,JS 的 ROLE_NAMES 与这里一起加。
 const char* roleName(uint32_t role) {
   switch ((ImageRole)role) {
     case ImageRole::Background:    return "表盘背景";
-    case ImageRole::FaceIdle:      return "左屏表情·常态";
+    case ImageRole::FaceIdle:      return "左屏表情·怠速";
     case ImageRole::FaceRedline:   return "左屏表情·红区";
     case ImageRole::FaceCruise:    return "左屏表情·巡航";
     case ImageRole::FaceSport:     return "左屏表情·运动";
-    case ImageRole::FaceIdleR:     return "右屏表情·常态";
+    case ImageRole::FaceHigh:      return "左屏表情·高转";
+    case ImageRole::FaceIdleR:     return "右屏表情·静止";
     case ImageRole::FaceOverspeedR: return "右屏表情·超速";
-    case ImageRole::FaceCruiseR:   return "右屏表情·巡航";
-    case ImageRole::FaceSportR:    return "右屏表情·运动";
+    case ImageRole::FaceCruiseR:   return "右屏表情·快速路";
+    case ImageRole::FaceSportR:    return "右屏表情·高速";
+    case ImageRole::FaceCityR:     return "右屏表情·市区";
   }
   return "?";
 }
@@ -230,13 +250,22 @@ uint32_t parseHexRow(const char* s, uint8_t* out, uint32_t cap) {
   return n;
 }
 
-uint8_t* readFile(const char* path, uint32_t* len) {
+// ★ 镜像与 manifest 的大小上限**必须分开**(2026-09-20):
+//   镜像受分区大小约束(宿主机口径 IMAGE_BLOB_MAX_BYTES:经典板 1MB、S3 板 8MB),
+//   但 **manifest 是十六进制文本,比镜像还大** —— 每字节 3 个字符
+//   (两位十六进制 + 一个逗号)。240×240 那块板的整套素材:镜像 809740 字节,
+//   而它的 manifest 是 1.7MB —— 用镜像的上限去卡,readFile 直接返回 nullptr,
+//   测试报"读不到 manifest"(看起来像文件不存在或路径写错,其实是上限)。
+//   所以 manifest 单独给一个宽松的上限(16MB,目前最坏的一套是几 MB)。
+const long kManifestMaxBytes = 16L * 1024 * 1024;
+
+uint8_t* readFile(const char* path, uint32_t* len, long cap) {
   FILE* f = fopen(path, "rb");
   if (!f) return nullptr;
   fseek(f, 0, SEEK_END);
   const long n = ftell(f);
   fseek(f, 0, SEEK_SET);
-  if (n <= 0 || n > (long)IMAGE_BLOB_MAX_BYTES) { fclose(f); return nullptr; }
+  if (n <= 0 || n > cap) { fclose(f); return nullptr; }
   uint8_t* buf = (uint8_t*)malloc((size_t)n + 1);
   const size_t got = fread(buf, 1, (size_t)n, f);
   fclose(f);
@@ -260,10 +289,13 @@ static void test_js_blob_roundtrip(void) {
   }
 
   uint32_t bin_len = 0, man_len = 0;
-  uint8_t* bin = readFile(bin_path, &bin_len);
-  uint8_t* man = readFile(man_path, &man_len);
-  TEST_ASSERT_NOT_NULL_MESSAGE(bin, "读不到 image.bin");
-  TEST_ASSERT_NOT_NULL_MESSAGE(man, "读不到 manifest");
+  uint8_t* bin = readFile(bin_path, &bin_len, (long)IMAGE_BLOB_MAX_BYTES);
+  uint8_t* man = readFile(man_path, &man_len, kManifestMaxBytes);
+  TEST_ASSERT_NOT_NULL_MESSAGE(bin,
+      "读不到 image.bin(路径不对,或比宿主机上限 IMAGE_BLOB_MAX_BYTES 还大)");
+  TEST_ASSERT_NOT_NULL_MESSAGE(man,
+      "读不到 manifest(路径不对,或超过 16MB 文本上限 —— "
+      "manifest 是十六进制文本,比镜像大 3 倍)");
 
   Manifest m;
   char perr[256] = {0};

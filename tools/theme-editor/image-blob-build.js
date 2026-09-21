@@ -57,6 +57,13 @@
     classic: {
       id: "classic",
       label: "经典 ESP32(4MB flash)",
+      // ★ chip 是**刷写命令里那个 --chip**(见 esptoolCommand)。
+      //   它必须按板子取:拿 --chip esp32 去刷 S3 会被 esptool 当场拒掉
+      //   ("Chip is ESP32-S3 ... but --chip esp32 was specified")。
+      //   以前这里只有 `targetId === "s3"` 一个判断,加了 s3_240 之后
+      //   那块 S3 板会印出 --chip esp32 —— 命令是页面直接给的,
+      //   复制粘贴就会失败。所以改成跟着目标板走的数据字段。
+      chip: "esp32",
       partitionBytes: 1024 * 1024,
       partitionsCsv: "partitions.csv",
       faceTier: "res480",          // 屏仍是 480×480 → 画布上限 320 / 推荐 300
@@ -66,6 +73,7 @@
     s3: {
       id: "s3",
       label: "ESP32-S3 N16R8(16MB flash)",
+      chip: "esp32s3",
       partitionBytes: 8 * 1024 * 1024,
       partitionsCsv: "partitions-s3.csv",
       faceTier: "res480",          // 最终那块 2.8" 屏仍是 480×480
@@ -80,6 +88,7 @@
     s3_240: {
       id: "s3_240",
       label: "ESP32-S3 微雪双屏 240×240(1.28\")",
+      chip: "esp32s3",             // 同一块 S3 板,只是屏是 240×240
       partitionBytes: 8 * 1024 * 1024,
       partitionsCsv: "partitions-s3.csv",
       faceTier: "res240",          // ★ 屏是 240×240 → 画布上限 160 / 推荐 152
@@ -463,9 +472,13 @@
   //   拿 "--chip esp32" 去刷 S3 会被 esptool 当场拒掉
   //   ("Chip is ESP32-S3 ... but --chip esp32 was specified")。
   //   分区偏移两块板相同(0x254000),所以只有这一个是变量。
+  // ★ 2026-09-20:改成查 TARGETS[id].chip,而不是写 `id === "s3"` ——
+  //   那种写法在加了第三种目标板(微雪 240,也是 S3)之后会印出
+  //   `--chip esp32`,而这条命令是页面直接给用户复制的。
+  //   新增目标板时**只要填 chip 字段**,这里不用改。
   // ------------------------------------------------------------
   function esptoolCommand(port, binPath, targetId) {
-    var chip = (targetId === "s3") ? "esp32s3" : "esp32";
+    var chip = targetInfo(targetId).chip;
     return "python -m esptool --chip " + chip + " --port " + (port || "COM3") +
            " --baud 921600 write_flash 0x254000 " + (binPath || "image.bin");
   }

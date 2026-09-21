@@ -372,6 +372,26 @@ section("刷写命令与 C 头文件");
   ok(cmdS3.includes("--chip esp32s3 "), "S3 板必须用 --chip esp32s3");
   ok(cmdS3.includes("0x254000"),
      "两块板的刷写偏移相同(S3 也走 0x254000,所以只有 chip 是变量)");
+  // ★ 微雪 240 那块板**也是 ESP32-S3**(同一份 partitions-s3.csv、同样的 8MB
+  //   image 分区),所以它必须是 --chip esp32s3。这条是回归测试:
+  //   以前这里写的是 `targetId === "s3" ? "esp32s3" : "esp32"`,加第三块板时
+  //   240 板会印出 `--chip esp32` —— 而这条命令是页面直接给用户复制的,
+  //   复制到终端就是 esptool 的一句话拒绝("Chip is ESP32-S3 ... but
+  //   --chip esp32 was specified")。选对目标板反而拿到不能用的命令。
+  const cmd240 = IB.esptoolCommand("COM7", "image.bin", "s3_240");
+  ok(cmd240.includes("--chip esp32s3 "), "微雪 240 那块板也是 ESP32-S3,必须 --chip esp32s3");
+  ok(cmd240.includes("0x254000"), "240 板的刷写偏移同样是 0x254000");
+  ok(cmd240.includes("COM7"), "端口要带上");
+  // ★ 每一块目标板的 chip 都必须真的出现在它自己的命令里 ——
+  //   以后加板子忘了填 chip 字段,这里会立刻红(而不是印一条不能用的命令)。
+  for (const id of Object.keys(IB.TARGETS)) {
+    const c = IB.esptoolCommand("COM7", "image.bin", id);
+    ok(c.includes("--chip " + IB.TARGETS[id].chip + " "),
+       id + " 的刷写命令要用它自己的 chip(" + IB.TARGETS[id].chip + ")");
+    ok(c.includes("0x254000"), id + " 的刷写偏移");
+  }
+  throws(() => IB.esptoolCommand("COM7", "image.bin", "esp32c3"),
+         "未知目标板不许悄悄按经典板印命令");
   const res = IB.build([{ name: "a", w: 2, h: 2, pixels: new Uint8Array(8) }]);
   const h = IB.toCHeader(res.blob);
   ok(h.includes("const uint8_t g_image_blob[1428]"), "C 数组长度要对(1420 头 + 8 像素)");
@@ -512,6 +532,21 @@ section("页面与共享常量没有分叉");
      "页面用 ImageBlob.faceSizeRecommendedFor(按目标板取,不写死 300)");
   ok(html.indexOf("ImageBlob.arcInnerMostRadiusFor") >= 0,
      "页面用 ImageBlob.arcInnerMostRadiusFor(按目标板取,不写死 163)");
+  // ★ 刷写那栏的分区大小也不许写死:曾经写着"大小 1024 KB",S3(8MB)与
+  //   微雪 240(也是 8MB)上都是错的,用户会以为装不下。
+  ok(html.indexOf("part-info") >= 0,
+     "刷写那栏的分区大小由页面按目标板填(span#part-info)");
+  ok(html.indexOf("，大小 1024 KB") < 0,
+     "不许再写死「，大小 1024 KB」(S3 两版都是 8MB)");
+  // ★ 预览画布必须跟着目标板的**屏**走:在 480 的画布里预览 240 的图会失真
+  //   (240 的底图够不到弧带、152 的表情看着只有一点点大)。
+  const pm = /function previewSide\(([\s\S]*?)\n\}/.exec(html);
+  if (!pm) throw new Error("image-editor.html 里找不到 previewSide");
+  const makeSide = (target) => new Function(
+    "ImageBlob", "curTarget", pm[0] + "\nreturn previewSide;")(IB, target);
+  eq(makeSide("s3_240")(), 240, "240 板:预览画布 240(1 像素 = 屏上 1 像素)");
+  eq(makeSide("classic")(), 480, "经典板:预览画布仍是 480");
+  eq(makeSide("s3")(), 480, "S3(480 屏):预览画布仍是 480");
   // 老常量仍在共享模块里(480 档),但不能被页面当成"唯一的上限"用
   ok(IB.FACE_CANVAS_MAX === 320 && IB.FACE_SIZE_RECOMMENDED === 300,
      "老常量仍在(480 档),行为不变");
@@ -673,6 +708,105 @@ section("raw 规格解析");
   throws(() => B.parseRawSpec("a.raw:480:rgb565"), "尺寸格式错要报错");
   throws(() => B.parseRawSpec("a.raw:8x8:bogus"), "未知格式要报错");
   throws(() => B.parseRawSpec("a.raw:8x8:rgb565:notarole"), "未知角色要报错");
+  // ★ rgb565a8:表情必须用的格式(带透明通道)。命令行的 --raw 以前只认
+  //   rgb565/rgb888/a8/l8 —— 于是"用命令行打一套表情"根本打不出页面那种带
+  //   透明的图,只能去改 JS。240 那块板的整套表情正是 3 字节/像素的。
+  const a8 = B.parseRawSpec("f.raw:152x152:rgb565a8:face_idle:0:idleL");
+  eq(a8.cf, IB.CF.RGB565A8, "rgb565a8 要能解析");
+  eq(a8.role, IB.ROLE.FaceIdle, "表情角色");
+  eq(IB.packedBytesPerPixel(a8.cf) * a8.w * a8.h, 152 * 152 * 3,
+     "152×152 的 rgb565a8 = 69312 字节(--raw 的大小检查就按这个数)");
+}
+
+// ------------------------------------------------------------
+section("命令行的角色表不许落后于 IB.ROLE(打不出一整套 10 张)");
+// ★ 回归测试(2026-09-20):build-image-bin.js 的 ROLE_ID 曾经漏了
+//   face_high(21) 与 face_city(22) —— 于是"命令行打一整套 10 张表情"
+//   到第五档就报"不认识的角色: face_high",只有网页能导出全套。
+//   角色表有两份(IB.ROLE 与命令行的名字表),这一条保证两份**同一个集合**。
+{
+  const setOf = (o) => new Set(Object.values(o));
+  const have = setOf(B.ROLE_ID), want = setOf(IB.ROLE);
+  for (const id of want) {
+    ok(have.has(id), "命令行角色表要能打到角色号 " + id +
+       "(" + (IB.ROLE_NAMES[id] || "?") + ")");
+  }
+  for (const id of have) {
+    ok(want.has(id), "命令行角色表里的 " + id + " 必须是 IB.ROLE 里真实存在的角色");
+  }
+  eq(have.size, want.size, "两份角色表的集合大小要一致");
+  // 名字要能真的解析(别只是表里有、roleId 却不认)
+  eq(B.roleId("face_high"), IB.ROLE.FaceHigh, "face_high → 21");
+  eq(B.roleId("face_city"), IB.ROLE.FaceCityR, "face_city → 22");
+  eq(B.roleId("face_surprise_r"), IB.ROLE.FaceOverspeedR, "老别名 face_surprise_r 仍可用");
+}
+
+// ------------------------------------------------------------
+section("spec-240.json:微雪 240 那块板的一整套素材必须打得出来");
+// 这是 README「微雪双屏 240×240」一节里那条命令用的配方,所以在这里钉住
+//   三件事:能打、多大、角色齐不齐。
+// ★ 尺寸数字一旦写进文档就得有机器盯着 —— 改了推荐值/颜色格式之后,
+//   文档里那句"809740 字节"会立刻变成谣言,而没人会去重算。
+{
+  const fs = require("fs"), path = require("path");
+  const spec = JSON.parse(fs.readFileSync(path.join(__dirname, "spec-240.json"), "utf8"));
+  eq(spec.images.length, 11, "配方 11 张(1 背景 + 10 表情)");
+  const res = IB.build(B.specItems(spec));
+  eq(res.entries.length, 11, "打出来 11 张");
+  // 1420(头) + 240×240×2(背景,RGB565) + 10 × 152×152×3(表情,RGB565A8)
+  eq(res.totalBytes, 809740, "总字节数(README 里引用的就是这个数)");
+  eq(res.headerBytes, IB.HEADER_SIZE, "头 1420");
+  eq(res.entries[0].cf, IB.CF.RGB565, "背景是 RGB565(2 字节/像素)");
+  eq(res.entries[0].w, 240, "背景 240 宽");
+  eq(res.entries[0].h, 240, "背景 240 高");
+  for (let i = 1; i < res.entries.length; i++) {
+    const e = res.entries[i];
+    eq(e.cf, IB.CF.RGB565A8, "第 " + (i + 1) + " 张表情是 RGB565A8(要透出底下的弧)");
+    eq(e.w, IB.faceSizeRecommendedFor("s3_240"), "表情宽度 = 240 档的推荐值 152");
+    eq(e.size, 152 * 152 * 3, "一张表情 69312 字节");
+  }
+  // ★ 角色号必须**每个都在、且只出现一次**:少一个 = 那一档永远显示不出来
+  //   (不报错,只会走降级链);多/重复 = 有人复制粘贴时忘了改用途。
+  const roles = res.entries.map(e => e.role).sort((a, b) => a - b);
+  const want = Object.values(IB.ROLE).sort((a, b) => a - b);
+  eq(roles.join(","), want.join(","), "11 个角色号一个不少、一个不重");
+  ok(res.totalBytes <= IB.partitionBytesFor("s3_240"),
+     "占得进 8MB 分区(" + (100 * res.totalBytes / IB.partitionBytesFor("s3_240")).toFixed(1) + "%)");
+  // 上限那一档也要算一遍:用满 160 时仍然装得下(宿主机那道 1MB 闸门也过)
+  const maxSet = IB.HEADER_SIZE + 10 * (160 * 160 * 3) + 240 * 240 * 2;
+  ok(maxSet <= IB.partitionBytesFor("s3_240"), "用满 160 也远小于 8MB");
+  ok(maxSet <= IB.PARTITION_BYTES,
+     "用满 160 的一整套(" + maxSet + " 字节)还要能过宿主机的 1MB 闸门" +
+     "(IMAGE_BLOB_MAX_BYTES 在经典板口径下是 1MB;过不了就没法用往返测试核对)");
+}
+
+// ------------------------------------------------------------
+section("配方 → items:颜色格式按角色显式选");
+// ★ 为什么单独测:页面按角色**自动**选格式(背景 RGB565 / 表情 RGB565A8),
+//   而命令行以前一律 RGB565 —— 同一条"表情"角色,页面导出的带透明、
+//   命令行导出的不透明,刷进去前者正常、后者盖住弧线。两边格式必须一致。
+{
+  const it = B.specItems({
+    images: [
+      { pattern: "ramp",    w: 8, h: 4, role: "background",  name: "bg" },
+      { pattern: "checker", w: 8, h: 8, role: "face_idle",   name: "idleL", cf: "rgb565a8" }
+    ]
+  });
+  eq(it[0].cf, IB.CF.RGB565, "配方不写 cf → 还是 RGB565(老 spec 行为不变)");
+  eq(it[0].pixels.length, 8 * 4 * 2, "背景 2 字节/像素");
+  eq(it[1].cf, IB.CF.RGB565A8, "写了 cf=rgb565a8 → 用带透明的格式");
+  eq(it[1].pixels.length, 8 * 8 * 3, "表情 3 字节/像素(含 A8 平面)");
+  eq(it[1].role, IB.ROLE.FaceIdle, "角色编号");
+  // 打包要接受它(否则"配方能写、打包报错"就是白写)
+  const res = IB.build(it);
+  eq(res.entries[1].size, 8 * 8 * 3, "打出来的表情项大小");
+  // 不认识的 cf 要报错,不能悄悄当成 rgb565
+  throws(() => B.specItems({ images: [{ pattern: "ramp", w: 4, h: 4, role: "face_idle", cf: "bogus" }] }),
+         "未知 cf 要报错");
+  // RGB565A8 没有行尾填充这一说,写了必须报错(不然尺寸对不上,报的还是别的原因)
+  throws(() => B.specItems({ images: [{ pattern: "ramp", w: 4, h: 4, role: "face_idle",
+                                        cf: "rgb565a8", stride_pad: 2 }] }),
+         "rgb565a8 + stride_pad 要报错");
 }
 
 // ------------------------------------------------------------

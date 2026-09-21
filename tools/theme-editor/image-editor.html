@@ -168,15 +168,28 @@
 
     <section>
       <h2>3 · 刷写</h2>
+      <!-- ★ 大小**不许写死**:这条以前写着"大小 1024 KB"(分区还是 1MB 时的值),
+           2026-09-18 给 S3 加了 8MB 之后就成了错的,2026-09-20 微雪 240 那块板
+           (也是 8MB)更是直接对不上 —— 用户照着这句会以为装不下。
+           偏移两块板相同(0x254000),只有大小跟着「目标板」走,所以下面那行
+           由 refresh() 从 ImageBlob.partitionBytesFor() 填。 -->
       <div class="hint" style="color:var(--dim);font-size:12px">
-        image 分区在 <code>0x254000</code>，大小 1024 KB。
+        image 分区固定在 <code>0x254000</code>(两块板偏移相同),大小按上面的「目标板」：
+        <b id="part-info">经典板 1 MB / S3 两版 8 MB</b>。<br>
+        <b>刷这一区不动固件</b>：换图只刷这一个分区，不用重新编译，也不用重烧 app。
       </div>
       <div class="cmd">
         <input type="text" id="cmd" readonly>
         <button class="tiny" id="btn-copy">复制</button>
       </div>
       <div class="hint" style="color:var(--dim);font-size:12px;margin-top:6px">
-        端口改成你电脑上的（设备管理器里看，一般是 COM3～COM7）。
+        ① 端口改成你电脑上的（设备管理器里看）：<b>这块 DualEye 板走原生 USB 口</b>，
+        本机是 <code>COM5</code>，不是命令里占位的 COM3。<br>
+        ② 直接 <code>python -m esptool</code> 在没装 esptool 的 python 上会报
+        <code>No module named esptool</code>（或 <code>intelhex</code>）——
+        刷之前先把三个路径挂上 PYTHONPATH，完整命令见
+        <code>tools/theme-editor/README.md</code> 的「微雪双屏 240×240」那一节。<br>
+        ③ 成功以 esptool 最后那行 <code>Hash of data verified.</code> 为准。
       </div>
       <div class="toolbar" style="margin-top:10px">
         <button id="btn-cheader">导出 C 数组（高级）</button>
@@ -205,7 +218,7 @@
   </div>
 
   <div class="right">
-    <div class="hint" style="color:var(--dim);font-size:12px;margin-bottom:10px">
+    <div class="hint" id="preview-note" style="color:var(--dim);font-size:12px;margin-bottom:10px">
       下面按 480×480（设备分辨率）合成。背景图铺在弧线下面，表情图盖在最上层。
     </div>
     <div class="previews">
@@ -1206,8 +1219,40 @@ function budget() {
   }
 }
 
+// ------------------------------------------------------------
+// 预览画布按**目标板的屏**取尺寸(2026-09-20 随 240 档一起加)
+//
+// 为什么必须跟着目标板走:画出来的图是**原尺寸**贴上去的(固件不缩放),
+// 所以"图在屏上占多大"只有在**同尺寸的画布**里才看得对。
+// 在 480 的画布里预览 240 那块板:
+//   · 240×240 的底图够不到弧带(半径 90..102 那一圈),看着像"背景没生效";
+//   · 152 的表情看着只有一点点大,而它在 240 屏上正好填到内圈副弧。
+// 弧的半径本来就按 cv.width/480 缩放(drawScreen),所以这里只要换画布尺寸,
+// 画法一个字都不用改。
+// ------------------------------------------------------------
+function previewSide() {
+  return ImageBlob.faceTierInfo(curTarget).id === "res240" ? 240 : 480;
+}
+
+function applyPreviewSize() {
+  const side = previewSide();
+  for (const id of ["cv0", "cv1"]) {
+    const cv = document.getElementById(id);
+    if (cv.width !== side) { cv.width = side; cv.height = side; }
+    // CSS 尺寸单独给:240 的画布在页面上放大约 1.5 倍,看得清(只是显示大小)
+    cv.style.width = cv.style.height = Math.round(side * 1.5) + "px";
+  }
+  const note = document.getElementById("preview-note");
+  if (note) {
+    note.textContent = "下面按 " + side + "×" + side + "（" +
+      (side === 240 ? "这块板的屏" : "设备分辨率") +
+      "，1 像素 = 屏上 1 像素）合成。背景图铺在弧线下面，表情图盖在最上层。";
+  }
+}
+
 function refresh(rebuildGrid = true) {
   buildList();
+  applyPreviewSize();
   const stage = FaceStages.STAGES[curStage] || FaceStages.STAGES[0];
   // 大预览也按屏取:左屏看 stage.left、右屏看 stage.right(可被下拉覆盖)
   drawScreen(document.getElementById("cv0"), 0, stage, stageFaceOverride[0] || null);
@@ -1233,6 +1278,9 @@ function refresh(rebuildGrid = true) {
 
   document.getElementById("cmd").value =
     ImageBlob.esptoolCommand("COM3", "image.bin", curTarget);
+  // 分区大小按目标板填(以前这行写死 "1024 KB",在 S3 那块板上是错的)
+  document.getElementById("part-info").textContent =
+    ImageBlob.targetInfo(curTarget).label + " → " + (partBytes() / 1024) + " KB";
 
   if (items.length && b.total >= 0 && b.pct > 100) {
     // ★ 分区大小必须问 partBytes(),别写死数字 ——
@@ -1506,7 +1554,8 @@ document.getElementById("btn-export").addEventListener("click", () => {
   download(new Blob([res.blob], { type: "application/octet-stream" }), "image.bin");
   say("已导出 image.bin（" + res.totalBytes + " 字节，" + res.entries.length + " 张图）。\n\n" +
       "刷进去（端口按你电脑上的改）：\n" + ImageBlob.esptoolCommand("COM3", "image.bin", curTarget) + "\n\n" +
-      "注意：图片要等真屏接上、固件里接好显示代码才会出现在屏幕上。", "ok");
+      "刷完重启就在屏上（固件已经会画图：背景在弧线下面、表情在最上面）。\n" +
+      "刷 image 分区**不动固件** —— 换图不用重新编译，只刷这一个分区。", "ok");
 });
 
 document.getElementById("btn-cheader").addEventListener("click", () => {

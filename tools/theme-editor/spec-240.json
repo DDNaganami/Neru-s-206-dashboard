@@ -1,0 +1,35 @@
+{
+  "_": [
+    "spec-240.json —— 微雪双屏 240×240(ESP32-S3-DualEye-Touch-LCD-1.28)的一整套占位素材",
+    "",
+    "用法(仓库根目录,输出就是可以直接刷的 image.bin):",
+    "  node tools/theme-editor/build-image-bin.js --spec tools/theme-editor/spec-240.json \\",
+    "       --out image.bin --target s3_240",
+    "",
+    "这是**占位图案**(颜色随 x/y 变化),用途是验证尺寸/占用/命令/角色号能不能跑通,",
+    "不是给人看的美术素材 —— 正式表情请在 image-editor.html 里导(拖 PNG,页面按角色自动选格式)。",
+    "",
+    "尺寸的来头(见 lib/themetool/image_blob.h 与 README 的「微雪双屏 240×240」一节):",
+    "  背景 240×240 = 屏的整块;图是**原尺寸居中**画的,480 的底图只会露出中间那块",
+    "  表情 152×152 = 推荐值(上限 160,内圈副弧内沿半径 81);原尺寸绘制,固件不缩放",
+    "  背景 rgb565(2 字节/像素,铺最底层);表情 rgb565a8(3 字节/像素,要透出底下的弧)",
+    "  合计 1420 + 240*240*2 + 10*152*152*3 = 809740 字节(占 8MB 分区的 9.7%)",
+    "",
+    "角色号 → 屏/档位取自 lib/dashcore/face_stages.h 的 kFaceRoleId(左屏 5 档 / 右屏 5 档)。"
+  ],
+  "images": [
+    { "pattern": "ramp",   "w": 240, "h": 240, "role": "background",      "order": 0, "name": "bg" },
+
+    { "pattern": "checker",    "w": 152, "h": 152, "cf": "rgb565a8", "role": "face_idle",      "order": 0, "name": "L_idle" },
+    { "pattern": "ramp",       "w": 152, "h": 152, "cf": "rgb565a8", "role": "face_cruise",    "order": 0, "name": "L_cruise" },
+    { "pattern": "solid",      "w": 152, "h": 152, "cf": "rgb565a8", "role": "face_sport",     "order": 0, "name": "L_sport" },
+    { "pattern": "transparent","w": 152, "h": 152, "cf": "rgb565a8", "role": "face_high",      "order": 0, "name": "L_high" },
+    { "pattern": "checker",    "w": 152, "h": 152, "cf": "rgb565a8", "role": "face_redline",   "order": 0, "name": "L_redline" },
+
+    { "pattern": "solid",      "w": 152, "h": 152, "cf": "rgb565a8", "role": "face_idle_r",    "order": 0, "name": "R_idle" },
+    { "pattern": "transparent","w": 152, "h": 152, "cf": "rgb565a8", "role": "face_city",      "order": 0, "name": "R_city" },
+    { "pattern": "ramp",       "w": 152, "h": 152, "cf": "rgb565a8", "role": "face_cruise_r",  "order": 0, "name": "R_cruise" },
+    { "pattern": "checker",    "w": 152, "h": 152, "cf": "rgb565a8", "role": "face_sport_r",   "order": 0, "name": "R_sport" },
+    { "pattern": "solid",      "w": 152, "h": 152, "cf": "rgb565a8", "role": "face_overspeed_r","order": 0, "name": "R_overspeed" }
+  ]
+}

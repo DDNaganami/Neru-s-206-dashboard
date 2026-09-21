@@ -4,17 +4,21 @@
  * 两种用法:
  *
  * 1) 用一份简单的"配方"JSON 打包(给自动化测试用,也是本文件的主用途):
- *      node build-image-bin.js --spec spec.json --out image.bin
+ *      node build-image-bin.js --spec spec.json --out image.bin --target s3_240
  *    配方里可以写:
  *      { "images": [ { "pattern": "ramp", "w":4, "h":2, "role":"background",
  *                      "order":0, "name":"grad" } ] }
- *    pattern 取值见下方的 makePattern()。
+ *    pattern 取值见下方的 makePattern();cf 取 rgb565(默认,背景) / rgb565a8(表情)。
+ *    ★ --target 决定"image 分区多大 + 刷写命令用哪个 --chip",微雪 240 那块板写 s3_240。
  *
- * 2) 直接打包已经转好的原始 RGB565 数据(给其它工具链用):
- *      node build-image-bin.js --raw grad.raw:480x480:rgb565:background:0:grad \
- *                              --out image.bin
+ * 2) 直接打包已经转好的原始数据(给其它工具链用):
+ *      背景:node build-image-bin.js --raw grad.raw:240x240:rgb565:background:0:grad \
+ *                                    --out image.bin --target s3_240
+ *      表情:node build-image-bin.js --raw face.raw:152x152:rgb565a8:face_idle:0:idleL ...
+ *    RGB565A8 是**每像素 3 字节**(上半部 565 + 下半部 A8 平面),表情必须用它。
  *
- * 图形界面的版本在 index.html —— 拖图片进去、点导出,不用命令行。
+ * 图形界面的版本在 index.html —— 拖图片进去、点导出,不用命令行
+ * (页面按角色自动选颜色格式,日常导图走它就行)。
  * ============================================================ */
 "use strict";
 
@@ -59,6 +63,25 @@ function makePattern(kind, w, h) {
   return rgba;
 }
 
+// 颜色格式名 → LVGL 常量。
+// ★ rgb565a8 = 带透明通道的 565(**每像素 3 字节**:上半部 565 + 下半部 A8 平面)。
+//   表情图必须是这个格式 —— 它要叠在弧线上面,不透明方块会把弧挡掉一块。
+//   页面(image-editor.html)按角色自动选格式,命令行这边要**显式写**
+//   (`"cf": "rgb565a8"` 或 --raw 的第三段),因为"自动"在自动化脚本里
+//   等于"看不见的分支":同一份 spec 换个名字就悄悄变成另一种格式。
+const CF_BY_NAME = {
+  rgb565: IB.CF.RGB565,
+  rgb565a8: IB.CF.RGB565A8,
+  rgb888: IB.CF.RGB888,
+  a8: IB.CF.A8,
+  l8: IB.CF.L8
+};
+function cfByName(v) {
+  const k = String(v || "rgb565").toLowerCase();
+  if (!(k in CF_BY_NAME)) throw new Error("不认识的颜色格式: " + v);
+  return CF_BY_NAME[k];
+}
+
 // 角色名 → 编号(与 image_blob.h 的 ImageRole 一致)
 // ★ 这里只列**当前存在**的角色。当年那些已删除的角色(开机帧 boot、
 //   左屏惊喜 face_surprise、右屏红区 face_redline_r)对应编号是**保留号**,
@@ -72,10 +95,18 @@ const ROLE_ID = {
   face_cruise: IB.ROLE.FaceCruise,
   face_sport: IB.ROLE.FaceSport,
   face_redline: IB.ROLE.FaceRedline,
+  // ★ 高转(21):2026-09-18 加的第五档。这里曾经漏了它和下面的"市区"——
+  //   后果是**命令行打不出一整套 10 张**:配一套齐的 spec 到这两行就报
+  //   "不认识的角色: face_high"。页面(image-editor.html)是从 face-stages.js
+  //   取角色的,所以只有页面能导出全套 —— 命令行那份悄悄落后了两档。
+  //   新增角色时:IB.ROLE 加了、页面自动跟上,这里必须手工加一行。
+  face_high: IB.ROLE.FaceHigh,
   // 右屏(速度表)
   face_idle_r: IB.ROLE.FaceIdleR,
   face_cruise_r: IB.ROLE.FaceCruiseR,
   face_sport_r: IB.ROLE.FaceSportR,
+  // 市区(22):右屏第五档,同样在 2026-09-18 加。
+  face_city: IB.ROLE.FaceCityR,
   // 超速(第 4 档,当年叫"惊喜")。旧名保留成别名:编号没变(都是 8),
   // 老 spec.json 里的 face_surprise_r 仍然能打包,只是语义变成"超速"。
   face_overspeed_r: IB.ROLE.FaceOverspeedR,
@@ -171,31 +202,66 @@ function parseRawSpec(s) {
   const m = /^(\d+)x(\d+)$/.exec(p[1]);
   if (!m) throw new Error("尺寸要写成 宽x高,例如 480x480");
   const cfName = p[2].toLowerCase();
-  const cfMap = { rgb565: IB.CF.RGB565, rgb888: IB.CF.RGB888, a8: IB.CF.A8, l8: IB.CF.L8 };
-  if (!(cfName in cfMap)) throw new Error("不认识的颜色格式: " + cfName);
+  if (!(cfName in CF_BY_NAME)) throw new Error("不认识的颜色格式: " + p[2]);
   return {
-    file: p[0], w: +m[1], h: +m[2], cf: cfMap[cfName],
+    file: p[0], w: +m[1], h: +m[2], cf: cfByName(cfName),
     role: roleId(p[3] || "background"),
     order: p[4] ? +p[4] : 0,
     name: p[5] || path.basename(p[0]).replace(/\.[^.]+$/, "")
   };
 }
 
+// 配方 JSON → build() 的 items。
+// ★ 单独一个函数是为了能被测试直接调(不然只能靠 spawn 一个 node 子进程,
+//   那在 CI/受限环境下很容易变成"测不了就不测")。
+function specItems(spec) {
+  const items = [];
+  for (const im of spec.images || []) {
+    const w = im.w | 0, h = im.h | 0;
+    const rgba = makePattern(im.pattern || "ramp", w, h);
+    const cf = cfByName(im.cf);            // 默认 rgb565(老 spec 一个字节不变)
+    const isA8 = (cf === IB.CF.RGB565A8);
+    const pad = im.stride_pad | 0;
+    if (isA8 && pad) {
+      throw new Error("第 " + (items.length + 1) + " 张:RGB565A8 不支持 stride_pad" +
+                      "(A8 平面紧跟在色平面后面,没有行尾填充这一说)");
+    }
+    if (!isA8 && cf !== IB.CF.RGB565) {
+      throw new Error("配方里的 cf 只支持 rgb565 与 rgb565a8(要别的格式请用 --raw)");
+    }
+    const pixels = isA8
+      ? IB.rgbaToRgb565A8(rgba, w, h)
+      : IB.rgbaToRgb565(rgba, w, h, { stridePad: pad, alphaBg: im.alpha_bg || null });
+    items.push({
+      name: im.name || ("img" + items.length),
+      w, h, cf, stridePad: pad,
+      role: roleId(im.role), order: im.order | 0, pixels
+    });
+  }
+  return items;
+}
+
 function main() {
   const args = parseArgs(process.argv);
   if (args.help) {
     console.log("用法:");
-    console.log("  node build-image-bin.js --spec spec.json --out image.bin");
-    console.log("  node build-image-bin.js --raw a.raw:480x480:rgb565:background:0:bg --out image.bin");
+    console.log("  node build-image-bin.js --spec spec.json --out image.bin --target s3_240");
+    console.log("  node build-image-bin.js --raw a.raw:240x240:rgb565:background:0:bg --out image.bin \\");
+    console.log("                          --raw f.raw:152x152:rgb565a8:face_idle:0:idleL");
     console.log("");
     console.log("--target  目标板,决定 image 分区多大(默认 " + IB.DEFAULT_TARGET + "):");
     for (const id of Object.keys(IB.TARGETS)) {
       const t = IB.TARGETS[id];
       console.log("            " + id.padEnd(8) + t.label + "  image " +
-                  (t.partitionBytes / 1024 / 1024) + "MB  (" + t.partitionsCsv + ")");
+                  (t.partitionBytes / 1024 / 1024) + "MB  (" + t.partitionsCsv +
+                  ", --chip " + t.chip + ")");
     }
     console.log("");
     console.log("图案类型(配方里的 pattern): ramp | checker | solid | transparent");
+    console.log("颜色格式(配方的 cf / --raw 的第三段): rgb565(默认,背景用) | rgb565a8" +
+                "(表情用,每像素 3 字节)");
+    console.log("★ 表情必须是 rgb565a8 —— rgb565 没有透明通道,刷进去会盖住底下的弧。");
+    console.log("  页面(image-editor.html)按角色自动选,所以日常导图走页面即可。");
     return 0;
   }
 
@@ -203,26 +269,15 @@ function main() {
 
   if (args.spec) {
     const spec = JSON.parse(stripBom(fs.readFileSync(args.spec, "utf8")));
-    for (const im of spec.images || []) {
-      const w = im.w | 0, h = im.h | 0;
-      const rgba = makePattern(im.pattern || "ramp", w, h);
-      const pad = im.stride_pad | 0;
-      const pixels = IB.rgbaToRgb565(rgba, w, h, {
-        stridePad: pad,
-        alphaBg: im.alpha_bg || null
-      });
-      items.push({
-        name: im.name || ("img" + items.length),
-        w, h, cf: IB.CF.RGB565, stridePad: pad,
-        role: roleId(im.role), order: im.order | 0, pixels
-      });
-    }
+    for (const it of specItems(spec)) items.push(it);
   }
 
   for (const r of args.raw) {
     const s = parseRawSpec(r);
     const buf = fs.readFileSync(s.file);
-    const bpp = IB.bytesPerPixel(s.cf);
+    // ★ 用 packedBytesPerPixel 而不是 bytesPerPixel:RGB565A8 是 3 字节/像素
+    //   (2 字节色 + 1 字节 alpha 平面),按 2 算会把合法文件判成大小不对。
+    const bpp = IB.packedBytesPerPixel(s.cf);
     const need = bpp * s.w * s.h;
     if (buf.length !== need) {
       throw new Error(`${s.file}: 大小 ${buf.length} 字节,${s.w}x${s.h} ${bpp}B/px 需要 ${need} 字节`);
@@ -276,4 +331,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { makePattern, manifestText, parseRawSpec, roleId };
+module.exports = { makePattern, manifestText, parseRawSpec, roleId, cfByName, specItems, ROLE_ID };
