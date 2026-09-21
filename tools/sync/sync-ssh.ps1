@@ -132,23 +132,50 @@ if (Test-Path -LiteralPath '__DIR__') {
 
 function Get-RemoteRepoProbeScript {
   <#  远端仓库体检:先看有没有本地改动(gate),再报 HEAD。
-      gate 和取 HEAD 放在同一次往返里,省一次 SSH。同样是单引号 here-string。 #>
+      gate 和取 HEAD 放在同一次往返里,省一次 SSH。同样是单引号 here-string。
+
+      ★ gate 只看**已跟踪**文件的改动(--untracked-files=no)。 #>
   [CmdletBinding()]
   param([Parameter(Mandatory)][string]$Repo)
   $r = $Repo.Replace("'", "''")
   return @'
 $ProgressPreference = 'SilentlyContinue'
 Set-Location -LiteralPath '__REPO__'
-$dirty = @(git status --porcelain)
+
+# ---- gate 判据(2026-09-21 改)----------------------------------------------
+# 为什么**不看未跟踪文件**(--untracked-files=no):
+#   1) 未跟踪文件根本挡不住快进合并。就算某个未跟踪文件的名字和这次要写进来的
+#      已跟踪文件撞上,git 自己会中止合并并原样留着那个文件 —— 它**不会**覆盖
+#      任何东西。也就是说"未跟踪文件"这条风险 git 已经替我们挡了,gate 再拦一遍
+#      只是把正常同步变成永远失败。
+#   2) 这不是理论:2026-09-21 那次真同步,笔记本 checkout 里躺着 26 个早期
+#      sshd / Radmin 调试残留(A.sshd.log、diagnose-sshd*.ps1、fix-route-metric.ps1 …),
+#      全是未跟踪文件。旧 gate 用含未跟踪的 `git status --porcelain`,于是每次都
+#      拒绝快进、退出 6 —— 明明整条同步都成功了。所以判据收窄。
+# 已跟踪改动 / 暂存改动 / 删除文件**照旧一律拒绝**(gate 的本意没变):
+# 那些是别人的活儿,我们不 stash / 不 reset / 不 clean。
+$dirty = @(git status --porcelain --untracked-files=no)
 Write-Output ('PORCELAIN_COUNT=' + $dirty.Count)
 $dirty | ForEach-Object { Write-Output ('DIRTY:' + $_) }
+
+# 未跟踪的只**报个数**给人看(gate 不看它们,但别让人以为它们不存在)。
+# 用 StartsWith 而不用 -like '??*':后者的 ? 是通配符,会连 ' M file' 一起算进来。
+$untracked = @(git status --porcelain --untracked-files=normal | Where-Object { $_.StartsWith('??') })
+Write-Output ('UNTRACKED_COUNT=' + $untracked.Count)
+
 Write-Output ('HEAD=' + (git rev-parse HEAD).Trim())
 Write-Output ('BRANCH=' + (git rev-parse --abbrev-ref HEAD).Trim())
 '@.Replace('__REPO__', $r)
 }
 
 function Get-RemoteRepoMergeScript {
-  <#  fetch + merge --ff-only。只快进,不产生 merge commit,也绝不碰本地改动。 #>
+  <#  fetch + merge --ff-only。只快进,不产生 merge commit,也绝不碰本地改动。
+
+      ★ fetch 的退出码必须**单独**报回来(FETCH_EXIT)。为什么:fetch 一失败,
+        `merge --ff-only origin/main` 就是拿**过期的** origin/main 去比,典型输出
+        是 "Already up to date." + 退出码 0 —— 只看 MERGE_EXIT 会把它当成成功。
+        2026-09-21 真跑就踩到了:笔记本连不上 github.com:443,脚本却打印
+        "[OK] 笔记本 fetch + ff-only 成功",把真问题藏了起来。 #>
   [CmdletBinding()]
   param([Parameter(Mandatory)][string]$Repo)
   $r = $Repo.Replace("'", "''")
@@ -156,6 +183,7 @@ function Get-RemoteRepoMergeScript {
 $ProgressPreference = 'SilentlyContinue'
 Set-Location -LiteralPath '__REPO__'
 git fetch --prune origin 2>&1 | ForEach-Object { Write-Output ('FETCH:' + $_) }
+Write-Output ('FETCH_EXIT=' + $LASTEXITCODE)
 git merge --ff-only origin/main 2>&1 | ForEach-Object { Write-Output ('MERGE:' + $_) }
 Write-Output ('MERGE_EXIT=' + $LASTEXITCODE)
 Write-Output ('HEAD=' + (git rev-parse HEAD).Trim())
@@ -216,6 +244,34 @@ function Get-SyncDecision {
     }
   }
   return [pscustomobject]@{ Action = 'Skip'; Reason = '大小一致'; Delta = 0L }
+}
+
+function Get-RepoVerdict {
+  <#  仓库这步的判决。**纯函数** —— 只吃四个事实,不打印、不碰网络,
+      所以 -SelfTest 能把每条分支都点一遍(这台的教训见下面)。
+
+      返回值:
+        'refused' gate 拒绝,根本没过 fetch/merge(gate 优先:没碰就是没碰)
+        'nofetch' 笔记本自己 git fetch origin 失败 —— origin/main 还是旧的,
+                  这时 `merge --ff-only` 常常回一句 "Already up to date." + 退出码 0,
+                  **不能**当成功(2026-09-21 真跑:笔记本连不上 github.com:443,
+                  旧代码却打了 "[OK] fetch + ff-only 成功")。
+        'failed'  merge 报错,或者两边 HEAD 对不上 —— 包括"哈希恰好相同但
+                  merge 报错"这种,哈希相同不等于这次真的同步过。
+        'ok'      fetch 成功 + merge --ff-only 成功 + 两边 HEAD 一致。 #>
+  [CmdletBinding()]
+  param(
+    [AllowEmptyString()][string]$DesktopHead = '',
+    [AllowEmptyString()][string]$LaptopHead  = '',
+    [int]$FetchExit = 0,
+    [int]$MergeExit = 0,
+    [int]$DirtyCount = 0
+  )
+  if ($DirtyCount -gt 0) { return 'refused' }
+  if ($FetchExit -ne 0)  { return 'nofetch' }
+  if ($MergeExit -ne 0)  { return 'failed' }
+  if ($DesktopHead -ne $LaptopHead) { return 'failed' }
+  return 'ok'
 }
 
 # ===========================================================================
@@ -354,7 +410,7 @@ function Invoke-SelfTest {
     else       { $tally.Fail++; Write-Host ("  [FAIL] " + $name + $(if ($detail) { " —— $detail" } else { '' })) -ForegroundColor Red }
   }
 
-  Write-Head 'SelfTest 1/4:参数解析'
+  Write-Head 'SelfTest 1/5:参数解析'
   Assert '默认 SshKey 指向 ~\.ssh\dsh_laptop' ($SshKey -eq (Join-Path $env:USERPROFILE '.ssh\dsh_laptop')) "实际:$SshKey"
   Assert '默认 Laptop 正确'      ($Laptop -eq '张九思@26.253.1.139')              "实际:$Laptop"
   Assert '默认 LaptopRepo 正确'  ($LaptopRepo -eq 'C:\Users\张九思\Documents\PlatformIO\Projects\Neru-s-206-dashboard')
@@ -366,7 +422,7 @@ function Invoke-SelfTest {
   Assert '目标不是已废的 C:\206dash-sync' ($LaptopData -ne 'C:\206dash-sync')
   Assert '任务名是 206dash-sync-ssh' ($TaskName -eq '206dash-sync-ssh')
 
-  Write-Head 'SelfTest 2/4:大小比较逻辑'
+  Write-Head 'SelfTest 2/5:大小比较逻辑'
   $d = Get-SyncDecision -Name 'a.csv' -LocalSize 100 -RemoteSize $null
   Assert '远端没有 → Send'            ($d.Action -eq 'Send')
   $d = Get-SyncDecision -Name 'a.csv' -LocalSize 100 -RemoteSize 100L
@@ -391,7 +447,7 @@ function Invoke-SelfTest {
   $empty = ConvertFrom-RemoteListing -Lines @('MISSING')
   Assert '目录不存在 → 空表(全部要发)' ($empty.Count -eq 0)
 
-  Write-Head 'SelfTest 3/4:远端命令的引号/编码'
+  Write-Head 'SelfTest 3/5:远端命令的引号/编码'
   # 这是核心断言:解回来的字符串必须和原文一字不差。
   $samples = @(
     (Get-RemoteListScript -Dir 'C:\206dash-data'),
@@ -424,7 +480,41 @@ function Invoke-SelfTest {
   Assert 'ssh 参数带 -i 私钥'                   ($sa -contains '-i' -and $sa -contains $SshKey)
   Assert 'ssh 目标是 张九思@26.253.1.139'       ($sa -contains '张九思@26.253.1.139')
 
-  Write-Head 'SelfTest 4/4:中文路径原样穿过(本机 8.3 短名是关的)'
+  Write-Head 'SelfTest 4/5:gate 判据 + 仓库判决(2026-09-21)'
+  # gate 原来用**含未跟踪文件**的 `git status --porcelain`:笔记本 checkout 里躺着
+  # 26 个早期 sshd / Radmin 调试残留(A.sshd.log、diagnose-sshd*.ps1 …),于是每次
+  # 都快进失败、退出 6,明明同步是成功的。下面几条把新判据钉死。
+  $gateScript = Get-RemoteRepoProbeScript -Repo $LaptopRepo
+  Assert 'gate 用 --untracked-files=no(未跟踪不进判据)' ($gateScript.Contains('git status --porcelain --untracked-files=no'))
+  Assert 'gate 里没有含未跟踪的裸 porcelain'            (-not ($gateScript -match 'git status --porcelain\s*\)'))
+  Assert '判据仍是 PORCELAIN_COUNT(只是收窄了)'         ($gateScript.Contains("('PORCELAIN_COUNT=' + " + '$dirty.Count'))
+  Assert '已跟踪改动的明细照旧打出来(DIRTY:)'           ($gateScript.Contains("('DIRTY:' + "))
+  Assert '未跟踪的只单独报个数(UNTRACKED_COUNT=)'        ($gateScript.Contains("('UNTRACKED_COUNT=' + "))
+  Assert '数未跟踪用 StartsWith(不用会把 M 也数进去)'   ($gateScript.Contains("StartsWith('??')"))
+  Assert '注释里留着"为什么"+日期(2026-09-21)'          ($gateScript.Contains('2026-09-21'))
+  # fetch 失败时 merge --ff-only 会拿**过期的** origin/main 比出 "Already up to date."
+  # + 退出码 0,所以两个退出码必须分开报,不能只看 MERGE_EXIT。
+  $mergeScript = Get-RemoteRepoMergeScript -Repo $LaptopRepo
+  Assert '快进脚本单独报 FETCH_EXIT(fetch 失败不算成功)' ($mergeScript.Contains("('FETCH_EXIT=' + "))
+  Assert '快进脚本仍然报 MERGE_EXIT'                     ($mergeScript.Contains("('MERGE_EXIT=' + "))
+  Assert '快进脚本仍然报 HEAD'                           ($mergeScript.Contains("('HEAD=' + "))
+  # 判决矩阵:一条条点。★ 这里就是第一版翻车的地方 —— 状态机写错时,两边 HEAD
+  # 明明都是 383c07c,脚本照样判"失败"退出 6。所以判决必须是纯函数 + 逐条断言。
+  $v = Get-RepoVerdict -DesktopHead 'aaa' -LaptopHead 'aaa' -FetchExit 0 -MergeExit 0 -DirtyCount 0
+  Assert '判决:全成功 → ok'                    ($v -eq 'ok')                     "实际:$v"
+  $v = Get-RepoVerdict -DesktopHead 'aaa' -LaptopHead 'aaa' -FetchExit 128 -MergeExit 0 -DirtyCount 0
+  Assert '判决:fetch 失败 → nofetch(不许当成功)' ($v -eq 'nofetch')               "实际:$v"
+  $v = Get-RepoVerdict -DesktopHead 'aaa' -LaptopHead 'aaa' -FetchExit 0 -MergeExit 1 -DirtyCount 0
+  Assert '判决:merge 报错 → failed(哈希相同也不行)' ($v -eq 'failed')             "实际:$v"
+  $v = Get-RepoVerdict -DesktopHead 'bbb' -LaptopHead 'aaa' -FetchExit 0 -MergeExit 0 -DirtyCount 0
+  Assert '判决:HEAD 不一致 → failed'           ($v -eq 'failed')                 "实际:$v"
+  $v = Get-RepoVerdict -DesktopHead 'aaa' -LaptopHead 'aaa' -FetchExit 0 -MergeExit 0 -DirtyCount 3
+  Assert '判决:有已跟踪改动 → refused'         ($v -eq 'refused')                "实际:$v"
+  $v = Get-RepoVerdict -DesktopHead 'aaa' -LaptopHead 'bbb' -FetchExit 128 -MergeExit 0 -DirtyCount 2
+  Assert '判决:refused 优先(没碰就是没碰)'     ($v -eq 'refused')                "实际:$v"
+  # 中文路径那条不影响 gate:同一份正文仍然要能逐字节穿过 base64(见 5/5)。
+
+  Write-Head 'SelfTest 5/5:中文路径原样穿过(本机 8.3 短名是关的)'
   # 这台机器 NtfsDisable8dot3NameCreation 开着,拿不到 ZHANGJ~1。
   # 所以必须证明:中文路径在 base64 里一字不改地活到远端。这是整条同步的前提。
   $cnScript = Get-RemoteRepoProbeScript -Repo $LaptopRepo
@@ -509,12 +599,14 @@ if ($Test) {
     Write-Bad "仓库体检失败:$($_.Exception.Message)"; exit $EX_REPO
   }
   $count = ($rLines | Where-Object { $_ -like 'PORCELAIN_COUNT=*' }) -replace 'PORCELAIN_COUNT=', ''
+  $uCount = ($rLines | Where-Object { $_ -like 'UNTRACKED_COUNT=*' }) -replace 'UNTRACKED_COUNT=', ''
   $rHead = ($rLines | Where-Object { $_ -like 'HEAD=*' }) -replace 'HEAD=', ''
   $rBr   = ($rLines | Where-Object { $_ -like 'BRANCH=*' }) -replace 'BRANCH=', ''
   $dLines = @($rLines | Where-Object { $_ -like 'DIRTY:*' })
   Write-Info "笔记本 HEAD : $rHead ($rBr)"
-  Write-Info "本地改动    : $count 项"
-  Write-Info "仓库可快进  : $(if ([int]$count -eq 0) { '是' } else { '否 —— 有本地改动,同步会拒绝动它' })"
+  Write-Info "已跟踪改动  : $count 项(gate 只看这个)"
+  Write-Info "未跟踪文件  : $uCount 个(不拦快进,gate 不看;要撞车 git 自己会中止)"
+  Write-Info "仓库可快进  : $(if ([int]$count -eq 0) { '是' } else { '否 —— 有已跟踪改动,同步会拒绝动它' })"
   Write-Info '数据目标目录:'
   $listing = Invoke-RemoteScript -Script (Get-RemoteListScript -Dir $dataShort)
   if ($listing -contains 'MISSING') { Write-Info "  $LaptopData 不存在(真同步时会建)" }
@@ -540,37 +632,59 @@ try {
 } finally { Pop-Location }
 Write-Ok "桌机 HEAD  : $desktopHead"
 
-# gate:笔记本上有本地改动就**不动**它。不 stash / 不 reset / 不 clean ——
+# gate:笔记本上有**已跟踪**文件的改动就**不动**它。不 stash / 不 reset / 不 clean ——
 # 那些会把别人没提交的工作弄丢,而这是台在用的开发机。
+# ★ 未跟踪文件**不进** gate 判据(2026-09-21 定的):它们挡不住快进,真要撞车
+#   git 自己会中止合并、不会覆盖。为什么收窄、当时踩了什么,见
+#   Get-RemoteRepoProbeScript 里那段注释。
 $rLines = Invoke-RemoteScript -Script (Get-RemoteRepoProbeScript -Repo $repoShort)
 $dirtyCount = [int](($rLines | Where-Object { $_ -like 'PORCELAIN_COUNT=*' }) -replace 'PORCELAIN_COUNT=', '')
+$untrackedCount = [int](($rLines | Where-Object { $_ -like 'UNTRACKED_COUNT=*' }) -replace 'UNTRACKED_COUNT=', '')
 $laptopHeadBefore = ($rLines | Where-Object { $_ -like 'HEAD=*' }) -replace 'HEAD=', ''
 $dirtyLines = @($rLines | Where-Object { $_ -like 'DIRTY:*' } | ForEach-Object { $_.Substring(6) })
 Write-Info "笔记本 HEAD(动之前): $laptopHeadBefore"
+if ($untrackedCount -gt 0) {
+  Write-Info "笔记本另有 $untrackedCount 个未跟踪文件 —— 按 2026-09-21 的决定不拦(快进不会覆盖它们)"
+}
 
-$repoOk = $false
 if ($dirtyCount -gt 0) {
-  Write-Bad "笔记本仓库有 $dirtyCount 项本地改动 —— 拒绝碰它(没有 stash / reset / clean)"
+  $repoState = 'refused'
+  Write-Bad "笔记本仓库有 $dirtyCount 项**已跟踪**文件的改动 —— 拒绝碰它(没有 stash / reset / clean)"
   foreach ($l in ($dirtyLines | Select-Object -First 10)) { Write-Info "  $l" }
   if ($dirtyCount -gt 10) { Write-Info "  ...还有 $($dirtyCount - 10) 项" }
   Write-Info '处理办法:在笔记本上把这些改动处理掉(提交 / 挪走 / 删掉)再同步。'
-  Write-Info '数据文件不受影响:它们进的是另一个目录,继续往下走。'
-  $repoOk = $false
+  Write-Info "仓库这步**跳过**了(未跟踪文件不算,数据文件也不受影响,继续往下走)。"
 } else {
   $mLines = Invoke-RemoteScript -Script (Get-RemoteRepoMergeScript -Repo $repoShort)
   foreach ($l in ($mLines | Where-Object { $_ -like 'FETCH:*' -or $_ -like 'MERGE:*' })) { Write-Info $l }
-  $mExit = ($mLines | Where-Object { $_ -like 'MERGE_EXIT=*' }) -replace 'MERGE_EXIT=', ''
+  $fExit = [int](($mLines | Where-Object { $_ -like 'FETCH_EXIT=*' }) -replace 'FETCH_EXIT=', '')
+  $mExit = [int](($mLines | Where-Object { $_ -like 'MERGE_EXIT=*' }) -replace 'MERGE_EXIT=', '')
   $laptopHeadAfter = ($mLines | Where-Object { $_ -like 'HEAD=*' }) -replace 'HEAD=', ''
-  if ([int]$mExit -eq 0) { Write-Ok "笔记本 fetch + ff-only 成功,HEAD : $laptopHeadAfter" }
-  else {
-    Write-Warn2 "git merge --ff-only 退出码 $mExit(可能是没提交的改动挡住了快进)"
-    Write-Info "笔记本 HEAD : $laptopHeadAfter"
+
+  # 判决交给 Get-RepoVerdict(纯函数,自检里逐条测过)。★ 别在这儿手写状态机 ——
+  # 第一版就是在这一步把"默认值 failed"和"merge 真报错"混成一个值,结果两边 HEAD
+  # 明明都是 383c07c 也判成失败、退出 6。
+  $repoState = Get-RepoVerdict -DesktopHead $desktopHead -LaptopHead $laptopHeadAfter `
+                 -FetchExit $fExit -MergeExit $mExit -DirtyCount $dirtyCount
+
+  switch ($repoState) {
+    'ok' {
+      Write-Ok "笔记本 fetch + ff-only 成功,两边 HEAD 一致:$laptopHeadAfter"
+    }
+    'nofetch' {
+      # 笔记本自己 fetch 失败 = origin/main 还是旧的。那句 "Already up to date."
+      # 是**跟旧数据比**出来的,不能当成功。
+      Write-Bad "笔记本自己 git fetch origin 失败(退出码 $fExit)—— origin/main 还是旧的,看上面的 FETCH: 行"
+      Write-Info "笔记本 HEAD : $laptopHeadAfter"
+    }
+    default {
+      if ($mExit -ne 0) { Write-Warn2 "git merge --ff-only 退出码 $mExit(可能是有未跟踪文件正好要被覆盖 —— git 自己中止了)" }
+      if ($desktopHead -ne $laptopHeadAfter) { Write-Warn2 "两边 HEAD 不一致:桌机 $desktopHead / 笔记本 $laptopHeadAfter" }
+      else { Write-Warn2 '两边 HEAD 哈希恰好相同,但这一步没成功 —— 不能当成“已同步”' }
+    }
   }
-  if ($desktopHead -eq $laptopHeadAfter) { Write-Ok '两边 HEAD 一致' }
-  else { Write-Warn2 "两边 HEAD 不一致:桌机 $desktopHead / 笔记本 $laptopHeadAfter"; $repoOk = $false }
-  if ([int]$mExit -eq 0 -and $desktopHead -eq $laptopHeadAfter) { $repoOk = $true }
 }
-if (-not $repoOk) { Write-Warn2 '仓库这一步没完全成功(数据照常同步,最后退出码会体现)' }
+if ($repoState -ne 'ok') { Write-Warn2 '仓库这一步没成功(数据照常同步,最后退出码会体现)' }
 
 # ---- 第 3 步:问笔记本要现有大小 ----
 Write-Head '3/5 数据(只发大小不一样的)'
@@ -650,7 +764,16 @@ $finalLines = Invoke-RemoteScript -Script (Get-RemoteRepoProbeScript -Repo $repo
 $laptopHeadFinal = ($finalLines | Where-Object { $_ -like 'HEAD=*' }) -replace 'HEAD=', ''
 Write-Info "桌机 HEAD   : $desktopHead"
 Write-Info "笔记本 HEAD : $laptopHeadFinal"
-if ($desktopHead -eq $laptopHeadFinal) { Write-Ok '仓库两边一致' } else { Write-Bad '仓库两边不一致(见上面仓库那一步的报错)'; $repoOk = $false }
+# ★ 哈希相同 ≠ 这一步做过:gate 拒绝时两边的 HEAD 本来就可能一样(笔记本早就停在
+#   同一个提交上)。所以先看 $repoState,不然后面会打出假的"已同步"。
+if ($desktopHead -eq $laptopHeadFinal) {
+  if ($repoState -eq 'ok') { Write-Ok '仓库两边一致(第 2 步的 fetch + ff-only 确实跑过)' }
+  elseif ($repoState -eq 'refused') { Write-Warn2 '两边 HEAD 哈希恰好相同,但第 2 步被 gate 拒绝过 —— 这**不算**已同步(本次没碰笔记本的仓库)' }
+  else { Write-Warn2 '两边 HEAD 哈希恰好相同,但第 2 步的快进报了错 —— 这**不算**已同步' }
+} else {
+  Write-Bad '仓库两边不一致(见上面仓库那一步的报错)'
+  if ($repoState -eq 'ok') { $repoState = 'failed' }
+}
 
 Write-Head '5/5 笔记本上现在的数据(证明东西真在)'
 $finalList = Invoke-RemoteScript -Script (Get-RemoteListScript -Dir $dataShort)
@@ -658,15 +781,31 @@ foreach ($l in $finalList) { Write-Info ("  {0}" -f $l) }
 
 Write-Head '小结'
 Write-Info "通道    : 通(笔记本 = $($probe.HostName))"
-Write-Info "仓库    : 桌机 $desktopHead / 笔记本 $laptopHeadFinal"
+# 仓库这步**照实说**:成功 / 被 gate 拒绝(跳过) / 快进报错,三种分开讲,
+# 不拿"两边哈希一样"冒充"已同步"。
+switch ($repoState) {
+  'ok'      { Write-Ok    "仓库    : 已快进,两边 HEAD 一致(桌机 $desktopHead / 笔记本 $laptopHeadFinal)" }
+  'refused' { Write-Warn2 "仓库    : **跳过**(gate 拒绝:笔记本有 $dirtyCount 项已跟踪改动,脚本不碰它)" }
+  'nofetch' { Write-Bad   "仓库    : **没成功**(笔记本自己 fetch origin 失败,origin/main 是旧的;桌机 $desktopHead / 笔记本 $laptopHeadFinal)" }
+  default   { Write-Bad   "仓库    : **没成功**(fetch / merge --ff-only 报错;桌机 $desktopHead / 笔记本 $laptopHeadFinal)" }
+}
 Write-Info ("数据    : 发送 {0} 个({1} 字节 / {2} MB);跳过 {3} 个;桌机上没有 {4} 个;失败 {5} 个" -f `
   $sent, $sentBytes, [math]::Round($sentBytes / 1MB, 2), $skipped, $missing, $failed)
 if ($failed -gt 0) {
   Write-Bad '有文件没传成功 —— 再跑一次(已经传过去的会被大小比较跳过,不会重传)'
   exit $EX_DATA
 }
-if (-not $repoOk) {
-  Write-Bad '数据传完了,但仓库那一步没成功(看上面的 WARN/FAIL)'
+if ($repoState -ne 'ok') {
+  if ($repoState -eq 'refused') {
+    Write-Bad '数据传完了,但仓库这一步**被跳过**了:笔记本 checkout 有已跟踪改动,gate 拒绝动它'
+    Write-Info '数据是新的;仓库要等那些改动(提交 / 挪走 / 删掉)处理掉再同步。'
+  } elseif ($repoState -eq 'nofetch') {
+    Write-Bad '数据传完了,但仓库没同步:笔记本自己 git fetch origin 失败(笔记本那边连不上它的远端)'
+    Write-Info '桌机这边是好的(push 走 ssh.github.com:443)。查笔记本的网络 / remote.origin.url,'
+    Write-Info '或者把仓库这条链改成"桌机把 git 对象中继给笔记本"(脚本里目前是笔记本自己 fetch)。'
+  } else {
+    Write-Bad '数据传完了,但仓库那一步没成功(看上面的 FETCH: / MERGE: 行)'
+  }
   exit $EX_DATA
 }
 Write-Ok '全部成功'

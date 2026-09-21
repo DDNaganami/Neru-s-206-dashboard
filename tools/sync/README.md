@@ -11,6 +11,9 @@
 
 现在用的只有 SSH。`sync-to-laptop.ps1` 和它的计划任务 `206dash-sync-to-laptop`
 **都不再用了**,别再照着老文档去配共享。
+把桌机上那个老任务**退役**掉要用**管理员** PowerShell(任务库在
+`C:\Windows\System32\Tasks`),命令在下面“计划任务”一节里:
+`Unregister-ScheduledTask -TaskName 206dash-sync-to-laptop -Confirm:$false`。
 
 为什么废:这台桌机连笔记本的共享一律 `System error 5 / 拒绝访问`,
 不管共享权限怎么给都一样;新加一条 Windows 凭据也救不回来
@@ -72,6 +75,15 @@ Start-ScheduledTask   -TaskName 206dash-sync-ssh                       # 立刻�
 退出码:`0` 全成功 / `2` 参数不对 / `3` 通道不通 / `4` 仓库那步失败 /
 `5` 自检没过 / `6` 数据传完了但仓库没成。计划任务的“上次结果”看这个码就知道断在哪。
 
+`6` 有三种原因,小结里会写明是哪一种(不会含糊过去):
+
+- **跳过** —— gate 拒绝(笔记本有**已跟踪**文件的改动),压根没碰它的仓库;
+- **没成功(fetch)** —— 笔记本自己 `git fetch origin` 失败,`origin/main` 还是旧的。
+  这种情况 `merge --ff-only` 常常回一句 “Already up to date.” 加退出码 0,
+  **别被它骗了**:那句话是跟**过期的** `origin/main` 比出来的。所以脚本把 fetch 和
+  merge 的退出码分开看(`FETCH_EXIT` / `MERGE_EXIT`),fetch 一失败就不算成功;
+- **没成功(merge)** —— 快进报错,或者两边 HEAD 对不上。
+
 ## 同步过去什么
 
 | 桌机上 | 笔记本上 | 说明 |
@@ -99,14 +111,31 @@ Start-ScheduledTask   -TaskName 206dash-sync-ssh                       # 立刻�
 
 ### 仓库那步会**先看一眼笔记本有没有本地改动**
 
-笔记本的 checkout 如果有本地改动(`git status --porcelain` 非空,含未跟踪文件),
+笔记本的 checkout 如果有**已跟踪文件**的改动(**未暂存 / 已暂存 / 删除**都算),
 脚本**直接停下不碰它**,只报出来 —— 它**不会** `stash` / `reset` / `clean`。
 那些命令会把别人没提交的工作弄丢,而这是台在用的开发机。
 处理办法:在笔记本上把这些改动提交掉或者挪走,再同步。
 
+> **未跟踪文件不算数(2026-09-21 改的)。** gate 从 `git status --porcelain` 收窄成
+> `git status --porcelain --untracked-files=no`,也就是只看已跟踪文件的改动。
+>
+> 为什么:未跟踪文件**挡不住快进合并**。万一某个未跟踪文件正好要被这次写进来的
+> 已跟踪文件覆盖,git 自己会中止合并、原样留着那个文件 —— 它不会覆盖任何东西。
+> gate 再拦一遍,只是把正常同步变成永远失败。当时就是这么翻的车:笔记本 checkout 里
+> 躺着 **26 个**早期 sshd / Radmin 调试残留(`A.sshd.log`、`diagnose-sshd*.ps1`、
+> `fix-route-metric.ps1` …),全是未跟踪文件,于是每次同步都拒绝快进、退出 6,
+> 明明整条同步都是成功的。
+>
+> 那些残留**没有被删、没有被挪、也没有进 `.gitignore` / `.git/info/exclude`**
+> —— 改的只是脚本这一边的判据。脚本仍然会**报出**未跟踪文件的个数
+> (`UNTRACKED_COUNT`),只是不拿它拦人。
+
 数据文件不受这个影响(它们进的是 `C:\206dash-data`,和仓库无关),继续照传。
 
 最后两边的 HEAD 哈希都会打出来,对不上一眼就能看见。
+**哈希相同 ≠ 这一步成功**:gate 拒绝、或者笔记本自己 `git fetch` 失败时,两边 HEAD
+本来就可能一样(笔记本早就停在同一个提交上)。所以小结里“已快进 / 跳过(gate 拒绝) /
+没成功(fetch 或 merge 报错)”是分开写的,不会拿哈希相同冒充“已同步”。
 
 ## 故意不同步什么(这是重点)
 
@@ -124,14 +153,34 @@ Start-ScheduledTask   -TaskName 206dash-sync-ssh                       # 立刻�
 | 看到什么 | 意思 | 下一步 |
 |---|---|---|
 | `通道不通` | SSH 没连上 | 它会给三行:① Radmin 通不通 ② 笔记本 `sshd` 服务在不在 ③ 私钥路径对不对 —— 按顺序查 |
-| 笔记本仓库 `有 N 项本地改动` | checkout 不干净,脚本拒绝动它 | 在笔记本上提交或挪走那些文件(未跟踪的也算) |
-| `两边 HEAD 不一致` | 笔记本没快进到最新 | 看上面 `MERGE:` 那几行;多半是被本地改动挡住了 |
+| 笔记本仓库 `有 N 项**已跟踪**文件的改动` | checkout 不干净,脚本拒绝动它 | 在笔记本上提交或挪走那几个**已跟踪**文件;未跟踪的残留文件不算数,不用删 |
+| `笔记本自己 git fetch origin 失败` | 笔记本连不上它自己的远端(`remote.origin.url` 是 HTTPS 的 `github.com`) | 查笔记本的网络/DNS。实测笔记本到 `github.com:443` 会超时或“Connection was reset”,而桌机这边是通的(所以桌机 `git push` 一直没事)。这种情况下的 “Already up to date.” **不算数** |
+| `两边 HEAD 不一致` | 笔记本没快进到最新 | 看上面 `MERGE:` 那几行;多半是被本地改动挡住了,或者 fetch 没成功 |
 | `传完大小不对` | 文件没传完整 | 再跑一次;已经传好的会被大小比较跳过,不会重传 |
-| 退出码 `6` | 数据是新的,但仓库没同步成功 | 看仓库那步的报错;数据可以放心 |
+| 退出码 `6` | 数据是新的,但仓库没同步成功 | 小结里写明是“gate 跳过 / fetch 失败 / merge 失败”哪一种 —— 三种的处理办法不一样 |
 
-计划任务:
+计划任务(**要动任务库就得用管理员 PowerShell**):
 
-- `-Register` 被策略拦 → 开一个**管理员** PowerShell 再跑那条命令(平时同步不需要管理员)。
+- `-Register` / `-Unregister` 写的是系统任务库 `C:\Windows\System32\Tasks`,
+  **普通权限会“拒绝访问”** —— 所以这两条(以及下面退役老任务那一条)都要在一个
+  **“以管理员身份运行”** 的 PowerShell 里执行。**平时跑同步不需要管理员**。
+
+  ```powershell
+  # 管理员 PowerShell:
+  powershell -ExecutionPolicy Bypass -File tools\sync\sync-ssh.ps1 -Register
+  powershell -ExecutionPolicy Bypass -File tools\sync\sync-ssh.ps1 -Unregister
+  ```
+
+- **退役老的 SMB 计划任务**(`206dash-sync-to-laptop`,2026-09-21 那条路已废):
+  同样要管理员。先看它在不在,再删:
+
+  ```powershell
+  # 管理员 PowerShell:
+  Get-ScheduledTask        -TaskName 206dash-sync-to-laptop            # 看还在不在
+  Unregister-ScheduledTask -TaskName 206dash-sync-to-laptop -Confirm:$false
+  ```
+
+  删掉之后桌机上就只剩 `206dash-sync-ssh` 一个同步任务了。
 - 任务跑的是带**默认参数**的本脚本;要改目标/密钥就改脚本里的默认值,别在任务里塞参数。
 
 ## 为什么远端命令要编成 base64(改脚本的人必读)
