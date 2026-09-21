@@ -520,6 +520,17 @@
       开起来如果觉得"上匝道加速时脸切得太频繁"，就把 kRpmSportFrom 往上抬；
       如果觉得"红区提醒太晚"，就把 kRpmRedlineFrom 往下降。
       这三个数在 `expression.cpp` 顶部，改完 `face_stages.h` 的转速四档要跟着改。
+- [x] **圆弧两端端帽不对称（2026-09-21 落帧实测修正）**：用户看到的"弧的起点是圆的、终点是方的"。
+      根因：`src/dash_ui.cpp` 的 `build_arcs()` 只给 `LV_PART_INDICATOR` 设了 `arc_rounded`
+      （原第 148 行），**轨道那半边 `LV_PART_MAIN` 从没设过**；而 `lv_obj_remove_style_all`
+      又把 LVGL 主题里 indicator 的圆头一起删了，于是 MAIN 落回属性默认值 0 = 平头。
+      四条弧（左：转速主弧＋水温副弧；右：车速主弧＋进气副弧）都出自这一个函数，所以四条全中。
+      修法只有一行：补 `lv_obj_set_style_arc_rounded(arc, true, LV_PART_MAIN);`
+      （厚度／角度／半径／颜色一行没动；主题层 `ArcStyle` 本来就不暴露 `arc_rounded`，
+      所以这条只能落在 `build_arcs()` 里，也不存在按屏覆盖）。实测（pcpreview 落帧，
+      沿半径逐角度量墨迹宽度）：弧尾外伸 **0.00°／0.15° → 3.45°／1.65°**，
+      与弧首 3.60°／2.10° 同量级；剖面由"整宽硬断"变成半圆收细
+      （24→21.8→19→11→0px，与 w/2 端帽模型逐点吻合）。两屏 `check-preview-frame` 各 17/17。
 
 ## 两处措辞更正（审查指出，实测确认）
 

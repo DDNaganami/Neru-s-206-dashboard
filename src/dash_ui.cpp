@@ -145,6 +145,12 @@ static void build_arcs(lv_obj_t* parent, const ScreenTheme& cfg, ScreenUi& ui) {
     lv_obj_set_style_arc_opa(arc, a.track_opa, LV_PART_MAIN);
     lv_obj_set_style_arc_color(arc, a.value_color, LV_PART_INDICATOR);
     lv_obj_set_style_arc_opa(arc, LV_OPA_COVER, LV_PART_INDICATOR);
+    // ★ 两个 part 都要圆头:MAIN 是轨道、INDICATOR 是点亮段,**一条弧的两端分属这两个 part**
+    //   (固定端那半由点亮段画、另一端的收尾由轨道画)。原来只设了 INDICATOR →
+    //   弧首看着是圆的、弧尾是平头(2026-09-21 落帧实测:弧首墨迹外伸 3.6°/1.8°
+    //   = 端帽半径 w/2 对应的角度,弧尾 0°)。注意 lv_obj_remove_style_all 连 LVGL
+    //   主题给 indicator 的 arc_rounded 也一起删了,所以两条都只能显式写。
+    lv_obj_set_style_arc_rounded(arc, true, LV_PART_MAIN);
     lv_obj_set_style_arc_rounded(arc, true, LV_PART_INDICATOR);
     ui.arcs[i] = arc;
   }
