@@ -16,3 +16,9 @@ preview/run*.err
 # Python 编译缓存(2026-09-18:之前被 git add -A 误带进仓库过一次)
 __pycache__/
 *.pyc
+
+# ★ 钥匙类文件绝不允许进仓库（2026-09-21：有一次私钥被放进了 tools/ 共享目录，靠人工发现）
+id_*
+*.key
+dsh_*
+known_hosts*
