@@ -663,3 +663,28 @@ ESP32-S3 本身没有视频输出，它靠 **LCD_CAM 外设（RGB 并口）** �
 | 表盘后方净空 | FPC 出线方向 + 屏背面元件有没有地方弯 | **未量** |
 
 已量、下单前复测一次即可：Ø89 孔、Ø100 台阶（台阶宽 5.5mm）、两表圆心距 95mm。
+
+## 十一之三、2.8" 能不能走串行：查完了，不能；但有个"串口屏"特例（2026-09-22）
+
+**串行存在性（一句话）**：**2.8" 圆 + 480×480 + 能送像素的串行（QSPI/SPI）＝ 不存在**。查过立创/TDO 冠显、微雪、Dwin、Wisecoco、鑫洪泰、Adafruit、BuyDisplay、Ronbo、屏库、1688/淘宝、Alibaba：
+2.8" 圆 480×480 只有 **RGB 并口（ST7701S，40pin FPC）/ MIPI-DSI（S3 驱不动）/ 串口 HMI（自带 MCU）** 三种。TDO 那族 QSPI 圆屏**只到 2.1"（圆）就跳到 3.4"/4.0"（方形）** → 这一格是空的。
+
+> **⚠️ 形状必须对上**：圆仓**只收圆形屏**，矩形屏尺寸够也会被切角（480×480 方形对角线 ≈679px，Ø89 只留内切圆 → 四角与弧端全切）。先前"3.4" 圆屏可用"**作废**：立创那块 TDO 3.4"（C55111248）**是矩形的**（实物图 = 方形屏 + 转接板）。
+
+| 型号 | 形状 | Ø 外形 | Ø 有效区 | 总厚 | 接口 | 驱动板 | 价 / 来源 |
+|---|---|---|---|---|---|---|---|---|
+| **Dwin `LI48480T028BA3098`** | 圆 | **73.03×76.48** | 70.13 | **2.3** | RGB24 + 3线SPI(仅init) | 无，裸屏 40pin/0.5mm | 询价 [datasheet](http://www.dwin-global.com/2-8-inch-circular-ips-tft-lcd-module-480x480-rgb-24bit-300-bright-li48480t028ba3098-product/) |
+| 微雪 `ESP32-S3-LCD-2.8C` 整板 | 圆 | 整板更宽 | 70.13 | 板载 | RGB（料表含 **ST7701S** 规格书） | **自带整板+S3** | $32.99~39.99 [docs](https://docs.waveshare.com/ESP32-S3-LCD-2.8C) |
+| 鑫洪泰 `TFT-H028A21ZHIST3N40` | 圆 | 73.03×76.48 | 70.13 | 待确认 | RGB+SPI(仅init) | 无，40pin | 面议 [页](https://zyhlcd.jdzj.com/wap/productinfo-1-25143044.html) |
+| Wisecoco 2.8" 圆 | 圆 | 73.1×**76.5** | 70.128 | 待确认 | 3SPI+18RGB | 无 | $49 [页](https://www.wisecocodisplay.com/product/custom-2-8-inch-480x480-ips-round-display/) |
+| **[TJC4848X228_011C](http://wiki.tjc1688.com/product/new_datasheet/X2/TJC4848X228_011C.html)** 串口屏 | 圆 | **Ø90.50** ✗ | 70.13 | **5.11** | **4pin 串口** GND/RX/TX/5V | **自带 MCU+16MB** | ~¥120~180 待确认（淘晶驰 X2） |
+| ~~TDO `TS034WVS02CP-B1477A`~~ | **矩形** | 90.5×90.5 待确认 | — | 待确认 | QSPI/SPI | 带转接板 | **¥121.80** [C55111248](https://item.szlcsc.com/58799609.html) |
+
+**关键结论**
+1. **一块屏才省事**：跑一路 RGB ⇒ **现有精简版 esp_lcd 就够**（`env:esp32s3-rgb` 已写好）；**两块屏才需要**选通板 + IDF 5.x。所以"一块屏画两个圆表"省掉的正是选通与升构建，前提是**两孔之间的塑料能不能打通**（横跨 95mm 圆心距 ⇒ 屏宽 ~185~200mm）——**owner 量净空**。
+2. **方形 480×480 + QSPI 送像素有现货**：TDO `TS040WVS02NP-B1617A`（3.95" 方屏，板上标"QSPI 标准化小板"，[C55111598](https://item.szlcsc.com/58799613.html) / [1688](https://detail.1688.com/offer/965255554547.html)）——**对角线 ≈135mm，远超 Ø89 ✗**。3.4"/4.0" 串行全是方形，圆仓用不上。
+3. **宽屏 185~200mm + QSPI/SPI：这一档基本只有 RGB/MIPI**（7.84" 400×1280 为 [RGB 或 LVDS](https://swicn.com/products/7-84-inch-stretched-bar-tft-lcd-display-400x1280-gc9704c-wide-viewing-angle-rgb-interface-screen-for-automotive-video-player)，6.86" 480×1280 为 MIPI）。单块宽屏 = **一路 RGB ⇒ 现有 esp_lcd 够**，但要 40pin FPC + 转接板，**总厚待确认**。
+4. **MIPI-DSI 别买错**：**2.8" 圆 480×480 MIPI-DSI 模组确实存在**（[Alibaba](https://www.alibaba.com/product-detail/Round-Display-480-480-MIPI-or_1600626267976.html)、微雪 [3.4" DSI 800×800](https://www.waveshare.com/wiki/2.8inch_DSI_LCD)），但 **S3 没有 DSI**（带 DSI 的是 **ESP32-P4**；`waveshare/esp_lcd_dsi` 目标平台只有 `esp32p4`）→ 买到即废。
+5. **串口屏为何未入选**：TJC4848X228 一次解决几何+带宽（2.8" 圆、480×480、**4 根线**、自带图形引擎），但 **Ø90.50 > Ø89 塞不进**（差 1.5mm）。唯一变数：**90.5 是不是"面板+边框"全宽**——若 PCB 撑出来、面板仅 70.93 铁框，则**面板进孔、PCB 藏 Ø100 台阶后** ⇒ 这条就活（**待确认，必须问店家**）。
+
+**下单前必须在车上量/问的**：① Ø89 孔的**实际最小内径**（90.5 vs 89 只差 1.5mm，量准了才能判 TJC）② 表玻→表盘纸净厚（Dwin 2.3mm；TJC 5.11mm）③ 台阶面→表盘纸深度（藏 PCB/FPC 座）④ **两孔之间塑料净空**（决定"一块宽屏"这条路成不成立）⑤ 问店家：**TJC 90.5mm 的构成**、Dwin 的 **FPC 总长/出线方向**。
