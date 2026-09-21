@@ -580,3 +580,13 @@ Micro-USB 公头**，USB-C 是可选规格 —— 下单时必须在规格里**�
 **16µs → 62.5 kbit/s**／
 都不接近 → 不是 VAN；另外还会按"间隔 >20µs 算空闲"分出**突发段**，
 帧长和帧间隔一眼可见。工具自带 `--selftest`（合成 8µs/16µs 两种，已通过）。
+
+## 18PIN FPC 那两个座到底是什么（2026-09-21 查官方原理图）
+
+单页原理图里两个 18PIN FPC = **L7**（LCD1-Board，带 MCU 的主半边＝wiki 第⑰项）与 **L9**（LCD2-Board，可掰下的半边＝第⑱项），逐脚（只有第 10 脚不同）：
+`0=GND 1=3V3 2=LCD_BL2 3=GND 4=LCD_CLK 5=LCD_DIN 6=LCD_DOUT 7=LCD_DC 8=LCD_RST2 9=GPIO1 10=L7:GPIO0(经R8 0R)/L9:SD_CS 11=LCD_CS2 12=TP2_RST 13=TP2_SCL 14=TP2_SDA 15=TP2_INT 16=SD_CMD 17=SD_SCK 18=SD_D0`
+两座都**不是独立通道**，是板载 **LCD2** 那一路（CLK/DIN/DOUT/DC/RST2/BL2/CS2＋触摸 TP2_*＋TF 线）的**并联引出**；LCD1 的信号（CS=GPIO47、RST=48、BL=46、TP1_*）一个都没引出来。
+不掰板加第三块屏只能走 **L7**，其 CS 必须接**第 9 脚 GPIO1**（第 11 脚 LCD_CS2 是板载 LCD2 的 CS，接上去两块同时被选中＝抢总线、会打架）；DC/RST/背光与 LCD2 共用，不能独立复位。
+GPIO1 平时经 **R14（0R/NC，图上注 `GPIO1（BAT_ADC）`）** 接电池 ADC＝wiki 第⑫项「GPIO1 功能选择电阻」：装上＝量电池，拆/挪＝才空出来给 FPC 第 9 脚。★ 资源清单写的「R12」不是位号：原理图 R12 = MP1605GTF-Z 反馈下电阻 **44.2K±1%**（与 R6 200K 分压，图上自注 `VOUT=0.6*(1+200/44.2)=3.314V`），改它改的是 3V3 电源 —— 别动 → 待确认。
+L9 第 9 脚另有 **R13（0R/NC）** 可把 GPIO1 并到 `LCD_CS2'`（板载 LCD2 面板的 CS 网），默认装配状态**文档未说明**；座上空脚只有 GPIO1（两座第 9 脚，图上粗线）与 GPIO0（仅 L7 第 10 脚，经 R8 0R）→ 只能加 **1 块**，加 2 块文档未说明。
+来源：原理图单页 L7/L9/R8/R12/R13/R14 区；wiki ⑫⑰⑱＋Interfaces 两表；例程 `…/LVGL_Arduino_Touch-Half-B/ReadMe.txt`（Half-B 由 ESP32-S3-LCD-Driver-Board 的 FPC 排线口驱动）。
