@@ -40,11 +40,73 @@ scp -i "$env:USERPROFILE\.ssh\dsh_laptop" <本地文件> "张九思@26.253.1.139
 | 私钥 | `C:\Users\张九思\.ssh\dsh_laptop`(脚本里 `-SshKey` 的默认值) |
 | 笔记本 Radmin 地址 | `26.253.1.139`(`-Laptop` 默认值 `张九思@26.253.1.139`) |
 | 笔记本主机名 | `MikamoNeru`(脚本会打出来,认一下是不是这台) |
-| 笔记本仓库 | `C:\Users\张九思\Documents\PlatformIO\Projects\Neru-s-206-dashboard` |
+| 笔记本仓库 | `C:\Users\张九思\206Dash\Neru-s-206-dashboard`(**和桌机同一个绝对路径**,2026-09-21 搬过来的,见下面「两边路径对齐」) |
 | 数据目标 | `C:\206dash-data`(`-LaptopData` 默认值) |
 
 **密钥路径不对 / Radmin 没连 / 笔记本 sshd 没跑** —— 脚本预检会一句话说清是哪一个,
 并且因为用了 `BatchMode=yes`,它**永远不会弹密码提示**(计划任务里弹提示 = 永远卡住)。
+
+## 两边路径对齐(2026-09-21)
+
+笔记本那个 checkout **搬到了和桌机完全同一个绝对路径**:
+
+| | 路径 |
+|---|---|
+| 旧(笔记本) | `C:\Users\张九思\Documents\PlatformIO\Projects\Neru-s-206-dashboard` |
+| 现在(两边都一样) | `C:\Users\张九思\206Dash\Neru-s-206-dashboard` |
+
+- 搬的是**真移动**(`Move-Item`,同一个卷上就是改名),旧路径**没有留副本**、**没有建 junction**,
+  只在旧路径放了一个一行说明 `README-已迁移.txt`(写明新路径和日期)。
+- 为什么对齐:① 文档 / 脚本里的命令两边通用,不用再记两套路径;② **DSH 的工作区目录名是按
+  工作区路径编码出来的**(见下面「笔记本上的 DSH」),两边路径一样,目录名才会一样,
+  以后在笔记本上看 / 恢复会话不会因为路径错位而对不上。
+- `tools/sync/sync-ssh.ps1` 的 `-LaptopRepo` 默认值已经改成新路径。
+
+> ⚠ **移动 / 重命名这个 checkout 之前,先在笔记本上关掉 VS Code(或 PlatformIO IDE 会话)。**
+> 这不是洁癖,是 2026-09-21 真踩到的:`.pio\libdeps` 被 PlatformIO 的进程占着时,
+> **整棵目录都改不了名**,报 "另一个程序正在使用此文件,进程无法访问"。
+> 扫描下来 `.git`、`src`、`tools` 这些子目录一个个都能改名,**只有根目录不行** ——
+> 因为"祖先目录里有被占用的子孙"时,祖先本身也动不了。
+>
+> 一句话确认有没有被占(把 `<仓库>` 换成实际路径,能改名就是没被占):
+>
+> ```powershell
+> # ① 改名探测:成功=没被占(它会立刻改回来)
+> Rename-Item -LiteralPath '<仓库>\.pio' -NewName '.pio.probe'; Rename-Item -LiteralPath '<仓库>\.pio.probe' -NewName '.pio'
+> # ② 看还有没有 PlanformIO / VS Code 的进程
+> Get-Process Code,pio* -ErrorAction SilentlyContinue
+> ```
+>
+> ★ 还有一类**看不出来**的占用:某个进程的**当前目录就在仓库里**。
+> 它不锁任何文件,但锁住目录本身,改名照样失败 —— 典型来源:VS Code 的集成终端、
+> 一个 `Set-Location <仓库>; platformio run …` 的包装脚本、或者**从仓库目录启动的 DSH**。
+> 遇到"子目录全都能改名、只有根目录不行",先想想有没有这种东西在跑。
+
+## 笔记本上的 DSH:会话是从哪来的、怎么放进去(2026-09-21)
+
+笔记本 `.dsh` 里能看到的会话,是靠**目录树**认的,不是靠某个索引文件:
+
+```
+%USERPROFILE%\.dsh\sessions\<工作区编码目录>\<会话目录>\session.v3.jsonl.zstd
+```
+
+- **工作区编码目录**:桌机上是 `--C-Users-~5F20~4E5D~601D-206Dash--`(即 `C:\Users\张九思\206Dash`
+  编码出来的名字)。两边路径对齐之后,笔记本上的同名目录就是同一个名字。
+- **前提**:笔记本上的 DSH 必须**从对齐后的工作区**(`C:\Users\张九思\206Dash`)启动,
+  会话才会出现在那个工作区的列表里。
+- 会话目录名**照台式机原样镜像**,别自己改:DSH 自己建的目录名带 `session-` 前缀
+  (例如 `session-49039670-ec47-46bb-8eb0-30e765c65e42`),而文件里 `id` 字段也是同一个带前缀的值
+  —— 两边必须一致,镜像源目录名最稳。
+- **只复制、不移动、不覆盖更新的那份**:目标已存在时 —— 大小一样就跳过;目标比源**新**就**不要覆盖**
+  (免得把笔记本上更完整的记录盖掉)。
+- **不复制** `storages\session_projcache\sessions\<id>.json`:查过 DSH 自己的包文档
+  (`@deepseek-ai/dsh-session-projection-cache` README)—— "The session log remains authoritative",
+  那只是给冷会话列表省 I/O 的**投影缓存**,缺失 / 不兼容会被忽略或重建。会话日志本身才是数据。
+- ⚠ **打开历史看可以,别在这个会话上接着跑**:两台机器的串口 / 设备 / 路径都不一样,
+  在一个从桌机搬过来的会话上继续执行,很容易把两边状态搅乱。要看就在笔记本上**新开**一个会话。
+- 装好之后,**笔记本的 DSH 一旦跑起来,它自己可能会往这个会话文件里追加事件**
+  (2026-09-21 实测:装完约 1 分钟后 +79 字节,文件仍是完整可解压的日志)—— 那是 DSH
+  在正常使用这个会话,**不是**同步脚本干的(同步脚本永远只写 `C:\206dash-data`)。
 
 ## 命令
 
@@ -93,7 +155,43 @@ Start-ScheduledTask   -TaskName 206dash-sync-ssh                       # 立刻�
 | `C:\Users\Public\206dash\image-v3.bin` | `C:\206dash-data\` | 烧机字库 |
 | `C:\Users\Public\206dash\theme-user.json` | `C:\206dash-data\` | 烧机主题 |
 | `C:\Users\Public\206dash\206dash-transfer.zip` | `C:\206dash-data\` | 现成的传输包,**有就带、没有就跳过** |
-| 仓库(代码) | 笔记本的同名 checkout | 桌机 `git push` → 笔记本 `git fetch` + `merge --ff-only origin/main` |
+| `%USERPROFILE%\.dsh\sessions\…\session.v3.jsonl.zstd`(最新的那个会话) | `C:\206dash-data\session-<会话目录名>.jsonl.zstd` | DSH 会话记录**原件**(以后能被 DSH 打开) |
+| 同上,解压出来的可读版 | `C:\206dash-data\对话记录.jsonl` | 给人看 / 搜的明文 JSONL |
+| 仓库(代码) | 笔记本的**同一个绝对路径** | 桌机 `git push` → 笔记本 `git fetch` + `merge --ff-only origin/main` |
+
+### 会话记录(对话记录)也跟着走(2026-09-21 owner 定的)
+
+每次同步都会把桌机上**最新的那个会话**带过去,两个文件都落在 `C:\206dash-data`:
+
+1. 桌机上递归找 `%USERPROFILE%\.dsh\sessions\` 下的 `session.v3.jsonl.zstd`,
+   按**最后写入时间**取最新的那个(DSH 是边跑边往这个文件里追加的,所以"最后写入"= 现在正在用的会话);
+2. 原样发一份,名字是 `session-<会话目录名>.jsonl.zstd`(会话目录名就是上一层目录名);
+3. 再用**桌机的 Python 3.14** 解压出可读版 `对话记录.jsonl`
+   (`python -c "from compression.zstd import decompress; …"` —— 这个模块 3.14 自带)。
+
+几个**故意这么设计**的点:
+
+- **它基本每次都会重发一遍**,这是预期的、不是 bug:会话记录一直在变,大小几乎每次都不一样,
+  所以"比大小"这套判据每次都判"发"。就这一个文件、正常 1 MB 上下
+  (2026-09-21 实测:`.zstd` 0.84 MB / 可读版 3.07 MB),重发一遍的代价可以忽略。
+- **发之前先拍个快照**:会话文件是活的(DSH 正在往里写),边发边涨的话"传完复核大小"永远对不上,
+  会被记成传输失败、退出 6 —— 明明文件已经到了。所以先复制到 `%TEMP%` 冻结一份,发的是冻结那份,
+  复核的也是它;跑完就删。
+- **解压失败不影响其它**:没有 Python / 没有 `compression.zstd` / 抄到半条 —— 都只打**一行警告**,
+  原始那份照发,整条同步**不会**因此失败。
+- **找不到会话记录**也只打一行就跳过(这台机器没跑过 DSH 也不该拦住抓包 CSV / 字库)。
+- **超过 20 MB 只警告、仍然照发**:正常一份 `.zstd` 就在 1 MB 上下(实测 0.84 MB;解压出来的
+  可读版约 3~4 倍 = 3.07 MB)。这条线量的是 `.zstd`,20 MB 说明
+  这个会话大得离谱(或者哪里在刷日志),值得人看一眼;可它是真数据,不是错误,所以不跳过、不拦同步。
+- **旧会话文件会攒在笔记本上**(每个会话一个 `session-<会话目录名>.jsonl.zstd`)。脚本**不删**它们 ——
+  不替人做删除决定,要看哪次就翻哪个。
+- ⚠ **`对话记录.jsonl` 以最近一次同步为准**:它每次都整份覆盖,别把它当成历史归档;
+  要留某一次就自己改名存一份。
+- ★ 这些**只放 `C:\206dash-data`**(供阅读 / 检索),**不写笔记本自己的 `.dsh` 会话树**。
+  要装进笔记本的 DSH 里让人在 DSH 里看到,是**手工一步**(规格见上面「笔记本上的 DSH」)。
+
+> 实测(2026-09-21 首次真跑):`session-5124ca8a-…jsonl.zstd` 882,403 字节 + `对话记录.jsonl`
+> 3,220,641 字节,两个都传完并核对过大小;同一次里那 5 个散件**全部跳过**(大小一致)。
 
 ### 只发“大小不一样”的(土办法 rsync)
 
@@ -147,6 +245,13 @@ Start-ScheduledTask   -TaskName 206dash-sync-ssh                       # 立刻�
 | `C:\Users\Public\206dash` 里其它几十个文件 | 只挑上表那 5 个;**散落的脚本和日志不进同步** |
 | 笔记本 → 桌机的任何东西 | 单向。笔记本上的新数据要**人工**拷回来 |
 | `C:\206dash-sync` | 那是老 robocopy `/MIR` 的镜像目标(会删文件),已废弃 |
+| 笔记本自己的 `.dsh` 会话树 | 同步只把会话记录放进 `C:\206dash-data`;**装进笔记本的 DSH 是手工一步**(规格见上面「笔记本上的 DSH」) |
+
+## 已评估但不做(别再提)
+
+| 已评估但不做 | 为什么 |
+|---|---|
+| **用 `git bundle` 把 git 对象从桌机中继到笔记本**(桌机打包 → scp → 笔记本解包) | 2026-09-21 owner 决定:**不做**。理由:① 笔记本的 VPN 常开,正常它自己就能连 GitHub;② 仓库这条链**本来就照实报错** —— 笔记本自己 `git fetch` 失败时判 `nofetch`、**退出码 6**,不会拿那句 "Already up to date." 冒充成功,所以"笔记本连不上"这件事已经能被看见,不需要靠中继去绕。<br>★ **实测补充(2026-09-21 当晚,别再猜)**:笔记本上 `github.com:443` **仍然连不上**(`curl 56 Connection was reset` / `Failed to connect to github.com:443 after 21126 ms`),而 **`ssh.github.com:443` 是通的** —— 桌机 `git push` 走的就是后者。所以真要修这条链,方向是**把笔记本的 `remote.origin.url` 也换成 SSH over 443**(`ssh://git@ssh.github.com:443/DDNaganami/Neru-s-206-dashboard.git`,并给笔记本配一把 GitHub 认的密钥),**不是**改成 bundle 中继。 |
 
 ## 出问题先看这里
 
@@ -154,9 +259,12 @@ Start-ScheduledTask   -TaskName 206dash-sync-ssh                       # 立刻�
 |---|---|---|
 | `通道不通` | SSH 没连上 | 它会给三行:① Radmin 通不通 ② 笔记本 `sshd` 服务在不在 ③ 私钥路径对不对 —— 按顺序查 |
 | 笔记本仓库 `有 N 项**已跟踪**文件的改动` | checkout 不干净,脚本拒绝动它 | 在笔记本上提交或挪走那几个**已跟踪**文件;未跟踪的残留文件不算数,不用删 |
-| `笔记本自己 git fetch origin 失败` | 笔记本连不上它自己的远端(`remote.origin.url` 是 HTTPS 的 `github.com`) | 查笔记本的网络/DNS。实测笔记本到 `github.com:443` 会超时或“Connection was reset”,而桌机这边是通的(所以桌机 `git push` 一直没事)。这种情况下的 “Already up to date.” **不算数** |
+| `笔记本自己 git fetch origin 失败` | 笔记本连不上它自己的远端(`remote.origin.url` 是 HTTPS 的 `github.com`) | 查笔记本的网络/DNS。实测笔记本到 `github.com:443` 会超时或“Connection was reset”,而桌机这边是通的(所以桌机 `git push` 一直没事)。这种情况下的 “Already up to date.” **不算数**。★ 2026-09-21 实测:`ssh.github.com:443` 在笔记本上是**通**的、`github.com:443` 不通 ⇒ 最直接的修法是把笔记本的 remote 换成 SSH over 443(见上面「已评估但不做」) |
 | `两边 HEAD 不一致` | 笔记本没快进到最新 | 看上面 `MERGE:` 那几行;多半是被本地改动挡住了,或者 fetch 没成功 |
 | `传完大小不对` | 文件没传完整 | 再跑一次;已经传好的会被大小比较跳过,不会重传 |
+| `对话记录.jsonl` 每次都显示"发送" | **正常**,不是故障 —— 会话一直在变,大小每次都不一样(见上面「会话记录」) | 不用管;它是唯一一个基本每次都会重发的文件 |
+| 笔记本 DSH 里看不到刚搬过去的会话 | 会话目录名 / 工作区目录名对不上 | 确认 DSH 是**从 `C:\Users\张九思\206Dash` 启动**的,且文件在 `.dsh\sessions\--C-Users-~5F20~4E5D~601D-206Dash--\session-<id>\session.v3.jsonl.zstd` |
+| 移动 / 改名仓库时报"另一个程序正在使用此文件" | 笔记本上有进程占着那个目录(PlatformIO / VS Code / 某个"当前目录在仓库里"的进程) | 先关 VS Code(或 PlatformIO IDE 会话),再用「两边路径对齐」里那句改名探测确认;`.git`/`src` 能改名但根目录不行 = 根目录本身被占 |
 | 退出码 `6` | 数据是新的,但仓库没同步成功 | 小结里写明是“gate 跳过 / fetch 失败 / merge 失败”哪一种 —— 三种的处理办法不一样 |
 
 计划任务(**要动任务库就得用管理员 PowerShell**):
@@ -194,10 +302,18 @@ PowerShell 直接报“表达式只能作为管道的第一个元素”。
 中文路径也不会被改写(本机 8.3 短名是关的,取不到 `ZHANGJ~1`,
 中文路径能过去**全靠**这一层)。`-SelfTest` 里有断言:解回来的字符串必须和原文逐字节相等。
 
-另外两个坑,都在自检里守着:
+另外三个坑,都在自检里守着:
 
 - 生成远端脚本必须用**单引号** here-string(`@'...'@`)。双引号版本会在本地就把
   `$_.Name` 展开掉(实测展成了 `powershell.exe|292864`)。
 - 调外部程序要用 `Invoke-Native`。`$ErrorActionPreference='Stop'` 之下,
   PowerShell 5.1 会把外部程序写到 stderr 的**正常输出**当终止性错误 ——
   `git push` 明明返回 0、只说了句 "Everything up-to-date",脚本就死在那儿了。
+- ★ **两头的控制台编码必须都是 UTF-8**(2026-09-21 加 `对话记录.jsonl` 时踩出来的)。
+  远端命令的输出是**字节流**,解成什么由编码决定,和 base64 那一层无关:
+  笔记本默认按 OEM 代码页(zh-CN = 936/GBK)吐字节,而桌机 PowerShell 5.1 按
+  `[Console]::OutputEncoding` 解。不一致时**中文文件名会变乱码**,于是
+  `对话记录.jsonl` 在"列目录"里永远认不出来:每次都判"笔记本上没有"→ 重发,
+  发完复核又认不出 → 记成"传完大小不对" → **假的失败、退出 6**。
+  所以脚本头部有 `[Console]::OutputEncoding = [Text.Encoding]::UTF8`,
+  每个远端脚本正文开头也有同一句。ASCII 在所有编码里都一样,那几个散件不受影响。

@@ -13,15 +13,32 @@
 
   数据文件只发**大小不一样**的那些(见 Get-SyncDecision),这是土办法的
   rsync:Windows 上没有 rsync,而整包重传 30~60 MB 不值得。
+
+  ★ 2026-09-21 owner 的决定:除了那 5 个散件,**DSH 的会话记录(对话记录)也跟着
+    每次同步走**。桌机上取 %USERPROFILE%\.dsh\sessions 下**最新写入**的那个
+    session.v3.jsonl.zstd,发两份到 -LaptopData:
+      session-<会话目录名>.jsonl.zstd  原样一份(以后能被 DSH 打开)
+      对话记录.jsonl                   桌机 Python 3.14 解压出来的可读版(给人看/搜)
+    ★ 本脚本只往 -LaptopData 放,**不**去写笔记本自己的 .dsh 会话树(那是 DSH 的地盘)。
+      要"在笔记本的 DSH 里直接看到这次对话"是**手工一步** —— 只复制、不移动、
+      不覆盖更新的(规格见 tools/sync/README.md「笔记本上的 DSH」/ docs/laptop-setup.md §8)。
 #>
 [CmdletBinding()]
 param(
   # SSH 私钥(桌机 → 笔记本专用)。默认值里的 $env:USERPROFILE 是**运行时**展开的
   [string]$SshKey     = "$env:USERPROFILE\.ssh\dsh_laptop",
   [string]$Laptop     = '张九思@26.253.1.139',
-  [string]$LaptopRepo = 'C:\Users\张九思\Documents\PlatformIO\Projects\Neru-s-206-dashboard',
+  # ★ 2026-09-21:笔记本的 checkout 已经**搬到和桌机完全同一个绝对路径**了
+  #   (原来是 C:\Users\张九思\Documents\PlatformIO\Projects\Neru-s-206-dashboard)。
+  #   为什么对齐路径:文档/脚本里的命令两边通用,而且 DSH 的会话目录名是按工作区
+  #   路径编码的 —— 两边路径一致,以后在笔记本上恢复会话才不会错位。
+  [string]$LaptopRepo = 'C:\Users\张九思\206Dash\Neru-s-206-dashboard',
   [string]$LaptopData = 'C:\206dash-data',
   [int]$SshTimeout    = 10,
+
+  # DSH 会话记录(对话记录)的老家:每个会话一个子目录,子目录里一个
+  # session.v3.jsonl.zstd。递归找、取最后写入的那个(见 Resolve-SessionTranscript)。
+  [string]$SessionRoot = "$env:USERPROFILE\.dsh\sessions",
 
   # 要搬的散件。为什么是这几个:它们都是 git 装不下的东西(抓包 CSV / 字库 bin /
   # 用户主题 json / 打包好的传输 zip),而源文件在桌机上是只读的。
@@ -57,6 +74,27 @@ $EX_DATA    = 6
 
 $TaskName       = '206dash-sync-ssh'
 $EveryMinutes   = 30
+
+# 会话记录(对话记录)超过这个大小就多打一行警告 —— 但**仍然照发**(见主流程 3/5 那段):
+# 正常一份就在 1 MB 上下(2026-09-21 实测 0.84 MB),20 MB 说明这个会话大得离谱
+# (或者哪里在刷日志),值得人看一眼;可它是真数据,不是错误,所以只提醒、不跳过、不拦同步。
+# ★ 这条线量的是**原始 .zstd**;解压出来的可读版还要再大 3~4 倍(实测 0.84 MB → 3.07 MB)。
+$TranscriptWarnBytes = 20MB
+
+# ---------------------------------------------------------------------------
+# ★ 两边都按 UTF-8 说话(2026-09-21,加"对话记录.jsonl"时踩出来的坑)
+# ---------------------------------------------------------------------------
+# 远端命令的输出是**字节流**,解成什么由两头的"控制台编码"决定,和 base64 那层无关:
+#   笔记本:没设的话按 OEM 代码页(zh-CN = 936/GBK)吐字节;
+#   桌机  :PowerShell 5.1 按 [Console]::OutputEncoding 解这些字节。
+# 两边不一致时,**中文文件名会变成乱码** —— 实测:笔记本列目录回
+# "对话记录.jsonl|1220758",桌机解出来是 "锟斤拷.jsonl|1220758" 那种乱码,
+# 于是 $remoteMap.ContainsKey('对话记录.jsonl') 永远是假:
+#   ① 每次都判"笔记本上还没有"→ 重发(浪费);
+#   ② 发完复核又认不出这个文件名 → 记成"传完大小不对" → **假的失败、退出 6**。
+# 所以:本地这一句 + 每个远端脚本正文开头那一句,两边一起钉死 UTF-8。
+# ASCII 在所有编码里都一样,所以那几个散件的老行为一点都不受影响(实测过)。
+try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 
 function Write-Head([string]$t) { Write-Host ''; Write-Host "=== $t ===" -ForegroundColor Cyan }
 function Write-Ok([string]$t)   { Write-Host "  [OK]   $t" -ForegroundColor Green }
@@ -123,6 +161,9 @@ function Get-RemoteListScript {
   $d = $Dir.Replace("'", "''")
   return @'
 $ProgressPreference = 'SilentlyContinue'
+# 输出按 UTF-8 吐字节 —— 桌机那边也钉死 UTF-8,中文文件名(对话记录.jsonl)
+# 才不会在"列目录"里变成乱码(为什么关系到大小比较,见文件头那段)。ASCII 不受影响。
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
 if (Test-Path -LiteralPath '__DIR__') {
   Get-ChildItem -LiteralPath '__DIR__' -File -ErrorAction SilentlyContinue |
     ForEach-Object { Write-Output ($_.Name + '|' + $_.Length) }
@@ -140,6 +181,8 @@ function Get-RemoteRepoProbeScript {
   $r = $Repo.Replace("'", "''")
   return @'
 $ProgressPreference = 'SilentlyContinue'
+# 输出 UTF-8(桌机那边同样钉死);中文路径出现在 DIRTY: / UNTRACKED 行里也不会乱码
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
 Set-Location -LiteralPath '__REPO__'
 
 # ---- gate 判据(2026-09-21 改)----------------------------------------------
@@ -181,6 +224,8 @@ function Get-RemoteRepoMergeScript {
   $r = $Repo.Replace("'", "''")
   return @'
 $ProgressPreference = 'SilentlyContinue'
+# 输出 UTF-8(桌机那边同样钉死),git 的中文路径/提示不会乱码
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
 Set-Location -LiteralPath '__REPO__'
 git fetch --prune origin 2>&1 | ForEach-Object { Write-Output ('FETCH:' + $_) }
 Write-Output ('FETCH_EXIT=' + $LASTEXITCODE)
@@ -272,6 +317,61 @@ function Get-RepoVerdict {
   if ($MergeExit -ne 0)  { return 'failed' }
   if ($DesktopHead -ne $LaptopHead) { return 'failed' }
   return 'ok'
+}
+
+# ===========================================================================
+# DSH 会话记录(对话记录)
+# ===========================================================================
+# 2026-09-21 owner 的决定:每次同步都把桌机上**最新那个会话**带到笔记本上。
+# 这三个函数都是纯本地/纯函数(自检里用临时目录测,不碰网络、也不碰真的 .dsh)。
+function Resolve-SessionTranscript {
+  <#  找"当前最新的会话记录":$Root 下面**递归**找所有 session.v3.jsonl.zstd,
+      按**最后写入时间**取最新的那个 —— DSH 是边跑边往这个文件里追加的,
+      所以"最后写入"就等于"现在正在用的那个会话"。
+
+      ★ 找不到就返回 $null,**不是**错误:调用方打一行就跳过这一步,绝不因此让
+        整条同步失败(这台机器上没跑过 DSH,也不该影响抓包 CSV / 字库那些文件)。 #>
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$Root)
+
+  if (-not (Test-Path -LiteralPath $Root)) { return $null }
+  $f = @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter 'session.v3.jsonl.zstd' -ErrorAction SilentlyContinue |
+         Sort-Object -Property LastWriteTime -Descending)
+  if ($f.Count -eq 0) { return $null }
+  $newest = $f[0]
+  return [pscustomobject]@{
+    Path        = $newest.FullName
+    SessionName = (Split-Path -Path $newest.DirectoryName -Leaf)
+    Size        = [long]$newest.Length
+    Written     = $newest.LastWriteTime
+  }
+}
+
+function Get-TranscriptSendNames {
+  <#  会话记录到了笔记本上叫什么名字(两个都落在 -LaptopData 里):
+        Raw       session-<会话目录名>.jsonl.zstd   原样一份,以后 DSH 能直接打开
+        Readable  对话记录.jsonl                    解压出来的可读版,给人看/搜
+
+      ★ 会话目录名先洗一遍:DSH 的会话目录名本来就是 GUID / session-GUID(纯 ASCII),
+        这里只是**兜底** —— 万一哪天是别的名字,把非 [A-Za-z0-9._-] 的字符换成 _,
+        免得中文/怪字符出现在 scp 的目标名里(scp 那边只有目录是 ASCII 才最稳)。 #>
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$SessionName)
+  $safe = ($SessionName -replace '[^A-Za-z0-9._-]', '_')
+  return [pscustomobject]@{
+    Raw      = ('session-{0}.jsonl.zstd' -f $safe)
+    Readable = '对话记录.jsonl'
+  }
+}
+
+function Get-TranscriptSizeNote {
+  <#  会话记录大小体检:超过 $TranscriptWarnBytes(20 MB)就返回一行警告文本,
+      否则返回 $null。**只提醒,不跳过** —— 判据和理由见 $TranscriptWarnBytes。 #>
+  [CmdletBinding()]
+  param([long]$Size)
+  if ($Size -le $TranscriptWarnBytes) { return $null }
+  return ('会话记录 {0} MB —— 超过 {1} MB 这条警戒线(正常一份就在 1 MB 上下),仍然照发,只是提醒你瞄一眼' -f `
+            [math]::Round($Size / 1MB, 2), [math]::Round($TranscriptWarnBytes / 1MB, 0))
 }
 
 # ===========================================================================
@@ -410,19 +510,23 @@ function Invoke-SelfTest {
     else       { $tally.Fail++; Write-Host ("  [FAIL] " + $name + $(if ($detail) { " —— $detail" } else { '' })) -ForegroundColor Red }
   }
 
-  Write-Head 'SelfTest 1/5:参数解析'
+  Write-Head 'SelfTest 1/6:参数解析'
   Assert '默认 SshKey 指向 ~\.ssh\dsh_laptop' ($SshKey -eq (Join-Path $env:USERPROFILE '.ssh\dsh_laptop')) "实际:$SshKey"
   Assert '默认 Laptop 正确'      ($Laptop -eq '张九思@26.253.1.139')              "实际:$Laptop"
-  Assert '默认 LaptopRepo 正确'  ($LaptopRepo -eq 'C:\Users\张九思\Documents\PlatformIO\Projects\Neru-s-206-dashboard')
+  # ★ 2026-09-21:笔记本 checkout 已搬到和桌机**同一个绝对路径**(理由见参数上的注释)
+  Assert '默认 LaptopRepo 正确(两边同路径)' ($LaptopRepo -eq 'C:\Users\张九思\206Dash\Neru-s-206-dashboard') "实际:$LaptopRepo"
+  Assert '  LaptopRepo 不再是旧的 PlatformIO 路径' (-not $LaptopRepo.Contains('PlatformIO'))
   Assert '默认 LaptopData 正确'  ($LaptopData -eq 'C:\206dash-data')              "实际:$LaptopData"
   Assert '默认 SshTimeout=10'    ($SshTimeout -eq 10)                             "实际:$SshTimeout"
+  Assert '默认 SessionRoot 指向 ~\.dsh\sessions' ($SessionRoot -eq (Join-Path $env:USERPROFILE '.dsh\sessions')) "实际:$SessionRoot"
+  Assert '会话记录警戒线 = 20 MB' ($TranscriptWarnBytes -eq 20MB)                 "实际:$TranscriptWarnBytes"
   Assert '默认搬 4 个散件'       ($Asset.Count -eq 4)                             "实际:$($Asset.Count)"
   Assert '4 个散件名字都对'      ((@($Asset | ForEach-Object { Split-Path $_ -Leaf }) -join ',') -eq 'van_capture_dm.csv,drive5min.csv,image-v3.bin,theme-user.json')
   Assert 'zip 是单独一个可选件'  ($ZipAsset -like '*206dash-transfer.zip')
   Assert '目标不是已废的 C:\206dash-sync' ($LaptopData -ne 'C:\206dash-sync')
   Assert '任务名是 206dash-sync-ssh' ($TaskName -eq '206dash-sync-ssh')
 
-  Write-Head 'SelfTest 2/5:大小比较逻辑'
+  Write-Head 'SelfTest 2/6:大小比较逻辑'
   $d = Get-SyncDecision -Name 'a.csv' -LocalSize 100 -RemoteSize $null
   Assert '远端没有 → Send'            ($d.Action -eq 'Send')
   $d = Get-SyncDecision -Name 'a.csv' -LocalSize 100 -RemoteSize 100L
@@ -446,8 +550,13 @@ function Invoke-SelfTest {
   Assert '  MISSING/垃圾行被跳过'     ($map.Count -eq 2 -and -not $map.ContainsKey(''))
   $empty = ConvertFrom-RemoteListing -Lines @('MISSING')
   Assert '目录不存在 → 空表(全部要发)' ($empty.Count -eq 0)
+  # 中文文件名必须原样当键 —— 对话记录.jsonl 就是靠这个被认出来的
+  # (★ 光这一条不够:两头编码不一致时远端回来的就是乱码,见 3/6 的 UTF-8 三条)
+  $cnMap = ConvertFrom-RemoteListing -Lines @('对话记录.jsonl|1220758', 'session-5124ca8a-ec3f-4fdc-b00d-f349800a99f0.jsonl.zstd|329494')
+  Assert '中文文件名能当列目录的键'   ($cnMap.ContainsKey('对话记录.jsonl')) "实际:$((@($cnMap.Keys)) -join ',')"
+  Assert '  它的字节数也解析对了'     ($cnMap['对话记录.jsonl'] -eq 1220758L)
 
-  Write-Head 'SelfTest 3/5:远端命令的引号/编码'
+  Write-Head 'SelfTest 3/6:远端命令的引号/编码'
   # 这是核心断言:解回来的字符串必须和原文一字不差。
   $samples = @(
     (Get-RemoteListScript -Dir 'C:\206dash-data'),
@@ -472,6 +581,12 @@ function Invoke-SelfTest {
   Assert '列目录脚本里保留了 $_.Length 插值'   ($listScript.Contains('$_.Length'))
   Assert '列目录脚本里没有被本地提前展开'      (-not $listScript.Contains('powershell.exe'))
   Assert '列目录脚本里保留了 | 分隔符'          ($listScript.Contains("+ '|' +"))
+  # ★ UTF-8:两头都得钉死,否则中文文件名(对话记录.jsonl)在列目录里变乱码,
+  #   大小比较认不出它 → 每次重发 + 发完复核假失败退 6。本地那句在脚本头部。
+  Assert '本地已按 UTF-8 解远端输出'            ([Console]::OutputEncoding.CodePage -eq 65001) "实际:$([Console]::OutputEncoding.CodePage)"
+  Assert '列目录脚本里钉死了 UTF-8 输出'        ($listScript.Contains('[Console]::OutputEncoding = [Text.Encoding]::UTF8'))
+  Assert '仓库体检脚本里钉死了 UTF-8 输出'      ((Get-RemoteRepoProbeScript -Repo 'C:\repo').Contains('[Console]::OutputEncoding = [Text.Encoding]::UTF8'))
+  Assert '仓库快进脚本里钉死了 UTF-8 输出'      ((Get-RemoteRepoMergeScript -Repo 'C:\repo').Contains('[Console]::OutputEncoding = [Text.Encoding]::UTF8'))
   Assert '整条命令里没有裸引号会活不过传输'     ($full -match '^(powershell -NoProfile -NonInteractive -EncodedCommand [A-Za-z0-9+/=]+)$')
   # ssh 参数
   $sa = Get-SshArgs -RemoteCommand 'Write-Output 1'
@@ -480,7 +595,7 @@ function Invoke-SelfTest {
   Assert 'ssh 参数带 -i 私钥'                   ($sa -contains '-i' -and $sa -contains $SshKey)
   Assert 'ssh 目标是 张九思@26.253.1.139'       ($sa -contains '张九思@26.253.1.139')
 
-  Write-Head 'SelfTest 4/5:gate 判据 + 仓库判决(2026-09-21)'
+  Write-Head 'SelfTest 4/6:gate 判据 + 仓库判决(2026-09-21)'
   # gate 原来用**含未跟踪文件**的 `git status --porcelain`:笔记本 checkout 里躺着
   # 26 个早期 sshd / Radmin 调试残留(A.sshd.log、diagnose-sshd*.ps1 …),于是每次
   # 都快进失败、退出 6,明明同步是成功的。下面几条把新判据钉死。
@@ -514,7 +629,7 @@ function Invoke-SelfTest {
   Assert '判决:refused 优先(没碰就是没碰)'     ($v -eq 'refused')                "实际:$v"
   # 中文路径那条不影响 gate:同一份正文仍然要能逐字节穿过 base64(见 5/5)。
 
-  Write-Head 'SelfTest 5/5:中文路径原样穿过(本机 8.3 短名是关的)'
+  Write-Head 'SelfTest 5/6:中文路径原样穿过(本机 8.3 短名是关的)'
   # 这台机器 NtfsDisable8dot3NameCreation 开着,拿不到 ZHANGJ~1。
   # 所以必须证明:中文路径在 base64 里一字不改地活到远端。这是整条同步的前提。
   $cnScript = Get-RemoteRepoProbeScript -Repo $LaptopRepo
@@ -531,6 +646,64 @@ function Invoke-SelfTest {
   Assert '-RejectNonAscii 生效时确实会拦'     $threw
   # 中文任务/路径不该影响的是:远端正文里不能出现"本地进程名被展开"的痕迹
   Assert '仓库体检脚本没有被本地提前展开'     (-not $cnScript.Contains('powershell.exe'))
+
+  Write-Head 'SelfTest 6/6:会话记录(对话记录)—— 临时目录 + 纯函数,不碰网络也不碰真的 .dsh'
+  # 造一棵假的会话树:三个会话目录 + 嵌套一层 + 一个"名字像但不是"的干扰文件。
+  # ★ 名字排序和时间排序**故意不一致**(aaaa 最早其实是中间,zzzz 名字最大反而最老),
+  #   这样"按最后写入时间取最新"这条才真的被测到,而不是被名字顺序蒙对。
+  $tRoot = Join-Path ([IO.Path]::GetTempPath()) ('206dash-selftest-' + [guid]::NewGuid().ToString('N'))
+  $tEmpty = Join-Path ([IO.Path]::GetTempPath()) ('206dash-selftest-empty-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $tRoot -Force | Out-Null
+  New-Item -ItemType Directory -Path $tEmpty -Force | Out-Null
+  try {
+    $sA = Join-Path $tRoot 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa'
+    $sM = Join-Path $tRoot 'mmmmmmmm-2222-4222-8222-mmmmmmmmmmmm'
+    $sZ = Join-Path $tRoot 'zzzzzzzz-3333-4333-8333-zzzzzzzzzzzz'
+    foreach ($p in @($sA, $sM, $sZ, (Join-Path $sM 'deep'))) { New-Item -ItemType Directory -Path $p -Force | Out-Null }
+    Set-Content -LiteralPath (Join-Path $sA 'session.v3.jsonl.zstd') -Value 'aaaa'     -NoNewline -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $sM 'deep\session.v3.jsonl.zstd') -Value 'cc' -NoNewline -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $sZ 'session.v3.jsonl.zstd') -Value 'bbbbbb'  -NoNewline -Encoding ASCII
+    # 干扰项:名字像,但**不是** session.v3.jsonl.zstd,而且写得最新 —— 必须不被选中
+    Set-Content -LiteralPath (Join-Path $sZ 'session.v3.jsonl') -Value 'decoy' -NoNewline -Encoding ASCII
+    (Get-Item -LiteralPath (Join-Path $sA 'session.v3.jsonl.zstd')).LastWriteTime      = (Get-Date).AddMinutes(-20)
+    (Get-Item -LiteralPath (Join-Path $sM 'deep\session.v3.jsonl.zstd')).LastWriteTime = (Get-Date).AddMinutes(-2)
+    (Get-Item -LiteralPath (Join-Path $sZ 'session.v3.jsonl.zstd')).LastWriteTime      = (Get-Date).AddMinutes(-30)
+    (Get-Item -LiteralPath (Join-Path $sZ 'session.v3.jsonl')).LastWriteTime           = (Get-Date)
+
+    $expect = Join-Path $sM 'deep\session.v3.jsonl.zstd'
+    $t = Resolve-SessionTranscript -Root $tRoot
+    Assert '找得到会话记录'                       ($null -ne $t)
+    Assert '  递归进子目录 + 取最后写入的那个'    ($null -ne $t -and $t.Path -eq $expect) "实际:$($t.Path)"
+    Assert '  是按写入时间挑的(不是按目录名)'    ($null -ne $t -and $t.Path -notlike "*$([IO.Path]::DirectorySeparatorChar)aaaa*" -and $t.Path -notlike '*zzzzzzzz*') "实际:$($t.Path)"
+    Assert '  会话名 = 文件所在目录名'            ($null -ne $t -and $t.SessionName -eq 'deep') "实际:$($t.SessionName)"
+    Assert '  大小读得到(2 字节)'                ($null -ne $t -and $t.Size -eq 2) "实际:$($t.Size)"
+    Assert '  只认 session.v3.jsonl.zstd(干扰项不算)' ($null -ne $t -and $t.Path.EndsWith('session.v3.jsonl.zstd'))
+    # 找不到 = $null(打一行就跳过),这是"绝不因为会话记录让整条同步失败"的根据
+    Assert '空目录 → $null(跳过,不报错)'         ($null -eq (Resolve-SessionTranscript -Root $tEmpty))
+    Assert '目录不存在 → $null(跳过,不报错)'     ($null -eq (Resolve-SessionTranscript -Root (Join-Path $tRoot 'no-such-dir')))
+  } finally {
+    Remove-Item -LiteralPath $tRoot  -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $tEmpty -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  # 两个目标名:原样一份(DSH 以后能打开)+ 可读一份(给人看/搜)
+  $tn = Get-TranscriptSendNames -SessionName '5124ca8a-ec3f-4fdc-b00d-f349800a99f0'
+  Assert '原始文件叫 session-<会话目录名>.jsonl.zstd' ($tn.Raw -eq 'session-5124ca8a-ec3f-4fdc-b00d-f349800a99f0.jsonl.zstd') "实际:$($tn.Raw)"
+  Assert '可读版固定叫 对话记录.jsonl'                ($tn.Readable -eq '对话记录.jsonl') "实际:$($tn.Readable)"
+  $tn2 = Get-TranscriptSendNames -SessionName 'weird name/x'
+  Assert '会话名里的怪字符洗成 _(scp 目标名要稳)'     ($tn2.Raw -match '^session-[A-Za-z0-9._-]+\.jsonl\.zstd$') "实际:$($tn2.Raw)"
+
+  # 超 20 MB:只多打一行警告,仍然照发(绝不静默跳过)
+  Assert '1 MB 不吭声'                ($null -eq (Get-TranscriptSizeNote -Size 1MB))
+  Assert '正好 20 MB 不吭声(线是"超过")' ($null -eq (Get-TranscriptSizeNote -Size $TranscriptWarnBytes))
+  $note = Get-TranscriptSizeNote -Size ($TranscriptWarnBytes + 1)
+  Assert '超过 20 MB → 有一行警告'      ($null -ne $note)
+  Assert '  警告里写明 20 MB 这条线'     ($null -ne $note -and $note -match '20 MB')
+  Assert '  警告里说明"仍然照发"'        ($null -ne $note -and $note -match '仍然照发')
+  # 阈值和"为什么"必须留在注释里(owner 明确要求:说清楚这条线是干嘛的)
+  $selfText = Get-Content -LiteralPath $scriptPath -Raw
+  Assert '注释里留着 20 MB 阈值 + 理由'  ($selfText.Contains('$TranscriptWarnBytes = 20MB') -and $selfText.Contains('1 MB 上下') -and $selfText.Contains('解压出来的可读版还要再大'))
+  Assert '注释里说明会话记录每次都会变'  ($selfText.Contains('通常每次都会变'))
 
   Write-Host ''
   if ($tally.Fail -eq 0) {
@@ -574,6 +747,15 @@ if ($WhatIf) {
   Write-Info "仓库    : 桌机 git push;笔记本 git fetch + merge --ff-only origin/main"
   Write-Info "数据    : 只发大小不一样的 → $LaptopData"
   foreach ($a in ($Asset + $ZipAsset)) { Write-Info "          $a" }
+  # 会话记录也是"只发大小不一样的",两个目标名都在 -LaptopData 里(不碰笔记本的 .dsh)
+  $whatIfT = Resolve-SessionTranscript -Root $SessionRoot
+  if ($null -eq $whatIfT) {
+    Write-Info "          (会话记录: $SessionRoot 下没找到 session.v3.jsonl.zstd → 这步会跳过)"
+  } else {
+    $whatIfN = Get-TranscriptSendNames -SessionName $whatIfT.SessionName
+    Write-Info ("          {0}" -f $whatIfT.Path)
+    Write-Info ("            → {0} + {1}" -f $whatIfN.Raw, $whatIfN.Readable)
+  }
   Write-Info '计划任务: 不加 -Register 就不会有任何计划任务'
   exit $EX_OK
 }
@@ -611,6 +793,16 @@ if ($Test) {
   $listing = Invoke-RemoteScript -Script (Get-RemoteListScript -Dir $dataShort)
   if ($listing -contains 'MISSING') { Write-Info "  $LaptopData 不存在(真同步时会建)" }
   else { foreach ($l in $listing) { Write-Info "  $l" } }
+  # 会话记录只读地看一眼(桌机本地找,不碰网络)
+  $tProbe = Resolve-SessionTranscript -Root $SessionRoot
+  if ($null -eq $tProbe) {
+    Write-Info "会话记录    : $SessionRoot 下没有 session.v3.jsonl.zstd(真同步时会跳过这一步)"
+  } else {
+    $tProbeN = Get-TranscriptSendNames -SessionName $tProbe.SessionName
+    Write-Info ("会话记录    : {0}" -f $tProbe.Path)
+    Write-Info ("              会话 {0} / {1} MB / 写于 {2} → 会发成 {3} + {4}" -f `
+      $tProbe.SessionName, [math]::Round($tProbe.Size / 1MB, 2), $tProbe.Written.ToString('yyyy-MM-dd HH:mm:ss'), $tProbeN.Raw, $tProbeN.Readable)
+  }
   Write-Host ''
   Write-Host '探路结束:通道没问题。去掉 -Test 就会真同步。' -ForegroundColor Green
   exit $EX_OK
@@ -710,6 +902,80 @@ foreach ($a in ($Asset + $ZipAsset)) {
   $toSend += [pscustomobject]@{ Path = $a; Leaf = $leaf; LocalSize = $localSize; RemoteSize = $remoteSize; Action = $dec.Action; Reason = $dec.Reason }
 }
 
+# ---- 会话记录(DSH 对话记录):也走同一条"比大小 → 发/跳"的路 ------------------
+# 2026-09-21 owner 的决定:每次同步都把桌机上最新那个会话带到笔记本上,两个文件
+# 都落在 -LaptopData。★ 脚本**不**碰笔记本自己的 .dsh 会话树 —— 要让会话出现在
+# 笔记本 DSH 的列表里,是**手工一步**(只复制、不覆盖更新的;见 README「笔记本上的 DSH」)。
+#
+# ★ 这一条**通常每次都会变**:DSH 一直在往会话文件里追加,大小几乎每次都不一样,
+#   所以大小比较基本每次都判"发"。这是**预期**行为,不是 bug —— 就这一个文件,
+#   正常 1 MB 上下(2026-09-21 实测 .zstd 0.84 MB / 可读版 3.07 MB),重发一遍的代价可以忽略。
+$transcriptTemp = $null
+$transcript = Resolve-SessionTranscript -Root $SessionRoot
+if ($null -eq $transcript) {
+  Write-Warn2 "会话记录:在 $SessionRoot 下没找到 session.v3.jsonl.zstd —— 这一步跳过(数据文件照常,不算失败)"
+} else {
+  $tNames = Get-TranscriptSendNames -SessionName $transcript.SessionName
+  Write-Info ("会话记录:{0}" -f $transcript.Path)
+  Write-Info ("          会话 {0} / {1} MB / 写于 {2} → {3} + {4}" -f `
+    $transcript.SessionName, [math]::Round($transcript.Size / 1MB, 2), $transcript.Written.ToString('yyyy-MM-dd HH:mm:ss'), $tNames.Raw, $tNames.Readable)
+  $tNote = Get-TranscriptSizeNote -Size $transcript.Size
+  if ($tNote) { Write-Warn2 $tNote }
+
+  # ★ 为什么先拍个快照再发:会话文件是**活的** —— DSH 正在往里追加。要是边发边涨,
+  #   传完复核的大小就永远对不上,会被记成"传输失败"→ 退出码 6,明明文件已经到了。
+  #   所以先 Copy-Item 到临时目录冻结一份,发的是冻结那份、复核的也是它。
+  #   (临时目录在 %TEMP% 下;正常跑完就在下面删掉。)
+  $transcriptTemp = Join-Path ([IO.Path]::GetTempPath()) ('206dash-sync-' + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $transcriptTemp -Force | Out-Null
+  $snapRaw = Join-Path $transcriptTemp $tNames.Raw
+  Copy-Item -LiteralPath $transcript.Path -Destination $snapRaw -Force
+
+  # 可读版:桌机的 Python 3.14 自带 compression.zstd(实测有,多帧也一次解完)。
+  # Python 不在 / 模块不在 / 解压报错 —— 三种都**不**连累别的:原始那份照发,
+  # 这里只打一行警告就跳过(owner 明确要的是"跳过要有一行清楚的话")。
+  $readablePath = Join-Path $transcriptTemp $tNames.Readable
+  $pyExe = $null
+  foreach ($cand in @('python', 'python3', 'py')) {
+    if (Get-Command $cand -CommandType Application -ErrorAction SilentlyContinue) { $pyExe = $cand; break }
+  }
+  if (-not $pyExe) {
+    Write-Warn2 ("对话记录.jsonl 这次不做:这台机器上没有 python —— 只发原始那份({0})" -f $tNames.Raw)
+  } else {
+    # Python 正文里只用单引号、一个双引号都不出现 —— PS 5.1 给外部程序拼参数时
+    # 只会在外面套一层双引号,正文里再冒出双引号就会被它改坏(和 ssh 那个坑同源)。
+    # ★ try/catch 是必须的:实测 `& <不存在的程序>` 抛的是**终止性**错误,
+    #   连 Invoke-Native 里那句 EAP=Continue 都拦不住 —— 不包起来的话
+    #   "没装 Python"会把整条同步炸掉,而这里要的只是"跳过可读版 + 一行警告"。
+    $pyCode = 'from compression.zstd import decompress;import sys;open(sys.argv[2],''wb'').write(decompress(open(sys.argv[1],''rb'').read()))'
+    # -X utf8:让 Python 的 stdout/stderr 也走 UTF-8,和上面钉死的两边编码一致
+    # (出错时那行警告才不会变成乱码;文件本身是二进制写,不受影响)
+    $pyRes = $null
+    try {
+      $pyRes = Invoke-Native -Exe $pyExe -Arguments @('-X', 'utf8', '-c', $pyCode, $snapRaw, $readablePath)
+    } catch {
+      $pyRes = [pscustomobject]@{ ExitCode = -1; Lines = @($_.Exception.Message) }
+    }
+    if ($pyRes.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $readablePath)) {
+      Write-Warn2 ("对话记录.jsonl 这次没做出来({0} 退出码 {1},可能抄到半条或模块不在)—— 只发原始那份;{2}" -f `
+        $pyExe, $pyRes.ExitCode, (($pyRes.Lines | Select-Object -First 2) -join ' / '))
+    } else {
+      Write-Ok ("对话记录.jsonl 已解压出来({0} 字节)" -f (Get-Item -LiteralPath $readablePath).Length)
+    }
+  }
+
+  # 两个目标名都按同一套判决走:笔记本上没有就发,大小不同就发,一样就跳。
+  $tCand = @([pscustomobject]@{ Path = $snapRaw; Leaf = $tNames.Raw })
+  if (Test-Path -LiteralPath $readablePath) { $tCand += [pscustomobject]@{ Path = $readablePath; Leaf = $tNames.Readable } }
+  foreach ($c in $tCand) {
+    $tLocalSize = [long](Get-Item -LiteralPath $c.Path).Length
+    $tRemoteSize = $null
+    if ($remoteMap.ContainsKey($c.Leaf)) { $tRemoteSize = [long]$remoteMap[$c.Leaf] }
+    $tDec = Get-SyncDecision -Name $c.Leaf -LocalSize $tLocalSize -RemoteSize $tRemoteSize
+    $toSend += [pscustomobject]@{ Path = $c.Path; Leaf = $c.Leaf; LocalSize = $tLocalSize; RemoteSize = $tRemoteSize; Action = $tDec.Action; Reason = $tDec.Reason }
+  }
+}
+
 $sent = 0; $sentBytes = 0L; $skipped = 0; $missing = 0; $failed = 0
 foreach ($item in $toSend) {
   switch ($item.Action) {
@@ -754,6 +1020,12 @@ foreach ($item in $toSend) {
       }
     }
   }
+}
+
+# 会话记录的临时快照(冻结的那一份)用完就删 —— 它只活在这一次同步里。
+# (要是脚本在中间异常退出,这份会留在 %TEMP% 里;不影响下次同步,下次是新的目录名。)
+if ($transcriptTemp -and (Test-Path -LiteralPath $transcriptTemp)) {
+  Remove-Item -LiteralPath $transcriptTemp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # ---- 第 5 步:小结 ----
@@ -801,8 +1073,8 @@ if ($repoState -ne 'ok') {
     Write-Info '数据是新的;仓库要等那些改动(提交 / 挪走 / 删掉)处理掉再同步。'
   } elseif ($repoState -eq 'nofetch') {
     Write-Bad '数据传完了,但仓库没同步:笔记本自己 git fetch origin 失败(笔记本那边连不上它的远端)'
-    Write-Info '桌机这边是好的(push 走 ssh.github.com:443)。查笔记本的网络 / remote.origin.url,'
-    Write-Info '或者把仓库这条链改成"桌机把 git 对象中继给笔记本"(脚本里目前是笔记本自己 fetch)。'
+    Write-Info '桌机这边是好的(push 走 ssh.github.com:443)。查笔记本的网络 / remote.origin.url(它的 VPN 应该是常开的)。'
+    Write-Info '★ "用 git bundle 从桌机中继 git 对象"这条**已评估过、决定不做**(VPN 常开 ⇒ 多此一举;理由见 tools/sync/README.md「已评估但不做」)。'
   } else {
     Write-Bad '数据传完了,但仓库那一步没成功(看上面的 FETCH: / MERGE: 行)'
   }
