@@ -43,6 +43,10 @@ param(
   [int]$VanBaud = 115200,
   [string]$ObdPort = '',
   [int]$ObdBaud = 38400,
+  # ★ 协议:默认 ATSP0(自动)。2026-09-22 实测这台 206 用 ATSP0 能出数据;
+  #   试过 ATSP3(ISO 9141-2)反而把 K 线卡在 BUS INIT 不动 ⇒ 别锁 3。
+  #   若哪天自动搜索不稳,可依次试 -ObdProto ATSP5(KWP fast)/ATSP4(KWP 5baud)。
+  [string]$ObdProto = 'ATSP0',
   [double]$Minutes = 15,    # 行驶时长(分钟);显式给了 -Seconds 时以 -Seconds 为准
   [double]$Seconds = 0,     # 时长(秒) —— 秒级自测用;>0 时**优先于** -Minutes(见 runSec)
   [string]$OutDir = '',
@@ -164,13 +168,40 @@ if ($ObdPort) {
   try { $obd.Open() } catch { Write-Host ("OBD 口打不开,改只记 VAN: " + $_.Exception.Message) -ForegroundColor Yellow; $obd = $null }
   if ($obd) {
     Write-Host ("OBD : " + $ObdPort + " @" + $ObdBaud) -ForegroundColor Green
-    # ELM327 初始化(自动探测波特率:38400 不通换 9600 由调用方重跑)
-    foreach ($c in @('ATZ', 'ATE0', 'ATL0', 'ATH0', 'ATSP0')) {
+    # ★ ELM327 初始化(2026-09-22 实测修):
+    #   原版发完 AT 序列就立刻开始 0.4s 轮询 ⇒ **适配器还在扫协议**
+    #   (K 线上要 1~2 秒),于是整轮采样全被记成 SEARCHING/STOPPED。
+    #   现在:把每条 AT 的回应读出来(不再盲发),发完再**静等协议锁定**。
+    foreach ($c in @('ATZ', 'ATE0', 'ATL0', 'ATH0', $ObdProto)) {
       try { $obd.Write($c + "`r") } catch {}
-      Start-Sleep -Milliseconds 350
-      try { $null = $obd.ReadExisting() } catch {}
+      $rr = ''; $w0 = [Diagnostics.Stopwatch]::StartNew()
+      while ($w0.ElapsedMilliseconds -lt 1200) {
+        try { if ($obd.BytesToRead -gt 0) { $rr += $obd.ReadExisting() } } catch {}
+        if ($rr -match '>') { break }
+        Start-Sleep -Milliseconds 60
+      }
+      Write-Host ("  {0,-7} -> {1}" -f $c, (($rr -replace "`r?`n", ' ').Trim()))
+      Start-Sleep -Milliseconds 250
     }
-    Write-Host "OBD : AT 序列已发" -ForegroundColor Green
+    Write-Host "  等协议锁定(2.5s)..." -ForegroundColor Yellow
+    Start-Sleep -Milliseconds 2500
+    # 用一次 0100 确认真的通了(失败也只是警告,照样记录 —— 总比盲跑强)
+    try { $obd.Write("0100`r") } catch {}
+    $rv = ''; $w0 = [Diagnostics.Stopwatch]::StartNew()
+    while ($w0.ElapsedMilliseconds -lt 8000) {
+      try { if ($obd.BytesToRead -gt 0) { $rv += $obd.ReadExisting() } } catch {}
+      if ($rv -match '>') { break }
+      Start-Sleep -Milliseconds 80
+    }
+    $rvClean = ($rv -replace "`r?`n", ' ').Trim()
+    # ★ 判据只用 "41 00"(真的有位图数据)。别用 BUS INIT —— 它是 BUS INIT: OK 的
+    #   **前缀**,而适配器扫描期间会先吐 'BUS INIT: ...'(省略号,还没连上),
+    #   于是造成**假阳性**(实测踩到:显示"已连上"却返回 SEARCHING...)。
+    if ($rvClean -match '41 00') {
+      Write-Host ("OBD : 已连上 ECU ✓  " + $rvClean.Substring(0, [Math]::Min(60, $rvClean.Length))) -ForegroundColor Green
+    } else {
+      Write-Host ("OBD : ⚠ 0100 未确认(" + $rvClean + ") —— 出车前先看这一行,别白跑") -ForegroundColor Red
+    }
   }
 }
 
@@ -190,7 +221,7 @@ $sw = [Diagnostics.Stopwatch]::StartNew()
 $vanBuf = ''
 $obdBuf = ''
 $nextObd = 0.0
-$n824 = 0; $nObd = 0
+$n824 = 0; $nObd = 0; $lastVanOk = 0.0; $vanStalled = $false
 $lastFlush = 0
 
 while ($sw.Elapsed.TotalSeconds -lt $runSec) {
@@ -213,10 +244,28 @@ while ($sw.Elapsed.TotalSeconds -lt $runSec) {
       $p = Parse-824 $Matches[1]
       if ($p) {
         $n824++
+        $lastVanOk = $el      # ★ VAN 活着的时间戳(见下面的失联告警)
         $vanLines.Add(("{0:N3},{1},{2},{3},{4},{5},{6}" -f $el, (Get-Date -Format 'HH:mm:ss.fff'),
           $p.spdCount, $p.data0, $p.data1, $p.rpmCount, $p.seq))
       }
     }
+  }
+
+  # ---- ★ VAN 失联告警(2026-09-22 加) ----
+  #   起因:实测板子中途被复位过一次(rst:0x1 POWERON),那之后 VAN 一个字节都没有,
+  #   而 OBD 那半照常采样 —— **回来才发现 VAN 全空 = 白跑一趟**。
+  #   这里一旦发现 VAN 连续 10 秒没有 824 帧就**大声告警**(屏幕红字 + CSV 里插标记行),
+  #   跑的时候就能看见,不用等回来。
+  if ($el -ge 15 -and ($el - $lastVanOk) -ge 10) {
+    if (-not $vanStalled) {
+      $vanStalled = $true
+      Write-Host ("!!! VAN 已失联 " + [int]($el - $lastVanOk) + " 秒 —— 板子可能被复位/掉线,检查 USB 与供电 !!!") -ForegroundColor Red
+      $vanLines.Add(("#VAN_STALL_FROM,{0:N3},{1}" -f $el, (Get-Date -Format 'HH:mm:ss.fff')))
+    }
+  } elseif ($vanStalled -and ($el - $lastVanOk) -lt 3) {
+    $vanStalled = $false
+    Write-Host "VAN 已恢复" -ForegroundColor Green
+    $vanLines.Add(("#VAN_RECOVER,{0:N3},{1}" -f $el, (Get-Date -Format 'HH:mm:ss.fff')))
   }
 
   # ---- OBD:每 0.4s 轮一次 010D + 010C(车速优先,它才是待定标那个) ----
@@ -226,8 +275,11 @@ while ($sw.Elapsed.TotalSeconds -lt $runSec) {
       try { $obd.Write($curPid + "`r") } catch { break }
       Start-Sleep -Milliseconds 120
       $resp = ''
+      # ★ 读窗口 700ms -> 2500ms(2026-09-22 实测):700ms 会把"SEARCHING... 之后才来"的
+      #   响应**从中间截断**(实测抓到 'SEARCHING...41 0D 00' 却判成失败),
+      #   于是整轮真值全是空的。K 线 + 克隆板慢,给足 2.5s。
       $w = [Diagnostics.Stopwatch]::StartNew()
-      while ($w.ElapsedMilliseconds -lt 700) {
+      while ($w.ElapsedMilliseconds -lt 2500) {
         try { if ($obd.BytesToRead -gt 0) { $resp += $obd.ReadExisting() } } catch {}
         if ($resp -match '>') { break }
         Start-Sleep -Milliseconds 40
