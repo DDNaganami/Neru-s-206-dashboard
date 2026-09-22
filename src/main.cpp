@@ -82,6 +82,74 @@ static VanPhyGpio g_van_phy;
 static VanPhyStub g_van_phy;
 #endif
 
+// ============================================================================
+//  VAN 帧嗅探(编译期开关) —— 2026-09-22 新增
+// ============================================================================
+// 为什么要有它:实测发现 VanLogSink 那句 "VAN %03X ..." 帧行**一行都没打印**
+//   (格式串确实在固件里、sink 链接法也对、dash_logf 无节流、frames 计数在涨)。
+//   后果不只是"少看几行日志":**实车流里到底有哪些 IDEN 变得无法观察** ——
+//   而"车速(IDEN 0x824)在不在流里"直接决定 SRC speed 能不能从 sim 变成 van。
+//
+//   所以这个开关做两件事:
+//     ① 按 IDEN 计数(不依赖任何字符串格式化)—— 绕开"帧行不打印"那条路,
+//        用最朴素的方式回答"流里有哪些帧、各多少";
+//     ② 每秒打一行 top-N + 总帧数 —— 如果这一行能出来而 "VAN %03X" 出不来,
+//        就把问题缩小到"那一条 dash_logf 调用"上,而不是整个 sink。
+//
+// 用法:python -m platformio run -e esp32s3-vansniff -t upload --upload-port COM3
+//   ★ 默认关(VAN_SNIFF=0):嗅探表占 4096×2B + 每轮一次扫描,不该进常规固件。
+#if !defined(VAN_SNIFF)
+#define VAN_SNIFF 0
+#endif
+
+#if VAN_SNIFF
+namespace {
+// 12 位 IDEN ⇒ 4096 个桶。uint16_t 计数够(每秒最多几百帧,溢出前早打过日志了)。
+uint16_t g_iden_count[4096] = {};
+uint32_t g_iden_total = 0;
+uint32_t g_iden_last_report_ms = 0;
+
+void van_sniff_note(uint16_t iden) {
+  ++g_iden_count[iden & 0x0FFFu];
+  ++g_iden_total;
+}
+
+void van_sniff_report(uint32_t now_ms) {
+  if (now_ms - g_iden_last_report_ms < 1000) return;
+  g_iden_last_report_ms = now_ms;
+  if (g_iden_total == 0) {
+    dash_logf("sniff: 还没解出任何帧\n");
+    return;
+  }
+  // 找出计数最高的几个 IDEN(桶只有 4096 个,直接扫,不用排序)
+  char buf[220];
+  int n = snprintf(buf, sizeof(buf), "sniff: 共 %lu 帧, IDEN: ",
+                   (unsigned long)g_iden_total);
+  // 每轮挑出当前最大的、且没打过的那一个,最多打 6 个
+  bool shown[4096] = {};
+  for (int pick = 0; pick < 6; ++pick) {
+    uint16_t best = 0;
+    bool found = false;
+    for (int i = 0; i < 4096; ++i) {
+      if (shown[i] || g_iden_count[i] == 0) continue;
+      if (!found || g_iden_count[i] > g_iden_count[best]) { best = (uint16_t)i; found = true; }
+    }
+    if (!found) break;
+    shown[best] = true;
+    if (n < (int)sizeof(buf) - 24) {
+      n += snprintf(buf + n, sizeof(buf) - (size_t)n, "%03X=%u ",
+                    (unsigned)best, (unsigned)g_iden_count[best]);
+    }
+  }
+  dash_logf("%s\n", buf);
+  // 车速帧单独点名 —— 它决定 SRC speed 能不能从 sim 变 van
+  dash_logf("sniff: 车速帧 IDEN 0x824 计数 = %u%s\n",
+            (unsigned)g_iden_count[0x824],
+            g_iden_count[0x824] ? "" : "  <-- 流里没有这一帧,所以 speed 只能是 sim");
+}
+}  // namespace
+#endif  // VAN_SNIFF
+
 // 打印每一帧 VAN,格式**故意与 van_replay 的行格式一致**:
 //     VAN 824 18 F8 27 10 00 00 00
 // 于是"车上抓到的串口日志"可以直接粘回设备的串口(或喂给宿主机测试)来回放 ——
@@ -91,6 +159,9 @@ class VanLogSink : public VanSink {
 public:
   // 只要 824(车速/转速)这一帧?先全打 —— 反查协议时缺的就是"别的帧长什么样"。
   void onPacket(const VanPacket& pkt) override {
+#if VAN_SNIFF
+    van_sniff_note(pkt.iden);   // ★ 计数不依赖任何字符串格式化,绕开"帧行不打印"
+#endif
     if (!pkt.fcs_ok) {
       dash_logf("# VAN 校验失败 iden=%03X len=%u\n", (unsigned)pkt.iden, (unsigned)pkt.len);
     } else {
@@ -376,5 +447,8 @@ void loop() {
     // 实测刷新率:判断"K 线够不够用"的唯一依据(见 obd_source.h 的时隙账)
     dash_logf("SRC-Hz rpm=%.1f cool=%.1f intake=%.1f speed=%.1f\n",
                   s.obd_rpm_hz, s.obd_coolant_hz, s.obd_intake_hz, s.obd_speed_hz);
+#if VAN_SNIFF
+    van_sniff_report(now);
+#endif
   }
 }

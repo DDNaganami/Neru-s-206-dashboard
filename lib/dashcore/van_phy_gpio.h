@@ -30,6 +30,23 @@ public:
   void begin() override;
   void tick(uint32_t now_ms) override;
 
+  // ★★ 必须转发给内嵌的 wire_(2026-09-22 修)。
+  //
+  // 为什么:VanPhyGpio 继承 VanPhy,内嵌的 VanPhyWire **也**继承 VanPhy ——
+  // 于是内存里有**两份** sink_。基类那个非虚 setSink 只会写 VanPhyGpio 自己那份,
+  // 而真正解帧的 VanPhyWire::finish() 读的是 wire_ 那份 ⇒ 永远 nullptr。
+  //
+  // 实测症状(定位它花了很久,因为太有迷惑性):
+  //   物理层诊断行 `van: edges=… frames=458 fcs_ok=458` **照常涨** ——
+  //   因为 ++stats_.frames 在 `if (sink_)` **之前**,计数不受影响;
+  //   但 `VAN %03X` 帧行一行不打、`SRC speed` 永远是 sim、嗅探计数恒为 0。
+  //   而 van_replay 那条路是直接调 g_data.vanSource().onPacket()、绕开物理层,
+  //   所以回放能出 `SRC speed=van` —— 把这个问题盖住了。
+  void setSink(VanSink* sink) override {
+    VanPhy::setSink(sink);        // 保留基类那份(接口语义完整)
+    wire_.setSink(sink);          // ★ 真正生效的那一份
+  }
+
   // 供 GPIO 中断调用(实现见 .cpp 的静态跳板)。必须是 public:
   // 跳板是文件级函数,够不到私有成员。
   void onIsrEdge();

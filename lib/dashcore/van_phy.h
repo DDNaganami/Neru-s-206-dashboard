@@ -15,7 +15,15 @@ public:
   virtual ~VanPhy() = default;
   virtual void begin() = 0;
   virtual void tick(uint32_t now_ms) = 0;   // 非阻塞:读硬件 FIFO、解帧、回调 sink
-  void setSink(VanSink* sink) { sink_ = sink; }
+  // ★ virtual(2026-09-22 改):组合式实现必须能把它**转发给真正解码的那个对象**。
+  //   原来是非虚的,于是踩了这个坑:VanPhyGpio 既继承 VanPhy、又内嵌一个 VanPhyWire,
+  //   而 VanPhyWire 自己也继承 VanPhy —— 于是存在**两份** sink_:
+  //     · setSink() 设的是 VanPhyGpio 那一份;
+  //     · VanPhyWire::finish() 读的是内嵌 wire_ 那一份(永远 nullptr)。
+  //   症状极具误导性:`stats_.frames`/`frames_fcs_ok` 照涨(计数在 if (sink_) 之前),
+  //   而 sink 一次都不被调用 —— 帧打不出来、数据也到不了 VanSource。
+  //   见 van_phy_gpio.h 的 override。
+  virtual void setSink(VanSink* sink) { sink_ = sink; }
 
 protected:
   VanSink* sink_ = nullptr;
