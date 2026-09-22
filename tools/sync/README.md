@@ -11,9 +11,10 @@
 
 现在用的只有 SSH。`sync-to-laptop.ps1` 和它的计划任务 `206dash-sync-to-laptop`
 **都不再用了**,别再照着老文档去配共享。
-把桌机上那个老任务**退役**掉要用**管理员** PowerShell(任务库在
-`C:\Windows\System32\Tasks`),命令在下面“计划任务”一节里:
-`Unregister-ScheduledTask -TaskName 206dash-sync-to-laptop -Confirm:$false`。
+那个老任务**已经不在桌面机上了**(2026-09-21 实测:`Get-ScheduledTask`、`schtasks /query`、
+`C:\Windows\System32\Tasks` 三处都搜不到 `206dash`)——**不需要再执行任何清理命令**。
+(曾经写在这里的“用管理员 PowerShell 去 Unregister”已经删掉:照着执行只会得到
+“找不到任何 TaskName 属性等于 … 的 MSFT_ScheduledTask 对象”,白跑一趟管理员窗口。)
 
 为什么废:这台桌机连笔记本的共享一律 `System error 5 / 拒绝访问`,
 不管共享权限怎么给都一样;新加一条 Windows 凭据也救不回来
@@ -279,16 +280,20 @@ Start-ScheduledTask   -TaskName 206dash-sync-ssh                       # 立刻�
   powershell -ExecutionPolicy Bypass -File tools\sync\sync-ssh.ps1 -Unregister
   ```
 
-- **退役老的 SMB 计划任务**(`206dash-sync-to-laptop`,2026-09-21 那条路已废):
-  同样要管理员。先看它在不在,再删:
+- **老的 SMB 计划任务**(`206dash-sync-to-laptop`,2026-09-21 那条路已废):
+  **已确认不存在,无需清理,也不需要管理员权限**。2026-09-21 实测三处都为空:
 
   ```powershell
-  # 管理员 PowerShell:
-  Get-ScheduledTask        -TaskName 206dash-sync-to-laptop            # 看还在不在
-  Unregister-ScheduledTask -TaskName 206dash-sync-to-laptop -Confirm:$false
+  Get-ScheduledTask | Where-Object TaskName -match '206dash'   # 应为空
+  schtasks /query /fo csv | Select-String 206dash              # 应为空
+  Get-ChildItem C:\Windows\System32\Tasks -Filter *206dash*    # 应为空
   ```
 
-  删掉之后桌机上就只剩 `206dash-sync-ssh` 一个同步任务了。
+  如果这时还去执行 `Unregister-ScheduledTask -TaskName 206dash-sync-to-laptop -Confirm:$false`,
+  会报“找不到任何 TaskName 属性等于 … 的 MSFT_ScheduledTask 对象” ——
+  那是**正常结果**(它本来就不在),不是命令写错了。
+
+  桌机上现在只剩 SSH 那条同步任务(`206dash-sync-ssh`,前提是 `-Register` 过)。
 - 任务跑的是带**默认参数**的本脚本;要改目标/密钥就改脚本里的默认值,别在任务里塞参数。
 
 ## 为什么远端命令要编成 base64(改脚本的人必读)
