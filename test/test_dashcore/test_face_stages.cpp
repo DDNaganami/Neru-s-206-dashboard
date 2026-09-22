@@ -149,17 +149,24 @@ static void test_driven_screen_differs_within_group(void) {
 // 降级链:每一行都得**从自己开始**,而且必须能一路退到 Idle(常态),
 // 否则"只导入一张常态图"的用户会遇到某些状态无图可切。
 static void test_fallback_chain(void) {
+  // ★ 行宽**由表自己推**(kFaceFallback 是 [kFaceSlotCount][N]),不许写死:
+  //   2026-09-18 每屏 4 档 → 5 档时 N 从 4 变 5,而这里原来写死 `k < 4` /
+  //   `a < 4` / `b < 4` —— 只扫前 4 列,于是 Idle 落在第 5 列的那三行
+  //   (Sport / Redline / High)永远扫不到、`reachesIdle` 误判为假,
+  //   而"每一行都能退到 Idle"恰恰是这张表最该保证的事(用户只导入一张图时
+  //   就靠它兜底)。改成整行扫,断言一条没减、覆盖面反而补齐了。
+  const int kRow = (int)(sizeof(kFaceFallback[0]) / sizeof(kFaceFallback[0][0]));
   for (uint8_t slot = 0; slot < kFaceSlotCount; ++slot) {
     TEST_ASSERT_EQUAL_INT8((int8_t)slot, kFaceFallback[slot][0]);
     bool reachesIdle = false;
-    for (int k = 0; k < 4; ++k) {
+    for (int k = 0; k < kRow; ++k) {
       const int8_t s = kFaceFallback[slot][k];
       TEST_ASSERT_TRUE(s >= 0 && s < (int8_t)kFaceSlotCount);
       if (s == (int8_t)Face::Idle) reachesIdle = true;
     }
     TEST_ASSERT_TRUE(reachesIdle);
-    for (int a = 0; a < 4; ++a) {
-      for (int b = a + 1; b < 4; ++b) {
+    for (int a = 0; a < kRow; ++a) {
+      for (int b = a + 1; b < kRow; ++b) {
         TEST_ASSERT_TRUE(kFaceFallback[slot][a] != kFaceFallback[slot][b]);
       }
     }
@@ -250,10 +257,16 @@ static void test_screen_state_sets(void) {
       TEST_ASSERT_EQUAL_UINT16_MESSAGE(0, kFaceRoleId[screen][slot], msg);
     }
   }
-  // 每屏声明的状态数必须一样多(现在左右各 4 个 —— 图片是按"每屏 4 张"规划的)
-  TEST_ASSERT_EQUAL_UINT8(4, kFaceStatesPerScreen);
-  TEST_ASSERT_EQUAL_UINT8(4, (uint8_t)(sizeof(kFaceLeftStates) / sizeof(Face)));
-  TEST_ASSERT_EQUAL_UINT8(4, (uint8_t)(sizeof(kFaceRightStates) / sizeof(Face)));
+  // ★ 每屏声明的状态数**以 face_stages.h 为唯一依据**,不写死档数:
+  //   `kFaceStatesPerScreen` 必须等于两个数组的**真实长度**,而且左右一样多。
+  //   原来这里写死 4(注释还写着"图片是按每屏 4 张规划的")—— 2026-09-18 每屏
+  //   4 → 5 档之后,这条就从"验收"变成了"用过期的期望去否定正确的表"。
+  //   三条断言一条没减:声明值 ↔ 左数组、声明值 ↔ 右数组、左数组 ↔ 右数组。
+  const uint8_t leftN  = (uint8_t)(sizeof(kFaceLeftStates) / sizeof(kFaceLeftStates[0]));
+  const uint8_t rightN = (uint8_t)(sizeof(kFaceRightStates) / sizeof(kFaceRightStates[0]));
+  TEST_ASSERT_EQUAL_UINT8(leftN, kFaceStatesPerScreen);
+  TEST_ASSERT_EQUAL_UINT8(rightN, kFaceStatesPerScreen);
+  TEST_ASSERT_EQUAL_UINT8(leftN, rightN);
 }
 
 void register_face_stage_tests(void) {
