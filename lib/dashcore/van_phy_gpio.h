@@ -10,7 +10,9 @@
 //   解码(van_phy_wire) 4B5B / E-Manchester / CRC-15 → VanPacket
 //
 // 接线(PINOUT.md 第一段):
-//   SN65HVD230:VCC=3.3V、GND=GND、RO=GPIO16、DI=不接、DE/RE=GND(只收)
+//   SN65HVD230:VCC=3.3V、GND=GND、RO=GPIO16、D(TX/DI)=3V3(★ 不能悬空:低电平=显性=会主动干扰总线)、RS=GND(只收)
+//     · RS 是第 8 脚(不是 DE/RE):接 GND=高速模式,接 VCC=待机(一帧都收不到);
+//       6 脚模块(3.3V GND RX TX CANH CANL)没有这一脚 —— 模块内部已接 GND,无需外接(PINOUT.md「抓帧盒」)
 //   ★ 模块上的 120Ω 终端电阻必须拆掉(总线两端才有终端,我们挂在中间)
 //
 // ★ 只有设备端编译(整个头/实现被 ARDUINO 包住):

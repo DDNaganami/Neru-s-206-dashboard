@@ -38,7 +38,7 @@ try {
 Write-Host '=== 上车后先确认这 4 条(错一条就是白跑一趟) ===' -ForegroundColor Cyan
 Write-Host ' 1) 笔记本用电池:充电器必须拔掉(USB 地 + 车 12V 地 = 地环流,见 PURCHASE.md 第六节)'
 Write-Host ' 2) 模块 3V3/GND 接板子;模块 GND 再单独一根到车地(OBD 4/5 脚或仪表侧搭铁)'
-Write-Host ' 3) 120Ω 终端电阻已拆;GPIO16 接模块 RX;模块 TX 悬空;RS(若有)接 GND'
+Write-Host ' 3) 120Ω 终端电阻已拆;GPIO16 接模块 RX;模块 TX 接 3V3(★ 不能悬空);RS 接 GND(6 脚模块无此脚=板内已接 GND)'
 Write-Host ' 4) VAN_H/VAN_L 接仪表连接器 5/10 脚:先量对地 2~3V 且两根不相等,是 0V/12V 就停手'
 Write-Host ''
 Write-Host "开始抓帧:$Port @ $Baud / $Seconds 秒 → $Out" -ForegroundColor Cyan

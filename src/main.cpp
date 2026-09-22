@@ -68,7 +68,7 @@ VehicleDataService& attachObdSerial() {
 
 // VAN 物理层:默认是桩(无硬件)。
 //   ★ 收发器(SN65HVD230)到货后:编译时加 -DVAN_PHY_GPIO=1
-//     (见 platformio.ini 的 [env:esp32s3]),RO 接 GPIO16,DE/RE 接 GND。
+//     (见 platformio.ini 的 [env:esp32s3]),RO 接 GPIO16,D/TX 接 3V3(★ 不能悬空:低=显性=会主动干扰总线)、RS 接 GND。
 //   换成 VanPhyGpio 之后,数据层一行都不用改 —— 这正是当初把它抽成
 //   VanPhy 接口的目的(见 van_phy.h)。
 // 数据源不是 VanSink,用 VanSourceSink 转一层;而我们要**打印**每一帧,

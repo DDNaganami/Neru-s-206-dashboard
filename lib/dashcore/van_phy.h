@@ -43,7 +43,7 @@ public:
 // 实驱动的样子(保留作实现参考):
 //   class VanPhyRmt : public VanPhy {
 //     void begin() override {
-//       // 引脚见 PINOUT.md(VAN RX=16 / TX=15 / DE-RE=GND 监听模式)
+//       // 引脚见 PINOUT.md(VAN RX=16 只收 / D(TX)=3V3,不接 GPIO 也不能悬空 / RS=GND 监听模式)
 //       // RMT 初始化:VAN 为 125kbps、E-Manchester(4B5B)编码
 //     }
 //     void tick(uint32_t now_ms) override {
