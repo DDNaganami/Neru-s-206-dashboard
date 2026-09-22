@@ -18,6 +18,7 @@ void register_image_roundtrip_tests(void);
 void register_data_service_tests(void);
 void register_expression_tests(void);
 void register_face_stage_tests(void);
+void register_link_crc_coverage_tests(void);   // 双板链路 v1:CRC-15 检错覆盖枚举(§8 L4)
 
 int main(void) {
   UNITY_BEGIN();
@@ -33,6 +34,9 @@ int main(void) {
   register_image_roundtrip_tests();
   register_data_service_tests();
   register_expression_tests();
+  // ★ 必须排在 face_stages 之前:test_face_stages.cpp 有一个**既有崩溃**
+  //   (进程 exit 3,见 ACCEPTANCE.md),排在它后面的用例根本跑不到。
+  register_link_crc_coverage_tests();
   register_face_stage_tests();
   return UNITY_END();
 }
