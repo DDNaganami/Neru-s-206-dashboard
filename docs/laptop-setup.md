@@ -19,12 +19,15 @@
 装在哪、有什么：
 
 - 项目副本：`C:\Users\张九思\206Dash\Neru-s-206-dashboard`
-  —— **是 git 检出**，branch `main`，origin = `https://github.com/DDNaganami/Neru-s-206-dashboard.git`。
+  —— **是 git 检出**，branch `main`，origin = `ssh://git@ssh.github.com:443/DDNaganami/Neru-s-206-dashboard.git`
+  （**SSH over 443**；2026-09-21 当晚从 HTTPS 改过来的，配置与复原步骤见 §10）。
   ★ **2026-09-21 这个检出被移动过**：从 `C:\Users\张九思\Documents\PlatformIO\Projects\Neru-s-206-dashboard`
   移到上面那个路径，为的是**和桌机同一个绝对路径**（真移动：没留副本、没建 junction，旧路径只留一行
   `README-已迁移.txt`）。移动前后 HEAD 都是 `9542efe`，仓库完好。为什么要对齐：文档/脚本里的命令
   两边通用，而且 **DSH 的工作区目录名是按工作区路径编码的** —— 两边路径一致，目录名才会一致，
   以后在笔记本上看 / 恢复会话不会因为路径错位而混乱（见 §7、§8）。
+- ⚠ **这个检出里有一处未提交的本地改动：`M src/main.cpp`（+49 / −9，内容是启用 OBD 串口）**
+  —— **不要动它、不要提交、不要还原**（实测不影响 `git merge --ff-only`；详见 §10.7）。
 - `C:\206dash-data\` —— 真车抓包 + 烧机素材（见 §4）。
 - **仓库根目录有 26 个未跟踪文件**：`setup-radmin-remote.ps1`、`expose-dsh-gui.ps1`、`fix-route-metric.ps1`、`install-standalone-openssh.ps1`、`*.sshd.log`、`sshd-diagnose.log`… 都是当初搭这条 SSH 通道的现场。
   ★ **别删**。已核对过：这些文件名与仓库树**不冲突**，所以 `git pull` 不会覆盖它们（真要撞上 git 也会先拒绝，不会闷头删）。
@@ -57,6 +60,8 @@ python -m platformio run -e esp32s3-rgb
 ```
 
 拉代码：`git -C C:\Users\张九思\206Dash\Neru-s-206-dashboard pull --ff-only`
+（origin 是 SSH over 443，见 §10。⚠ **在一条 SSH 会话里派生 `git fetch` / `pull` 会卡在数据阶段** ——
+要在笔记本本机跑，或者用一次性计划任务，见 §10.4。）
 
 ✗ **`native` / `pcpreview` 在笔记本上编不过** —— 这两个 env 是 `platform = native`，要**宿主机 C 编译器**，笔记本上没有。
 （桌机是靠 `C:\Users\Public\206dash\.tools\zigbin` 里那套 `cc/gcc/c++/g++.exe` 代理。★ 那几个代理把 zig 的路径**硬编码**成 `C:\Users\Public\206dash\.tools\pyzig\ziglang\zig.exe`，所以**光把 `zigbin` 拷过来没用**，必须连 zig 本体一起放到那个绝对路径上。）
@@ -96,6 +101,9 @@ SMB 共享那条路是坏的（见 §5），所以是直接从桌机 `scp` 过�
 2. **`native` / `pcpreview` 编不了** —— 见 §3，要装宿主机编译器。
 3. 提权 / GUI 的事（本轮**都没做**，也没猜）：给账号设密码、改 `LimitBlankPasswordUse`、重新注册计划任务、装 MinGW。
 4. 笔记本上没有 `C:\Users\Public\206dash`，也没走"拷桌机 `.pio-core`"那条备用路线 —— 不需要，pip 那条路已经通了。
+5. **PlatformIO 那个 259 MB 的 `toolchain-riscv32-esp` 下载中途断掉了**（`IncompleteRead`，42/216 MB）
+   —— **原因尚未查清**。★ **不要**把它当成和 GitHub 同因：那是 PlatformIO 自己的包下载（§2 那条
+   `python -m pip install -U platformio` 的路线），和 git-over-ssh 那条链是两回事。要接着查就单独查。
 
 ## 6. SSH 通道
 
@@ -191,3 +199,147 @@ scp -i $env:USERPROFILE\.ssh\dsh_laptop <本地> 张九思@26.253.1.139:'C:/目�
 - **"SSH 注册计划任务 → 紧接着启动"那次，powershell.exe 起进程被拒**
   （报「程序无法运行: 拒绝访问」），而同一分钟里下一条一模一样的 `-EncodedCommand` 却正常
   ⇒ 看着是**偶发拦截**。**长驻进程别走这条路，让用户本地启动。**
+
+## 10. 笔记本的 GitHub 通道（已修好，2026-09-21 当晚实测）
+
+> ★ **先更正一条错结论**：以前写的“笔记本连不上 GitHub / 笔记本那边没有到 GitHub 的通道”
+> **是错的**。笔记本侧的网络一直是好的，坏的只是这个 checkout 的配置。
+> 误判来自**嵌套 SSH 会话**（见 §10.4）—— 当时的判断是错的，原因是嵌套 SSH 会话造成的假象。
+
+### 10.1 笔记本侧的网络本身是好的（实测）
+
+| 域名 | 笔记本解析 | 443/TCP |
+|---|---|---|
+| `github.com` | `20.205.243.166` | 通 |
+| `ssh.github.com` | `20.205.243.160` | 通 |
+| `api.github.com` | `20.205.243.168` | 通 |
+| `codeload.github.com` | `20.205.243.165` | 通 |
+
+- **解析不是污染**：四个都是 GitHub 的真实地址。（台式机那边 `github.com` / `api.github.com` /
+  `codeload.github.com` 都被解析成 `127.0.0.1` —— 所以台式机只能走 SSH-over-443；笔记本这边是干净的。）
+- 从笔记本 `ssh.github.com:443` 读到的 SSH 横幅是 **`SSH-2.0-af8ca74`**，与台式机读到的
+  **完全一致** ⇒ 没有中间人。
+- 路径 MTU 与台式机一致：DF ping 载荷 **1452 通**、**1472 需要分片**；各接口 `NlMtu` 都是 **1500**。
+- 到 GitHub 的 IP 段（20/140 开头）**没有任何 VPN 路由**；两端都走 WLAN。
+
+### 10.2 原来的 `exit 6` 是这三个原因（和“没通道”无关）
+
+1. 笔记本的 remote 当时是 **HTTPS**（`https://github.com/DDNaganami/Neru-s-206-dashboard.git`）
+   —— TLS 里带 `github.com` 的 **SNI 被 RST**，报 `Recv failure: Connection was reset`。
+   （被重置的是**这一条 HTTPS 连接**，不是“GitHub 不可达”。）
+2. 笔记本 `~/.ssh` 里**当时只有 `dsh_desktop` 一把密钥，没有 GitHub 密钥**
+   （现在是 `dsh_desktop` + `id_ed25519` 两把 + `known_hosts`）。
+3. git 默认用的 ssh 是 **Git 自带那套**（`C:\Program Files\Git\usr\bin\ssh.exe`），
+   它读的 HOME/.ssh 与 Windows OpenSSH 不是一个 ⇒ 报 `Host key verification failed`。
+
+> **台式机为什么“看起来能连”**：台式机上 `github.com` 和 `api.github.com` 被解析成 **`127.0.0.1`**
+> （域名被污染），所以台式机走的是 `ssh://git@ssh.github.com:443` 这条 **SSH-over-443** 绕行；
+> **笔记本 DNS 干净，本来就能直连 GitHub**，只是 remote 写错了协议。
+
+### 10.3 现在的配置（实测读回）+ 验证命令
+
+| 项 | 值 |
+|---|---|
+| `remote.origin.url` | `ssh://git@ssh.github.com:443/DDNaganami/Neru-s-206-dashboard.git` |
+| `core.sshCommand` | `C:/PROGRA~1/OpenSSH/ssh.exe -o BatchMode=yes -o StrictHostKeyChecking=accept-new`（**只有一行**） |
+| GitHub 私钥 | `%USERPROFILE%\.ssh\id_ed25519`（+ `.pub`），与台式机私钥 SHA256 前 16 位一致：**`3FFE2C9BE5658ED7`** |
+| `known_hosts` | `[ssh.github.com]:443` 的 rsa / ecdsa / ed25519 三条（写入用 `Add-Content`，实测**无 CRLF 问题**） |
+| 能用的 ssh | **`C:\Program Files\OpenSSH\ssh.exe`**（下面那张表是另外两个的下场） |
+| HEAD | `a2c03ed`（与台式机一致，2026-09-21 当晚快进到位） |
+
+笔记本上三个 `ssh.exe`，只有一个能用：
+
+| 可执行文件 | 结果 |
+|---|---|
+| `C:\Program Files\OpenSSH\ssh.exe` | ✅ 正常（`core.sshCommand` 指的就是它，shell PATH 里也是它） |
+| `C:\Windows\System32\OpenSSH\ssh.exe` | ❌ **会挂死**（连 stdin 接 NUL 也挂） |
+| `C:\Program Files\Git\usr\bin\ssh.exe` | ❌ 认证不过（读不到我们的密钥）⇒ `Host key verification failed` |
+
+验证命令（**都在笔记本本机上跑**，不要在桌机 `ssh` 过来的那条会话里跑 —— 原因见 §10.4）：
+
+```powershell
+$r = 'C:\Users\张九思\206Dash\Neru-s-206-dashboard'
+git -C $r config --get-all core.sshCommand      # 应只有一行
+git -C $r config --get-all remote.origin.url    # 应是 ssh://git@ssh.github.com:443/...
+ssh-keygen -lf "$env:USERPROFILE\.ssh\known_hosts"          # 三条指纹
+& 'C:\Program Files\OpenSSH\ssh.exe' -T -p 443 git@ssh.github.com   # 应回 "Hi <用户名>! You've successfully authenticated..."
+git -C $r fetch --prune origin                  # 应成功并更新 origin/main
+```
+
+三条主机密钥指纹（笔记本 `known_hosts` 里读出来的，**与 GitHub 官方公布的一致**）：
+`SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU`（ed25519）、
+`SHA256:p2QAMXNIC1TJYWeIOttrVc98/R1BUFWu3/LiyKgUfQM`（ecdsa）、
+`SHA256:uNiVztksCsDhcc0u9e8BujQXVUpKZIDTMczCvj3tD2s`（rsa）
+（官方页面：<https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints>）。
+
+### 10.4 ★ 嵌套 SSH 会话会在数据阶段卡死（最坑的一条，误判就是它造成的）
+
+**在一条 SSH 会话里再派生 `ssh` / `git fetch`：认证会成功、远端 `git-upload-pack` 已经启动、
+SSH 通道也 open confirm 了，然后一个字节都不再回来** —— `-vvv` 日志停在
+`channel 0: open confirm rwindow 32000 rmax 35000`。
+
+- 实测**三种派生方式都挂**：① 内联调用 ② `Start-Process` 重定向 ③ `Start-Process cmd` + stdin 接 NUL。
+- 同一个 ssh 手动加 `-T` 只用了 **0.6 秒**就通 ⇒ 密钥、网络、主机密钥全都是好的。
+- ★ 把同一条 `git fetch` 放到**会话之外**（一次性计划任务）**立刻成功**，日志
+  `face40c..a2c03ed  main -> origin/main`；笔记本 HEAD 随即变成 **`a2c03ed`**
+  （`git reflog` 里是 `merge origin/main: Fast-forward`，`.git/FETCH_HEAD` 指向
+  `ssh://ssh.github.com:443/DDNaganami/Neru-s-206-dashboard`）。
+
+⇒ **规矩：不要用嵌套 SSH 会话去诊断或执行长时间的 git-over-ssh 操作。**
+要么让用户在笔记本本地跑，要么用一次性计划任务（`Register-ScheduledTask` + `Start-ScheduledTask`，
+跑完 `Unregister`，形状见 §10.6）。
+**“笔记本没有到 GitHub 的通道”这个误判就是这么来的 —— 是嵌套 SSH 会话造成的假象。**
+
+### 10.5 换机 / 重装时的复原步骤
+
+1. **remote 换成 SSH over 443**：
+   `git remote set-url origin ssh://git@ssh.github.com:443/DDNaganami/Neru-s-206-dashboard.git`
+2. **放 GitHub 私钥**：把台式机的 `~/.ssh/id_ed25519`（+ `.pub`）复制到新机
+   `%USERPROFILE%\.ssh\id_ed25519`，并收紧 ACL（只留自己可读）：
+   `icacls <该文件> /inheritance:r /grant:r "$env:USERNAME:R"`
+   核对：两端私钥 SHA256 前 16 位应都是 **`3FFE2C9BE5658ED7`**。
+3. **写 `known_hosts`**：`ssh-keyscan -p 443 -t rsa,ecdsa,ed25519 ssh.github.com`
+   （追加用 `Add-Content`，实测无 CRLF 问题）；再用 `ssh-keygen -lf` 对一下 ed25519 指纹
+   必须是 `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU`。
+4. **指定 ssh 可执行文件（★ 必须 `--replace-all`）**：
+   ```powershell
+   git config --replace-all core.sshCommand 'C:/PROGRA~1/OpenSSH/ssh.exe -o BatchMode=yes -o StrictHostKeyChecking=accept-new'
+   git config --get-all core.sshCommand      # ★ 必须只有一行
+   ```
+   - 路径要用 **8.3 短名** 的原因：`C:\Program Files\OpenSSH\ssh.exe` 带空格，PowerShell 会把传给
+     原生 exe 的引号吞掉，git 只收到 `C:/Program`（报 `cannot spawn C:/Program`）。
+   - **必须 `--replace-all`** 的原因：笔记本 `.git/config` 里当时**真的有两条 `sshCommand`**，
+     **最后一条生效** ⇒ 一直在用错的那条。实测（git 2.x，本机复现）：`core.sshCommand` 有**多个值**时，
+     普通的 `git config core.sshCommand '<新值>'` **改不动**，直接报
+     `error: cannot overwrite multiple values with a single value`，那两条原样躺着 ——
+     所以只能 `--replace-all`，而且**改完不核对等于没改**。
+5. **验证**：跑 §10.3 那几条（`ssh -T -p 443 git@ssh.github.com` 应回
+   `Hi <用户名>! You've successfully authenticated, but GitHub does not provide shell access.`）。
+6. ⚠ **验证也要在会话之外**（§10.4）：要么笔记本本地跑，要么一次性计划任务。
+
+### 10.6 一次性计划任务（在会话之外跑 git-over-ssh 的形状）
+
+```powershell
+# 在笔记本本机上执行（不是在桌机 ssh 过来的那条会话里）；路径/日志名按实际填
+$ps1 = 'C:\206dash-data\gitfetch-once.ps1'
+[IO.File]::WriteAllText($ps1,
+  "cd C:\Users\张九思\206Dash\Neru-s-206-dashboard`ngit fetch --prune origin *> C:\206dash-data\gitfetch.log`n",
+  (New-Object Text.UTF8Encoding($false)))          # 无 BOM
+
+Register-ScheduledTask -TaskName 206dash-gitfetch-once -Force -Action (New-ScheduledTaskAction `
+  -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\206dash-data\gitfetch-once.ps1')
+Start-ScheduledTask   -TaskName 206dash-gitfetch-once
+Get-Content C:\206dash-data\gitfetch.log           # 期望看到 face40c..a2c03ed  main -> origin/main
+Unregister-ScheduledTask -TaskName 206dash-gitfetch-once -Confirm:$false   # 跑完清理
+```
+
+### 10.7 顺带：仓库里那处未提交改动（别动它）
+
+- `M src/main.cpp`，**+49 / −9**，内容是**启用 OBD 串口**：`OBD_SERIAL`、`OBD_RX_PIN 17`、
+  `OBD_TX_PIN 18`、`kObdBaud 38400`、`attachObdSerial()`。
+- ★ **不要动它、不要提交、不要还原。** 实测**不影响 `git merge --ff-only`**
+  （`face40c → a2c03ed` 那次快进照过，这处改动原样留着）。
+- ⚠ 但它是**已跟踪**文件的改动 ⇒ 桌机同步脚本的 gate 会因此拒绝快进、判 `refused` / 退出 `6`
+  （见 `tools/sync/README.md` 的「仓库那步会先看一眼笔记本有没有本地改动」）。那是**预期行为**，
+  **不要**为了让它过去而 `stash` / `checkout` 这处改动。
+

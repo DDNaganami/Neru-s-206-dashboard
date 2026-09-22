@@ -7,6 +7,127 @@
   双向比不自动同步还危险。
 - 代码和文档**不走这条路**,走 `git push`。这里只搬“git 装不下 / 不该装”的东西。
 
+## ★★ 更正:笔记本到 GitHub **有**通道 —— 2026-09-21 当晚修好,原来那句结论是错的
+
+**先把错的结论划掉。** 本文原来(以及下面「出问题先看这里」那张表)写着“笔记本连不上它自己的远端 /
+笔记本那边没有到 GitHub 的通道” —— **这个判断是错的**。笔记本那侧的网络本来就是好的,
+坏的只是笔记本这个 checkout 的**配置**。
+
+**当初为什么会误判:** 所有诊断都是在一条**嵌套 SSH 会话**里做的(桌机 `ssh` 进笔记本,
+再在笔记本里派生 `ssh` / `git fetch`)。那条路**会在数据阶段卡死**,看起来和“没有通道”一模一样。
+详见下面「★ 嵌套 SSH 会话」一段 —— 那条规矩请当硬规矩用。
+
+### 笔记本侧网络:实测干净(以下都在笔记本本机上跑)
+
+| 域名 | 笔记本解析 | 443/TCP |
+|---|---|---|
+| `github.com` | `20.205.243.166` | 通 |
+| `ssh.github.com` | `20.205.243.160` | 通 |
+| `api.github.com` | `20.205.243.168` | 通 |
+| `codeload.github.com` | `20.205.243.165` | 通 |
+
+- **解析不是污染**:这四个都是 GitHub 的真实地址。台式机那边 `github.com` / `api.github.com` /
+  `codeload.github.com` 全被解析成 `127.0.0.1`(只有 `ssh.github.com` 是干净的 `20.205.243.160`)。
+- 从笔记本 `ssh.github.com:443` 读到的 SSH 横幅是 **`SSH-2.0-af8ca74`**,与台式机读到的**完全一致**
+  ⇒ 中间没有中间人。
+- 路径 MTU 与台式机一致:DF ping 载荷 **1452 通**、**1472 报需要分片**;各接口 `NlMtu` 都是 **1500**。
+- 到 GitHub 的 IP 段(20/140 开头)**没有任何 VPN 路由**;两端都走 WLAN。
+
+### 原来的 `exit 6` 是这三个原因(与“有没有通道”无关)
+
+1. 笔记本的 remote 当时是 **HTTPS** `https://github.com/DDNaganami/Neru-s-206-dashboard.git`
+   —— TLS 里带 `github.com` 的 **SNI 被 RST**,报 `Recv failure: Connection was reset`。
+   (被重置的是**这一条 HTTPS 连接**,不是“GitHub 不可达”。)
+2. 笔记本 `~/.ssh` 里**当时只有 `dsh_desktop` 一把密钥,没有 GitHub 密钥**
+   (现在是 `dsh_desktop` + `id_ed25519` 两把 + `known_hosts`)。
+3. git 默认用的 ssh 是 **Git 自带那套**(`C:\Program Files\Git\usr\bin\ssh.exe`),
+   它读的 HOME/.ssh 与 Windows OpenSSH 不是一个 ⇒ 报 `Host key verification failed`。
+
+> **台式机为什么“看起来能连”**:台式机上 `github.com` 和 `api.github.com` 被解析成 **`127.0.0.1`**
+> (域名被污染),所以台式机只能走 `ssh://git@ssh.github.com:443` 这条 **SSH-over-443** 绕行
+> (本文所有 `git push` 走的就是它);**笔记本 DNS 干净,本来就能直连 GitHub**,
+> 只是 remote 写错了协议 —— 所以这从来不是“笔记本没通道”,是“笔记本配错了”。
+
+### 修好的四条(都在笔记本上执行,逐条实测)
+
+```powershell
+# ① remote 换成 SSH over 443(和台式机同一条 URL)
+git remote set-url origin ssh://git@ssh.github.com:443/DDNaganami/Neru-s-206-dashboard.git
+
+# ② 密钥:把台式机的 ~/.ssh/id_ed25519(+ .pub)复制到笔记本 %USERPROFILE%\.ssh\id_ed25519
+#    两端私钥 SHA256 前 16 位一致:3FFE2C9BE5658ED7
+icacls "$env:USERPROFILE\.ssh\id_ed25519" /inheritance:r /grant:r "$env:USERNAME:R"
+
+# ③ known_hosts:用 keyscan 写进去(写入用的是 Add-Content,实测无 CRLF 问题)
+ssh-keyscan -p 443 -t rsa,ecdsa,ed25519 ssh.github.com
+
+# ④ 让 git 用 OpenSSH,而不是 Git 自带那套
+git config --replace-all core.sshCommand 'C:/PROGRA~1/OpenSSH/ssh.exe -o BatchMode=yes -o StrictHostKeyChecking=accept-new'
+git config --get-all core.sshCommand      # ★ 必须只有一行
+```
+
+两个**必须这么写**的细节(都实测踩过):
+
+- **路径要用 8.3 短名 `C:/PROGRA~1/OpenSSH/ssh.exe`**:`C:\Program Files\OpenSSH\ssh.exe`
+  带空格,而 PowerShell 把传给原生 exe 的引号吞掉,git 只收到 `C:/Program`,
+  报 `cannot spawn C:/Program`。
+- ★ **必须用 `--replace-all`,改完必须 `git config --get-all core.sshCommand` 确认只有一行**:
+  笔记本 `.git/config` 里当时**真的有两条 `sshCommand`**,**最后一条生效** ⇒ 一直在用错的那条。
+  实测(git 2.x,本机复现):`core.sshCommand` 有**多个值**时,普通的
+  `git config core.sshCommand '<新值>'` **改不动**,直接报
+  `error: cannot overwrite multiple values with a single value`,那两条原样躺着 ——
+  所以只能 `--replace-all`,而且改完不核对等于没改。
+
+另外,笔记本上三个 `ssh.exe` 只有一个是能用的(**换机时会再遇到**):
+
+| 可执行文件 | 结果 |
+|---|---|
+| `C:\Program Files\OpenSSH\ssh.exe` | ✅ 正常(现在 `core.sshCommand` 指的就是它) |
+| `C:\Windows\System32\OpenSSH\ssh.exe` | ❌ **会挂死**(连 stdin 接 NUL 也挂) |
+| `C:\Program Files\Git\usr\bin\ssh.exe` | ❌ 认证不过(读不到我们的密钥)⇒ `Host key verification failed` |
+
+### 修完之后的实测结果
+
+- 笔记本 `git config --get-all core.sshCommand` = **一行**;
+  `remote.origin.url` = `ssh://git@ssh.github.com:443/DDNaganami/Neru-s-206-dashboard.git`。
+- 笔记本 `known_hosts` 里 `[ssh.github.com]:443` 的 rsa / ecdsa / ed25519 三条指纹
+  **与 GitHub 官方公布的主机密钥逐个一致**(ed25519 = `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU`)。
+- 在笔记本上(**会话之外**)跑 `git fetch`,日志 **`face40c..a2c03ed  main -> origin/main`** ——
+  笔记本 HEAD 随即变成 **`a2c03ed`**,`git merge --ff-only` 快进成功;`git reflog` 里是
+  `merge origin/main: Fast-forward`,`.git/FETCH_HEAD` 指向
+  `ssh://ssh.github.com:443/DDNaganami/Neru-s-206-dashboard`。
+  ⇒ **笔记本这条腿现在是通的**,本文原来“笔记本自己 fetch 不会成功”的默认假设不再成立。
+
+### ★ 嵌套 SSH 会话:在 SSH 会话里再派生 ssh / git fetch 会**在数据阶段卡死**(最坑的一条)
+
+症状(2026-09-21 实测,全部发生在“桌机 `ssh` → 笔记本”这条会话里):
+
+- 认证**成功**,远端 `git-upload-pack` **已经启动**,SSH 通道也 **open confirm** 了,
+- 然后**一个字节都不再回来**;`-vvv` 日志停在
+  `channel 0: open confirm rwindow 32000 rmax 35000`。
+
+实测**三种派生方式都挂**:① 内联调用 ② `Start-Process` 重定向 ③ `Start-Process cmd` + stdin 接 NUL。
+而**同一个 ssh 手动加 `-T`** 只用了 **0.6 秒**就通 —— 密钥、网络、主机密钥全都是好的,
+挂的只是“**在一条 SSH 会话里再开一条 SSH 去搬数据**”这件事。
+
+★ 把同一条 `git fetch` 放到**会话之外**跑(一次性计划任务)**立刻成功**(就是上面那条 `face40c..a2c03ed`)。
+
+⇒ **规矩:不要用嵌套 SSH 会话去诊断或执行长时间的 git-over-ssh 操作。**
+要么让用户在笔记本本地跑,要么用一次性计划任务(`Register-ScheduledTask` + `Start-ScheduledTask`,
+跑完 `Unregister`)。**原来那句“笔记本没有到 GitHub 的通道”就是这么误判出来的 ——
+当时的判断是错的,原因是嵌套 SSH 会话造成的假象。**
+
+### 另外两条现状(别顺手改掉)
+
+- 笔记本 checkout 里有一处**未提交的本地改动 `M src/main.cpp`**(**+49 / −9**:启用 OBD 串口 ——
+  `OBD_SERIAL` / `OBD_RX_PIN 17` / `OBD_TX_PIN 18` / `kObdBaud 38400` / `attachObdSerial()`)。
+  ★ **不要动它、不要提交、不要还原。** 实测它**不影响 `git merge --ff-only`**
+  (`face40c → a2c03ed` 这次快进照过,那处改动原样留着)。
+  ⚠ 但它是**已跟踪**文件的改动,所以**下一轮同步脚本的 gate 会拒绝快进、判 `refused` / 退出 6**
+  (见下面「仓库那步会先看一眼笔记本有没有本地改动」)—— 那是预期行为,**不要**去 stash / checkout 它。
+- **PlatformIO 那个 259 MB 的 `toolchain-riscv32-esp` 下载中途断掉**(`IncompleteRead`,42/216 MB)
+  —— **原因尚未查清**。**不要**把它当成和 GitHub 同因:那是 PlatformIO 自己的下载,和 git 这条链无关。
+
 ## ★ SMB / robocopy 那条路**已废弃**(2026-09-21)
 
 现在用的只有 SSH。`sync-to-laptop.ps1` 和它的计划任务 `206dash-sync-to-laptop`
@@ -145,6 +266,8 @@ Start-ScheduledTask   -TaskName 206dash-sync-ssh                       # 立刻�
   这种情况 `merge --ff-only` 常常回一句 “Already up to date.” 加退出码 0,
   **别被它骗了**:那句话是跟**过期的** `origin/main` 比出来的。所以脚本把 fetch 和
   merge 的退出码分开看(`FETCH_EXIT` / `MERGE_EXIT`),fetch 一失败就不算成功;
+  ★ 2026-09-21 起笔记本侧 remote 已是 SSH over 443、**fetch 实测会成功**(见开头「更正」一节)。
+  真再出现 `nofetch`,**别再用嵌套 SSH 会话去复现** —— 那会得到假的“连不上”(见「★ 嵌套 SSH 会话」);
 - **没成功(merge)** —— 快进报错,或者两边 HEAD 对不上。
 
 ## 同步过去什么
@@ -158,7 +281,7 @@ Start-ScheduledTask   -TaskName 206dash-sync-ssh                       # 立刻�
 | `C:\Users\Public\206dash\206dash-transfer.zip` | `C:\206dash-data\` | 现成的传输包,**有就带、没有就跳过** |
 | `%USERPROFILE%\.dsh\sessions\…\session.v3.jsonl.zstd`(最新的那个会话) | `C:\206dash-data\session-<会话目录名>.jsonl.zstd` | DSH 会话记录**原件**(以后能被 DSH 打开) |
 | 同上,解压出来的可读版 | `C:\206dash-data\对话记录.jsonl` | 给人看 / 搜的明文 JSONL |
-| 仓库(代码) | 笔记本的**同一个绝对路径** | 桌机 `git push` → 笔记本 `git fetch` + `merge --ff-only origin/main` |
+| 仓库(代码) | 笔记本的**同一个绝对路径** | 桌机 `git push` → 笔记本 `git fetch` + `merge --ff-only origin/main`。笔记本侧 remote 也是 **SSH over 443**,2026-09-21 起实测快进成功(见开头「更正」一节) |
 
 ### 会话记录(对话记录)也跟着走(2026-09-21 owner 定的)
 
@@ -229,6 +352,11 @@ Start-ScheduledTask   -TaskName 206dash-sync-ssh                       # 立刻�
 > —— 改的只是脚本这一边的判据。脚本仍然会**报出**未跟踪文件的个数
 > (`UNTRACKED_COUNT`),只是不拿它拦人。
 
+> ★ **注意:笔记本现在真的有一处“已跟踪改动”** —— `M src/main.cpp`(+49 / −9,OBD 串口,2026-09-21)。
+> 所以下一轮同步**会**在这个 gate 上被拒、判 `refused` / 退出 6,那是**预期**的,不是回归。
+> 这处改动**不要提交、不要 stash、不要还原**(实测它不影响 `git merge --ff-only`,
+> 见开头「更正」一节最后两条)。
+
 数据文件不受这个影响(它们进的是 `C:\206dash-data`,和仓库无关),继续照传。
 
 最后两边的 HEAD 哈希都会打出来,对不上一眼就能看见。
@@ -252,7 +380,7 @@ Start-ScheduledTask   -TaskName 206dash-sync-ssh                       # 立刻�
 
 | 已评估但不做 | 为什么 |
 |---|---|
-| **用 `git bundle` 把 git 对象从桌机中继到笔记本**(桌机打包 → scp → 笔记本解包) | 2026-09-21 owner 决定:**不做**。理由:① 笔记本的 VPN 常开,正常它自己就能连 GitHub;② 仓库这条链**本来就照实报错** —— 笔记本自己 `git fetch` 失败时判 `nofetch`、**退出码 6**,不会拿那句 "Already up to date." 冒充成功,所以"笔记本连不上"这件事已经能被看见,不需要靠中继去绕。<br>★ **实测补充(2026-09-21 当晚,别再猜)**:笔记本上 `github.com:443` **仍然连不上**(`curl 56 Connection was reset` / `Failed to connect to github.com:443 after 21126 ms`),而 **`ssh.github.com:443` 是通的** —— 桌机 `git push` 走的就是后者。所以真要修这条链,方向是**把笔记本的 `remote.origin.url` 也换成 SSH over 443**(`ssh://git@ssh.github.com:443/DDNaganami/Neru-s-206-dashboard.git`,并给笔记本配一把 GitHub 认的密钥),**不是**改成 bundle 中继。 |
+| **用 `git bundle` 把 git 对象从桌机中继到笔记本**(桌机打包 → scp → 笔记本解包) | 2026-09-21 owner 决定:**不做**。理由:① 笔记本正常它自己就能连 GitHub(★ 见开头「更正」一节:这一点 2026-09-21 当晚已实测修好,笔记本 `git fetch` 快进到 `a2c03ed`);② 仓库这条链**本来就照实报错** —— 笔记本自己 `git fetch` 失败时判 `nofetch`、**退出码 6**,不会拿那句 "Already up to date." 冒充成功,所以"笔记本连不上"这件事已经能被看见,不需要靠中继去绕。<br>★ **实测更正(2026-09-21 当晚)**:这里原来写的是“笔记本上 `github.com:443` **仍然连不上**” —— **那个结论是错的**,原因是**嵌套 SSH 会话造成的假象**(见开头「★ 嵌套 SSH 会话」)。真实原因是笔记本 remote 当时是 HTTPS(**TLS 里带 `github.com` 的 SNI 被 RST**,`curl 56 Connection was reset`)+ 没有 GitHub 密钥 + git 用错 `ssh.exe`;而**笔记本 DNS 是干净的、`ssh.github.com:443` 一直是通的**。修法正是把 `remote.origin.url` 换成 `ssh://git@ssh.github.com:443/DDNaganami/Neru-s-206-dashboard.git` 并配一把 GitHub 认的密钥(已完成),**不是**改成 bundle 中继。 |
 
 ## 出问题先看这里
 
@@ -260,7 +388,7 @@ Start-ScheduledTask   -TaskName 206dash-sync-ssh                       # 立刻�
 |---|---|---|
 | `通道不通` | SSH 没连上 | 它会给三行:① Radmin 通不通 ② 笔记本 `sshd` 服务在不在 ③ 私钥路径对不对 —— 按顺序查 |
 | 笔记本仓库 `有 N 项**已跟踪**文件的改动` | checkout 不干净,脚本拒绝动它 | 在笔记本上提交或挪走那几个**已跟踪**文件;未跟踪的残留文件不算数,不用删 |
-| `笔记本自己 git fetch origin 失败` | 笔记本连不上它自己的远端(`remote.origin.url` 是 HTTPS 的 `github.com`) | 查笔记本的网络/DNS。实测笔记本到 `github.com:443` 会超时或“Connection was reset”,而桌机这边是通的(所以桌机 `git push` 一直没事)。这种情况下的 “Already up to date.” **不算数**。★ 2026-09-21 实测:`ssh.github.com:443` 在笔记本上是**通**的、`github.com:443` 不通 ⇒ 最直接的修法是把笔记本的 remote 换成 SSH over 443(见上面「已评估但不做」) |
+| `笔记本自己 git fetch origin 失败` | 笔记本 fetch 没成功,`origin/main` 还是旧的 | **先看开头「更正」一节:笔记本到 GitHub 是通的**(2026-09-21 当晚已修好 —— `remote.origin.url` = `ssh://git@ssh.github.com:443/DDNaganami/Neru-s-206-dashboard.git`,`core.sshCommand` 指向 `C:/PROGRA~1/OpenSSH/ssh.exe` 且只有一行,密钥是 `id_ed25519`)。★ 排查时**不要**用嵌套 SSH 会话去派生 `git fetch` —— 那条路会卡在数据阶段、伪装成“连不上”(见「★ 嵌套 SSH 会话」);要么让用户在笔记本本地跑,要么用一次性计划任务。这种情况下的 “Already up to date.” **不算数** |
 | `两边 HEAD 不一致` | 笔记本没快进到最新 | 看上面 `MERGE:` 那几行;多半是被本地改动挡住了,或者 fetch 没成功 |
 | `传完大小不对` | 文件没传完整 | 再跑一次;已经传好的会被大小比较跳过,不会重传 |
 | `对话记录.jsonl` 每次都显示"发送" | **正常**,不是故障 —— 会话一直在变,大小每次都不一样(见上面「会话记录」) | 不用管;它是唯一一个基本每次都会重发的文件 |
