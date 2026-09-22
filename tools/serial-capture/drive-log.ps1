@@ -9,18 +9,28 @@
     ★ 关键设计:**两个串口都接同一台笔记本**,所以两边的时间戳天然同源,
       不需要事后对齐(手机 App 那条路要手工对齐墙上时间,误差大)。
 
-    VAN 侧  : 我们自己的板子(COM3, 115200) —— 记 IDEN 0x824 的 data[0..2]
-    OBD 侧  : 蓝牙 ELM327(SPP 配对后枚举成 COM 口, 38400) —— 真值源 010D 车速 + 010C 转速
+    VAN 侧  : 我们自己的板子(COM3, 115200) —— 记 IDEN 0x824 与 0x4FC 的**整个负载**
+    OBD 侧  : 蓝牙 ELM327(SPP 配对后枚举成 COM 口, 38400) —— 真值源
+              010D 车速 + 010C 转速 + 0105 水温 + 010F 进气温度
 
   产出两份 CSV(都在脚本旁边):
-    van_drive.csv : t_s, wall_time, spd_count, data0, data1, rpm_count, seq
-                    其中 spd_count = 0x824.data[2](待定标), rpm_count = data[0..1](16 位大端)
+    van_drive.csv : t_s, wall_time, iden, len, cmd, ack, d0..d6, spd, rpm, seq
+                    其中 spd = 0x824.data[2](车速,标度 2.56,已定标)、rpm = data[0..1](16 位大端)
+                    ★ d0..d6 是**原样的 data[0..6]**,没有位移 —— 别把 d0 当命令字节
     obd_drive.csv : t_s, wall_time, pid, ok, raw, value
-                    value 对 010D 是 km/h、对 010C 是 rpm —— **这就是地面真值**
+                    value 对 010D 是 km/h、对 010C 是 rpm、对 0105/010F 是 ℃ —— **地面真值**
+
+  ★ 为什么改成记"整个负载"(2026-09-22 晚):
+    上一版只挑 data[0..2] 三列,于是**事后想问的问题全都问不了** ——
+    最典型的就是「进气温度(010F)在 VAN 上有没有副本」,而上一版
+    `data[3]` / `data[4..5]` 根本没落盘。板子本来就把整帧打全了
+    (`VAN 824 1C 1E 27 ...   # cmd=.. ack=..`,行尾注释那两位不算负载),
+    所以**不用重新刷固件**,只把采集放宽即可 —— 采集脚本永远比改固件便宜,数据先囤着。
 
   用法:
-    # 双路(推荐):VAN + 蓝牙 OBD
-    powershell -ExecutionPolicy Bypass -File drive-log.ps1 -VanPort COM3 -ObdPort COM5 -Minutes 15
+    # 双路(推荐):VAN + 蓝牙 OBD —— 板上 CH340 那个 UART 口是 COM3,
+    #   蓝牙 327 配对后通常枚举成 COM6(2026-09-22 实测就是 COM6;别指到 COM5 那个空口)
+    powershell -ExecutionPolicy Bypass -File drive-log.ps1 -VanPort COM3 -ObdPort COM6 -Minutes 15
 
     # 只记 VAN(蓝牙还没配对时)
     powershell -ExecutionPolicy Bypass -File drive-log.ps1 -VanPort COM3 -Minutes 15
@@ -73,15 +83,31 @@ if ($runSec -le 0) { Write-Host "错误: 时长必须 > 0" -ForegroundColor Red;
 # data[2]    = 车速(单字节,待定标)
 # data[6]    = 帧序号
 function Parse-824([string]$dataHex) {
-  $b = [regex]::Matches($dataHex, '[0-9A-F]{2}') | ForEach-Object { [Convert]::ToInt32($_.Value, 16) }
-  if ($b.Count -lt 7) { return $null }
+  # ★ 2026-09-22 晚:不再只取前 3 个字节、也不再要求 >=7 —— 整帧全收。
+  #   ★★ 索引口径**已按实测数据核对**(不是照抄注释):
+  #     板子那行日志是 `VAN 824 <data[0]> <data[1]> ... <data[len-1]>`,
+  #     **不带 cmd 字节**(cmd/ack 打在行尾注释里),所以 hex 的第 i 个就是 data[i]:
+  #       data[0..1] = 转速 x8 (16 位大端)   ← 旧 CSV 的 data0 列=0x1C 就是它的高字节
+  #       data[2]    = 车速(单字节, x2.56)
+  #       data[3]    = 未知(与车速反相相关)
+  #       data[4..5] = 里程累计量(16 位大端,单调不减)
+  #       data[6]    = 帧序号
+  #   越界的列统一给 -1,免得不同长度的帧把列数撑歪。
+  $b = @([regex]::Matches($dataHex, '[0-9A-F]{2}') | ForEach-Object { [Convert]::ToInt32($_.Value, 16) })
+  if ($b.Count -lt 3) { return $null }
+  $at = { param($i) if ($i -lt $b.Count) { $b[$i] } else { -1 } }
   return [PSCustomObject]@{
-    rpmCount = $b[0] * 256 + $b[1]
-    spdCount = $b[2]
-    data0    = $b[0]
-    data1    = $b[1]
-    d3       = $b[3]
-    seq      = $b[6]
+    datalen  = $b.Count
+    d0       = & $at 0
+    d1       = & $at 1
+    d2       = & $at 2
+    d3       = & $at 3
+    d4       = & $at 4
+    d5       = & $at 5
+    d6       = & $at 6
+    rpmCount = (& $at 0) * 256 + (& $at 1)
+    spdCount = & $at 2
+    seq      = & $at 6
   }
 }
 
@@ -106,6 +132,10 @@ function Parse-Obd([string]$raw, [string]$PidHex) {
   switch ($pid2) {
     '0D' { if ($bytes.Count -ge 1) { return @{ ok = $true; value = [string]$bytes[0]; note = 'km/h' } } }
     '0C' { if ($bytes.Count -ge 2) { return @{ ok = $true; value = [string](($bytes[0] * 256 + $bytes[1]) / 4); note = 'rpm' } } }
+    # ★ 0105(水温)/010F(进气)都是单字节 A,℃ = A - 40。
+    #   实测口径:010F -> '41 0F 6F' = 0x6F-40 = 71℃(冬菇头,偏高属正常)。
+    '05' { if ($bytes.Count -ge 1) { return @{ ok = $true; value = [string]($bytes[0] - 40); note = 'C-coolant' } } }
+    '0F' { if ($bytes.Count -ge 1) { return @{ ok = $true; value = [string]($bytes[0] - 40); note = 'C-intake' } } }
     default { return @{ ok = $true; value = $hex.Substring($i); note = 'raw' } }
   }
   return @{ ok = $false; value = ''; note = '太短' }
@@ -119,7 +149,14 @@ if ($SelfTest) {
   $chk = @(
     @{ n = 'rpmCount = 0x1AF8 = 6904'; got = $f.rpmCount; want = 6904 },
     @{ n = 'spdCount = 0x27 = 39';     got = $f.spdCount; want = 39 },
-    @{ n = 'seq = 0x05 = 5';           got = $f.seq;      want = 5 }
+    @{ n = 'd3 = 0x00(未知列,现在要落盘)'; got = $f.d3; want = 0 },
+    @{ n = 'datalen = 7';              got = $f.datalen; want = 7 },
+    @{ n = 'seq = 0x05 = 5';           got = $f.seq;      want = 5 },
+    # ★ 短帧不能崩、也不能把列撑歪:3 字节帧 -> d3..d6 = -1
+    @{ n = '短帧 d3 = -1(越界哨兵)'; got = (Parse-824 '1C 1E 27').d3; want = -1 },
+    @{ n = '短帧 datalen = 3';        got = (Parse-824 '1C 1E 27').datalen; want = 3 },
+    # ★ 实测口径:旧 CSV 的 data0=0x1C 是**转速高字节**,不是命令字节
+    @{ n = 'data[0] 是转速高字节(0x1C)'; got = $f.d0; want = 0x1A }
   )
   foreach ($c in $chk) {
     $ok = ($c.got -eq $c.want); if (-not $ok) { $fail++ }
@@ -130,6 +167,8 @@ if ($SelfTest) {
     @{ raw = '41 0D 3C';                    pid = '010D'; want = $true;  wv = '60' },
     @{ raw = '410D3C';                      pid = '010D'; want = $true;  wv = '60' },
     @{ raw = '41 0C 1A F8';                 pid = '010C'; want = $true;  wv = '1726' },
+    @{ raw = '41 05 80';                    pid = '0105'; want = $true;  wv = '88' },
+    @{ raw = '41 0F 6F';                    pid = '010F'; want = $true;  wv = '71' },
     @{ raw = 'NO DATA';                     pid = '010D'; want = $false; wv = '' },
     @{ raw = 'UNABLE TO CONNECT';           pid = '010D'; want = $false; wv = '' },
     @{ raw = '';                            pid = '010D'; want = $false; wv = '' }
@@ -212,7 +251,10 @@ if ($obd) { Write-Host ("  OBD -> " + $obdCsv) }
 Write-Host ""
 
 $vanLines = New-Object System.Collections.Generic.List[string]
-$vanLines.Add('t_s,wall_time,spd_count,data0,data1,rpm_count,seq')
+# ★ 列在 2026-09-22 晚放宽(见文件头说明):整帧 + 标识/长度/cmd/ack,824 与 4FC 都进同一张表。
+#   解析时**必须按 iden 过滤**(iden=824 的行 spd/rpm 才有意义)——
+#   忘了过滤、把 4FC 的 d2 当车速读,是最容易犯的错。
+$vanLines.Add('t_s,wall_time,iden,len,cmd,ack,d0,d1,d2,d3,d4,d5,d6,spd,rpm,seq')
 $obdLines = New-Object System.Collections.Generic.List[string]
 $obdLines.Add('t_s,wall_time,pid,ok,raw,value')
 
@@ -220,9 +262,11 @@ $t0 = Get-Date
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $vanBuf = ''
 $obdBuf = ''
-$nextObd = 0.0
 $n824 = 0; $nObd = 0; $lastVanOk = 0.0; $vanStalled = $false
 $lastFlush = 0
+# OBD 轮询状态机(见循环里那段注释):一次只挂一个 PID,响应到/超时才轮到下一个
+$obdPids = @('010D', '010C', '0105', '010F')
+$pidIdx = 0; $curPid = ''; $resp = ''; $pidSentAt = 0.0; $nObdBad = 0
 
 while ($sw.Elapsed.TotalSeconds -lt $runSec) {
   $el = $sw.Elapsed.TotalSeconds
@@ -240,13 +284,24 @@ while ($sw.Elapsed.TotalSeconds -lt $runSec) {
   while ($vanBuf.Contains("`n")) {
     $i = $vanBuf.IndexOf("`n")
     $line = $vanBuf.Substring(0, $i).Trim(); $vanBuf = $vanBuf.Substring($i + 1)
-    if ($line -match 'VAN 824 ((?:[0-9A-F]{2} ?)+)') {
-      $p = Parse-824 $Matches[1]
+    # ★ 宽着收:824(车速/转速)**和** 4FC(灯/门,现成的已知时间标记)都要;
+    #   行尾那两行注释 `# cmd=.. ack=..` 单独摘出来(它们**不是**负载的一部分)。
+    if ($line -match '^VAN ([0-9A-F]{3}) ((?:[0-9A-F]{2} ?)+)') {
+      $idenHex = $Matches[1]
+      $p = Parse-824 $Matches[2]
       if ($p) {
+        $cmd = -1; $ack = -1
+        if ($line -match 'cmd=(\d+)\s+ack=(\d+)') { $cmd = [int]$Matches[1]; $ack = [int]$Matches[2] }
         $n824++
         $lastVanOk = $el      # ★ VAN 活着的时间戳(见下面的失联告警)
-        $vanLines.Add(("{0:N3},{1},{2},{3},{4},{5},{6}" -f $el, (Get-Date -Format 'HH:mm:ss.fff'),
-          $p.spdCount, $p.data0, $p.data1, $p.rpmCount, $p.seq))
+        # 非 824 的帧:把随帧统计列写成空,免得后面误当车速读(列数不变,Csv 依然好用)
+        $isSpd = ($idenHex -eq '824')
+        $spdS = if ($isSpd) { [string]$p.spdCount } else { '' }
+        $rpmS = if ($isSpd) { [string]$p.rpmCount } else { '' }
+        $seqS = if ($isSpd) { [string]$p.seq }      else { '' }
+        $vanLines.Add(("{0:N3},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11},{12},{13},{14},{15}" -f `
+            $el, (Get-Date -Format 'HH:mm:ss.fff'), $idenHex, $p.datalen, $cmd, $ack,
+          $p.d0, $p.d1, $p.d2, $p.d3, $p.d4, $p.d5, $p.d6, $spdS, $rpmS, $seqS))
       }
     }
   }
@@ -254,7 +309,7 @@ while ($sw.Elapsed.TotalSeconds -lt $runSec) {
   # ---- ★ VAN 失联告警(2026-09-22 加) ----
   #   起因:实测板子中途被复位过一次(rst:0x1 POWERON),那之后 VAN 一个字节都没有,
   #   而 OBD 那半照常采样 —— **回来才发现 VAN 全空 = 白跑一趟**。
-  #   这里一旦发现 VAN 连续 10 秒没有 824 帧就**大声告警**(屏幕红字 + CSV 里插标记行),
+  #   这里一旦发现 VAN 连续 10 秒没有帧就**大声告警**(屏幕红字 + CSV 里插标记行),
   #   跑的时候就能看见,不用等回来。
   if ($el -ge 15 -and ($el - $lastVanOk) -ge 10) {
     if (-not $vanStalled) {
@@ -268,28 +323,41 @@ while ($sw.Elapsed.TotalSeconds -lt $runSec) {
     $vanLines.Add(("#VAN_RECOVER,{0:N3},{1}" -f $el, (Get-Date -Format 'HH:mm:ss.fff')))
   }
 
-  # ---- OBD:每 0.4s 轮一次 010D + 010C(车速优先,它才是待定标那个) ----
-  if ($obd -and $el -ge $nextObd) {
-    $nextObd = $el + 0.4
-    foreach ($curPid in @('010D', '010C')) {
-      try { $obd.Write($curPid + "`r") } catch { break }
-      Start-Sleep -Milliseconds 120
-      $resp = ''
-      # ★ 读窗口 700ms -> 2500ms(2026-09-22 实测):700ms 会把"SEARCHING... 之后才来"的
-      #   响应**从中间截断**(实测抓到 'SEARCHING...41 0D 00' 却判成失败),
-      #   于是整轮真值全是空的。K 线 + 克隆板慢,给足 2.5s。
-      $w = [Diagnostics.Stopwatch]::StartNew()
-      while ($w.ElapsedMilliseconds -lt 2500) {
-        try { if ($obd.BytesToRead -gt 0) { $resp += $obd.ReadExisting() } } catch {}
-        if ($resp -match '>') { break }
-        Start-Sleep -Milliseconds 40
+  # ---- OBD:4 个 PID 轮询(010D/010C/0105/010F),**与 VAN 交替**而不是阻塞 ----
+  #   ★ 2026-09-22 晚重构。原版是「发一问 → Start-Sleep 120ms → 死等最多 2500ms」,
+  #     这两三秒里**完全没读 VAN 口**:CH340 那点驱动缓冲在 115200 下一两秒就满,
+  #     多出来的**默默丢掉**。只有 2 个 PID 时还勉强,加到 4 个 PID 后
+  #     (4 × 2.5s = 最多 10s 的盲区)会把 VAN 那半彻底废掉。
+  #   现在:每轮 15ms 的循环里**先读干 VAN**,再看这个状态机 ——
+  #     ① 该发下一个 PID 就发(顺手把上一个 PID 的响应结算掉);
+  #     ② 不等 sleep,等的是**墙上时间**;响应到了或超时才结算。
+  #   超时 2500 → 1200ms:实测这个蓝牙 327 一问一答 200~400ms 就回来了,
+  #   2500ms 只是上一版为「SEARCHING 之后才来」留的冗余;真超时会**计数并报**,
+  #   不再静默降级(上一版就是静默降级骗我们白跑了一趟)。
+  #   ★★ 结算条件必须是「收到 '>' 提示符」或超时,**不能是 BytesToRead>0** ——
+  #     2026-09-22 晚实测踩到:327 会先吐半截 `SEARCHING..`,那**一个字符**就让
+  #     BytesToRead 变正,于是我们在真数据到达前就结算了 ⇒ 209 条里 179 条失败。
+  #     判据换成提示符以后,失败率才是个能看的数。
+  if ($obd) {
+    if ($curPid) {
+      # --- 结算上一次:收全到 '>' 或超时 ---
+      try { if ($obd.BytesToRead -gt 0) { $resp += $obd.ReadExisting() } } catch {}
+      if (($resp -match '>') -or ($el - $pidSentAt -ge 1.2)) {
+        $pp = Parse-Obd $resp $curPid
+        $nObd++
+        if (-not $pp.ok) { $nObdBad++ }
+        $rawShort = ($resp -replace "`r?`n", ' ').Trim()
+        if ($rawShort.Length -gt 60) { $rawShort = $rawShort.Substring(0, 60) }
+        $obdLines.Add(("{0:N3},{1},{2},{3},{4},{5}" -f $el, (Get-Date -Format 'HH:mm:ss.fff'),
+          $curPid, [int]$pp.ok, $rawShort.Replace(',', ';'), $pp.value))
+        $curPid = ''
       }
-      $p = Parse-Obd $resp $curPid
-      $nObd++
-      $rawShort = ($resp -replace "`r?`n", ' ').Trim()
-      if ($rawShort.Length -gt 60) { $rawShort = $rawShort.Substring(0, 60) }
-      $obdLines.Add(("{0:N3},{1},{2},{3},{4},{5}" -f $el, (Get-Date -Format 'HH:mm:ss.fff'),
-        $curPid, [int]$p.ok, $rawShort.Replace(',', ';'), $p.value))
+    } else {                                                            # --- 发下一个 ---
+      $curPid = $obdPids[$pidIdx]
+      $pidIdx = ($pidIdx + 1) % $obdPids.Count
+      $resp = ''
+      $pidSentAt = $el
+      try { $obd.Write($curPid + "`r") } catch { $curPid = '' }
     }
   }
 
@@ -298,7 +366,8 @@ while ($sw.Elapsed.TotalSeconds -lt $runSec) {
     $lastFlush = $sw.ElapsedMilliseconds
     try { [IO.File]::WriteAllLines($vanCsv, $vanLines, (New-Object Text.UTF8Encoding($false))) } catch {}
     if ($obd) { try { [IO.File]::WriteAllLines($obdCsv, $obdLines, (New-Object Text.UTF8Encoding($false))) } catch {} }
-    Write-Host ("  {0:N0}s  VAN 帧 {1}  OBD 采样 {2}" -f $el, $n824, $nObd)
+    Write-Host ("  {0:N0}s  VAN 帧 {1}  OBD 采样 {2}{3}" -f $el, $n824, $nObd,
+      $(if ($obd -and $nObd -gt 0 -and $nObdBad -gt 0) { "  其中失败 $nObdBad" } else { '' }))
   }
   Start-Sleep -Milliseconds 15
 }
@@ -313,6 +382,11 @@ Write-Host ""
 Write-Host ("完成:VAN 824 帧 " + $n824 + " 条 / OBD 采样 " + $nObd + " 条 / 用时 " + [math]::Round($sw.Elapsed.TotalMinutes, 1) + " 分钟") -ForegroundColor Green
 Write-Host ("  " + $vanCsv)
 if ($obd) { Write-Host ("  " + $obdCsv) }
+# ★ 覆盖率要当场看见:VAN 那半的判据是「824 帧/秒」够不够(实车 18/s 量级),
+#   OBD 那半的判据是「失败率」。两条都不合格就别急着分析数据 —— 先修采集。
+Write-Host ""
+Write-Host ("采集质量:VAN 824 帧 " + [math]::Round($n824 / [Math]::Max(1.0, $sw.Elapsed.TotalSeconds), 1) + " 条/秒" +
+            $(if ($obd) { ";OBD 失败 " + $nObdBad + "/" + $nObd + $(if ($nObd -gt 0 -and $nObdBad * 5 -gt $nObd) { "  ← 失败超过 20%,真值不可信!" } else { "" }) } else { "" })) -ForegroundColor $(if ($obd -and $nObd -gt 0 -and $nObdBad * 5 -gt $nObd) { 'Red' } else { 'Gray' })
 if (-not $obd) {
   Write-Host ""
   Write-Host "⚠ 这次只记了 VAN。要定标还得有地面真值:" -ForegroundColor Yellow
