@@ -23,7 +23,7 @@ VAN 协议已经解完并在真实抓包上验过：帧布局（SOF 10 槽 / IDE
 
 还没做完的：有线 ELM327 接到板上之后的实车刷新率（看串口 `SRC-Hz` 行）、VAN 上的转速 / 油量 / 门灯、表仓里的最终屏和结构件。
 
-板子是微雪 ESP32-S3-DualEye-Touch-LCD-1.28（ESP32-S3R8 + 两块 1.28" 240×240 GC9A01A），SPI 驱动已在 `src/dash_display_spi.cpp` 里按官方 wiki 与例程填好（`esp32s3-spi`，`VAN_RX_PIN=18`）。**板上还没接 VAN 收发器**：实车帧是在抓帧盒（裸 S3 + SN65HVD230）上验的，流程是车上抓包 → `tools/van-decode/` 离线解帧 → 用 `tools/serial-capture/replay.py` 贴回板子。板子最后一次上电是 2026-09-18，那次的固件含槽时间 / CRC / 关帧门限三处改动，**不含 2026-09-20 的车速定标**（0.01 → 1.0 还没刷进去）。最终要放进表仓的是 2.8" 级圆屏，几何按 `THEME_DISPLAY_RES` 缩放，选屏硬约束（可视直径 ≤ Ø89、两屏外径 < 95）在 `PURCHASE.md`。
+**验证用的板子**是微雪 ESP32-S3-DualEye-Touch-LCD-1.28（ESP32-S3R8 + 两块 1.28" 240×240 GC9A01A），SPI 驱动已在 `src/dash_display_spi.cpp` 里按官方 wiki 与例程填好（`esp32s3-spi`，`VAN_RX_PIN=18`）。它承担的是**真屏 240 档**的验证（字号随分辨率缩放、图片素材导入、面谱分档），**验证已完成并被接受，该板已于 2026-09-22 退货**（owner 确认；退货原因未说）——**240 档的结论不作废**：`esp32s3-spi` 环境、`ui_theme.h` 的 240 字号档、`tools/theme-editor/spec-240.json` 都继续保留且仍然有效，只是**现在手上没有这块硬件**。当时板上一直没接 VAN 收发器：实车帧是在抓帧盒（裸 S3 + SN65HVD230）上验的，流程是车上抓包 → `tools/van-decode/` 离线解帧 → 用 `tools/serial-capture/replay.py` 贴回板子。这台板子退货前最后一次上电是 2026-09-18，那次的固件含槽时间 / CRC / 关帧门限三处改动，**不含 2026-09-20 的车速定标**（0.01 → 1.0 还没刷进去）。**当前手上的显示硬件只有裸 S3 抓帧盒**（**无屏**，只用于 VAN 抓帧）；要上屏得等 **2.8" 级圆屏**到货，最终显示架构（两块 S3、一板一屏、一条 UART）见 `ARCHITECTURE.md`。最终要放进表仓的是 2.8" 级圆屏，几何按 `THEME_DISPLAY_RES` 缩放，选屏硬约束（可视直径 ≤ Ø89、两屏外径 < 95）在 `PURCHASE.md`。
 
 ## 编译 / 测试 / 刷机
 
@@ -51,7 +51,7 @@ python tools/serial-capture/capture.py COM4         # 抓复位后的完整开�
 | `native` | 宿主机单元测试 |
 | `pcpreview` | 本机渲双屏 BMP |
 | `esp32s3` | S3 桩显示，先把串口 / VAN 跑通 |
-| `esp32s3-spi` | 现在的验证板（真屏，GC9A01A 双 240×240） |
+| `esp32s3-spi` | 240 档验证用的真屏（GC9A01A 双 240×240）—— **该板 2026-09-22 已退货，现在手上没有这块硬件**（环境照旧保留、仍可编译） |
 | `esp32s3-rgb` | RGB 并口骨架（最终大屏备用） |
 | `esp32dev` | 经典 ESP32，4MB，廉价回归 |
 

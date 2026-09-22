@@ -187,12 +187,18 @@ python -m platformio run -e pcpreview -t exec
 
 双击打开，**拖图片进去 → 选用途 → 导出 `image.bin` → 刷到 image 分区**。
 
-## 微雪双屏 240×240（现在实配的那块板）—— 图片从零到屏上
+## 微雪双屏 240×240（验证用的那块板，2026-09-22 已退货）—— 图片从零到屏上
 
 板子是 **ESP32-S3-DualEye-Touch-LCD-1.28**（两块 240×240 圆屏 GC9A01A），
 固件是 `[env:esp32s3-spi]`（`-DTHEME_DISPLAY_RES=240`，分区表 `partitions-s3.csv`）。
 下面的尺寸、字节数、刷写命令都在这台机器上实测过（整套素材还过了**固件自己的解析器**
 的逐字节对账）；最后"屏上对不对"按第 5 节的眼睛验收。**换图只刷 image 分区，不动固件**。
+
+> **★ 2026-09-22（owner 确认）**：这块 **DualEye 板已退货**（240 档验证已完成并被接受），
+> 所以**本节保留供同类板参考** —— 下面的尺寸 / 字节数 / 命令都是当年在这台机器上实测的数，
+> **结论与 240 档都仍然有效**（`spec-240.json`、`ui_theme.h` 的 240 字号档、`[env:esp32s3-spi]` 都还在），
+> 只是**现在手上没有这块硬件**（手上的显示硬件只有无屏的裸 S3 抓帧盒，见仓库根 `README.md`）。
+> **步骤一条没删**：换同类 240 板时照做即可，端口 / 识别到的设备名要按新板重新看。
 
 ### 1. 选目标板：`ESP32-S3 微雪双屏 240×240（1.28"）`（`s3_240`）
 
@@ -278,6 +284,7 @@ node tools/theme-editor/build-image-bin.js --spec tools/theme-editor/spec-240.js
 所以改图迭代的循环是"导出 → 刷 → 重启"，没有编译。
 
 ```powershell
+# ★ 2026-09-22：这块 DualEye 板已退货，本行保留供同类板参考（COM5 是当时那台机器上的口）。
 # ★ 端口改成你板子的那个：这块 DualEye 走**原生 USB**，本机是 COM5（不是 COM3）。
 # ★ 三个路径缺一不可，否则会报 No module named 'esptool' / 'intelhex'：
 #     esptool 本体（PlatformIO 装的）/ stubs（intelhex 等替身包）/ pyserial 所在的 .pio-pylibs
