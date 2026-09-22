@@ -403,8 +403,8 @@ QSPI（TDO 3.95"）→ 对角线 ≈135 mm，圆孔把四角切掉；2.8" 圆 MI
   `Serial` 与 `Serial0` 是同一个 UART0，按 `CDC_ON_BOOT` 判断只写一次。
 
 测试（宿主机，不烧板）：
-- test/test_dashcore/ 为 native 单元测试（Unity，当前 **128 例**：125 通过 / 2 跳过 / 0 失败，
-  其中 2 例需环境变量否则跳过），
+- test/test_dashcore/ 为 native 单元测试（Unity，当前 **注册 132 例 / 130 通过 / 0 失败 /
+  2 跳过**，其中 2 例需环境变量否则跳过；★ **退出码不是判据**，看摘要里有没有 `[FAILED]`），
   覆盖 OBD 文本解析、OBD 状态机（假串口）、VAN 解析与钳制、VAN 线路层
   （4B5B/CRC-15/帧字节契约/空闲不入队）、**VanPhyWire 整链**（边沿→包→车速/转速）、
   15 位 IDEN 与回放语法、主题 JSON 解析与钳制（含数字读数那一段）、
@@ -421,9 +421,10 @@ QSPI（TDO 3.95"）→ 对角线 ≈135 mm，圆孔把四角切掉；2.8" 圆 MI
   图案恒 `0xB9F1`），**最小汉明距离 4**（完整数字与口径见 §8 的 L4）
 - 跑法（纯 ASCII 路径下，env 变量同上）：
     python -m platformio test -e native
-  ★ **进程退出码不是成败判据**：`test_face_stages.cpp` 有一个**既有**崩溃
-  （`panic: index 4 out of bounds for type 'Face[4]'`，进程 **exit 3**）⇒ PlatformIO 会按退出码
-  把环境标成 `ERRORED`，而摘要仍是 **128 例 / 125 通过 / 2 跳过 / 0 失败** ——
+  ★ **进程退出码不是成败判据**：PlatformIO 的 native runner 只看**非零退出码** ——
+  崩溃期间（`test_face_stages.cpp` 的 `panic: index 4 out of bounds for type 'Face[4]'`，
+  进程 **exit 3**）它就把环境标成 `ERRORED`，而**当时**的摘要仍是
+  **注册 128 例 / 125 通过 / 0 失败 / 2 跳过** ——
   看摘要里有没有 `[FAILED]`，别看退出码。两条跑测纪律（新用例**必须注册在 `face_stages`
   之前**、`-v` 才转发测试里的 `printf`、且中文输出会把用例统计打乱）见 `README.md` 的
   「编译 / 测试 / 刷机」。

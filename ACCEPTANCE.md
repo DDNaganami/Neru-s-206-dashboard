@@ -1,8 +1,9 @@
 # 验收
 
 - [x] 工程能编译（esp32dev 已实测；构建路径需纯 ASCII，见 ARCHITECTURE.md）
-- [x] 宿主机单元测试全绿（python -m platformio test -e native，当前 **128 例**：
-      125 通过 / 2 跳过 / 0 失败，其中 2 例需环境变量否则跳过）；网页端另有 5 个 Node 检查脚本
+- [x] 宿主机单元测试全绿（python -m platformio test -e native，当前 **注册 132 例 /
+      130 通过 / 0 失败 / 2 跳过**，其中 2 例需环境变量否则跳过；★ **退出码不是判据**，
+      看摘要里有没有 `[FAILED]` —— 理由见 `ARCHITECTURE.md` 的测试节）；网页端另有 5 个 Node 检查脚本
       （`test-face-stages.js` 429 项、`test-image-blob-build.js` 362 项、
       `test-theme-json.js` 259 项、`test-gauge-geometry.js` 71 项、
       `syntax-check-pages.js` 页面脚本语法）
