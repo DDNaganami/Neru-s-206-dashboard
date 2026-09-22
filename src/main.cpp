@@ -121,13 +121,21 @@ void van_sniff_report(uint32_t now_ms) {
     dash_logf("sniff: 还没解出任何帧\n");
     return;
   }
-  // 找出计数最高的几个 IDEN(桶只有 4096 个,直接扫,不用排序)
-  char buf[220];
-  int n = snprintf(buf, sizeof(buf), "sniff: 共 %lu 帧, IDEN: ",
-                   (unsigned long)g_iden_total);
-  // 每轮挑出当前最大的、且没打过的那一个,最多打 6 个
+  // ★ 全量输出(2026-09-22 改):原来只打 top-6,但那样**答不了"总线上有多少种帧"**
+  //   —— top-6 只覆盖约 84%,剩下的低count IDEN 看不见。现在先报种类数,
+  //   再把**所有**出现过的 IDEN 按计数降序打完(12 位 IDEN 最多 4096 种,
+  //   实车就十几种,每行 220 字节够装 14 个左右,必要时分行)。
+  uint16_t present = 0;
+  for (int i = 0; i < 4096; ++i) if (g_iden_count[i]) ++present;
+  dash_logf("sniff: 共 %lu 帧 / %u 种 IDEN\n",
+            (unsigned long)g_iden_total, (unsigned)present);
+
+  // 选择排序:每轮挑剩下的最大者。实车种类少,直接 O(n²) 扫 4096 也行。
   bool shown[4096] = {};
-  for (int pick = 0; pick < 6; ++pick) {
+  char buf[220];
+  int n = 0;
+  buf[0] = 0;
+  for (uint16_t pick = 0; pick < present; ++pick) {
     uint16_t best = 0;
     bool found = false;
     for (int i = 0; i < 4096; ++i) {
@@ -136,14 +144,18 @@ void van_sniff_report(uint32_t now_ms) {
     }
     if (!found) break;
     shown[best] = true;
-    if (n < (int)sizeof(buf) - 24) {
-      n += snprintf(buf + n, sizeof(buf) - (size_t)n, "%03X=%u ",
-                    (unsigned)best, (unsigned)g_iden_count[best]);
+    // 一行装得下就续着写,装不下就先 flush
+    if (n > (int)sizeof(buf) - 24) {
+      dash_logf("sniff:   %s\n", buf);
+      n = 0; buf[0] = 0;
     }
+    n += snprintf(buf + n, sizeof(buf) - (size_t)n, "%03X=%u ",
+                  (unsigned)best, (unsigned)g_iden_count[best]);
   }
-  dash_logf("%s\n", buf);
+  if (n > 0) dash_logf("sniff:   %s\n", buf);
+
   // 车速帧单独点名 —— 它决定 SRC speed 能不能从 sim 变 van
-  dash_logf("sniff: 车速帧 IDEN 0x824 计数 = %u%s\n",
+  dash_logf("sniff: 车速帧 0x824 = %u%s\n",
             (unsigned)g_iden_count[0x824],
             g_iden_count[0x824] ? "" : "  <-- 流里没有这一帧,所以 speed 只能是 sim");
 }
