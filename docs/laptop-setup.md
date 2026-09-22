@@ -43,10 +43,28 @@ python -m pip install -U platformio
 
 装到 `C:\Users\张九思\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\platformio`。
 
-★ **笔记本没有设 `PLATFORMIO_CORE_DIR`、也没有设 `PYTHONPATH`** ⇒ PlatformIO 用默认的 `%USERPROFILE%\.platformio`。
-桌机那套（`PLATFORMIO_CORE_DIR=C:\Users\Public\206dash\.pio-core` + `PYTHONPATH=...\.pio-pylibs`）是**桌机自己的历史包袱**，笔记本上别抄、也不需要。
+★ **`...\pythoncore-3.14-64\Scripts` 不在 PATH 上** ⇒ 笔记本上**没有** `pio` / `platformio` 这个命令。一律写成 `python -m platformio`。
 
-★ `...\pythoncore-3.14-64\Scripts` **不在 PATH 上** ⇒ 笔记本上**没有** `pio` / `platformio` 这个命令。一律写成 `python -m platformio`。
+★ **§2 原文有误，已更正（2026-09-22 实测）**：原文写"笔记本没有设 `PLATFORMIO_CORE_DIR`、也没有设 `PYTHONPATH`
+⇒ PlatformIO 用默认的 `%USERPROFILE%\.platformio`" —— **这半句不成立**。
+现在环境变量确实都**不存在**（`Get-ChildItem env:` 里没有 `PLATFORMIO_*`；`HKCU:\Environment` 与
+`HKLM:\...\Session Manager\Environment` 里也没设 `PLATFORMIO_CORE_DIR`；PATH 里没有 platformio 相关项），
+但 PlatformIO 实际报出来的 core 目录是：
+
+```
+python -m platformio system info     →  PlatformIO Core Directory   C:\.platformio
+```
+
+而且 `C:\Users\张九思\.platformio` **不存在**；`C:\.platformio` 是**真实目录**（不是 junction/符号链接，
+`Attributes` 里没有 ReparsePoint）。也就是说**核心包目录跟"默认路径"不一致**。
+
+- **后果（重要）**：工具链不在"笔记本自己"的目录里，而在 `C:\.platformio\packages`。
+  找包 / 清缓存 / 排查"缺哪个包"都要去**那里**看，别去翻 `%USERPROFILE%\.platformio`（那儿没有）。
+- **已实测可用**：`esp32s3` 在这个布局下构建 SUCCESS（RAM 37.4% / Flash 70.6%，91.83 s），
+  7 个包齐全且每个都有 `.piopm`。
+- ⚠ `C:\.platformio` 看着是**桌机那套的遗留**（桌机用 `C:\Users\Public\206dash\.pio-core` 是另一处），
+  成因尚未查清（没设环境变量、没有 junction）。**别再写"用默认目录"这种断言**，
+  要用就用 `python -m platformio system info` 现问。
 
 ## 3. 在笔记本上编译 / 测试
 
@@ -101,9 +119,32 @@ SMB 共享那条路是坏的（见 §5），所以是直接从桌机 `scp` 过�
 2. **`native` / `pcpreview` 编不了** —— 见 §3，要装宿主机编译器。
 3. 提权 / GUI 的事（本轮**都没做**，也没猜）：给账号设密码、改 `LimitBlankPasswordUse`、重新注册计划任务、装 MinGW。
 4. 笔记本上没有 `C:\Users\Public\206dash`，也没走"拷桌机 `.pio-core`"那条备用路线 —— 不需要，pip 那条路已经通了。
-5. **PlatformIO 那个 259 MB 的 `toolchain-riscv32-esp` 下载中途断掉了**（`IncompleteRead`，42/216 MB）
-   —— **原因尚未查清**。★ **不要**把它当成和 GitHub 同因：那是 PlatformIO 自己的包下载（§2 那条
-   `python -m pip install -U platformio` 的路线），和 git-over-ssh 那条链是两回事。要接着查就单独查。
+5. ~~**PlatformIO 那个 259 MB 的 `toolchain-riscv32-esp` 下载中途断掉了**（`IncompleteRead`，42/216 MB）~~
+   **✅ 已解决（2026-09-22）** —— 而且**根因不是"断掉"，是"卡在 `Downloading 0%` 完全不动"**。
+   实测症状：连续采样 3 分钟，`.cache\downloads` 字节增量恒为 0、CPU 为 0、日志零新行 —— 不是传输中断，是压根没开始传。
+
+   **解法（可复现，四步）**：
+   1. **走代理**：`HTTP_PROXY`/`HTTPS_PROXY=http://127.0.0.1:7890`（clash）。
+      实测 246.84 MB **110 秒**下完（≈1.2 MB/s）；直连一直 `Downloading 0%`。
+      同一个代理顺带把 `lvgl@9.6.0`、`Unity@2.6.1` 两个依赖库也下好了。
+   2. **核对官方 SHA256**：`toolchain-riscv32-esp-windows_amd64-8.4.0+2021r2-patch5.tar.gz`
+      = `55c5c36593d87021ff19857d99da17a85fe4d708e77333e98ff54a8ac0ed1804`
+      （258,829,021 B；实测逐字节一致）。
+   3. **解压到 `C:\.platformio\packages\toolchain-riscv32-esp`**（包内结构就是 `bin/`、`lib/` 在顶层）。
+   4. ★★ **补 `.piopm`** —— 光解压**没用**！PlatformIO 不靠"目录在不在"判断已装，
+      而是读目录里的 `.piopm`。少了它，重跑构建仍会打印 `Tool Manager: Installing ...` 继续卡下载
+      （实测踩过）。补上之后它立刻认了（列出 `toolchain-riscv32-esp @ 8.4.0+2021r2-patch5`）：
+
+      ```json
+      {"type": "tool", "name": "toolchain-riscv32-esp", "version": "8.4.0+2021r2-patch5",
+       "spec": {"owner": "espressif", "id": 15395, "name": "toolchain-riscv32-esp",
+                "requirements": null, "uri": null}}
+      ```
+
+      `id=15395` 是从 registry 查的：`api.registry.platformio.org/v3/packages/espressif/tool/toolchain-riscv32-esp`。
+
+   **★ 对桌机的提醒**：`C:\206dash-data\tc-s3.zip` 里装的是 `toolchain-xtensa-esp32s3` ——
+   那一个笔记本**本来就有**；真正缺的是 **riscv32**。要打离线包就请打这一个。
 
 ## 6. SSH 通道
 
