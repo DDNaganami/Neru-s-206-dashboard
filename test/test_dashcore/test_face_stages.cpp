@@ -122,7 +122,10 @@ static void test_only_own_gauge_moves_own_screen(void) {
 static void test_driven_screen_differs_within_group(void) {
   const char* groups[2] = {"rpm", "speed"};
   for (int g = 0; g < 2; ++g) {
-    Face seen[4];
+    // ★ 界取**表自己的长度**(kFaceStageCount),不写字面量:每组最多就是表里的行数。
+    //   原来是 `Face seen[4]` —— 每屏 2026-09-18 起是 5 档,第 5 档写 `seen[4]` 越界,
+    //   进程 panic(exit 3),把注册在它**后面**的 4 条用例全挡掉了(2026-09-22 修)。
+    Face seen[kFaceStageCount];
     int n = 0;
     for (uint8_t i = 0; i < kFaceStageCount; ++i) {
       if (strcmp(kFaceStages[i].group, groups[g]) == 0) {
