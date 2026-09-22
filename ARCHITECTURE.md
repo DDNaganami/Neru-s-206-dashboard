@@ -403,19 +403,30 @@ QSPI（TDO 3.95"）→ 对角线 ≈135 mm，圆孔把四角切掉；2.8" 圆 MI
   `Serial` 与 `Serial0` 是同一个 UART0，按 `CDC_ON_BOOT` 判断只写一次。
 
 测试（宿主机，不烧板）：
-- test/test_dashcore/ 为 native 单元测试（Unity，当前 95 例，2 例需环境变量否则跳过），
+- test/test_dashcore/ 为 native 单元测试（Unity，当前 **128 例**：125 通过 / 2 跳过 / 0 失败，
+  其中 2 例需环境变量否则跳过），
   覆盖 OBD 文本解析、OBD 状态机（假串口）、VAN 解析与钳制、VAN 线路层
   （4B5B/CRC-15/帧字节契约/空闲不入队）、**VanPhyWire 整链**（边沿→包→车速/转速）、
   15 位 IDEN 与回放语法、主题 JSON 解析与钳制（含数字读数那一段）、
   图片镜像解析（坏镜像必须被拒 + 头部字节布局钉死 + 角色编号与表情槽位对账）、
   多源回退、表情状态机（**每屏一套独立**：左看转速、右看车速、水温不参与 +
-  瞬态只属于速度表 + 稳态与时间无关）、
-  **表情阶段表**（14 条用例 = 转速 4 + 车速 4 + 水温 3 + 进气 3，
+  超速只属于速度表 + 稳态与时间无关；原"急加速瞬态"那一档 2026-09-18 已删）、
+  **表情阶段表**（16 条用例 = 转速 5 + 车速 5 + 水温 3 + 进气 3，
   逐条断言 face_update 对**左右两屏**的输出；
   检查降级链一定能退到常态；检查每组只变自己那一维、每屏只被自己那一路驱动 ——
   这两条都是用户试用时抓出来的：点"速度·中"时转速表跟着动过）
+- **双板链路 v1 的 CRC-15 检错覆盖**（`test_link_crc_coverage.cpp`，5 条用例）：帧长
+  12..23 B **逐帧长全量枚举** —— 1/2/3 位错与长度 2..15 bit 的突发**未检出都是 0**，
+  16 bit 突发的漏检**只落在被 CRC 覆盖的数据区内**（每帧长 `8(L−2)−15`、合计 **1308**，
+  图案恒 `0xB9F1`），**最小汉明距离 4**（完整数字与口径见 §8 的 L4）
 - 跑法（纯 ASCII 路径下，env 变量同上）：
     python -m platformio test -e native
+  ★ **进程退出码不是成败判据**：`test_face_stages.cpp` 有一个**既有**崩溃
+  （`panic: index 4 out of bounds for type 'Face[4]'`，进程 **exit 3**）⇒ PlatformIO 会按退出码
+  把环境标成 `ERRORED`，而摘要仍是 **128 例 / 125 通过 / 2 跳过 / 0 失败** ——
+  看摘要里有没有 `[FAILED]`，别看退出码。两条跑测纪律（新用例**必须注册在 `face_stages`
+  之前**、`-v` 才转发测试里的 `printf`、且中文输出会把用例统计打乱）见 `README.md` 的
+  「编译 / 测试 / 刷机」。
 - **网页端与固件的一致性**（四套 JS 镜像，Node 里跑）：
     node tools/theme-editor/test-face-stages.js     # 解析 face_stages.h 逐字段对账
     node tools/theme-editor/test-theme-json.js      # 主题文件的 0x 颜色能不能读回来
@@ -440,7 +451,7 @@ QSPI（TDO 3.95"）→ 对角线 ≈135 mm，圆孔把四角切掉；2.8" 圆 MI
     pwsh tools/theme-editor/test-image-roundtrip.ps1
   它用 JS 打一个镜像并生成可读的 manifest，再让固件解析器读同一个文件、
   逐字段逐字节对账（C 侧用例见 test_image_roundtrip.cpp，未设环境变量时自动跳过）。
-  这个核对实测抓出过两个真 bug，都是"编译通过、肉眼看不出来"的类型。
+  这个核对实测抓出过四个真 bug（清单见 `ACCEPTANCE.md`），都是"编译通过、肉眼看不出来"的类型。
 - **像素级验收**（真屏到货前唯一的"证据"）：
     # ASCII 路径下，先造测试图，再带 IMAGE_BLOB 跑预览
     node tools/theme-editor/make-test-blob.js <ascii>\test-image.bin

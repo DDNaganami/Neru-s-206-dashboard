@@ -39,6 +39,8 @@ $env:PLATFORMIO_CORE_DIR='C:\Users\Public\206dash\.pio-core'
 $env:PATH='C:\Users\Public\206dash\.tools\zigbin;' + $env:PATH
 
 python -m platformio test -e native                 # 宿主机单元测试，不烧板
+# 同一套环境也可以直接用装好的 PlatformIO（不必设 PYTHONPATH）：
+#   & 'C:\.platformio\penv\Scripts\platformio.exe' test -e native
 python -m platformio run -e pcpreview -t exec       # 本机渲双屏 BMP，Ctrl+C 后打开 preview/preview.html
 python -m platformio run -e esp32s3-spi -t upload --upload-port COM4
 python tools/serial-capture/capture.py COM4         # 抓复位后的完整开机日志
@@ -57,13 +59,15 @@ python tools/serial-capture/capture.py COM4         # 抓复位后的完整开�
 
 `theme`（16KB @ `0x210000`）与 `image`（经典板 1MB、S3 8MB @ `0x254000`）两个分区是运行时可换的：换配色或换图不用重编固件，esptool 命令由 `tools/theme-editor/` 的两个页面按目标板打印（两份分区表的偏移刻意相同）。
 
-刷机与测试的五条硬约束，都是踩过的：
+刷机与测试的七条硬约束，都是踩过的：
 
 - 刷写和监视**走板上的 UART 口（CH340）**，不是原生 USB 口：后者的复位是软复位请求，会把芯片留在 ROM 下载模式。
 - S3 原生 USB 口开监视器必须 `monitor_rts = 0` / `monitor_dtr = 0`（`platformio.ini` 已写死），否则芯片被按在复位态。
 - 两份分区表 CSV 必须**纯 ASCII**（PlatformIO 用系统编码读它），一个"★"就能让链接成功的构建在最后一步抛 `UnicodeDecodeError`。
 - `.pio-pylibs` 里那份 pyserial 不在系统 python 里，直接敲 `python tools/serial-capture/capture.py` 会 `ModuleNotFoundError: No module named 'serial'`。
 - 表情画布不要超过 320，再大会盖住内圈副弧。
+- **新用例必须注册在 `test/test_dashcore/test_main.cpp` 里 `face_stages` 之前**：`test_face_stages.cpp` 有一个**既有崩溃**（`panic: index 4 out of bounds for type 'Face[4]'`，进程 exit 3），注册在它**之后**的用例根本跑不到 —— 2026-09-22 那 5 条 CRC 用例就是因此前置注册的。
+- 跑 native 测试想看到测试里的输出有两条：① `python -m platformio test -e native` **默认只转发"用例结果行"**，测试里的 `printf` 表格要加 `-v` 才看得见；② `-v` 会把未解析的行 echo 到 GBK 控制台，**测试里的中文 `printf` 会抛 `UnicodeEncodeError` 并把用例统计打乱**（实测那一次 128 例被报成 124 例）⇒ 测试里的输出**一律纯 ASCII**（断言消息里的中文没事，PlatformIO 走 `\xNN` 转义路径），并且因为进程随后会崩、缓冲没人冲，**要显式 `fflush(stdout)`**，否则整段输出会丢。
 
 ## 文档在哪
 
