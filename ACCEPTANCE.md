@@ -1,10 +1,10 @@
 # 验收
 
 - [x] 工程能编译（esp32dev 已实测；构建路径需纯 ASCII，见 ARCHITECTURE.md）
-- [x] 宿主机单元测试全绿（python -m platformio test -e native，当前 **95 例**，
-      2 例需环境变量否则跳过）；网页端另有 5 个 Node 检查脚本
-      （`test-face-stages.js` 230 项、`test-image-blob-build.js` 164 项、
-      `test-theme-json.js` 131 项、`test-gauge-geometry.js` 48 项、
+- [x] 宿主机单元测试全绿（python -m platformio test -e native，当前 **128 例**：
+      125 通过 / 2 跳过 / 0 失败，其中 2 例需环境变量否则跳过）；网页端另有 5 个 Node 检查脚本
+      （`test-face-stages.js` 429 项、`test-image-blob-build.js` 362 项、
+      `test-theme-json.js` 259 项、`test-gauge-geometry.js` 71 项、
       `syntax-check-pages.js` 页面脚本语法）
 - [x] **主题文件的颜色两种写法都能读**：`0xRRGGBB` 与十进制。
       固件解析器一直两种都吃，但编辑器用裸 `JSON.parse` ——
@@ -241,7 +241,7 @@
       → 0°=3 点钟、顺时针；而 canvas 的 `arc()` 约定完全一样，所以不需要任何偏移。
       **错的是两个编辑器的预览**：都写成 `(d - 90)`，把整块表**逆时针转了 90°**
       （起点跑到 4:30、缺口跑到正右方）。已改成不加偏移。
-      两端都有测试：`test-gauge-geometry.js`（26 项，查编辑器源码 + 默认主题几何）
+      两端都有测试：`test-gauge-geometry.js`（71 项，查编辑器源码 + 默认主题几何）
       与 `check-preview-frame.js` 的「表盘朝向」检查（读真实 BMP，断言正下方是缺口、
       正上方有弧）。故意把偏移改回去，前者立刻红两项。
 - [x] **水温弧镜像(从左端起涨)**（用户要求："位置对了，但是涨幅方向反了，得做一下镜像"）
@@ -334,10 +334,10 @@
       这种检查是发现不了的（Text 也是白的）；所以检查里加了**墨迹外接框**。
 - [x] **表情阶段表在固件与网页两端一致**：
       固件侧 `lib/dashcore/face_stages.h` 是唯一事实来源
-      （10 条用例 + 每屏状态集合 + 缺图降级链 + 槽位→角色编号），
+      （16 条用例 + 每屏状态集合 + 缺图降级链 + 槽位→角色编号），
       `test_face_stages.cpp` 逐条断言 `face_update()` 对**左右两屏**的输出；
       网页侧 `tools/theme-editor/face-stages.js` 是它的镜像，
-      `test-face-stages.js` **解析 face_stages.h** 后逐字段对账（230 项断言）。
+      `test-face-stages.js` **解析 face_stages.h** 后逐字段对账（429 项断言）。
       理由：表情导入页的"阶段模拟"是用户刷图前唯一能看到的证据，
       网页那份和固件那份不一致，预览就是在骗人。
 - [x] **每组阶段只变自己那一维**（用户试用时抓出来的规则）：
@@ -357,7 +357,7 @@
       **实测证据**：测试图只含 3 张老表情时，"运动"确实显示成了红区那张
       （左屏 #ffff00），"常态"显示常态那张（#ff0000）—— 降级链按预期工作。
 - [x] **JS 打包器 ↔ 固件解析器的往返一致性测试**（`tools/theme-editor/test-image-roundtrip.ps1`）：
-      Node 侧 164 项断言 + 用 JS 打镜像（覆盖全部在用角色）+ 让
+      Node 侧 362 项断言 + 用 JS 打镜像（覆盖全部在用角色）+ 让
       **固件自己的解析器**逐字段、逐行、逐字节对账。
       这个核对实测抓出四个真 bug，全都是编译期看不出来的：
       索引项名字用了上一轮循环的遗留变量（每项名字都变成最后一张）、
