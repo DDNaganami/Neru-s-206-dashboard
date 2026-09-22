@@ -10,6 +10,24 @@
 #define VAN_RX_PIN 16        // PINOUT.md:RO → GPIO16(UART2 RX 那一路)
 #endif
 
+// ★ 极性翻转开关(2026-09-22 新增,编译期,不改接线就能试)
+//
+// 为什么需要它:VAN 是差分曼彻斯特,收发器的 RO 给的是**单端**电平,而"显性/隐性
+// 对应 0 还是 1"取决于 9004/9005 哪根接进了 A、哪根接进了 B —— PINOUT.md 里
+// 「极性待定」说的就是这件事(ACCEPTANCE.md:169:"它只证明线通、芯片活,
+// 不证明极性/速率/协议 —— 那三样只能上车看")。
+//
+// 极性接反的症状**恰好**是"edges 在正常涨(约 3400/s,与真总线一致)、
+// frames 却始终 0" —— 因为反相后 SOF 图案 0000111101 永远匹配不上,
+// 解码器一帧都起不来,而边沿计数完全不受影响。
+//
+// 用法:编译时加 -DVAN_RX_INVERT=1(见 platformio.ini 的 [env:esp32s3-vaninv])
+//   不改代码、不改接线就能判定到底是极性还是别的问题。
+//   极性确认之后,**改接线**(把 9004/9005 对调)比长期带着这个宏更干净。
+#if !defined(VAN_RX_INVERT)
+#define VAN_RX_INVERT 0
+#endif
+
 // 总线空闲多久算"这一帧结束"。
 //
 // ★ 70µs 是**量出来**的,不是拍的(2026-09-19;工具 tools/van-decode/gap_stats.py,
@@ -49,7 +67,12 @@ void VanPhyGpio::onIsrEdge() {
   //   · esp_timer_get_time() 是 ISR 安全的(直接读硬件计数器),比 micros() 稳;
   //   · 绝不在中断里调用解码器(几百微秒,会丢边沿 —— 见 van_edge_queue.h)。
   const uint32_t t = (uint32_t)esp_timer_get_time();
+#if VAN_RX_INVERT
+  // 极性翻转:见本文件开头 VAN_RX_INVERT 的说明
+  q_.push(t, (uint8_t)(digitalRead(VAN_RX_PIN) ? 0 : 1));
+#else
   q_.push(t, (uint8_t)(digitalRead(VAN_RX_PIN) ? 1 : 0));
+#endif
 }
 
 void VanPhyGpio::begin() {
@@ -62,8 +85,13 @@ void VanPhyGpio::begin() {
   // CHANGE:上升+下降都要。VAN 是差分曼彻斯特(每个位都有跳变),
   // 只抓一个方向会丢一半槽。
   attachInterrupt(digitalPinToInterrupt(VAN_RX_PIN), van_isr_thunk, CHANGE);
-  dash_logf("van phy: gpio 就绪 RX=GPIO%d(RO),空闲 %uus 关帧\n",
-                VAN_RX_PIN, (unsigned)kIdleCloseUs);
+  dash_logf("van phy: gpio 就绪 RX=GPIO%d(RO),空闲 %uus 关帧,极性%s\n",
+                VAN_RX_PIN, (unsigned)kIdleCloseUs,
+#if VAN_RX_INVERT
+                "**已翻转**(VAN_RX_INVERT=1)");
+#else
+                "正常(VAN_RX_INVERT=0)");
+#endif
 }
 
 void VanPhyGpio::tick(uint32_t now_ms) {
