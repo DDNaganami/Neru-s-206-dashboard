@@ -17,17 +17,54 @@
 #include "van_phy.h"
 #include "van_replay.h"
 
-// OBD(K 线)串口:板子和引脚定了以后在这里接上。
-//   例: Serial1.begin(38400, SERIAL_8N1, OBD_RX_PIN, OBD_TX_PIN);
-//       static VehicleDataService g_data(&Serial1);
-// 没接 OBD 时传 nullptr,只跑假数据。
+// ============================================================================
+//  OBD(K 线)串口接线 —— 2026-09-21 启用(此前一直是注释,设备端从不问 OBD)
+// ============================================================================
+//  ELM327 USB(CH340,带开关)的**数据线**接 S3 的 **UART1**:
+//      ELM327 TX  ->  ESP32 GPIO17(OBD_RX_PIN,板子收)
+//      ELM327 RX  <-  ESP32 GPIO18(OBD_TX_PIN,板子发)
+//      GND        <-> GND        两个 USB 只取数据,**别把 5V 对插**
+//  波特率 38400 8N1(ELM327 默认;克隆板个别是 9600,换这个数值得改 kObdBaud)。
 //
-// ★ 换成 &Serial1 之后:串口会多两行,到车上第一眼看的就是它们 ——
-//     obd: ECU 位图 0x… -> 车速(010D)支持/不支持,车速轮询已开/关闭
-//     SRC-Hz rpm=… cool=… intake=… speed=…      ← 每个字段的**实测**刷新率
-//   0100 位图与"要不要给 010D 一个轮询时隙"的关系见 lib/dashcore/obd_source.h;
-//   车速级优先级(Van > Obd > Sim)见 data_service.h。
+//  ★ 怎么核对接线:看开机后串口里那两行 ——
+//      obd: ECU 位图 0x… -> 车速(010D)支持/不支持,车速轮询已开/关闭
+//      SRC-Hz rpm=… cool=… intake=… speed=…    ← 每个字段的**实测**刷新率
+//    位图那行**一直不出现** = 板子发出去的 AT 序列 ELM327 没回 ⇒ 优先把
+//    17/18 对调再试(廉价克隆板的 K 线可能只有单方向能跑,见 PINOUT.md 那条注)。
+//    没有 OBD 硬件时编译加 -DOBD_SERIAL=0,退回 Sim 假数据。
+//
+//  0100 位图与"要不要给 010D 一个轮询时隙"的关系见 lib/dashcore/obd_source.h;
+//  车速级优先级(Van > Obd > Sim)见 data_service.h。
+//  Serial1(UART1)在本仓库其余地方**没有被用过**,不存在串口互抢。
+#if !defined(OBD_SERIAL)
+#define OBD_SERIAL 1
+#endif
+#if !defined(OBD_RX_PIN)
+#define OBD_RX_PIN 17
+#endif
+#if !defined(OBD_TX_PIN)
+#define OBD_TX_PIN 18
+#endif
+static const uint32_t kObdBaud = 38400;
+
 static VehicleDataService g_data(nullptr);
+#if defined(ARDUINO)
+// 挂上 OBD 串口,并把 VehicleDataService 的指针换成 &Serial1。
+// ★ 必须在 setup() 里做,不能在静态初始化期做:Serial1 的 begin() 要等
+//   运行时(时钟/外设都就绪)才安全。
+// 返回该服务,setup() 里这样用:`g_data = attachObdSerial();`
+VehicleDataService& attachObdSerial() {
+#if OBD_SERIAL
+  Serial1.begin(kObdBaud, SERIAL_8N1, OBD_RX_PIN, OBD_TX_PIN);
+  g_data = VehicleDataService(&Serial1);
+  dash_logf("obd: UART1 已挂上 ELM327, RX=GPIO%d TX=GPIO%d @%u 8N1\n",
+            (int)OBD_RX_PIN, (int)OBD_TX_PIN, (unsigned)kObdBaud);
+#else
+  dash_logf("obd: 未启用(-DOBD_SERIAL=0),只跑 Sim 假数据\n");
+#endif
+  return g_data;
+}
+#endif  // ARDUINO
 
 // VAN 物理层:默认是桩(无硬件)。
 //   ★ 收发器(SN65HVD230)到货后:编译时加 -DVAN_PHY_GPIO=1
@@ -236,6 +273,9 @@ void setup() {
   }
 #endif
 
+  // ★ OBD 串口要在 g_data.begin() **之前**接上:ObdSource::begin() 会立刻
+  //   发第一条 AT,那时 UART1 必须已经 begin 过(见文件头 OBD 那一节)。
+  g_data = attachObdSerial();
   g_data.begin();
   BOOT_STAGE(2);
   // 物理层 → 打印层 → 数据源。打印层只旁观,不影响数据流
