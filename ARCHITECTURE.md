@@ -80,7 +80,8 @@
   文本解析在 obd_protocol.h/.cpp（纯函数，**表驱动**，加 PID 只动那张表）；
   坏帧值域钳制（转速≤9000、温度 -40..215；车速单字节不用钳）
 - van_source：VAN 帧解析。车速/转速帧 IDEN 0x824（BSI→仪表，7 字节）：
-  data[0..1]=转速×8，data[2..3]=车速×100 km/h（大端）
+  data[0..1]=转速×8，data[2]=车速（**单字节**，1 计数 = 1 km/h，kSpeedScale=1.0；
+  绝对刻度尚无地面真值，按表盘脸的档位复核），data[3] 含义未知
   依据 morcibacsi/psa_van_bus_packet_descriptions（307 实测、206 适用，实车需验证）
   坏帧值域钳制（车速≤300、转速≤9000）
 - van_phy.h：VAN 物理层接缝（接口 + VanPhyStub）。当前 main 用桩占位；
