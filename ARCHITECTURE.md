@@ -421,13 +421,21 @@ QSPI（TDO 3.95"）→ 对角线 ≈135 mm，圆孔把四角切掉；2.8" 圆 MI
   图案恒 `0xB9F1`），**最小汉明距离 4**（完整数字与口径见 §8 的 L4）
 - 跑法（纯 ASCII 路径下，env 变量同上）：
     python -m platformio test -e native
-  ★ **进程退出码不是成败判据**：PlatformIO 的 native runner 只看**非零退出码** ——
-  崩溃期间（`test_face_stages.cpp` 的 `panic: index 4 out of bounds for type 'Face[4]'`，
-  进程 **exit 3**）它就把环境标成 `ERRORED`，而**当时**的摘要仍是
-  **注册 128 例 / 125 通过 / 0 失败 / 2 跳过** ——
-  看摘要里有没有 `[FAILED]`，别看退出码。两条跑测纪律（新用例**必须注册在 `face_stages`
-  之前**、`-v` 才转发测试里的 `printf`、且中文输出会把用例统计打乱）见 `README.md` 的
-  「编译 / 测试 / 刷机」。
+  ★ **进程退出码不是成败判据**：PlatformIO 的 native runner
+  （`test/runners/readers/native.py`）**只看非零退出码**，而退出码本身还有个坑 ——
+  Unity 拿"**失败条数**"当退出码，**2 在 Windows 上正好撞上 `signal.Signals(2)` = SIGINT**，
+  于是"2 条用例红了"会被报成 `Program received signal SIGINT (Interrupt)`、环境标成
+  `ERRORED`（修前那个越界崩溃是 exit 3，3 不是 Windows 信号，才报 `Program errored with
+  3 code`）。**⇒ `ERRORED` 不等于"崩了"**：有没有红一律看摘要里的 `[FAILED]` 行与
+  **注册 / 通过 / 失败 / 跳过**四项。
+  ★ **那个越界崩溃已经修了**：`test_face_stages.cpp` 的 `panic: index 4 out of bounds for
+  type 'Face[4]'`（进程 exit 3）由 `e97b13a` 修掉 —— `Face seen[4]` 的容量改成由本头文件的
+  `kFaceStageCount` 推导（**不再写死档数**），断言一条没动；崩溃消失后注册在它后面的 4 条
+  用例第一次真的跑起来，当场红了 2 条同族的"写死 4"，再由 `a75b94a` 修掉。现状：
+  `132 Tests 0 Failures 2 Ignored`、环境 `PASSED`、退出码 0。
+  ⇒ "新用例**必须注册在 `face_stages` 之前**"这条纪律**已无必要**（来龙去脉见
+  `README.md` 的「编译 / 测试 / 刷机」；`-v` 才转发 `printf`、中文输出会打乱用例统计
+  这两条**仍然有效**）。
 - **网页端与固件的一致性**（四套 JS 镜像，Node 里跑）：
     node tools/theme-editor/test-face-stages.js     # 解析 face_stages.h 逐字段对账
     node tools/theme-editor/test-theme-json.js      # 主题文件的 0x 颜色能不能读回来

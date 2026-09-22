@@ -59,15 +59,16 @@ python tools/serial-capture/capture.py COM4         # 抓复位后的完整开�
 
 `theme`（16KB @ `0x210000`）与 `image`（经典板 1MB、S3 8MB @ `0x254000`）两个分区是运行时可换的：换配色或换图不用重编固件，esptool 命令由 `tools/theme-editor/` 的两个页面按目标板打印（两份分区表的偏移刻意相同）。
 
-刷机与测试的七条硬约束，都是踩过的：
+刷机与测试的八条硬约束，都是踩过的：
 
 - 刷写和监视**走板上的 UART 口（CH340）**，不是原生 USB 口：后者的复位是软复位请求，会把芯片留在 ROM 下载模式。
 - S3 原生 USB 口开监视器必须 `monitor_rts = 0` / `monitor_dtr = 0`（`platformio.ini` 已写死），否则芯片被按在复位态。
 - 两份分区表 CSV 必须**纯 ASCII**（PlatformIO 用系统编码读它），一个"★"就能让链接成功的构建在最后一步抛 `UnicodeDecodeError`。
 - `.pio-pylibs` 里那份 pyserial 不在系统 python 里，直接敲 `python tools/serial-capture/capture.py` 会 `ModuleNotFoundError: No module named 'serial'`。
 - 表情画布不要超过 320，再大会盖住内圈副弧。
-- **新用例必须注册在 `test/test_dashcore/test_main.cpp` 里 `face_stages` 之前**：`test_face_stages.cpp` 有一个**既有崩溃**（`panic: index 4 out of bounds for type 'Face[4]'`，进程 exit 3），注册在它**之后**的用例根本跑不到 —— 2026-09-22 那 5 条 CRC 用例就是因此前置注册的。
-- 跑 native 测试想看到测试里的输出有两条：① `python -m platformio test -e native` **默认只转发"用例结果行"**，测试里的 `printf` 表格要加 `-v` 才看得见；② `-v` 会把未解析的行 echo 到 GBK 控制台，**测试里的中文 `printf` 会抛 `UnicodeEncodeError` 并把用例统计打乱**（实测那一次 128 例被报成 124 例）⇒ 测试里的输出**一律纯 ASCII**（断言消息里的中文没事，PlatformIO 走 `\xNN` 转义路径），并且因为进程随后会崩、缓冲没人冲，**要显式 `fflush(stdout)`**，否则整段输出会丢。
+- **（历史注记 —— 这条纪律已经不需要了）新用例曾经必须注册在 `test/test_dashcore/test_main.cpp` 里 `face_stages` 之前**：`test_face_stages.cpp` 当年有一个越界崩溃（`panic: index 4 out of bounds for type 'Face[4]'`，进程 exit 3），注册在它**之后**的用例根本跑不到 —— 2026-09-22 那 5 条 CRC 用例就是因此前置注册的。**该崩溃已在 `e97b13a` 修掉**（`Face seen[4]` 的容量改成由 `face_stages.h` 的 `kFaceStageCount` 推导，不再写死档数），随后两条同族"写死 4"的断言也在 `a75b94a` 修掉 ⇒ 现在 132 条用例全部跑得到，**注册顺序不再是约束**。来龙去脉留在这里，免得以后有人照旧文把新用例白往前塞。
+- 跑 native 测试想看到测试里的输出有两条：① `python -m platformio test -e native` **默认只转发"用例结果行"**，测试里的 `printf` 表格要加 `-v` 才看得见；② `-v` 会把未解析的行 echo 到 GBK 控制台，**测试里的中文 `printf` 会抛 `UnicodeEncodeError` 并把用例统计打乱**（实测那一次 128 例被报成 124 例）⇒ 测试里的输出**一律纯 ASCII**（断言消息里的中文没事，PlatformIO 走 `\xNN` 转义路径），并且**要显式 `fflush(stdout)`**（当年是因为进程随后会崩、缓冲没人冲；那个崩溃已在 `e97b13a` 修掉，但 `fflush` 照旧保留 —— 用例一红进程也可能提前退出，同样会丢缓冲），否则整段输出会丢。
+- 直接跑 native 测试二进制（`.pio\build\native\program.exe`）时 **CWD 必须是项目根**：4 条 `test_real_capture_*` 用例按相对路径读 `tools/van-decode/sample-*.csv`，从 `.pio\build\native` 里直接跑会读不到、**假红 4 条**（`platformio test` 自己会把 CWD 设成项目根，所以只有手动跑二进制时才踩得到）。
 
 ## 文档在哪
 

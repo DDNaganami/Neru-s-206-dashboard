@@ -1502,6 +1502,26 @@ PSRAM 会慢一点，但 40MHz 的 SPI 本来就不是瓶颈）。
       摘要里 `[FAILED]` = 0，PlatformIO 只是按进程退出码把环境标成 `ERRORED`；
       **进程退出码不能当判据**。两条跑测纪律（新用例注册顺序、`-v` 与 printf/`fflush`）
       已写进 `README.md` 的「编译 / 测试 / 刷机」。
+      ★ **同日更新（2026-09-22）：那个"既有崩溃"已经修掉了** ——
+      · `e97b13a`：`test_driven_screen_differs_within_group` 里的 `Face seen[4]` 改成容量由
+        `face_stages.h` 的 `kFaceStageCount` 推导（**不再写死档数**），断言一条没动。
+        崩溃消失 ⇒ 注册在它后面的 4 条用例**第一次真的跑起来**，当场红了 2 条（见下），
+        `exit 3` 也随之消失（退出码变成 Unity 的失败条数 2）。
+      · `a75b94a`：那 2 条红是**同族的"写死 4"**，都改成以 `face_stages.h` 为唯一依据 ——
+        `test_fallback_chain` 的 `k < 4` / `a < 4` / `b < 4`（只扫前 4 列，Idle 落在第 5 列的
+        Sport / Redline / High 三行永远扫不到）改成按行宽推；`test_screen_state_sets` 的
+        `4`（`kFaceStatesPerScreen` 早就是 5）改成"声明值 ↔ 左右数组真实长度"。两条转绿，
+        而且覆盖面比原来更全（降级链第 5 列以前从没被查过）。
+      · **现状实测**：Unity 自报 **132 Tests / 0 Failures / 2 Ignored**（进程退出码 **0**）、
+        PlatformIO `132 test cases: 2 skipped, 130 succeeded`、环境 **`[PASSED]`** ⇒
+        注册 / 通过 / 失败 / 跳过 = **132 / 130 / 0 / 2**。
+      · ⇒ "**新用例必须注册在 `face_stages` 之前**"这条纪律**已无必要**（保留为来龙去脉，
+        见 `README.md`）；`-v` 才转发 `printf`、中文输出会打乱用例统计这两条**仍然有效**。
+      · 顺带把 `ERRORED` 的含义写清（`ARCHITECTURE.md` 测试节）：PlatformIO 的 native runner
+        只看**非零退出码**，而退出码还有个坑 —— Unity 用"**失败条数**"当退出码，**2 在
+        Windows 上正好撞上 `signal.Signals(2)` = SIGINT** ⇒ "2 条用例红了"会被报成
+        `Program received signal SIGINT (Interrupt)`、环境标 `ERRORED`（修前的 exit 3 不是
+        Windows 信号，才报 `Program errored with 3 code`）。**`ERRORED` ≠ 崩了**。
 
 - [x] **★ 链路协议 v1 定案：`ARCHITECTURE.md` §8 的 L8~L13 六条裁决完毕（2026-09-22）**
       **来源：owner 裁决，2026-09-22**（六条照写、**编号保留** —— §1~§7 里引用 L8~L13 的
