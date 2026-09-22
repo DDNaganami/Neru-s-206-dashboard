@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // 真实抓包回归:把逻辑分析仪导出的**真边沿**喂进固件用的解码链
 // (van::BitDecoder —— 也就是 VanPhyWire / 实车固件里那个解码器)
 //
@@ -437,7 +437,7 @@ static void test_speed_field_constant_pinned_on_real_capture(void) {
   snprintf(msg, sizeof(msg),
            "车速常量钉真实抓包(sample-speed-824.csv): 边沿 %d · frames=%u "
            "fcs_ok=%u 回调包=%d(其中 0x824 有 %d 个)· 末值 speed=%.4f rpm=%.4f"
-           "(黄金值: 全部 33 帧 / 0x824 12 帧 / speed=14.0 / rpm=2744.5)",
+           "(黄金值: 全部 33 帧 / 0x824 12 帧 / speed=35.84 / rpm=2744.5)",
            rows, (unsigned)st.frames, (unsigned)st.frames_fcs_ok, rec.count,
            rec.iden824, src.speedKmh(), src.rpm());
 
@@ -447,15 +447,16 @@ static void test_speed_field_constant_pinned_on_real_capture(void) {
   TEST_ASSERT_EQUAL_UINT32_MESSAGE(33u, st.frames_fcs_ok, msg);
   TEST_ASSERT_EQUAL_INT_MESSAGE(33, rec.count, msg);
   TEST_ASSERT_EQUAL_INT_MESSAGE(12, rec.iden824, msg);
-  // ★ 车速:单字节 data[2],1 计数 = 1 km/h。末帧 data[2]=0x0E ⇒ 14.0
+  // ★ 车速:单字节 data[2],1 计数 = **2.56 km/h**(2026-09-22 实测定标)。
+  //   末帧 data[2]=0x0E(14) ⇒ 14 × 2.56 = 35.84
   TEST_ASSERT_TRUE_MESSAGE(src.hasSpeed(), msg);
-  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(14.0f, src.speedKmh(), msg);
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(35.84f, src.speedKmh(), msg);
   // ★ 转速:16 位大端 data[0..1] × 0.125。末帧 0x55C4=21956 ⇒ 2744.5
   TEST_ASSERT_TRUE_MESSAGE(src.hasRpm(), msg);
   TEST_ASSERT_EQUAL_FLOAT_MESSAGE(2744.5f, src.rpm(), msg);
   // 常量本身也钉一份(改常量就会在这里变红,不用等到算错值)
   TEST_ASSERT_EQUAL_UINT8_MESSAGE(2u, VanSource::kSpeedOffset, msg);
-  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(1.0f, VanSource::kSpeedScale, msg);
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(2.56f, VanSource::kSpeedScale, msg);
   TEST_ASSERT_EQUAL_UINT8_MESSAGE(0u, VanSource::kRpmOffset, msg);
   TEST_ASSERT_EQUAL_FLOAT_MESSAGE(0.125f, VanSource::kRpmScale, msg);
 }

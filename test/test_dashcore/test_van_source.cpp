@@ -13,11 +13,13 @@ void test_van_speed_and_rpm(void) {
   VanSource van;
   VanPacket p = makePacket(0x824, 7, 1000);
   p.data[0] = 0x18; p.data[1] = 0xF8;  // 6392 → 799 rpm
-  p.data[2] = 0x64;                    // 100 → 100 km/h(★ 车速是**单字节**,1 计数 = 1 km/h)
+  p.data[2] = 0x64;                    // 100 × 2.56 = 256.0 km/h
+                                       // ★ 1 计数 = 2.56 km/h —— 2026-09-22 用蓝牙 ELM327 的
+                                       //   010D 当真值实测定标得到(此前误以为 1.0)
   van.onPacket(p);
 
   TEST_ASSERT_TRUE(van.hasSpeed());
-  TEST_ASSERT_EQUAL_FLOAT(100.0f, van.speedKmh());
+  TEST_ASSERT_EQUAL_FLOAT(256.0f, van.speedKmh());
   TEST_ASSERT_TRUE(van.hasRpm());
   TEST_ASSERT_EQUAL_FLOAT(799.0f, van.rpm());
   TEST_ASSERT_EQUAL_UINT32(1000, van.lastUpdateMs());
@@ -33,8 +35,9 @@ void test_van_speed_is_single_byte(void) {
   pb.data[3] = 0xFF;                   // 只改 data[3]
   a.onPacket(pa);
   b.onPacket(pb);
-  TEST_ASSERT_EQUAL_FLOAT(13.0f, a.speedKmh());
-  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(13.0f, b.speedKmh(),
+  // 0x0D(13) × 2.56 = 33.28 km/h —— 两个对象都必须得到**同一个**结果
+  TEST_ASSERT_EQUAL_FLOAT(33.28f, a.speedKmh());
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(33.28f, b.speedKmh(),
                                   "data[3] 不该影响车速 —— 车速是单字节 data[2]");
 }
 
@@ -42,12 +45,12 @@ void test_van_clamp_bad_speed(void) {
   VanSource van;
   VanPacket p = makePacket(0x824, 7, 2000);
   p.data[0] = 0x18; p.data[1] = 0xF8;  // 合法转速应照常通过
-  p.data[2] = 0x64;                    // 100 km/h 合法
+  p.data[2] = 0x64;                    // 100 × 2.56 = 256.0 km/h,合法(< 300)
   van.onPacket(p);
   TEST_ASSERT_TRUE(van.hasSpeed());
-  TEST_ASSERT_EQUAL_FLOAT(100.0f, van.speedKmh());
+  TEST_ASSERT_EQUAL_FLOAT(256.0f, van.speedKmh());
 
-  // 值域钳制仍要挡得住坏帧:默认 scale=1.0 时 8 位字段最大 255 km/h(< 300),
+  // 值域钳制仍要挡得住坏帧:默认 scale=2.56 时 8 位字段最大 255×2.56 = 652.8 km/h,
   // 所以用 configureSpeedFrame 把标度放大到 2.0,让 0xFF(510 km/h)越界。
   VanSource van2;
   van2.configureSpeedFrame(VanSource::kSpeedIden, VanSource::kSpeedOffset, 2.0f);

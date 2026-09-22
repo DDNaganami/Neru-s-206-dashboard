@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <stdint.h>
 
 // VAN 总线数据源:接收原始帧,提取车速与转速。
@@ -7,7 +7,7 @@
 //   ACCEPTANCE.md 文末那条记录与 tools/van-decode/):
 //     IDEN 0x824 / CMD 0x8,BSI → Dashboard,7 个数据字节:
 //       data[0..1] = 转速 x8(大端,16 位)  例 1C A2 = 7330 → 7330/8 = 916.25 rpm
-//       data[2]    = 车速,单位 km/h(1 计数 = 1 km/h;**单字节**)
+//       data[2]    = 车速,**单字节**;**1 计数 = 2.56 km/h**(2026-09-22 实测定标,见 .cpp)
 //       data[3]    = 未知(与 data[2] 反相相关,疑似同量的低分辨率副本)
 //       data[4..5] = 里程/位移累计量(16 位大端,**单调不减**,只在行驶时增长)
 //       data[6]    = 帧序号(滚动计数)
@@ -25,7 +25,7 @@
 //       ∫data[2]dt 与 ΔS 的分段比值恒定在 0.037 m/count(10 段一致)
 //       ⇒ 它是**速率**而不是累计量,且两条独立积分量互相印证。
 //       |Δdata[2]|/Δt 的 p99 = 19.9 km/h/s < 21.6 km/h/s(乘用车加速度上限)。
-//   ★ 仍未定:1 计数是否**恰好** 1 km/h 没有地面真值(BT 蓝牙日志那两份的
+//   ★★ 已定(2026-09-22):1 计数 = **2.56 km/h**,用蓝牙 ELM327 的 PID 010D 当真值实测回归得到
 //     "车速"列全是 0 —— 车没动,见 ACCEPTANCE.md)。2026-09-20 用户决定:
 //     先按 1.0 上屏,用**表盘脸的档位**复核(30/65/95/130 —— 若真值差一倍,
 //     "市区"脸会等到真车速约 60 才出现);不再要求 20/40/60/80 定速跑,
@@ -67,14 +67,14 @@ public:
 
   // 实车帧格式与默认常量不符时,先用这个在运行时改,确认后写回常量
   // ★ 语义见 onPacket():speed_offset 指向**单字节**车速,scale 只做乘法
-  //   (默认 1.0f ⇒ 1 计数 = 1 km/h)。
+  //   (默认 2.56f ⇒ 1 计数 = 2.56 km/h,见 .cpp 的实测定标说明)。
   void configureSpeedFrame(uint16_t iden, uint8_t speed_offset, float speed_scale);
 
   static void dumpRaw(const VanPacket& pkt);  // 嗅探模式
 
   static const uint16_t kSpeedIden   = 0x824;
   static const uint8_t  kSpeedOffset = 2;       // data[2],**单字节** km/h
-  static const float    kSpeedScale;            // 1.0(1 计数 = 1 km/h)
+  static const float    kSpeedScale;            // 2.56(1 计数 = 2.56 km/h,实测)
   static const uint8_t  kRpmOffset   = 0;       // data[0..1],16 位大端
   static const float    kRpmScale;              // 0.125(÷8)
 

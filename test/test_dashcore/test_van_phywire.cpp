@@ -196,7 +196,7 @@ static void test_chain_preserves_iden_bits(void) {
 static void test_chain_feeds_van_source(void) {
   Frame f;
   f.ident = 0x824; f.cmd = 0xC; f.len = 7;
-  // 18 F8 → 799 rpm;车速 = data[2] = 0x64 = 100 km/h(★ 单字节,1 计数 = 1 km/h)
+  // 18 F8 → 799 rpm;车速 = data[2] = 0x64 = 100 × 2.56 = 256 km/h(★ 单字节,实测定标)
   const uint8_t d[7] = {0x18, 0xF8, 0x64, 0x00, 0x00, 0x00, 0x00};
   memcpy(f.data, d, 7);
 
@@ -210,7 +210,7 @@ static void test_chain_feeds_van_source(void) {
   TEST_ASSERT_EQUAL_INT(1, sink.count);
   TEST_ASSERT_TRUE(src.hasSpeed());
   TEST_ASSERT_TRUE(src.hasRpm());
-  TEST_ASSERT_EQUAL_FLOAT(100.0f, src.speedKmh());
+  TEST_ASSERT_EQUAL_FLOAT(256.0f, src.speedKmh());
   TEST_ASSERT_EQUAL_FLOAT(799.0f, src.rpm());
 }
 
