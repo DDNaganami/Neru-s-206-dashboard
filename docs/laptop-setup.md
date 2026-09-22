@@ -343,3 +343,63 @@ Unregister-ScheduledTask -TaskName 206dash-gitfetch-once -Confirm:$false   # 跑
   （见 `tools/sync/README.md` 的「仓库那步会先看一眼笔记本有没有本地改动」）。那是**预期行为**，
   **不要**为了让它过去而 `stash` / `checkout` 这处改动。
 
+## 11. 笔记本侧提交必须带来源标记（2026-09-21 owner 定的规矩）
+
+**问题**：两台机器的 git 身份**完全相同** —— 都是 `DDNaganami <scarm@126.com>`
+（`user.name`/`user.email` 本地与全局一致）。所以光看 `git log` **分不出哪条提交是笔记本改的**，
+桌机那边的 DSH 没法据此做代码审核。
+
+**约定**：笔记本这边产生的**每一条**提交，提交信息末尾必须带这两行 trailer：
+
+```
+Machine: MikamoNeru
+Role: laptop-agent
+```
+
+- `Machine` 的值**钉死成 `MikamoNeru`**（规范大小写）。
+  ★ 不要用 `$env:COMPUTERNAME` —— 它给的是全大写 `MIKAMONERU`，
+  大小写不一致会让桌机的 `--grep='^Machine: MikamoNeru'` **漏掉**。
+- 只用**纯 ASCII**（已核对：`DDNaganami`、`MikamoNeru` 都是 ASCII），
+  保证 `--grep` 在两边都能稳定匹配。
+- 不动 `user.name` / `user.email` —— 仓库里已有的历史都署那一个身份，
+  改身份会把"谁写的"这条线搅乱。**只用 trailer 区分来源。**
+
+### 桌机侧怎么挑出笔记本的改动
+
+```powershell
+# 只看笔记本的提交
+git log --format='%h %s' --grep='^Machine: MikamoNeru'
+
+# 反选：只看桌机自己的提交
+git log --format='%h %s' --invert-grep --grep='^Machine: '
+
+# 逐条看某次笔记本提交的 trailer
+git show --format=%B -s e258412 | git interpret-trailers --parse
+```
+
+### 落地方式：用 `tools\sync\lt-commit.ps1`，别直接 `git commit -m`
+
+★ **`git config trailer.<token>.key/value` 靠不住**：它**只对走编辑器的提交
+（`git commit -e`）和显式 `git commit --trailer` 生效**，对最常见的
+`git commit -m "..."` **完全不生效** —— 实测设好配置再 `-m` 提交，
+提交信息里一个 trailer 都没有。所以标记必须由脚本落地。
+
+```powershell
+# 提交已暂存的改动（标记自动加）
+powershell -ExecutionPolicy Bypass -File tools\sync\lt-commit.ps1 -Message "fix(obd): …"
+
+powershell -ExecutionPolicy Bypass -File tools\sync\lt-commit.ps1 -Message "…" -All      # 连暂存一起
+powershell -ExecutionPolicy Bypass -File tools\sync\lt-commit.ps1 -Message "…" -Path src\main.cpp
+powershell -ExecutionPolicy Bypass -File tools\sync\lt-commit.ps1 -Message "…" -WhatIf   # 干跑
+```
+
+脚本会在提交后**回读校验** trailer 是否真的进去了，没进去就报错退出（不会静默漏标）。
+
+### 写这个脚本时踩到的两个坑（改脚本的人必读）
+
+1. **变量不能叫 `$args`** —— 那是 PowerShell 的保留自动变量，赋值会失败/行为未定义。
+   改用 `$itArgs` 之类。
+2. **`--trailer` 的值必须自己带引号**：PS 5.1 转发原生命令参数时，会把不带引号的
+   `"Role: laptop-agent"` 按空格**拆成两个参数** ⇒ trailer 被**悄悄丢掉**
+   （实测：只加进了 `Machine`，`Role` 不见了，而且不报错）。
+   写法是 `--trailer "`"$k: $v`""`。
