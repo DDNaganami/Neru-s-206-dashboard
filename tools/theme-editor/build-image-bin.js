@@ -214,8 +214,15 @@ function parseRawSpec(s) {
 // 配方 JSON → build() 的 items。
 // ★ 单独一个函数是为了能被测试直接调(不然只能靠 spawn 一个 node 子进程,
 //   那在 CI/受限环境下很容易变成"测不了就不测")。
+//
+// ★ 2026-09-24 新增:顺手把每一项与**素材规格**对一遍,把问题挂到
+//   `items.assetWarnings`（**不抛错** —— 抛错会把"我就要一张大图"的人挡在门外）。
+//   规格的权威在 asset-spec.js（网页与文档引用同一份），这里只是让**命令行**
+//   也有同样的提醒。`main()` 会把它们打出来。
 function specItems(spec) {
   const items = [];
+  // 角色名 → asset-spec 的 id（两边名字本来就一样，走一次查表确认，
+  // 对不上就不检查那一条 —— 不猜）
   for (const im of spec.images || []) {
     const w = im.w | 0, h = im.h | 0;
     const rgba = makePattern(im.pattern || "ramp", w, h);
@@ -237,6 +244,40 @@ function specItems(spec) {
       w, h, cf, stridePad: pad,
       role: roleId(im.role), order: im.order | 0, pixels
     });
+  }
+
+  // ★ 规格对账（见上面那段说明）。用运行时的 require 是为了：网页里没有
+  //   require，而本文件同时被浏览器与 Node 使用 —— 所以放在**函数里**而不是
+  //   顶层（顶层 require 会让浏览器那一侧直接 ReferenceError）。
+  if (typeof require === "function") {
+    const warnings = [];
+    try {
+      const AS = require("./asset-spec.js");
+      const target = spec.target || IB.DEFAULT_TARGET;
+      for (const it of items) {
+        const r = AS.roleByNumber(it.role);
+        if (!r) continue;                     // 自己算出来的编号，查不到就不猜
+        const box = AS.slotBox(r.id, target);
+        const maxSide = box.max;
+        if (it.w > maxSide || it.h > maxSide) {
+          warnings.push("「" + it.name + "」" + it.w + "×" + it.h + " 超过「" + r.label +
+                        "」在 " + AS.tierOf(target).label + " 上的上限 " + maxSide +
+                        " ⇒ 会盖住内圈副弧（不报错，只是表盘缺一块）");
+        }
+        const needA8 = (box.alpha === "required");
+        if (needA8 && !(it.cf === IB.CF.RGB565A8)) {
+          warnings.push("「" + it.name + "」是表情却没有用 rgb565a8 ⇒ 屏上会是不透明方块，"
+                        + "把底下的弧线盖掉一块（加上 \"cf\":\"rgb565a8\" 即可）");
+        }
+        if (!needA8 && it.cf === IB.CF.RGB565A8) {
+          warnings.push("「" + it.name + "」是背景却用了 rgb565a8 ⇒ 白占 1/3 空间"
+                        + "（alpha 对铺在最底层的图没有意义）");
+        }
+      }
+    } catch (e) {
+      warnings.push("（规格检查没跑成：" + e.message + "）");
+    }
+    if (warnings.length) items.assetWarnings = warnings;
   }
   return items;
 }
@@ -295,6 +336,11 @@ function main() {
 
   const res = IB.build(items);
   fs.writeFileSync(args.out, Buffer.from(res.blob));
+
+  // ★ 素材规格的提醒（不拦路，只说话）。规格的权威在 asset-spec.js。
+  if (items.assetWarnings) {
+    for (const w of items.assetWarnings) console.error("⚠ " + w);
+  }
 
   const manPath = args.manifest || (args.out + ".manifest");
   fs.writeFileSync(manPath, manifestText(res, args.out, args.target), "utf8");

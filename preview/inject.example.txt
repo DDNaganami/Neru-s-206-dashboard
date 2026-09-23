@@ -1,0 +1,9 @@
+# pcpreview inject control file (see lib/dashcore/preview_input.h for keys)
+# Copy to preview/inject.txt, then edit + save - the preview re-reads every frame.
+# Keep it SHORT: only the first 1024 bytes are read (it warns if longer).
+# Keys: left right hazard low_beam position door speed rpm mute clear
+# NOTE: values are absolute; deleting a line does NOT revert it, use clear=1.
+left=1
+low_beam=1
+door=1
+speed=140

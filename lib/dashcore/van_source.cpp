@@ -30,7 +30,67 @@ const float VanSource::kRpmScale   = 0.125f;
 static const float kSpeedMaxValid = 300.0f;
 static const float kRpmMaxValid   = 9000.0f;
 
+// VIN 的可打印 ASCII 判据(§4.7:"17 个数据字节**逐字节可打印 ASCII**")。
+// 为什么要有它:0xE24 这一族是**常量广播**(全程 101 帧只有 1 种取值),
+// 所以"段内混进一帧坏帧"不会让谁看出来 —— 而一个带控制字符的"VIN"会被
+// 上层当字符串直接显示/上报。所以按 §4.7 的判据**整帧校验后再收**:
+// 有一字节不可打印就**整帧丢掉**(不覆盖上一次的好值,也不清成空串)。
+static bool printableAscii(const uint8_t* p, uint8_t n) {
+  for (uint8_t i = 0; i < n; ++i) {
+    if (p[i] < 0x20u || p[i] > 0x7Eu) return false;
+  }
+  return true;
+}
+
 void VanSource::onPacket(const VanPacket& pkt) {
+  // ---- 0x4FC:灯位域 (data[5]) + 门状态位 (data[1]) ----
+  // ★ 一帧同时带这两样(§4.6 的关键旁证就是"门测试期间 data[5] 完全没动"),
+  //   所以一次判长度、一次解,别写成两个分支各判一次。
+  if (pkt.iden == kLightIden) {
+    // `data[5]` 需要 n ≥ 6;按 §3 的实测 n = 11,这里只挡"短到读不到"的帧
+    // (与车速/转速同一套 `offset < len` 判据,不另立规矩)。
+    if (kLightOffset < pkt.len) {
+      const uint8_t v = pkt.data[kLightOffset];
+      lights_.raw = v;
+      // ★ 位域,不是三个枚举值 —— §4.3 的独立证据:双闪 == 左 | 右。
+      //   所以这里**逐位**取,不许写成 `v == 0x04` 这种等值判断
+      //   (等值判断会让 `0x84`(仪表盘灯 + 左转)被判成"没有左转")。
+      lights_.left      = (v & kVanLightLeft) != 0;
+      lights_.right     = (v & kVanLightRight) != 0;
+      lights_.hazard    = lights_.left && lights_.right;
+      lights_.low_beam  = (v & kVanLightLowBeam) != 0;
+      lights_.dashboard = (v & kVanLightDashboard) != 0;
+      lights_seen_ = true;
+      lights_ms_ = pkt.rx_ms;
+    }
+    if (kDoorOffset < pkt.len) {
+      const uint8_t d = pkt.data[kDoorOffset];
+      door_raw_ = d;
+      if (!door_base_seen_) {
+        // 第一帧建立**静息基线**(实车静息是 0x00,见 §4.6 的表)。
+        // ★ 刻意不硬编码"静息就是 0":那是抓包里的观察、不是协议保证,
+        //   而"第一帧"在任何一趟车上都一定是静息态(开门之前总线已经在跑)。
+        door_base_seen_ = true;
+        door_base_ = d;
+      } else if (d != door_base_) {
+        door_change_ms_ = pkt.rx_ms;   // 相对基线的**活动**
+      }
+    }
+    return;   // 0x4FC 不是车速/转速帧,不必再往下走
+  }
+
+  // ---- 0xE24:17 字节明文 ASCII VIN ----
+  if (pkt.iden == kVinIden) {
+    // 整帧 17 字节都要在(短帧直接丢 —— 半截 VIN 比没有更糟)
+    if (pkt.len >= kVanVinChars && printableAscii(pkt.data, kVanVinChars)) {
+      for (uint8_t i = 0; i < kVanVinChars; ++i) vin_[i] = (char)pkt.data[i];
+      vin_[kVanVinChars] = '\0';
+      vin_valid_ = true;
+      vin_ms_ = pkt.rx_ms;
+    }
+    return;
+  }
+
   if (pkt.iden != speed_iden_) return;
 
   // 车速是**单字节**(data[speed_offset_])。上限 300 只在有人把 scale 调大时

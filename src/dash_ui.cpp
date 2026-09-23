@@ -35,6 +35,16 @@ struct ScreenUi {
   int32_t digit_val = INT32_MIN;         // 上次显示的值:不变就不 set_text
   int32_t coolant_val = INT32_MIN;
   int32_t intake_val = INT32_MIN;
+
+  // ---- 指示灯槽位(2026-09-24)----
+  // 每个槽 = 一个**容器**(占位图形的父对象) + 子图形。
+  // 只存对象指针:亮/灭/闪烁全部靠 opa 与 HIDDEN 旗标表达,
+  // **不重建对象**(重建会在 LVGL 里留下 invalid 记录,闪烁时 5 Hz 重建更糟)。
+  lv_obj_t* lamp[kLampSlotCount] = {};
+  uint8_t lamp_sub[kLampSlotCount] = {};        // 这个槽有几个子图形(建槽时定)
+  uint8_t lamp_last_pulse[kLampSlotCount] = {}; // 上次的亮度:不变就一个字节都不碰
+  bool lamp_last_alert[kLampSlotCount] = {};
+  bool lamp_built = false;
 };
 
 static ScreenUi g_ui[2];
@@ -389,6 +399,186 @@ static void readout_apply(ScreenUi& ui, const ArcDashView& v) {
   }
 }
 
+// ============ 指示灯槽位（占位图形，2026-09-24）============
+//
+// ★★ 本轮**只画占位几何**，不画正式素材 —— 这是刻意的（让逻辑与美术解耦）：
+//     · 几何/位置在 src/ui_model.h（kLampSize / kLampGap / kLampCy，480 基准，
+//       随 theme_scale() 缩放 ⇒ 480 与 240 两档自动各自成立）；
+//     · 亮/灭/闪烁/告警描边由 make_lamps() 算好（纯函数，native 有几何用例）；
+//     · 这里**只负责把"亮不亮"变成像素**：一个槽一个容器 + 若干子图形。
+//   真屏到了换正式素材时，要改的**只有本函数下面那几段图形构建**
+//   （换成 image 或 LVGL 的矢量/自定义 draw），本文件其余部分、ui_model、
+//   alerts、data_service 全都不用动。
+//
+// 图形用**最朴素的几何**（矩形/圆/旋转矩形），每个槽一眼能认出是什么：
+//   左转 = 双层左尖括号(chevron)   右转 = 镜像
+//   双闪 = 两个三角并排(报警符号)    近光 = 半圆 + 三条斜光线
+//   仪表盘灯 = 实心圆(灯珠)         门   = 侧立的矩形门扇 + 门把手圆点
+//
+// ★ 为什么全部用 LVGL 对象而不是自绘：对象可以**只改 opa/旗标**地闪烁
+//   （见 lamp_apply），而自绘每次都要 invalidate 一整块。
+// ★ 不给这些对象设 opa < 255 的**父容器**：这个驱动上会给对象开离屏层
+//   （见 boot_apply 那条踩坑记录）。所以亮度落在**每个子图形**上，
+//   容器本身恒为不透明（它没有背景，只是坐标系）。
+
+// 建一个"纯容器"：无样式、不可滚动、按槽位摆好。
+static lv_obj_t* lamp_make_cell(lv_obj_t* parent, LampSlot slot) {
+  lv_obj_t* cell = lv_obj_create(parent);
+  lv_obj_remove_style_all(cell);
+  // ★ 不设 SCROLLABLE 会走离屏层裁剪（与表情容器同一个坑，见 build_face）
+  lv_obj_remove_flag(cell, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_size(cell, ts(kLampSize), ts(kLampSize));
+  lv_obj_set_pos(cell, ts(lampLeft(slot)), ts(lampTop(slot)));
+  lv_obj_add_flag(cell, LV_OBJ_FLAG_HIDDEN);   // 默认灭：第一帧由 lamp_apply 决定
+  return cell;
+}
+
+// 槽内的小矩形（三角形/光线/门扇都由它拼）
+static lv_obj_t* lamp_make_bar(lv_obj_t* cell, lv_color_t c, int32_t x, int32_t y,
+                              int32_t w, int32_t h, int32_t rot10) {
+  lv_obj_t* o = lv_obj_create(cell);
+  lv_obj_remove_style_all(o);
+  lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_size(o, ts(w), ts(h));
+  lv_obj_set_style_bg_color(o, c, 0);
+  lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(o, ts(1), 0);   // 一点倒角,免得细条端点太尖
+  lv_obj_set_pos(o, ts(x), ts(y));
+  // ★ LVGL 的旋转是 **0.1 度**为单位的整数,且绕对象中心转
+  lv_obj_set_style_transform_rotation(o, rot10, 0);
+  return o;
+}
+
+static lv_obj_t* lamp_make_dot(lv_obj_t* cell, lv_color_t c, int32_t cx, int32_t cy,
+                              int32_t d) {
+  lv_obj_t* o = lamp_make_bar(cell, c, cx - d / 2, cy - d / 2, d, d, 0);
+  lv_obj_set_style_radius(o, ts(d / 2), 0);   // 全圆角 = 圆
+  return o;
+}
+
+// 双层 chevron：`dir` = +1 指右 / -1 指左。返回子图形个数。
+// ★ 画法：两根细长条各转 ±θ，拼成一个"<"；两层错开就是双箭头。
+//   为什么不用三角形：LVGL 没有现成的三角形图元，而"两根条拼一个尖角"
+//   是纯矩形 + 旋转，行为在任何驱动上都一样（自绘路径要碰 draw 回调，
+//   那条路在这个精简版 esp_lcd 上还没验过）。
+//
+// ★ 几何用**"尖角位置 + 臂长"**算出来，不靠试：条的中心 = 尖角 + (L/2)·(cosθ, ±sinθ)
+//   （θ = 30° ⇒ 0.866L/2, 0.5L/2）。这样槽内怎么挪都只是改 `tip` 一个数。
+static uint8_t lamp_build_chevron(lv_obj_t* cell, lv_color_t c, int32_t dir) {
+  const int32_t L = 17;    // 条长
+  const int32_t T = 5;     // 条厚
+  const int32_t ang = 30;  // 与水平线的夹角(度)
+  const int32_t dx = 7;    // (L/2)·cos30 ≈ 7.4 → 取 7
+  const int32_t dy = 4;    // (L/2)·sin30 ≈ 4.25 → 取 4
+  uint8_t n = 0;
+  for (int32_t layer = 0; layer < 2; ++layer) {
+    // 尖角的 x：左箭头从 7 起往右排两层；右箭头镜像。
+    const int32_t tip_x = (dir < 0) ? (7 + layer * 9) : (33 - layer * 9);
+    const int32_t tip_y = 20;
+    // ★ 上臂转 -30°、下臂转 +30° —— **与 dir 无关**：一个 "<" 和一个 ">"
+    //   用的是同一对角度，只是尖角的 x 镜像了（第一版在这里按 dir 又翻了一次，
+    //   于是"右箭头"画出个"左箭头"，而且不报错）。
+    const int32_t bx = (dir < 0 ? tip_x + dx : tip_x - dx) - L / 2;
+    lamp_make_bar(cell, c, bx, tip_y - dy - T / 2, L, T, -ang * 10);
+    lamp_make_bar(cell, c, bx, tip_y + dy - T / 2, L, T, +ang * 10);
+    n += 2;
+  }
+  return n;
+}
+
+// 建一个槽的占位图形。返回子图形个数（0 = 这个槽没有图形，用例会拦）。
+static uint8_t lamp_build_slot(lv_obj_t* cell, LampSlot slot, lv_color_t c) {
+  switch (slot) {
+    case LampSlot::LeftArrow:  return lamp_build_chevron(cell, c, -1);
+    case LampSlot::RightArrow: return lamp_build_chevron(cell, c, +1);
+    case LampSlot::Hazard: {
+      // 两个三角并排(常见双闪符号):每个三角 = 两根斜条 + 一根横条
+      uint8_t n = 0;
+      for (int32_t k = 0; k < 2; ++k) {
+        const int32_t cx = 11 + k * 18;
+        lamp_make_bar(cell, c, cx - 8, 12, 4, 16, 20 * 10);
+        lamp_make_bar(cell, c, cx - 8, 12, 4, 16, -20 * 10);
+        lamp_make_bar(cell, c, cx - 9, 26, 18, 4, 0);
+        n += 3;
+      }
+      return n;
+    }
+    case LampSlot::LowBeam: {
+      // 圆 + 三条向下斜的光线(近光的通用符号)。
+      // ★ 一开始想画"半圆 + 光线",但那要**按角设圆角**(lv_obj 的 radius
+      //   只有整体/四角同值),而这个精简版驱动上没验过自绘路径 —— 于是
+      //   改成"圆 + 光线":同样一眼可辨,而且只用矩形/圆两种图元。
+      uint8_t n = 0;
+      lamp_make_dot(cell, c, 13, 20, 16);
+      n++;
+      lamp_make_bar(cell, c, 22, 8, 13, 3, 35 * 10);
+      lamp_make_bar(cell, c, 24, 18, 13, 3, 0);
+      lamp_make_bar(cell, c, 22, 28, 13, 3, -35 * 10);
+      n += 3;
+      return n;
+    }
+    case LampSlot::PositionLamp:
+      // 仪表盘灯 = 实心圆(灯珠)。不画光芒:它要能一眼区别于近光
+      lamp_make_dot(cell, c, 20, 20, 18);
+      return 1;
+    case LampSlot::Door: {
+      // 门扇(侧立矩形) + 门把手圆点
+      lamp_make_bar(cell, c, 12, 8, 15, 24, 0);
+      lamp_make_dot(cell, c, 23, 20, 5);
+      return 2;
+    }
+    default:
+      return 0;
+  }
+}
+
+// 建灯条(六个槽)。★ 创建顺序在**背景图之后**、读数之前 ——
+// 灯条压在背景图上、被读数压在下面(读数在底部只有副表数字,不会重叠)。
+static void build_lamps(lv_obj_t* parent, ScreenUi& ui) {
+  const lv_color_t c = lv_color_hex(THEME_LAMP_COLOR);
+  for (uint8_t i = 0; i < kLampSlotCount; ++i) {
+    lv_obj_t* cell = lamp_make_cell(parent, (LampSlot)i);
+    ui.lamp[i] = cell;
+    ui.lamp_sub[i] = lamp_build_slot(cell, (LampSlot)i, c);
+    // 告警描边用的边框:**建好就设置、平时不显示**(改 opa 而不是改宽度,
+    // 免得"开描边"那一下触发一次布局重算)
+    lv_obj_set_style_border_width(cell, ts(2), 0);
+    lv_obj_set_style_border_color(cell, lv_color_hex(THEME_LAMP_ALERT_COLOR), 0);
+    lv_obj_set_style_border_opa(cell, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(cell, ts(6), 0);
+  }
+  ui.lamp_built = true;
+}
+
+// 把 make_lamps() 的结果落到 LVGL 上。
+// ★ 只在**亮度和告警位真的变了**的时候碰对象：转向灯 5 Hz 闪，
+//   无脑每帧 set_opa 会把 invalid 队列刷爆（表情那段注释里踩过同一个坑）。
+static void lamp_apply(ScreenUi& ui, const LampView& v) {
+  if (!ui.lamp_built) return;
+  for (uint8_t i = 0; i < kLampSlotCount; ++i) {
+    const uint8_t pulse = v.pulse[i];
+    const bool show = pulse > 0;
+    if (pulse != ui.lamp_last_pulse[i]) {
+      ui.lamp_last_pulse[i] = pulse;
+      if (show) {
+        lv_obj_remove_flag(ui.lamp[i], LV_OBJ_FLAG_HIDDEN);
+        // 亮度落在**每个子图形**上(不是容器 —— 见 build_lamps 上的说明)
+        const uint32_t kids = lv_obj_get_child_count(ui.lamp[i]);
+        for (uint32_t k = 0; k < kids; ++k) {
+          lv_obj_set_style_opa(lv_obj_get_child(ui.lamp[i], (int32_t)k), pulse, 0);
+        }
+      } else {
+        lv_obj_add_flag(ui.lamp[i], LV_OBJ_FLAG_HIDDEN);
+      }
+    }
+    if (v.alert[i] != ui.lamp_last_alert[i]) {
+      ui.lamp_last_alert[i] = v.alert[i];
+      lv_obj_set_style_border_opa(ui.lamp[i],
+                                  v.alert[i] ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    }
+  }
+}
+
 // ============ 开机动画应用(20ms 档推进,见 dash_ui_tick 的节流) ============
 static void boot_apply(uint32_t now) {
   for (uint8_t s = 0; s < 2; ++s) {
@@ -497,6 +687,13 @@ void dash_ui_init() {
     lv_image_set_src(g_face_img[s], &g_face_dsc[s][slot]);
   }
 
+  // 指示灯槽位(占位图形):建在**读数之前** —— 于是副表数字(水温/进气)
+  // 压在灯条上面；两者在几何上不重叠(灯条 y=395..435、副表墨迹到 y≈396),
+  // 所以图层顺序在这里只是"万一"的保险(见 ui_model.h 的 kLamp* 说明)。
+  for (uint8_t s = 0; s < 2; ++s) {
+    build_lamps(g_screens[s], g_ui[s]);
+  }
+
   // 数字读数最后建:创建顺序就是图层顺序,读数要压在弧和表情之上。
   for (uint8_t s = 0; s < 2; ++s) {
     build_readout(g_screens[s], kScreens[s], g_ui[s]);
@@ -527,7 +724,7 @@ void dash_ui_tick(uint32_t now_ms) {
   lv_timer_handler();
 }
 
-void dash_ui_render(const ArcDashView& v, uint32_t now) {
+void dash_ui_render(const ArcDashView& v, const LampView& lamps, uint32_t now) {
   if (now - last_ok_ms >= 1000) {
     last_ok_ms = now;
     // face= 打的是**左/右两个**:两屏表情各看各的表,只打一个就分不清
@@ -536,6 +733,10 @@ void dash_ui_render(const ArcDashView& v, uint32_t now) {
                   v.speed_t * 100.0f, v.rpm_t * 100.0f, v.coolant_c,
                   face_name(v.face_left), face_name(v.face_right));
   }
+
+  // ★ 灯条**在开机动画之前**应用:开机扫表期间也要能看见灯
+  //   (打灯/开门是随时发生的,而开机动画只在前 1.1 秒)。它不参与弧的缓动。
+  for (uint8_t s = 0; s < 2; ++s) lamp_apply(g_ui[s], lamps);
 
   if (g_boot.active(now)) return;   // 开机期间由 boot_apply 接管
 

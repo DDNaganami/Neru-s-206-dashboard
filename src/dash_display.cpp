@@ -131,7 +131,6 @@ static void write_bmp(const char* path, const fb_pixel_t* fb, int32_t w, int32_t
 void dash_display_init() {
   _mkdir("preview");
   _mkdir("preview/frames");
-
   g_left = lv_display_create(THEME_DISPLAY_RES, THEME_DISPLAY_RES);
   lv_display_set_user_data(g_left, fb_left);
   lv_display_set_flush_cb(g_left, preview_flush_cb);
@@ -147,6 +146,18 @@ void dash_display_init() {
 
 lv_display_t* dash_display_left() { return g_left; }
 lv_display_t* dash_display_right() { return g_right; }
+
+// 蜂鸣器那一侧的"落一行"出口（lib/dashcore/buzzer.cpp 声明它、这里给实现）。
+// ★ 为什么挂在**这个**文件而不是新开一个：它要的只是"把一行文本送到
+//   运行预览那个终端"，而预览驱动这一段已经拿着 stdout 与 Arduino 桩；
+//   单独开一个 .cpp 只会让"pcpreview 到底编了哪些文件"更难数。
+// ★ native 构建里同一符号由 buzzer.cpp 自己的默认实现提供（fputs 到 stdout），
+//   两边签名一致 —— 签名对不上时 native 会直接链接失败（那是刻意的）。
+void buzzer_host_printf(const char* line) {
+  fputs(line, stdout);
+  fputc('\n', stdout);
+  fflush(stdout);   // ★ 不 flush 的话这一行会卡在缓冲里，"按了怎么没反应"最难查
+}
 
 // 每 200ms 落一对 BMP(共 150 对 = 30 秒,够看开机动画 + 假数据走动)
 void dash_display_poll() {

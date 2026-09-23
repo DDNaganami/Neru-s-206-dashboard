@@ -17,6 +17,9 @@ void register_image_blob_tests(void);
 void register_image_roundtrip_tests(void);
 void register_data_service_tests(void);
 void register_expression_tests(void);
+void register_van_fields_tests(void);   // 已解字段接进数据层:灯位/门/VIN + 不抢既有优先级(2026-09-24)
+void register_alerts_tests(void);       // 告警层:去抖/最短重复间隔/静音 + 蜂鸣器抽象(2026-09-24)
+void register_ui_lamp_tests(void);      // 指示灯槽位几何 + 预览注入语义(2026-09-24)
 void register_face_stage_tests(void);
 void register_link_crc_coverage_tests(void);   // 双板链路 v1:CRC-15 检错覆盖枚举(§8 L4)
 void register_link_frame_tests(void);          // 双板链路 v1:帧层(§2)—— 布局/帧长/CRC 覆盖/拒绝路径
@@ -49,6 +52,12 @@ int main(void) {
   register_link_phy_tests();
   register_link_phy_uart_tests();
   register_link_app_tests();
+  // ★ 2026-09-24 新增两组:已解字段(灯位/门/VIN)与告警层。
+  //   排在 face_stages 之前(与上面那段的理由一致:face_stages 历史上崩过一次,
+  //   排在它后面的用例跑不到 —— 崩溃虽已修掉,这条顺序纪律照旧保留)。
+  register_van_fields_tests();
+  register_alerts_tests();
+  register_ui_lamp_tests();
   register_face_stage_tests();
   return UNITY_END();
 }

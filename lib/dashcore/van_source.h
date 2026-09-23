@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <stdint.h>
 
 // VAN 总线数据源:接收原始帧,提取车速与转速。
@@ -53,6 +53,67 @@
 // 把收到的原始帧转成 VanPacket 喂给 onPacket()。
 // 线路层(SOF/4B5B/CRC-15/帧尾)由 van_wire.h 负责;van_phy.h 把两者接起来。
 //
+// ★★ 2026-09-24 新增:三类**已实测解出**的字段接进数据层
+//   (`0x4FC` 的灯位域 / 门状态,`0xE24` 的 VIN)。
+//
+//   为什么放在 VanSource 里、而不是在 data_service 里另开一个"VAN 灯解析":
+//     这三类字段和车速/转速一样,都是"**只有 VAN 这一个来源**"的字段 ⇒
+//     解包必须贴着帧格式走(与车速/转速同一处、同一套 `data[i] < len` 判据),
+//     而合并/来源标注才是 data_service 的事。两边分工见
+//     `VAN-PROTOCOL.md` §8.1 那张表。
+//
+//   ★ 每一个常量的出处(协议侧;**照文档的确定部分实现,不确定的一个都没猜**):
+//     0x4FC / CMD 0xC,`data[5]` 是**位域**(§4.3 / §4.4,实测提交 ee15e9e / 1a5d69b / 2826610):
+//        bit2 = 0x04 = 左转向   bit3 = 0x08 = 右转向   (两位或 = 0x0C = 双闪)
+//        bit6 = 0x40 = 近光     bit7 = 0x80 = 仪表盘灯
+//     `data[1]` = 门状态位(§4.6,实测提交 9ad3d10)——
+//        ⚠ **左右门不可分辨**(§6 撤回①):就我们抓的这段总线找不到能区分左右门的字节,
+//          所以这里**只给"门信号有没有动"这个定量结果,不给左/右**。
+//        ⚠ 而且它更像**瞬时/边沿信号**而不是稳态位:门开那几段脉冲**段内就在跳变**
+//          (§4.6 末条),所以这里同样**不做 `==1 就是门开着` 这种读取**,只给
+//          `doorActivity()`(= 这个字节相对**本帧之前见过的静息值**变了)。
+//     0xE24 / CMD 0x8,`data[0..16]` = **17 字节明文 ASCII VIN**(§4.7,实测提交 f839a7d)。
+//        ★ 不需要和 `0x5E4` 拼 —— `0xE24` 自己就是完整的 17 位(17 == 17 就是证据)。
+//
+//   ★ 采样坑(§4.3,必须照它设计):`0x4FC` 只有 **4.7 帧/秒**,而转向灯闪烁
+//     全周期 0.80 s(≈1.25 Hz)⇒ 闪烁波形是**欠采样**的,"亮"只持续 1~3 帧。
+//     所以灯位**不能**按"这一帧的位"直接当现状用 —— 见 VanSource::lights() 的
+//     **保持窗口**(kIndicatorHoldMs),它把欠采样补回来。
+struct VanLights {
+  uint8_t raw = 0;           // data[5] 原文(诊断用;位定义见上)
+  bool left = false;         // bit2
+  bool right = false;        // bit3
+  bool hazard = false;       // bit2|bit3 同时置位(§4.3:"双闪 = 左|右"独立证明它是位域)
+  bool low_beam = false;     // bit6 = 近光
+  bool dashboard = false;    // bit7 = 仪表盘灯(灯杆第 1 档)
+};
+
+// 位掩码常量(与 §4.3/§4.4 的表逐条对应,不写裸数字)
+static const uint8_t kVanLightLeft      = 0x04u;
+static const uint8_t kVanLightRight     = 0x08u;
+static const uint8_t kVanLightLowBeam   = 0x40u;
+static const uint8_t kVanLightDashboard = 0x80u;
+
+// 灯位的**保持窗口**(ms)。为什么必须有它:
+//   0x4FC 只有 4.7 帧/秒(≈213 ms 一帧),而闪烁全周期 0.80 s ⇒ 一帧"亮"之后
+//   下面两三帧很可能是"灭"那一半。若按帧直读,屏上的箭头会以 ≈1.7 Hz 乱抖。
+//   ★ 600 ms 的来历:`0x4FC` 帧间隔是指数分布(速率 4.7/s),连续 k 帧都落在
+//     闪烁的"灭"半周期(0.40 s)内的概率 = (1-e^(-0.4×4.7))^k ≈ 0.154^k ⇒
+//     k=2 时 2.4% 的"亮"段会被短一截;k=3 时 0.4%。取 600 ms 是"看得见的余量",
+//     而不是精算值 —— 真车上以"箭头不闪、灭灯后约 0.6 s 内消失"为准。
+static const uint32_t kIndicatorHoldMs = 600u;
+
+// 帧长度:§3 的实测值(0x4FC = 11 字节、0xE24 = 17 字节)。
+// ★ 别按旧文档的 4 字节 —— 那一条正是 §3.0 逐行重核时改掉的 4 行之一,
+//   而且 `data[5]` 本来就需要 n ≥ 6。
+static const uint8_t kVanLightLen = 11u;
+static const uint8_t kVanVinLen   = 17u;
+
+// VIN 缓冲长度:17 位 + '\0'。**17 是 VIN 的硬长度**(§4.7:17 字节 == 17 位字符,
+// 这本身就是"不用跟别的族拼"的证据),所以按它定长。
+static const uint8_t kVanVinChars = 17u;
+static const uint8_t kVanVinBuf   = kVanVinChars + 1u;
+
 // 字段宽度说明:协议规范里 IDEN 是 15 位(0x000/0xFFF 保留),CMD 是 5 位
 // (EXT/RAK/RW/RTR,EXT 为保留位、应为 1)。本结构按 12 位 IDEN + 4 位 CMD
 // 承载 —— 这是公开抓包的实际读法,15 位与 12 位的换算关系尚未用真实位流
@@ -73,13 +134,54 @@ public:
 
   void begin() {}  // 物理层初始化由外部驱动完成
   void onPacket(const VanPacket& pkt);
-  void tick(uint32_t now_ms) { (void)now_ms; }  // 超时回退由 data_service 处理
+  // 超时回退由 data_service 处理;**灯位不需要 tick** —— 它的保持窗口是
+  // 由 `lightsRecent(now)` 按 `now` 现算的(见 kIndicatorHoldMs 的说明),
+  // 于是"没有帧的时候灯自己灭"这件事不依赖谁按点调 tick。
+  void tick(uint32_t now_ms) { (void)now_ms; }
 
   bool hasSpeed() const { return speed_valid_; }
   bool hasRpm() const { return rpm_valid_; }
   float speedKmh() const { return speed_kmh_; }
   float rpm() const { return rpm_; }
   uint32_t lastUpdateMs() const { return last_update_ms_; }
+
+  // ---------------- 灯位(0x4FC.data[5],已实测解出) ----------------
+  // 收到过合法的灯帧 → true。**与"灯亮着没有"是两件事**:
+  // 前者是"这一格有没有数据",后者要过保持窗口。
+
+  // 最近一次解出的灯位(不看保持窗口)。没有过灯帧时全 false / raw = 0。
+  const VanLights& lights() const { return lights_; }
+  bool hasLights() const { return lights_seen_; }
+  uint32_t lightsLastMs() const { return lights_ms_; }
+
+  // 带**保持窗口**的现状:`now - lights_ms_ < kIndicatorHoldMs`。
+  // ★ 上层(UI/告警)该用这一个,不要用 lights() 里的裸位 —— 理由见 kIndicatorHoldMs。
+  bool lightsRecent(uint32_t now_ms) const {
+    return lights_seen_ && lights_ms_ != 0u &&
+           (uint32_t)(now_ms - lights_ms_) < kIndicatorHoldMs;
+  }
+
+  // ---------------- 门状态(0x4FC.data[1]) ----------------
+  // ★ **只给"动过没有",不给"哪扇门 / 开着还是关着"** ——
+  //   左右门可分辨性是**未解**(§6 撤回①),而"==1 就是门开着"被 §4.6 明确否掉
+  //   (脉冲段内还在 `00`↔`01` 跳变)。所以这里刻意**不提供** `doorOpen()` 这种 API:
+  //   名字一旦叫"门开着",上层就会有人当真值用。
+  //
+  //   本函数回答的是:"`data[1]` 相对**我们见过的静息值**变过没有,且变化在
+  //   `window_ms` 之内"。静息值取**第一次见到的那个值**(实车静息是 `0x00`,
+  //   见 §4.6 的表),所以第一次收到帧就建立了基线、不会自己触发。
+  bool doorActivity(uint32_t now_ms, uint32_t window_ms) const {
+    return door_base_seen_ && door_change_ms_ != 0u &&
+           (uint32_t)(now_ms - door_change_ms_) < window_ms;
+  }
+  bool hasDoor() const { return door_base_seen_; }
+  uint8_t doorRaw() const { return door_raw_; }
+  uint32_t doorChangeMs() const { return door_change_ms_; }
+
+  // ---------------- VIN(0xE24,17 字节明文) ----------------
+  bool hasVin() const { return vin_valid_; }
+  const char* vin() const { return vin_; }
+  uint32_t vinLastMs() const { return vin_ms_; }
 
   // 实车帧格式与默认常量不符时,先用这个在运行时改,确认后写回常量
   // ★ 语义见 onPacket():speed_offset 指向**单字节**车速,scale 只做乘法
@@ -94,6 +196,15 @@ public:
   static const uint8_t  kRpmOffset   = 0;       // data[0..1],16 位大端
   static const float    kRpmScale;              // 0.125(÷8)
 
+  // 灯/门 与 VIN 两族的 IDEN(§3 的帧目录表:0x4FC/0xC 与 0xE24/0x8)
+  static const uint16_t kLightIden  = 0x4FC;
+  static const uint8_t  kLightOffset = 5;       // data[5],位域(§4.3/§4.4)
+  static const uint8_t  kDoorOffset  = 1;       // data[1],门状态位(§4.6)
+  static const uint16_t kVinIden    = 0xE24;
+  // ★ CMD 不参与本类的匹配:现有 onPacket 只按 IDEN 分支(车速/转速都没有判 cmd),
+  //   这里**沿用同一套语义**,以免出现"车速不看 cmd、灯却看 cmd"的不一致。
+  //   §3 的表里这两族的 CMD 都是 0x8 / 0xC 之外的组合各有实测,留待将来需要时再收紧。
+
 private:
   bool speed_valid_ = false;
   bool rpm_valid_ = false;
@@ -104,4 +215,20 @@ private:
   uint16_t speed_iden_ = kSpeedIden;
   uint8_t  speed_offset_ = kSpeedOffset;
   float    speed_scale_ = kSpeedScale;
+
+  // ---- 灯位 ----
+  VanLights lights_{};
+  bool lights_seen_ = false;
+  uint32_t lights_ms_ = 0;     // 最近一次灯帧(0 = 还没见过)
+
+  // ---- 门状态 ----
+  uint8_t door_raw_ = 0;
+  bool door_base_seen_ = false;   // 静息基线建立了吗(第一帧就是基线)
+  uint8_t door_base_ = 0;
+  uint32_t door_change_ms_ = 0;   // 最近一次"与基线不同"的时刻(0 = 从未)
+
+  // ---- VIN ----
+  char vin_[kVanVinBuf] = {0};
+  bool vin_valid_ = false;
+  uint32_t vin_ms_ = 0;
 };

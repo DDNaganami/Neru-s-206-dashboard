@@ -275,6 +275,10 @@
 
 <!-- 打包器:同一份代码在 Node 里跑单测,保证界面导出的 bin 和设备端一致 -->
 <script src="image-blob-build.js"></script>
+<!-- ★ 2026-09-24 新增:素材规格 + 简单转换（可接受格式/尺寸上限/alpha 要求/
+     圆形可视区/自动缩放/裁透明边/人话拒绝理由）。规格与数字都在
+     asset-spec.js 里，网页与文档共用同一份 —— 见那个文件的头注释。 -->
+<script src="asset-spec.js"></script>
 <!-- 表情阶段表:与固件 lib/dashcore/face_stages.h 同源(由 test-face-stages.js 对账)。
      阶段模拟、缺图降级、"哪些角色算表情"都问它,不在这里重抄一遍。 -->
 <script src="face-stages.js"></script>
@@ -428,6 +432,42 @@ function renderToTarget(item, tw, th, transparent) {
   const sh = src.naturalHeight || src.height;
   if (!sw || !sh) return null;
 
+  // ------------------------------------------------------------------
+  // ★ 2026-09-24：**裁掉透明边**这一条走 AssetSpec.prepareAsset()，
+  //   而不是在 canvas 上再写一套裁剪 —— 理由有三条：
+  //     ① "什么叫透明"要**只有一个阈值**（trimAlpha），而这个转换函数
+  //        与它的用例在 asset-spec.js 里、Node 上逐条测过；
+  //     ② 那条路是按 alpha **加权**缩放的，能避免"透明像素的 RGB 把边缘
+  //        染黑/染白"（缩图后一圈脏边的成因）—— canvas 的 drawImage
+  //        在带 alpha 的图上不保证这一点；
+  //     ③ 裁完之后的"输出尺寸"要跟着内容变（200×200 的留白裁成 60×40），
+  //        而这会反过来影响占用条与预算是**同一份**数字。
+  //   不勾"裁透明边"时仍然走原来那条 canvas 路径（一个字节都没改）。
+  if (item.trim) {
+    const full = ctx.getImageData(0, 0, sw, sh).data;   // 先拿原图像素
+    const r = AssetSpec.prepareAsset(full, sw, sh, {
+      roleId: roleIdForNumber(item.role),
+      targetId: curTarget,
+      maxSide: Math.max(tw, th),          // 用户框定的目标宽度就是上限
+      trim: true,
+      bgColor: unhexRgb(theme.bg)
+    });
+    if (r.errors.length) return null;
+    // 输出尺寸跟着裁完的内容走（调用方据此更新 item.w/h）
+    item.trimW = r.w; item.trimH = r.h;
+    const out = ctx.createImageData(r.w, r.h);
+    out.data.set(r.rgba);
+    // 居中贴到目标画布上（保持比例，不拉伸）
+    const tmp = document.createElement("canvas");
+    tmp.width = r.w; tmp.height = r.h;
+    tmp.getContext("2d").putImageData(out, 0, 0);
+    const k = Math.min(tw / r.w, th / r.h, 1);
+    const dw = Math.round(r.w * k), dh = Math.round(r.h * k);
+    ctx.imageSmoothingEnabled = k < 1;
+    ctx.drawImage(tmp, Math.round((tw - dw) / 2), Math.round((th - dh) / 2), dw, dh);
+    return ctx.getImageData(0, 0, tw, th).data;
+  }
+
   if (item.fit === "stretch") {
     ctx.drawImage(src, 0, 0, tw, th);
   } else {
@@ -572,6 +612,22 @@ function buildList() {
     fs.addEventListener("change", () => { item.fit = fs.value; refresh(); });
     fitRow.append(fl, fs);
 
+    // ★ 2026-09-24 新增:「裁掉透明边」。为什么值得一个控件而不是写死:
+    //   表情图四周常常有一圈"看不见但占地方"的透明像素（导出时画布留白），
+    //   裁掉它能让"按内容居中"更准；但**有人是故意留白的**（想让图在屏上
+    //   偏一点），所以默认关、由人决定。实现在 renderToTarget 里调
+    //   AssetSpec.prepareAsset(..., {trim:true})，两处对"什么叫透明"用同一个
+    //   阈值（trimAlpha，见 asset-spec.js）。
+    const trimRow = document.createElement("div");
+    trimRow.className = "row";
+    const tl = document.createElement("label");
+    tl.textContent = "裁透明边";
+    const tc = document.createElement("input");
+    tc.type = "checkbox";
+    tc.checked = !!item.trim;
+    tc.addEventListener("change", () => { item.trim = tc.checked; refresh(); });
+    trimRow.append(tl, tc);
+
     // 目标宽度（高度按原图比例）
     const szRow = document.createElement("div");
     szRow.className = "row";
@@ -592,7 +648,7 @@ function buildList() {
       szRow.appendChild(b);
     });
 
-    box.append(top, thumb, meta, roleRow, orderRow, fitRow, szRow);
+    box.append(top, thumb, meta, roleRow, orderRow, fitRow, trimRow, szRow);
     listEl.appendChild(box);
   });
 
@@ -656,6 +712,20 @@ const THEME_KEY_V1 = "206dash.theme.v1"; // 旧记录(整份主题、没有基�
 function cloneTheme(o) { return JSON.parse(JSON.stringify(o)); }
 function hexOf(n) { return "#" + (n & 0xFFFFFF).toString(16).padStart(6, "0").toUpperCase(); }
 function unhexOf(s) { return parseInt(String(s).replace("#", ""), 16) & 0xFFFFFF; }
+
+// 角色**编号 → asset-spec 的 id**（"face_idle" 这种）。
+// ★ 为什么需要这一层：页面内部一律用**编号**（item.role = ImageBlob.ROLE.*，
+//   与固件/打包器同一套），而素材规格是按**名字**组织的（人要读）。
+//   两边靠 asset-spec.js 的 ROLES 表对上；对不上返回 null，由调用方降级
+//   （不猜一个 id —— 猜错会让"该有 alpha 的角色"被当成背景，静默出黑边）。
+function roleIdForNumber(n) {
+  const r = AssetSpec.roleByNumber(n);
+  return r ? r.id : null;
+}
+// "#141414" → [0x14,0x14,0x14]（AssetSpec.prepareAsset 的 bgColor 用）
+function unhexRgb(n) {
+  return [(n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF];
+}
 
 // 兜底 = 固件默认主题里"本页用得到的那部分"(底色 + 四条弧 + 读数颜色)。
 // 与 lib/themetool/ui_theme.h 的 theme_set_defaults() 一致，
@@ -1716,6 +1786,21 @@ function addFiles(files) {
       say("「" + f.name + "」不是图片格式，跳过了。", "err");
       if (--pending === 0) refresh();
       return;
+    }
+    // ★ 2026-09-24:上传前的规格检查（格式认不认 / 该不该有 alpha）。
+    //   拒绝理由一律**人能看懂**（说清"为什么不行"和"该怎么办"），
+    //   规则与文案都在 asset-spec.js 的 checkUpload() 里 —— 那一份是唯一权威，
+    //   网页、命令行与文档引用同一份（改动不会分叉）。
+    const role0 = defaultRoleForNewItem();
+    const chk = AssetSpec.checkUpload(f.name, f.type, role0, curTarget);
+    if (!chk.ok) {
+      say("✗ 「" + f.name + "」不能用在这个用途上：\n" + chk.errors.join("\n"), "err");
+      if (--pending === 0) refresh();
+      return;
+    }
+    if (chk.warnings.length) {
+      say("⚠ 「" + f.name + "」：" + chk.warnings.join("\n") +
+          "\n（已放进列表，你可以看看预览再决定要不要换一张。）", "warn");
     }
     const url = URL.createObjectURL(f);
     const img = new Image();

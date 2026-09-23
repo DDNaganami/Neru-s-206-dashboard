@@ -810,6 +810,43 @@ section("配方 → items:颜色格式按角色显式选");
 }
 
 // ------------------------------------------------------------
+section("配方 vs 素材规格:命令行也要给出同样的提醒(2026-09-24)");
+// ★ 为什么放在这里而不是 test-asset-spec.js:这一组测的是**打包器**的行为
+//   （specItems 顺手做的规格对账），规格本身的数字与拒绝路径在
+//   test-asset-spec.js 里。两边各测自己那一半，不重不漏。
+{
+  // 表情用了 rgb565（没有 alpha）⇒ 必须有一条提醒
+  const it1 = B.specItems({ images: [{ pattern: "ramp", w: 32, h: 32, role: "face_idle",
+                                       cf: "rgb565" }] });
+  ok(!!it1.assetWarnings, "表情用 rgb565 ⇒ 有提醒");
+  ok((it1.assetWarnings || []).some(w => /rgb565a8/.test(w)),
+     "提醒里点名了该怎么改：" + (it1.assetWarnings || []).join(" | "));
+
+  // 背景用了 rgb565a8 ⇒ 白占 1/3 空间，也要提醒
+  const it2 = B.specItems({ images: [{ pattern: "ramp", w: 32, h: 32, role: "background",
+                                       cf: "rgb565a8" }] });
+  ok(!!it2.assetWarnings, "背景用 rgb565a8 ⇒ 有提醒");
+
+  // 超上限（480 档表情上限 320）⇒ 提醒里要有"盖住内圈副弧"
+  const it3 = B.specItems({ images: [{ pattern: "ramp", w: 324, h: 324, role: "face_idle",
+                                       cf: "rgb565a8" }] });
+  ok(!!it3.assetWarnings, "324×324 超上限 ⇒ 有提醒");
+  ok((it3.assetWarnings || []).some(w => /盖住内圈副弧/.test(w)), "提醒里说清了后果");
+
+  // ★ 合规的一套**不许**有提醒（否则这个检查会变成噪音，人人学会忽略它）
+  const it4 = B.specItems({ images: [
+    { pattern: "solid", w: 480, h: 480, role: "background", cf: "rgb565" },
+    { pattern: "transparent", w: 300, h: 300, role: "face_idle", cf: "rgb565a8" }
+  ] });
+  eq(it4.assetWarnings, undefined, "合规的一套没有提醒");
+
+  // 240 档：300×300 的表情在 240 屏上超上限（160）⇒ 提醒必须跟着**目标板**变
+  const it5 = B.specItems({ target: "s3_240", images: [
+    { pattern: "transparent", w: 300, h: 300, role: "face_idle", cf: "rgb565a8" }] });
+  ok(!!it5.assetWarnings, "240 档上 300×300 的表情要有提醒（上限只 160）");
+}
+
+// ------------------------------------------------------------
 console.log("\n" + "=".repeat(56));
 if (fail === 0) {
   console.log("全部通过:" + pass + " 项断言");

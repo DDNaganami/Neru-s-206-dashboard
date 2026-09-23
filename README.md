@@ -51,7 +51,7 @@ python tools/serial-capture/capture.py COM4         # 抓复位后的完整开�
 | 环境 | 用途 |
 |---|---|
 | `native` | 宿主机单元测试 |
-| `pcpreview` | 本机渲双屏 BMP |
+| `pcpreview` | 本机渲双屏 BMP（**能手动喂输入**：键盘 `← → 空格 L P D O R M X`，或 `preview/inject.txt` —— 见 `tools/theme-editor/README.md` 的「模拟页面上手动喂输入」） |
 | `esp32s3` | S3 桩显示，先把串口 / VAN 跑通 |
 | `esp32s3-spi` | 240 档验证用的真屏（GC9A01A 双 240×240）—— **该板 2026-09-22 已退货，现在手上没有这块硬件**（环境照旧保留、仍可编译） |
 | `esp32s3-rgb` | RGB 并口骨架（最终大屏备用） |
@@ -85,6 +85,17 @@ python tools/serial-capture/capture.py COM4         # 抓复位后的完整开�
 
 ## 最近进展
 
+- **2026-09-24** ★ **已解字段接进数据层 + 指示灯/告警框架（仍然零硬件）**：
+  `0x4FC` 的灯位域（左/右/双闪/近光/仪表盘灯）与门信号、`0xE24` 的 17 字节 VIN 接进
+  `data_service`（来源恒 `Van`、**没动既有优先级**，因为这三类在 OBD 上根本没有对应 PID）；
+  pcpreview 上加**占位**指示灯槽位（六格，本机全是简单几何）与**输入注入**（键盘 / `preview/inject.txt`）；
+  新增告警层 `lib/dashcore/alerts.*`（超速/红区/门/转向灯忘关，带去抖、最短重复间隔、静音）
+  与**可替换的蜂鸣器抽象**（`buzzer.h`；真机那一档建议走 2.8C 的 TCA9554 `EXIO8` ——
+  `ARCHITECTURE.md` §8 的 **L14 仍是建议、待 owner 裁决**）。
+  素材上传端规格与转换补齐：`tools/theme-editor/asset-spec.js` + README 的「素材规格」一节 +
+  `test-asset-spec.js`。★ 顺带修掉一个**一直存在**的构建缺口：`attachObdSerial()` 只在
+  `ARDUINO` 那一支里定义，而调用点没被圈起来 ⇒ **pcpreview 在起点上就编不过**
+  （现在给预览一份显式的空实现 + 一行日志）。
 - **2026-09-22** ★ **车速绝对刻度定标**：`kSpeedScale` 1.0 → **2.56**（1 计数 = 2.56 km/h）。第一次拿到地面真值 —— 蓝牙 ELM327 的 `010D` 与板子的 `0x824.data[2]` 双串口同源时间戳对齐，284 对非零样本回归 R² = 0.9984、斜率 95% 置信区间 [2.543, 2.567] ⇒ **取整 2.56**（数据只能分辨 2.55~2.57）。推翻旧口径「1 计数 = 1 km/h」（实测差 2.5 倍）。原始数据 `tools/serial-capture/drive-2026-09-22-{van,obd}.csv`，协议侧汇总见 `VAN-PROTOCOL.md`。
 - **2026-09-20** 车速字段定案并上屏：0x824 的 `data[2]` 单字节，`kSpeedScale` 0.01 → 1.0（旧值来自文档，`data[2..3]` 当 16 位大端解读过）。转速字段同时从"照抄文档"变成实测钉住（`kRpmScale = 0.125`）。测试 122 例 / 119 通过 / 2 跳过。
 - **2026-09-20** 用户定下 1.0 上屏、看表盘复核的口径，并取消定速跑要求。

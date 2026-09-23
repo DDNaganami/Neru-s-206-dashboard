@@ -3,6 +3,16 @@
 
 static const uint32_t kStaleMs = 3000;  // 源超时回退阈值
 
+// 门信号的"活动"窗口(ms)。★ 这个数与 `kStaleMs`(3 秒)**刻意不同**,别合并:
+//   · 3 秒是"这个源还活着吗"的判据(所有标量字段共用);
+//   · 本窗口是"门这一整套动作还在进行吗"的判据 —— 开门 → 上车/下车 → 关门
+//     是一串持续几秒的脉冲,所以取得比 3 秒长。
+//   ★ 取 8 秒是**工程判断,不是实测数字**:抓包那份数据里门脉冲是 10 s 档
+//     (第四轮实验:左门开/关/开/关 各 10 s),所以 8 s 落在"一次开门动作之内"。
+//     真车标定要等 owner 拿这块屏在地库里试一次(见回报里"留待裁决"那节)。
+//   ★ 它只影响**告警是否续着报**,不影响数据层的来源标注(那一格只看"收到过没有")。
+static const uint32_t kDoorActivityMs = 8000;
+
 const char* fieldSourceName(FieldSource f) {
   switch (f) {
     case FieldSource::None: return "none";
@@ -130,6 +140,78 @@ VehicleState VehicleDataService::update(uint32_t now_ms) {
       state_.intake_c = link_.intake_c;
       status_.intake = FieldSource::Link;
       status_.intake_age_ms = age;
+    }
+  }
+
+  // 5) VAN 已解出的四类字段（2026-09-24 新增）—— ★ 本段是**独立的一段**，
+  //    不插进 1)~4) 任何一段里，理由三条（这就是"没动既有优先级"的证据）：
+  //
+  //      ① 这四类字段**没有第二来源**（转向灯/灯位/门/VIN 在 OBD-II 里没有对应
+  //         PID，模拟页也不产生它们）⇒ 它们不进 `status_.x == Sim` 那套填空位
+  //         逻辑，`applyLinkData` 也一个字没改 ⇒ 结构上不可能抢走 speed/rpm/
+  //         coolant/intake 任何一格，也不可能被 Link 覆盖（链路只搬那四个标量）。
+  //      ② 判据用的是**自己那颗时间戳**（`van_.lightsLastMs()` / `vinLastMs()`），
+  //         与车速/转速共用的 `van_.lastUpdateMs()` 分开 —— 这正是"按字段独立"
+  //         那条纪律（test_obd_intake_takeover_per_field 钉过一次的那个坑：
+  //         共用时间戳会让一路有数据就把另一路也判成有数据）。
+  //         实测这三族的速率差得远：0x824 ≈ 9.7 Hz、0x4FC = 4.7 Hz、0xE24 是常量广播。
+  //      ③ 灯位刻意**不吃** `kStaleMs`（3 秒）那套：它的窗口是 600 ms
+  //         （`kIndicatorHoldMs`，见 van_source.h 的推导）。3 秒对闪着的转向灯
+  //         是"熄了还亮三秒"，对真灭灯也是"三秒才灭" —— 两个方向都错。
+  //
+  //    灯位的 `age` 只报**最近一帧**的年龄（真实新鲜度），"灯有没有过保持窗口"
+  //    由 `indicator_*` 这几个 bool 承担 —— 两者分开，UI 才画得出"数据在、但灯灭"。
+  if (van_.hasLights()) {
+    const uint32_t lage = now_ms - van_.lightsLastMs();
+    status_.lights_age_ms = lage;
+    if (van_.lightsRecent(now_ms)) {
+      const VanLights& L = van_.lights();
+      state_.indicator_left = L.left;
+      state_.indicator_right = L.right;
+      state_.hazard = L.hazard;
+      state_.position_lamp = L.dashboard;
+      state_.low_beam = L.low_beam;
+      // 五格**同一个来源**（同一帧的同一个字节），所以一起标、不分开判
+      status_.indicator_left = FieldSource::Van;
+      status_.indicator_right = FieldSource::Van;
+      status_.hazard = FieldSource::Van;
+      status_.position_lamp = FieldSource::Van;
+      status_.low_beam = FieldSource::Van;
+    } else {
+      // 过窗：值**清掉**（不是停在最后那个状态）—— 闪着的灯不能让屏上留个僵尸箭头。
+      // 来源回 `None` = "这一格现在没有有效值"，与 LinkData 里 None 的语义一致。
+      state_.indicator_left = false;
+      state_.indicator_right = false;
+      state_.hazard = false;
+      state_.position_lamp = false;
+      state_.low_beam = false;
+      status_.indicator_left = FieldSource::None;
+      status_.indicator_right = FieldSource::None;
+      status_.hazard = FieldSource::None;
+      status_.position_lamp = FieldSource::None;
+      status_.low_beam = FieldSource::None;
+    }
+  }
+  if (van_.hasDoor()) {
+    // ★ 门这一格报的是"**动过没有**"，不是"门开着"（左右门不可分辨 = 未解，
+    //   §6 撤回①）。窗口取 `kDoorActivityMs`：它要覆盖"开门这一整套动作"
+    //   （人下车、关门），比灯位的 600 ms 长得多。
+    // ★ age 只在**真的变化过**之后才算得出来（doorChangeMs() == 0 = 从未变化）：
+    //   否则会报出 `now - 0` 这种看着像"刚发生"的假年龄。没变化 ⇒ 保持哨兵值。
+    const uint32_t dchg = van_.doorChangeMs();
+    if (dchg != 0u) status_.door_age_ms = now_ms - dchg;
+    state_.door_activity = van_.doorActivity(now_ms, kDoorActivityMs);
+    // 来源格是"这一格有没有数据"：收到过门帧就一直是 Van（见 DataSourceStatus ②）。
+    status_.door = FieldSource::Van;
+  }
+  if (van_.hasVin()) {
+    status_.vin = FieldSource::Van;
+    status_.vin_age_ms = now_ms - van_.vinLastMs();
+    if (state_.vin[0] == '\0') {
+      // 只在还是空串时拷一次（17 字节 + 结尾）：这是**常量广播**，
+      // 每帧都拷只是白费 CPU（0xE24 ≈ 0.9 Hz，拷了也不会变）。
+      const char* v = van_.vin();
+      for (uint8_t i = 0; i <= kVanVinChars; ++i) state_.vin[i] = v[i];
     }
   }
 

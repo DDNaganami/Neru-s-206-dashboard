@@ -166,6 +166,68 @@ const BAND_DIGIT   = { x0: 150, y0: 48, x1: 330, y1: 96 };
 const BAND_UNIT    = { x0: 190, y0: 96, x1: 290, y1: 120 };
 const BAND_COOLANT = { x0: 190, y0: 370, x1: 290, y1: 400 };
 
+// ------------------------------------------------------------
+// 指示灯槽位（2026-09-24 新增）—— 逐格数"灯色像素"
+//
+// 为什么要有这一段：灯条的**几何与亮灭判定**已经被 native 用例钉住了
+// （test/test_dashcore/test_ui_lamps.cpp：内切圆约束 + 不压副表小字 + 六格映射），
+// 但"这些对象到底有没有画到屏上、画在哪一格"只有**读真实渲染的像素**才算数
+// （这正是本文件存在的理由，见文件头）。
+//
+// ★ 期望值来自 lib/dashcore/lamp_view.h 的 kLamp* 那组常量与
+//   lib/themetool/ui_theme.h 的 THEME_LAMP_COLOR / THEME_LAMP_ALERT_COLOR ——
+//   两处都在仓库里，改了几何这里要跟着改（数不对会当场红，这是刻意的：
+//   "灯条整体挪了 4 个像素"这种改动必须有人复核）。
+//
+// 用法（第 7 个参数）：`lamps=L,R,D` 之类，字母含义：
+//   L 左转 · R 右转 · Haz 双闪 · Low 近光 · Pos 仪表盘灯 · D 门
+//   不传 = **不做这两项检查**（保持这个脚本原来的调用方式仍然有效）。
+// 第 8 个参数：`alert=<none|overspeed|redline|door|turn-signal>` ——
+//   告警会让某一格**按脉冲闪**，闪的那一拍是时序相关的，所以这里只在
+//   `alert=none` 时把"没点名的格子必须不亮"当硬条件。
+// ------------------------------------------------------------
+const LAMP_SIZE = 40, LAMP_GAP = 6, LAMP_CY = 415, LAMP_BASE = 480;
+const LAMP_ROW_W = 6 * LAMP_SIZE + 5 * LAMP_GAP;          // = 270
+const LAMP_X0 = (LAMP_BASE - LAMP_ROW_W) / 2;             // = 105
+const LAMP_TOP = LAMP_CY - LAMP_SIZE / 2;                 // = 395
+const LAMP_ON  = { r: 0xFF, g: 0xB0, b: 0x20 };           // THEME_LAMP_COLOR
+const LAMP_ALERT = { r: 0xFF, g: 0x4D, b: 0x4D };         // THEME_LAMP_ALERT_COLOR
+const LAMP_LETTERS = ["L", "R", "Haz", "Low", "Pos", "D"];
+
+function checkLamps(file, spec, alertKind, side) {
+  const img = readBmp(file);
+  const k = img.w / LAMP_BASE;               // 240 档上整套几何 ×0.5
+  const checks = [];
+  const want = String(spec || "").split(",").map(s => s.trim()).filter(Boolean);
+  if (!want.length) return checks;
+  const ink = [];
+  for (let s = 0; s < 6; s++) {
+    const x0 = Math.round((LAMP_X0 + s * (LAMP_SIZE + LAMP_GAP)) * k);
+    const y0 = Math.round(LAMP_TOP * k);
+    const x1 = x0 + Math.round(LAMP_SIZE * k), y1 = y0 + Math.round(LAMP_SIZE * k);
+    let amber = countNear(img, x0, y0, x1, y1, LAMP_ON, 0x38);
+    // 告警描边是另一色，算"亮"时一起数（描边只出现在"正在报的那一条"上）
+    amber += countNear(img, x0, y0, x1, y1, LAMP_ALERT, 0x30);
+    ink.push(amber);
+  }
+  for (let s = 0; s < 6; s++) {
+    const name = "灯位 " + LAMP_LETTERS[s];
+    const wantOn = want.indexOf(LAMP_LETTERS[s]) >= 0;
+    // 没点名 + 没有告警 ⇒ 必须是灭的（告警会让某一格闪，见函数头）
+    const mustBeOff = !wantOn && (!alertKind || alertKind === "none");
+    const ok = wantOn ? ink[s] >= 50 : (mustBeOff ? ink[s] <= 10 : true);
+    checks.push({
+      name, x: 0, y: 0,
+      got: { r: ink[s], g: ink[s], b: ink[s] },
+      expect: { r: wantOn ? 50 : 0, g: 0, b: 0 },
+      ok,
+      text: "格内命中 " + ink[s] + " 像素（" +
+            (wantOn ? "期望亮 ≥50" : (mustBeOff ? "期望灭 ≤10" : "告警期间不断言")) + "）"
+    });
+  }
+  return checks;
+}
+
 function main() {
   const path = process.argv[2];
   const which = (process.argv[3] || "idle").toLowerCase();
@@ -179,7 +241,14 @@ function main() {
   // 开机扫表期间**不该有**:dash_ui_render 在开机期间会早退,
   // 所以标签一直是空文本 —— 这正是想要的效果,也在这里钉住。
   const readoutShown = (process.argv[6] || "yes") !== "no";
-  if (!path) { console.error("用法: check-preview-frame.js <bmp> [idle|cruise|sport|redline|overspeed] [yes|no] [left|right] [yes|no]"); process.exit(2); }
+  // 第 7/8 个参数:指示灯槽位（2026-09-24 新增，不传就跳过，见 checkLamps）
+  let lampSpec = "", alertKind = "";
+  for (let i = 7; i < process.argv.length; i++) {
+    const a = process.argv[i] || "";
+    if (a.indexOf("lamps=") === 0) lampSpec = a.slice(6);
+    else if (a.indexOf("alert=") === 0) alertKind = a.slice(6);
+  }
+  if (!path) { console.error("用法: check-preview-frame.js <bmp> [idle|cruise|sport|redline|overspeed] [yes|no] [left|right] [yes|no] [lamps=L,R,Low,D] [alert=none|overspeed|redline|door|turn-signal]"); process.exit(2); }
 
   const table = (side === "right") ? FACE_R : FACE_L;
   const face = table[which];
@@ -475,11 +544,15 @@ function main() {
     addBand("开机期间不该有单位", BAND_UNIT, READOUT_UNIT, 0x30, undefined, 0);
   }
 
+  // --- 指示灯槽位（传了 lamps= 才检查）---
+  for (const c of checkLamps(path, lampSpec, alertKind, side)) checks.push(c);
+
   let fail = 0;
   console.log("=== " + path + "  (" + (side === "right" ? "右屏" : "左屏") +
               ", 期望表情: " + which +
               ", 表情可见: " + (faceVisible ? "是" : "否") +
-              ", 读数: " + (readoutShown ? "应有" : "不应有") + ")  " + img.w + "x" + img.h + " ===");
+              ", 读数: " + (readoutShown ? "应有" : "不应有") +
+              (lampSpec ? ", 灯位: " + lampSpec : "") + ")  " + img.w + "x" + img.h + " ===");
   for (const c of checks) {
     if (!c.ok) fail++;
     if (c.text) {

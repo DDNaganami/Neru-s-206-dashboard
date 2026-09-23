@@ -31,6 +31,37 @@ struct DataSourceStatus {
   uint32_t coolant_age_ms = UINT32_MAX;
   uint32_t intake_age_ms  = UINT32_MAX;
 
+  // ============================================================
+  // ★★ 2026-09-24 新增:VAN 已解出的四类字段的来源(全部**唯一来源 = Van**)
+  //
+  // 语义与上面几格**刻意不同**,两条都写清楚(这是本轮最容易读歪的地方):
+  //
+  // ① 这几格只有 `None` / `Van` 两种取值,**永远不可能是 Sim/Obd/Link**。
+  //    理由不是"懒得写",而是**没有第二来源**:转向灯/灯位/门/VIN 在 K 线
+  //    OBD 上没有对应 PID(它们不是 OBD-II 标准项),模拟页也不产生它们。
+  //    ⇒ 也就没有"优先级"可言:这几格**不参与** applyLinkData 的填空位逻辑,
+  //      也不会被 Sim 覆盖 —— 所以"既有 Van/Obd/Sim/Link 的优先级语义"一个字没动。
+  //
+  // ② 这几格的 `age` 判据**不是**其它字段那套"3 秒无新数据就回退下一档":
+  //    · 灯位:保持窗口是 `kIndicatorHoldMs`(600 ms,见 van_source.h),
+  //      而不是 3 秒 —— 3 秒对闪着的转向灯太长,对灭灯也太长。超窗 ⇒ 回 `None`
+  //      (屏上箭头**隐藏**,不是"停在最后那个状态")。
+  //    · 门/VIN:一族是边沿信号、一族是常量广播,都没有"过期"这回事 ⇒
+  //      它们的来源格在**收到过之后一直是 Van**(age 照实给),值本身不做时间衰减。
+  //      上层的判据各自现算(门用 doorActivity 的窗口、VIN 是一次性读取)。
+  // ============================================================
+  FieldSource indicator_left  = FieldSource::None;
+  FieldSource indicator_right = FieldSource::None;
+  FieldSource hazard          = FieldSource::None;
+  FieldSource position_lamp   = FieldSource::None;
+  FieldSource low_beam        = FieldSource::None;
+  FieldSource door            = FieldSource::None;
+  FieldSource vin             = FieldSource::None;
+  uint32_t lights_age_ms = UINT32_MAX;   // 0x4FC 最近一帧的年龄
+  uint32_t door_age_ms   = UINT32_MAX;   // 门信号相对基线的**最近一次变化**的年龄
+                                         // (★ 不是"最近一帧"——门是边沿信号,见 .cpp 第 5 段)
+  uint32_t vin_age_ms    = UINT32_MAX;   // 0xE24 最近一帧的年龄
+
   // OBD 各字段的**实测刷新率**(Hz,每秒结算一次)。
   // 为什么放在 status 里:这是"K 线够不够用"的唯一判据,而 K 线是一条
   // 排队共享的窄管子 —— 加一个 PID 会不会把别的字段拖慢,算不出来
@@ -82,6 +113,11 @@ struct LinkData {
 // ★ 2026-09-23：上面这套优先级**一个字都没改**，新增的链路（Link）只在"该字段本来
 //   就要落到 Sim"时才接手 —— 见 applyLinkData() 的注释与
 //   test_data_service.cpp 里那两条"既有优先级不变"的用例。
+//
+// ★ 2026-09-24：又加了一组字段（转向灯/灯位/门/VIN，全部来自 VAN、全部是唯一来源）。
+//   这一组**不参与**这套优先级，也不进 `applyLinkData` 的填空位逻辑 —— 理由与
+//   它们各自的 age 判据见 `DataSourceStatus` 里那三段注释。既有六个字段
+//   （speed/rpm/coolant/intake/fuel/gear）的合并顺序与回退行为**一个字没动**。
 //
 // ★ 车速为什么是 Van 优先(而不是 Obd 优先):
 //   K 线是**请求/应答**且排队共享,而车速和转速是最需要"跟手"的两条弧。

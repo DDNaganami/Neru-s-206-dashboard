@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <string.h>     // memcmp:pcpreview 的注入快照比对(设备侧也编,无副作用)
 #include "dash_log.h"   // 日志默认打 USB-CDC+UART0;带链路 PHY 的构建只打 USB-CDC(见文件头)
 
 // ★ 单板回环验证固件（`env:esp32s3-linkloop`）要与本文件**二选一**：同一个 env 只能
@@ -19,6 +20,8 @@
 #include "data_service.h"
 #include "dash_display.h"
 #include "dash_ui.h"
+#include "alerts.h"       // 告警层:只用已解字段(超速/红区/门/转向灯忘关)
+#include "buzzer.h"       // 蜂鸣器抽象(L14 建议 = 从板本地发声;真机实现待 L14 点头)
 #include "expression.h"   // Face（STATUS.left_face 要报"左屏当前档位"，§3）
 #include "image_load.h"
 #include "link_app.h"     // 双板链路 v1 的应用层接线（§1.2 ③ / §3 / §4 / §5）
@@ -30,6 +33,12 @@
 #include "ui_model.h"
 #include "van_phy.h"
 #include "van_replay.h"
+
+// pcpreview 的输入注入（键盘 + preview/inject.txt）—— 只在这个 env 里编
+// （实现整个在 src/preview_input.cpp 的 `#if defined(DASH_DISPLAY_PREVIEW)` 里）。
+#if defined(DASH_DISPLAY_PREVIEW)
+#include "preview_input.h"
+#endif
 
 #if LINK_ROLE == 1
 // 链路物理层（真实 UART）只在**主板**这一侧编译：从板（LINK_ROLE==0）不发车数据、
@@ -72,6 +81,75 @@
 static const uint32_t kObdBaud = 38400;
 
 static VehicleDataService g_data(nullptr);
+
+// ============================================================================
+//  告警层 + 蜂鸣器（2026-09-24 新增）
+// ============================================================================
+// 触发源**只用已解字段**：超速（车速）/ 转速红区（5800）/ 门（"动过"）/
+// 转向灯亮太久。判据、去抖、最短重复间隔、静音全在 lib/dashcore/alerts.*
+// （纯逻辑，native 用例逐条测掉），这里只做三件事：
+//   ① 每轮喂一份快照给 Alerts；
+//   ② 按它的结论驱动蜂鸣器（Buzzer 抽象后面的实现）；
+//   ③ 把结论交给 UI（灯位闪烁 + 告警描边）。
+//
+// ★ 蜂鸣器挂哪个实现（**这是 §8 L14 的落点**）：
+//   · 现在挂的是 `BuzzerNull`（不发声）—— 因为 2.8C 还没到货、
+//     而且 L14「由哪块板发声」**还没裁决**（本轮按"从板本地发声"**建议**实现，
+//     见 buzzer.h 的文件头）。
+//   · pcpreview 上换成 `BuzzerHost`（打印 `BEEP pattern=… ms=…` 一行，
+//     可选 -DBUZZER_HOST_SOUND=1 出系统提示音）⇒ 模拟页上能看见"什么时候会响"。
+//   · 真机实现是**另一个 Buzzer 子类**（TCA9554 的 EXIO8，零额外引脚）——
+//     L14 一旦点头，只改下面这几行的构造，alerts 与 UI 一行都不用动。
+//     在那之前**不写一个没验过的 I2C 写时序**（没硬件，验不了）。
+static Alerts g_alerts;
+static BuzzerNull g_buzzer_null;
+#if defined(DASH_DISPLAY_PREVIEW)
+static BuzzerHost g_buzzer_host;
+#endif
+static Buzzer* g_buzzer = &g_buzzer_null;
+
+// 告警状态的一行回执（只在**变了**的时候打：每 5 秒那行只报"当前是什么"）。
+static uint8_t g_alert_last = 0xFF;   // 0xFF = 还没打过
+static uint32_t g_beep_seen = 0;
+
+#if defined(DASH_DISPLAY_PREVIEW)
+// pcpreview 的注入快照 + 它改过的字段。设备固件里没有这一段。
+static PreviewInput g_preview;
+static PreviewInput g_preview_prev;
+static uint32_t g_lamp_pulse_ms = 0;
+static bool g_lamp_pulse = false;
+
+// 把注入施加到快照上。
+// ★ 施加的位置在 `g_data.update()` **之后**、`make_view()` **之前**：
+//   注入是"人替传感器说话"，所以它压过数据层的合并结果；
+//   而它**不回流**进 data_service（不碰优先级、不产生协议行为，见 preview_input.h ③）。
+static void preview_apply(const PreviewInput& in, VehicleState& st) {
+  // ★ 用"与上一帧比**变了**没有"来决定要不要打印：控制文件是每帧重读的，
+  //   不变时刷屏没意义。
+  const bool changed = memcmp(&in, &g_preview_prev, sizeof(PreviewInput)) != 0;
+  g_preview_prev = in;
+  if (changed && in.any()) {
+    dash_logf("inject: L=%d R=%d haz=%d low=%d pos=%d door=%d spd=%.0f rpm=%.0f mute=%d\n",
+              (int)in.left, (int)in.right, (int)in.hazard, (int)in.low_beam,
+              (int)in.position, (int)in.door, in.speed_kmh, in.rpm, (int)in.mute);
+  }
+  if (in.left_set)      st.indicator_left = in.left;
+  if (in.right_set)     st.indicator_right = in.right;
+  if (in.hazard_set) {
+    st.hazard = in.hazard;
+    // ★ 双闪的语义在数据层是"两位同时置位"（§4.3 的位域证据就是 `0x0C = 0x04|0x08`）。
+    //   注入也照这个来 —— 不然"双闪但不亮左右箭头"这件事在真机上根本不存在，
+    //   会造成预览与真车行为分叉。
+    if (in.hazard) { st.indicator_left = true; st.indicator_right = true; }
+  }
+  if (in.low_beam_set)  st.low_beam = in.low_beam;
+  if (in.position_set)  st.position_lamp = in.position;
+  if (in.door_set)      st.door_activity = in.door;
+  if (in.speed_set)     st.speed_kmh = in.speed_kmh;
+  if (in.rpm_set)       st.rpm = in.rpm;
+  g_alerts.setMuted(in.mute);
+}
+#endif  // DASH_DISPLAY_PREVIEW
 #if defined(ARDUINO)
 // 挂上 OBD 串口,并把 VehicleDataService 的指针换成 &Serial1。
 // ★ 必须在 setup() 里做,不能在静态初始化期做:Serial1 的 begin() 要等
@@ -86,6 +164,29 @@ VehicleDataService& attachObdSerial() {
 #else
   dash_logf("obd: 未启用(-DOBD_SERIAL=0),只跑 Sim 假数据\n");
 #endif
+  return g_data;
+}
+#else
+// ============================================================================
+//  pcpreview（宿主机）：**没有 UART1，也没有 ELM327**
+// ============================================================================
+// ★ 这一段是 2026-09-24 补的，补的是一个**一直存在的缺口**（不是本轮引入的
+//   行为改变）：`g_data = attachObdSerial()` 那句调用**没有**被 `#if defined(ARDUINO)`
+//   圈起来，而函数**只在 ARDUINO 那一支里定义** ⇒ pcpreview 编译到那句时就报
+//   `use of undeclared identifier 'attachObdSerial'`，**整个宿主机预览编不出来**。
+//   （实测复核：拿 `git show HEAD:src/main.cpp` 用 pcpreview 的**逐字编译参数**
+//     预 processed 一遍，`attachObdSerial()` 只剩调用点、没有定义 ⇒ 起点上就编不过。
+//     仓库里的 `.pio/build/` 也只有 `esp32dev` 一个目录 ⇒ pcpreview 在本机
+//     从来没成功编过一次。所以本轮"pcpreview 要 SUCCESS"这条必须先把这里修掉。）
+//
+// 修法刻意选**"给预览一份显式的空实现"**，而不是把调用点也圈进 ARDUINO：
+//   · 预览里 OBD 本来就该是关的（宿主机没有 Serial1；`OBD_SERIAL` 默认 1），
+//     所以这里 `g_data` 保持构造时的 `nullptr`（= `ObdSource` 不启用），
+//     与"没插 OBD"完全同一条路径 —— 预览的弧/表情继续由 `sim_source` 驱动。
+//   · 而且它会**明确打一行日志**。圈掉调用点的话是"静默地没有"，而这正是
+//     最难查的一类（"预览里为什么没有 OBD"根本不会有人问，直到真车对不上）。
+VehicleDataService& attachObdSerial() {
+  dash_logf("obd: pcpreview 宿主机没有 UART1/ELM327 ⇒ 不启用 OBD(弧/表情走 Sim 假数据)\n");
   return g_data;
 }
 #endif  // ARDUINO
@@ -632,6 +733,21 @@ void setup() {
   g_data = attachObdSerial();
   g_data.begin();
   BOOT_STAGE(2);
+
+  // 告警层 + 蜂鸣器：把实现**挂上**（挂哪个见上面那一段注释 —— L14 还没裁决）。
+#if defined(DASH_DISPLAY_PREVIEW)
+  g_buzzer = &g_buzzer_host;      // 预览：打印 BEEP 行（可选系统提示音）
+#endif
+  g_buzzer->begin();
+  dash_logf("alerts: 已就绪(超速 %.0f / 红区 %.0f / 门 / 转向灯忘关 %us)\n",
+            (double)g_alerts.config().overspeed_kmh,
+            (double)g_alerts.config().redline_rpm,
+            (unsigned)(g_alerts.config().turn_signal_on_ms / 1000u));
+#if defined(DASH_DISPLAY_PREVIEW)
+  // 预览的输入注入：键盘 + preview/inject.txt（用法见 src/preview_input.h）
+  preview_input_begin("preview/inject.txt");
+  g_preview_prev = g_preview;     // 免得第一帧就报"变了"
+#endif
   // 物理层 → 打印层 → 数据源。打印层只旁观,不影响数据流
   // (抓帧时那行文本就是回放格式,见 VanLogSink 的说明)。
   g_van_log.setNext(&g_van_sink);
@@ -713,7 +829,11 @@ void loop() {
   link_poll_frames_slave(now);
 #endif
 
-  const VehicleState st = g_data.update(now);
+  // ★ 2026-09-24：由 `const VehicleState st` 改成**可写**的 `st_mut` ——
+  //   pcpreview 的输入注入要在这份快照上覆写几个字段（见下面 preview_apply）。
+  //   设备侧一个字都没变：`st_mut` 在那边从来不会被改（那一段在 #if 里）。
+  //   名字刻意带 `_mut`：后面读代码的人一眼知道"这里可能被注入改过"。
+  VehicleState st_mut = g_data.update(now);
   BOOT_STAGE(7);
 
 #if LINK_ROLE == 1
@@ -721,20 +841,55 @@ void loop() {
   // ★ 三个顺序上的口径：
   //   ① 收在 `g_data.update()` **之后**：收到的 STATUS/EVENT 只进日志，不参与本机的
   //      数据合并（本机的真值来自它自己的 VAN/OBD，§1.2 ③ 也不许它回头影响快照）。
-  //   ② TICK/HELLO/DATA 用的都是**刚才那一份快照**（`st` 与 `g_data.status()`）——
+  //   ② TICK/HELLO/DATA 用的都是**刚才那一份快照**（`st_mut` 与 `g_data.status()`）——
   //      这就是 §1.2 ③ 的"从快照发、不从回调发"。
   //   ③ 排水放在**同一轮的最末尾**：先把该排的都排完，下一圈再进新的。两步都有上界、
   //      都不忙等（见 link_tx.h / link_phy_uart.h）。
   link_poll_inbound(now);
-  link_master_tick(now, st);
+  link_master_tick(now, st_mut);
 #endif
+#if defined(DASH_DISPLAY_PREVIEW)
+  // ---- pcpreview 的输入注入：在数据合并**之后**、算视图**之前** ----
+  // 顺序是硬的：注入是"人替传感器说话"，所以要压过 sim/VAN/OBD 的合并结果；
+  // 但它**不回流**进 data_service（不碰优先级、不产生协议行为）。
+  if (preview_input_poll(g_preview)) {
+    preview_apply(g_preview, st_mut);
+  }
+#endif
+
+  // ---- 告警层（2026-09-24）----
+  // ★ 喂的是**这一轮最终的快照**（注入之后），所以 pcpreview 上按 O/R
+  //   能立刻看到告警与蜂鸣器的反应 —— 而判据本身与真车跑的是同一份代码。
+  const AlertKind alert = g_alerts.update(st_mut, now);
+  if (g_alerts.beeping()) {
+    g_buzzer->beep(g_alerts.pattern(), g_alerts.config().beep_ms);
+  } else {
+    g_buzzer->off();
+  }
+  // 状态变化时打一行（不是每轮都打：红区一直守着会变成每秒一行噪音）。
+  const uint8_t alert_id = (uint8_t)alert;
+  if (alert_id != g_alert_last) {
+    g_alert_last = alert_id;
+    dash_logf("alert: %s%s\n", alertName(alert), g_alerts.muted() ? " (muted)" : "");
+  }
+#if defined(DASH_DISPLAY_PREVIEW)
+  // 屏上告警闪与蜂鸣器**同一拍**：这里用"刚响过的那一拍"当相位源
+  // （听起来在叫、看起来在闪 = 一条信息；两者不同步会很怪）。
+  if (g_alerts.beeping()) { g_lamp_pulse = true; g_lamp_pulse_ms = now; }
+  else if (g_lamp_pulse && (uint32_t)(now - g_lamp_pulse_ms) > 150u) g_lamp_pulse = false;
+  const LampView lamps = make_lamps(st_mut, alert_id, now, g_lamp_pulse);
+#else
+  // 设备侧：告警闪的相位由 beep 的节奏给（真机上蜂鸣器一响，屏上就闪那一拍）。
+  const LampView lamps = make_lamps(st_mut, alert_id, now, g_alerts.beeping());
+#endif
+
   dash_ui_tick(now);   // LVGL 心跳,每个循环都跑
   dash_display_poll(); // 设备上为空;pcpreview 落 BMP 帧
   BOOT_STAGE(8);
 
   if (now - last_ui_ms >= 200) {
     last_ui_ms = now;
-    dash_ui_render(make_view(st, now), now);
+    dash_ui_render(make_view(st_mut, now), lamps, now);
     BOOT_STAGE(9);
   }
 
@@ -770,10 +925,47 @@ void loop() {
                   fieldSourceName(s.rpm),
                   fieldSourceName(s.coolant),
                   fieldSourceName(s.intake),
-                  st.speed_kmh, st.rpm, st.coolant_c, st.intake_c);
+                  st_mut.speed_kmh, st_mut.rpm, st_mut.coolant_c, st_mut.intake_c);
     // 实测刷新率:判断"K 线够不够用"的唯一依据(见 obd_source.h 的时隙账)
     dash_logf("SRC-Hz rpm=%.1f cool=%.1f intake=%.1f speed=%.1f\n",
                   s.obd_rpm_hz, s.obd_coolant_hz, s.obd_intake_hz, s.obd_speed_hz);
+    // ★ 2026-09-24 新增的一行:**VAN 上已解出、这一轮才接进数据层的四类字段**。
+    //   为什么要单独一行（而不是塞进上面 SRC 那行）：上面那行是"六个标量字段
+    //   各自的源"，这四类的来源**恒为 VAN 或 None**（唯一来源，见 data_service.h），
+    //   合并到一行里会让"为什么 speed 那格能是 obd、灯那格永远不是"看着像 bug。
+    //   age 也一起报：灯位那一格的 age 是"最近一帧 0x4FC 的年龄"，
+    //   而灯**亮不亮**另由 600 ms 的保持窗口决定（见 van_source.h）。
+    //   ★ 拿不到的值一律打 `-`：UINT32_MAX 这种哨兵直接打出来是 4294967295，
+    //     到车上会被误读成"这个数有意义"（踩过同类坑：age 字段写成 now-0）。
+    {
+      const VehicleState& cur = st_mut;
+      char age_lights[16], age_door[16], age_vin[16];
+      snprintf(age_lights, sizeof(age_lights), "%lu",
+               (unsigned long)((s.lights_age_ms == UINT32_MAX) ? 0u : s.lights_age_ms));
+      snprintf(age_door, sizeof(age_door), "%lu",
+               (unsigned long)((s.door_age_ms == UINT32_MAX) ? 0u : s.door_age_ms));
+      snprintf(age_vin, sizeof(age_vin), "%lu",
+               (unsigned long)((s.vin_age_ms == UINT32_MAX) ? 0u : s.vin_age_ms));
+      dash_logf("SRC-VAN turn=%s%s%s low=%s pos=%s door=%s vin=%s\n",
+                    cur.indicator_left ? "L" : "-",
+                    cur.indicator_right ? "R" : "-",
+                    cur.hazard ? "(haz)" : "",
+                    fieldSourceName(s.low_beam),
+                    fieldSourceName(s.position_lamp),
+                    cur.door_activity ? "active" : "idle",
+                    (cur.vin[0] != '\0') ? cur.vin : "-");
+      dash_logf("SRC-VAN age lights=%sms door=%sms vin=%sms | src turn=%s door=%s vin=%s"
+                " | alert=%s beeps=%lu%s\n",
+                    (s.lights_age_ms == UINT32_MAX) ? "-" : age_lights,
+                    (s.door_age_ms == UINT32_MAX) ? "-" : age_door,
+                    (s.vin_age_ms == UINT32_MAX) ? "-" : age_vin,
+                    fieldSourceName(s.indicator_left),
+                    fieldSourceName(s.door),
+                    fieldSourceName(s.vin),
+                    alertName(g_alerts.active()),
+                    (unsigned long)g_alerts.beepCount(),
+                    g_alerts.muted() ? " muted" : "");
+    }
 #if LINK_ROLE == 1
     // 链路质量（§7 的失败模式表：链路断/从板无响应那一行就看这里）。
     // ★ §8 L13：STATUS 超时门限 **30 s**（不是 5 s），而且**只用于日志、不上屏**

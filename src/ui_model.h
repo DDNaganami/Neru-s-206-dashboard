@@ -1,9 +1,8 @@
-#pragma once
+﻿#pragma once
 #include "vehicle_state.h"
 #include "expression.h"
 
-struct ArcDashView {
-  float speed_t;
+struct ArcDashView {  float speed_t;
   float rpm_t;
   float coolant_c;
   // 进气温度(OBD 010F):速度表的副表,与转速表上的水温表对称。
@@ -46,3 +45,9 @@ inline ArcDashView make_view(const VehicleState& s, uint32_t now_ms) {
   v.face_right = fs.right;
   return v;
 }
+
+// 指示灯槽位（六格灯）—— 定义在 lib/dashcore/lamp_view.h（纯映射、native 可测）。
+// ★ 从 src/ui_model.h 里**移出去**了，不是删掉：这里 include 一下，
+//   于是 dash_ui.cpp / main.cpp 照旧写 LampView / make_lamps / LampSlot，
+//   一个调用点都不用改（那正是"移动而不是复制"的验收标准）。
+#include "lamp_view.h"
