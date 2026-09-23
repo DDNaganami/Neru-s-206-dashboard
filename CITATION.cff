@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use this project or its VAN protocol findings, please cite it using the metadata below."
+
+title: "Neru's 206 Dashboard"
+abstract: |-
+  Peugeot 206 (AEE2001 platform) instrument-cluster dashboard: two round displays
+  driven by an ESP32-S3, reading rpm, coolant temperature, intake temperature via
+  K-line OBD and vehicle speed from the VAN comfort bus.
+
+  The repository mainly publishes an evidence-backed measured reference for the
+  PSA / AEE2001 VAN comfort bus (frame layout, E-Manchester / 4B5B, CRC-15
+  parameters, measured 8.25 us slot time, decoded IDs) plus the wiring notes,
+  architecture decisions and per-run acceptance log behind it.
+
+  Licensing is layered: code is MIT, documentation (*.md) is CC BY 4.0, and
+  artwork / image and binary assets are declared separately with all rights
+  reserved. See LICENSE, LICENSE-DOCS, LICENSE-ARTWORK and THIRD-PARTY.md.
+
+type: software
+authors:
+  - name: "DDNaganami"
+repository-code: "https://github.com/DDNaganami/Neru-s-206-dashboard"
+license: MIT
+keywords:
+  - Peugeot 206
+  - PSA
+  - AEE2001
+  - VAN bus
+  - vehicle area network
+  - K-line
+  - OBD
+  - ESP32-S3
+  - LVGL
+  - instrument cluster
+  - reverse engineering

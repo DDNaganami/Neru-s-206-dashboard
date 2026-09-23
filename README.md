@@ -83,6 +83,14 @@ python tools/serial-capture/capture.py COM4         # 抓复位后的完整开�
 
 **逐次日志写 `ACCEPTANCE.md`，README 只放稳定信息和最近进展。**
 
+## 许可证与引用
+
+本仓库按内容分三层授权：**代码**（`src/` / `lib/` / `include/` / `test/` / `preview/` / `tools/` 下的源码与构建配置，含接线 / 引脚 / 分区这类事实性表格）= **MIT**，见 `LICENSE`；**文档**（全部 `*.md`，含本文与 `VAN-PROTOCOL.md`）= **CC BY 4.0**，见 `LICENSE-DOCS`；**美术素材与图片 / 二进制** = **单独声明、保留所有权利**，**不在** MIT 或 CC BY 4.0 覆盖范围内，见 `LICENSE-ARTWORK`。
+
+引用或转载**文档**（尤其 `VAN-PROTOCOL.md` 的协议表）请按 CC BY 4.0 注明出处：仓库地址 <https://github.com/DDNaganami/Neru-s-206-dashboard> + 文件路径；机器可读的引用元数据在 `CITATION.cff`（GitHub 会据此显示「引用」按钮）。
+
+**第三方**（协议 / 技术资料、硬件资料、软件依赖与字体）各自保留其原始条款，登记见 `THIRD-PARTY.md`；本项目对它们的引用与实测复现不改变其归属。
+
 ## 最近进展
 
 - **2026-09-24** ★ **已解字段接进数据层 + 指示灯/告警框架（仍然零硬件）**：

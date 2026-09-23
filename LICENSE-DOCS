@@ -1,0 +1,52 @@
+# 文档许可证 —— CC BY 4.0
+
+本仓库的**文档**以 **Creative Commons Attribution 4.0 International（CC BY 4.0）** 提供。
+
+- 许可证全文（规范链接）：<https://creativecommons.org/licenses/by/4.0/>
+- 法律文本（legalcode）：<https://creativecommons.org/licenses/by/4.0/legalcode>
+- 中文摘要（仅供参考，以英文 legalcode 为准）：<https://creativecommons.org/licenses/by/4.0/deed.zh>
+
+Copyright (c) 2026 DDNaganami
+
+## 适用文件
+
+**本仓库内全部 Markdown 文档（`*.md`）**，包括但不限于：
+
+| 文件 | 内容 |
+|---|---|
+| `README.md` | 项目总览、到哪一步、编译/测试/刷机 |
+| `VAN-PROTOCOL.md` | 法系车 VAN 舒适总线实测协议参考（**主要面向外部引用**） |
+| `ARCHITECTURE.md` | 分层与数据流、取舍理由 |
+| `PINOUT.md` | 接线、认线、上车次序、抓帧盒 |
+| `PURCHASE.md` | 采购清单与到货验证动作 |
+| `ACCEPTANCE.md` | 逐次日志：实测证据、踩过的坑、仍未验的项 |
+| `docs/` 下的文档 | `docs/LINK-LOOPBACK.md`、`docs/laptop-setup.md` |
+| `tools/` 下的文档 | `tools/theme-editor/README.md`、`tools/sync/README.md`、以及各工具目录内的说明文档 |
+| 以后新增的 `*.md` | 同上，自动适用 CC BY 4.0 |
+
+## 引用 / 转载 / 翻译请注明出处
+
+CC BY 4.0 要求署名。**任何引用、转载、节选、翻译或改编，请注明出处**：
+
+1. **仓库地址**：<https://github.com/DDNaganami/Neru-s-206-dashboard>
+2. **文件路径**：所引用文档在仓库内的路径（例如 `VAN-PROTOCOL.md`、`PINOUT.md`）
+3. 如方便，附上**版本信息**（提交哈希或发布日期），以便读者对应到具体结论
+
+建议的署名格式：
+
+> 来源：Neru's 206 Dashboard — `VAN-PROTOCOL.md`
+> <https://github.com/DDNaganami/Neru-s-206-dashboard/blob/main/VAN-PROTOCOL.md>
+> 作者：DDNaganami ｜ 许可证：CC BY 4.0
+
+## 不在本文件覆盖范围内的内容
+
+下表列出的内容**不适用** CC BY 4.0，各自的条款如下：
+
+| 内容 | 适用许可证 |
+|---|---|
+| 代码（`src/`、`lib/`、`include/`、`test/`、`preview/`、`tools/` 下的源码）、构建配置，以及其中的接线 / 引脚 / 分区等事实性表格 | **MIT** —— 见 `LICENSE` |
+| 美术素材与图片 / 二进制（含 `tools/theme-editor/` 下的图片与生成物） | **保留所有权利** —— 见 `LICENSE-ARTWORK`（**不在 CC BY 4.0 覆盖范围内**） |
+| 第三方内容（协议 / 技术资料、硬件资料、软件依赖及其字体） | **各自保留其原始条款** —— 见 `THIRD-PARTY.md` |
+
+★ **本文件（`LICENSE-DOCS`）与 `LICENSE`、`LICENSE-ARTWORK`、`THIRD-PARTY.md` 是许可证与来源
+声明本身**，不是"被许可的文档内容"：它们中的中文说明文字可以自由转发，但请勿改动其法律含义。
