@@ -80,7 +80,11 @@ struct StatusMsg {
   uint16_t frames_ok     = 0;   // 收下的帧
   uint16_t frames_dropped = 0;  // 丢掉的帧（§2 的三种：crc / bad_len / unknown_type）
   uint16_t crc_err       = 0;
-  uint16_t last_gap_ms   = 0;   // 最近一次帧间隔（详见回报里的契约歧义）
+  // ★ v1 决定（2026-09-23，ARCHITECTURE.md §3 表下那一段）：**字段保留、一律发 0**
+  //   —— 要填它，发送侧必须先有**接收侧自己的时钟**（"从板观测到的帧间隔"得有基准），
+  //   而 v1 没有那条落地代码 ⇒ 这里既没有生产者、也没有"语义"可定。
+  //   ★ 别按字段名猜语义（"最近一次帧间隔"只是名字）：将来要填时先定语义再写实现。
+  uint16_t last_gap_ms   = 0;   // 保留；v1 恒 0（无生产者）
   uint8_t  left_face     = 0;   // 左屏当前档位 = expression.h 的 Face 槽位下标
   uint8_t  flags         = 0;   // kStFlag*
 };
