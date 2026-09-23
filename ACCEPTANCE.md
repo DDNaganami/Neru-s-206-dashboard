@@ -2476,3 +2476,52 @@ PSRAM 会慢一点，但 40MHz 的 SPI 本来就不是瓶颈）。
       · 「接线定案」那条"为什么挑 15 不挑 44"**保留原决定**，只追记一句：理由被修正（43/44 不是硬并线，是经开关二选一）。
 
       **未动**：`tools/theme-editor/theme.json`（未跟踪，未碰、未提交）；原理图 PDF 只落在 `%TEMP%`，**未入库**。
+
+---
+
+- [x] **★ 3 条陈旧断言修复（只改测试）+ 链路协议 v1 契约 6 处补全（2026-09-23）**
+      **起点**：`0441838` 上 native 有 **3 条既有失败**（**不是本轮引入**，且**产品行为是对的**）。
+      **根因**：`c596351` 把 `kSpeedScale` 从 `1.0` 改成 **`2.56f`** 时，改了 `test_van_source.cpp` /
+      `test_van_phywire.cpp` / `test_van_real_capture.cpp`，**漏改 `test_data_service.cpp` 与 `test_van_replay.cpp`** ——
+      这两处仍按「1 计数 = 1 km/h」断言（`data[2] = 0x64` ⇒ 100 计数 × 2.56 = **256** km/h，期望还写着 `100.0f`）。
+      三条失败（PlatformIO 把文件名改写成 `test_main.cpp`，行号是**原文件里**的断言行）：
+      `test_van_replay.cpp:88 test_replay_feeds_data_service`、`test_data_service.cpp:106 test_van_speed_and_fallback`、
+      `test_data_service.cpp:180 test_speed_priority_van_obd_sim` —— 三条都是 `Expected 100 Was 256`。
+
+      **① 修法：期望值由代码常量推导（耐久，不写死 km/h 字面量）**
+      · 三条一律写成 `计数 × VanSource::kSpeedScale`；计数用文件级 `kVanSpeedCount = 0x64` 表达（**帧内容，与标度无关**），
+        `test_data_service.cpp` 的两条共用它。
+      · `test_van_replay.cpp` 那条另加一条断言把回放行解出的字节单独钉住（`p.data[kSpeedOffset] == 0x64`）⇒
+        期望值不是从被验对象自己推出来的（**不循环论证**）。
+      · 顺手改掉**造成事故的那条注释**（原文「100 km/h（★ 单字节，1 计数 = 1 km/h）」）—— 这种注释本身就是下一个地雷。
+        `kRpmScale`(0.125) 那边只加了一行出处注，**值未动**。
+      · ⇒ 标度以后再变，期望值自动跟着走，不会再出现"改了代码忘了改测试"的同类事故。
+      · **断言语义原样保留**：三条验的仍是"回放喂进 data_service / 车速与兜底 / 来源优先级 Van > Obd > Sim"。
+      · **产品代码一行未动**（`lib/dashcore/`、`src/` 只读未改；`theme.json` 未碰）。
+
+      **② native 真跑（ASCII 临时副本 `C:\206dash-scratch\Neru`；未在真仓库里 `pio clean` / 删 `.pio`）**
+      · 改前 **`189 test cases: 3 failed, 2 skipped, 183 succeeded`** → 改后 **`188 test cases: 2 skipped, 186 succeeded`**
+        ⇒ **失败 3 → 0、通过 183 → 186（+3）**、跳过仍 2。
+      · ★ 那个 `189` **不是用例数、更不是丢了用例** —— **`RUN_TEST` 注册数 = 188**（静态计数），
+        两次运行的**用例结果行各 188 条、用例名集合逐一相同**：用 `git archive` 把 HEAD 上原始的两份测试文件
+        按字节还原后重跑，再逐名 `Compare-Object`，**无差异**。
+        `189` 是 **Unity 汇总在"有失败"时的多数 1**，同一现象上一轮已经出现过 —— `0441838` 的提交信息写着
+        "RUN_TEST 注册数 155 → 188，Unity 汇总 156 → **189** 例（183 通过 / 3 既有失败 / 2 跳过）"，
+        即 `156 = 155 + 1`、`189 = 188 + 1`，**两次都带着那同样的 3 条失败** ⇒ 修掉失败后两边对齐成 **188**。
+
+      **③ 契约补全（`ARCHITECTURE.md` §「双板链路协议 v1 范围」，只改文档）：6 处补全 + 1 处标 `待确认`**
+      都是上一轮实现方"照契约实现、**没擅自改契约**"时报出来的缺口：
+      · **§2 `LEN` 合法范围 `5..16` → `4..16`（硬冲突）**：§3 的 `EVENT`(`0x40`) 载荷只有 **4 B** ⇒ 照原文实现
+        会让 `EVENT` 被接收侧**全体当 `bad_len` 丢掉**，而 §3 又要求它可用；按"下界由最短载荷决定"改成 4..16
+        （实现侧 `lib/link/link_frame.h` 早已取 `kLenMin = 4`）。
+      · **§2 帧长清单补 `EVENT 11 B`**（= 7 + 4），清单改成按长度升序。
+      · **§3 补字节序总则**：多字节字段**一律大端**（原文只在 `DATA.rpm_raw` 上标过一次 `u16 BE`）——
+        `fw_ver` / `build_tag` / `tick_ms` / `uptime_ms` / 各计数器 / `EVENT.value` 同此。
+      · **§3 补 `DATA.flags` 位号**：`rpm = bit7..6`、`speed = bit5..4`、`coolant = bit3..2`、`intake = bit1..0`。
+      · **§3 补 `STATUS.flags` 位号**：`bit0 ver_mismatch` / `bit1 role_conflict` / `bit2` 无 `DATA` 超时 / `bit3` 温度弧无源。
+      · **§2 补「次版本加尾巴不得越过 `LEN` 上限 16」**：`STATUS` 已顶格 16 B ⇒ 它要加字段只能**升主版本**或另开 `TYPE`。
+      · ★ **`STATUS.last_gap_ms` 的语义仍标 `待确认`（不自己发明）**：§3 写清两种候选（"最近一次帧间隔" vs
+        "观察到的最坏间隔"）与"**当前没有任何生产者填它**（需要接收侧自己的时钟）⇒ 一律发 0"；
+        本条**未编 L 号**（§8 的 L 表是 owner 裁决用的编号表），只在 §8 表头留了一条指引。
+
+      **未动**：`tools/theme-editor/theme.json`（未跟踪，未碰、未提交）；临时副本跑完即删。
