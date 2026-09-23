@@ -28,7 +28,7 @@
 //      所以"缓冲满"是一条不可达的防御分支。
 // ============================================================
 
-namespace link {
+namespace dashlink {
 
 // 计数：与 §3 的 STATUS 载荷字段一一对应（全 u32 累计，写 STATUS 时再截到 u16）
 struct LinkRxStats {
@@ -98,4 +98,4 @@ class LinkRx {
   bool mRoleConflict = false;
 };
 
-}  // namespace link
+}  // namespace dashlink

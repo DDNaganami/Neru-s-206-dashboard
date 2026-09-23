@@ -33,7 +33,7 @@
 //   视图）。本轮不碰 data_service（口径见任务：只许新增文件）。
 // ============================================================
 
-namespace link {
+namespace dashlink {
 
 // ---- 载荷长度（§3 逐字节表的宽度之和；用例与"帧长 = 7 + LEN"对账） ----
 static const uint8_t kHelloLen  = 5u;    // fw_ver u16 + build_tag u16 + boot_reason u8
@@ -170,4 +170,4 @@ bool packEvent(const EventMsg& m, uint8_t* out);
 //   （evtIdKnown()）。EVENT 的载荷长度 v1 固定 4 B，认不出的事件也占这 4 B。
 bool unpackEvent(const uint8_t* p, uint8_t len, EventMsg* out);
 
-}  // namespace link
+}  // namespace dashlink

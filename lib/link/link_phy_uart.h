@@ -86,7 +86,7 @@
 
 #include "link_phy.h"
 
-namespace link {
+namespace dashlink {
 
 class LinkPhyUart : public LinkPhy {
  public:
@@ -127,7 +127,7 @@ class LinkPhyUart : public LinkPhy {
   // 单次调用有上界（≤ kTxFifoHeadroom + 硬件可写量），不忙等、不 delay。
   uint16_t pumpTx();
 
-  // ---- link::LinkPhy ----
+  // ---- dashlink::LinkPhy ----
   int    available() override;
   int    read() override;
   int    availableForWrite() override;
@@ -175,6 +175,6 @@ class LinkPhyUart : public LinkPhy {
   volatile uint32_t mRxOverflow = 0;
 };
 
-}  // namespace link
+}  // namespace dashlink
 
 #endif  // LINK_PHY_UART

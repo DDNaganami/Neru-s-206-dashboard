@@ -1,7 +1,7 @@
 // 双板链路协议 v1 —— 发送侧实现（§1.2）。纯逻辑：只碰内存，写 PHY 的只有 pump()。
 #include "link_tx.h"
 
-namespace link {
+namespace dashlink {
 
 void LinkTx::reset() {
   mTail    = 0;
@@ -69,4 +69,4 @@ uint16_t LinkTx::pump(LinkPhy& phy) {
   return written;
 }
 
-}  // namespace link
+}  // namespace dashlink

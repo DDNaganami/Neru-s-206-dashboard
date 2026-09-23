@@ -24,6 +24,7 @@ void register_link_msg_tests(void);            // 双板链路 v1:消息载荷(�
 void register_link_time_tests(void);           // 双板链路 v1:时基(§4)—— tick 生成/偏移估计/三级超时
 void register_link_phy_tests(void);            // 双板链路 v1:传输层(§1/§2 重同步)—— 假 PHY/非阻塞收发
 void register_link_phy_uart_tests(void);       // 双板链路 v1:真实 UART 的接线口径(§0/§1.1)—— 43 发/44 收/回环脚
+void register_link_app_tests(void);            // 双板链路 v1:数据接线(§1.2③/§3/§5)—— DATA 打包/节奏/第五档 Link
 
 int main(void) {
   UNITY_BEGIN();
@@ -47,6 +48,7 @@ int main(void) {
   register_link_time_tests();
   register_link_phy_tests();
   register_link_phy_uart_tests();
+  register_link_app_tests();
   register_face_stage_tests();
   return UNITY_END();
 }

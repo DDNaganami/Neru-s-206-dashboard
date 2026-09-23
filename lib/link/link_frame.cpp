@@ -10,7 +10,7 @@
 
 #include "van_wire.h"   // van::crc15_van_iso()（-I lib/dashcore）
 
-namespace link {
+namespace dashlink {
 
 uint16_t frameCrc(const uint8_t* frame, uint16_t n) {
   if (frame == nullptr || n < kOverhead) return 0u;
@@ -112,4 +112,4 @@ DecodeErr decodeFrame(const uint8_t* buf, uint16_t n, Frame* out) {
   return DecodeErr::Ok;
 }
 
-}  // namespace link
+}  // namespace dashlink

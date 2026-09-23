@@ -26,7 +26,7 @@
 //      写不完就留在环里，下一圈接着来；PHY 断开时一个字节都不动。
 // ============================================================
 
-namespace link {
+namespace dashlink {
 
 class LinkTx {
  public:
@@ -60,4 +60,4 @@ class LinkTx {
   uint32_t mSent    = 0;
 };
 
-}  // namespace link
+}  // namespace dashlink

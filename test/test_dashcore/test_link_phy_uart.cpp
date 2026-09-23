@@ -25,12 +25,12 @@
 // ------------------------------------------------------------
 static void test_link_pins_match_contract(void) {
   // §0：「主板 **GPIO43**（UART 口 TXD）→ 从板 **GPIO44**（UART 口 RXD）」
-  TEST_ASSERT_EQUAL_INT(43, (int)link::kLinkTxPin);
-  TEST_ASSERT_EQUAL_INT(44, (int)link::kLinkRxPin);
+  TEST_ASSERT_EQUAL_INT(43, (int)dashlink::kLinkTxPin);
+  TEST_ASSERT_EQUAL_INT(44, (int)dashlink::kLinkRxPin);
   // §0「载体」：链路用的就是 **UART0 那一对脚（43/44）**
-  TEST_ASSERT_EQUAL_INT(0, (int)link::kLinkUartPort);
+  TEST_ASSERT_EQUAL_INT(0, (int)dashlink::kLinkUartPort);
   // §1.1：**115200 8N1**
-  TEST_ASSERT_EQUAL_UINT32(115200u, link::kLinkBaud);
+  TEST_ASSERT_EQUAL_UINT32(115200u, dashlink::kLinkBaud);
 }
 
 // ★ §0 那条"本节对「接线定案」的一处新增"：v1 要双向跑，于是
@@ -43,15 +43,15 @@ static void test_link_pins_are_role_independent(void) {
   // 两个角色（§2 的 ROLE 字段只有这两位取值）读到的都是同一组常量 ——
   // 这条是"常量不随角色变"的**可执行**说法：本文件与 link_role.h 一起编译，
   // LINK_ROLE 取哪个值都不影响上面那两个断言。
-  TEST_ASSERT_TRUE(link::kLocalRole == link::kRoleMaster || link::kLocalRole == link::kRoleSlave);
-  TEST_ASSERT_NOT_EQUAL((int)link::kLinkTxPin, (int)link::kLinkRxPin);
+  TEST_ASSERT_TRUE(dashlink::kLocalRole == dashlink::kRoleMaster || dashlink::kLocalRole == dashlink::kRoleSlave);
+  TEST_ASSERT_NOT_EQUAL((int)dashlink::kLinkTxPin, (int)dashlink::kLinkRxPin);
 
   // 43/44 是板载 USB-串口桥（CH343P）那一对，VAN 特意避开它们走 GPIO15
   // （«本方案用途»表：GPIO15 = 主板 VAN 收发器 RX）⇒ 链路与 VAN 不许抢同一根脚。
   // ★ 这里只钉"链路这一侧"的 43/44；VAN 那根脚在 van_phy_gpio.cpp，
   //   由那条"特意避开 43/44"的口径与文档一起兜着。
-  TEST_ASSERT_TRUE(link::kLinkTxPin == 43 || link::kLinkTxPin == 44);
-  TEST_ASSERT_TRUE(link::kLinkRxPin == 43 || link::kLinkRxPin == 44);
+  TEST_ASSERT_TRUE(dashlink::kLinkTxPin == 43 || dashlink::kLinkTxPin == 44);
+  TEST_ASSERT_TRUE(dashlink::kLinkRxPin == 43 || dashlink::kLinkRxPin == 44);
 }
 
 // ------------------------------------------------------------
@@ -62,27 +62,27 @@ static void test_link_pins_are_role_independent(void) {
 // （改坏了要等到某天真去回环才发现，而那时你会先怀疑线、怀疑固件、怀疑板子）。
 static void test_link_loopback_wiring_is_sane_even_when_disabled(void) {
   // ① 两个脚是两根**不同**的脚（本机回环 = 一根线把 TX 短接到 RX）
-  TEST_ASSERT_NOT_EQUAL((int)link::kLoopbackTxPinC, (int)link::kLoopbackRxPinC);
+  TEST_ASSERT_NOT_EQUAL((int)dashlink::kLoopbackTxPinC, (int)dashlink::kLoopbackRxPinC);
 
   // ② ★ 都不许是 43/44：裸 S3 devkit 上那两脚接着**板载 USB-串口桥**
   //    （CH340/CH343P）。短接它们等于把桥的推挽 TX 一起并进回路（对打），
   //    而 §8 L1 说的那颗 FSUSB42UMX 是"二选一"的模拟开关 —— **摘不掉**桥。
-  TEST_ASSERT_TRUE_MESSAGE(link::kLoopbackTxPinC != 43 && link::kLoopbackTxPinC != 44,
+  TEST_ASSERT_TRUE_MESSAGE(dashlink::kLoopbackTxPinC != 43 && dashlink::kLoopbackTxPinC != 44,
                            "回环的 TX 脚不许用 GPIO43/44：会与板载串口桥的推挽 TX 并线");
-  TEST_ASSERT_TRUE_MESSAGE(link::kLoopbackRxPinC != 43 && link::kLoopbackRxPinC != 44,
+  TEST_ASSERT_TRUE_MESSAGE(dashlink::kLoopbackRxPinC != 43 && dashlink::kLoopbackRxPinC != 44,
                            "回环的 RX 脚不许用 GPIO43/44：会与板载串口桥的推挽 TX 并线");
 
   // ③ 回环的 UART 与链路的 UART **不是同一个**：
   //    UART0 的 43/44 上挂着桥 ⇒ UART0 **在硬件上**做不了本机回环，这不是软件选择。
-  TEST_ASSERT_TRUE_MESSAGE(link::kLoopbackUsesOwnUart,
+  TEST_ASSERT_TRUE_MESSAGE(dashlink::kLoopbackUsesOwnUart,
                            "回环不能与链路用同一个 UART：UART0 的 43/44 上挂着板载桥，摘不掉");
-  TEST_ASSERT_EQUAL_INT(1, (int)link::kLoopbackUartPort);   // 1 = UART1
+  TEST_ASSERT_EQUAL_INT(1, (int)dashlink::kLoopbackUartPort);   // 1 = UART1
 }
 
 // 回环默认**关**（用户口径：默认关闭）。这条看着像废话，但它挡的是"某次调试
 // 顺手把默认值改成 1 忘了改回来"——那会让上板后的链路端口/引脚**静默**变成 17/18。
 static void test_link_loopback_is_off_by_default(void) {
-  TEST_ASSERT_FALSE(link::kLoopbackEnabled);
+  TEST_ASSERT_FALSE(dashlink::kLoopbackEnabled);
 }
 
 // 编译期守卫的"运行期影子"：pins 头文件里有一条**无条件**的 static_assert
@@ -90,7 +90,7 @@ static void test_link_loopback_is_off_by_default(void) {
 // 本用例只是把同一条判据再写成可执行断言 —— 将来若有人把那条 static_assert 删掉，
 // 这里还能红。
 static void test_link_pins_compile_time_guard_has_runtime_twin(void) {
-  TEST_ASSERT_TRUE(link::kLoopbackWiringSane);
+  TEST_ASSERT_TRUE(dashlink::kLoopbackWiringSane);
 }
 
 void register_link_phy_uart_tests(void) {

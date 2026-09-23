@@ -27,7 +27,7 @@
 //   见 alphaRound() 的注释）—— 远小于 §4 那条"两板估计偏差 < 40 ms"的目标。
 // ============================================================
 
-namespace link {
+namespace dashlink {
 
 // ---- §3 TICK 行的三档 / §4（数字是契约原文，别在别处抄） ----
 static const uint32_t kTickPeriodMs  = 20u;     // 50 Hz（20 ms）
@@ -165,4 +165,4 @@ class LinkTime {
   LinkTimeState mDataState = LinkTimeState::SimFallback;
 };
 
-}  // namespace link
+}  // namespace dashlink

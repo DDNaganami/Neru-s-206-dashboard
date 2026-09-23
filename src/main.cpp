@@ -1,5 +1,13 @@
 #include <Arduino.h>
 #include "dash_log.h"   // 日志同时打到 USB-CDC 与 UART0(见文件头说明)
+
+// ★ 单板回环验证固件（`env:esp32s3-linkloop`）要与本文件**二选一**：同一个 env 只能
+//   有一个 setup()/loop()。开了这个宏就把整个 main.cpp 摘掉，由 src/link_loopback.cpp
+//   提供入口（见那个文件的头注释）。
+//   ★ 为什么用宏、不用 platformio 的 build_src_filter 排除文件：宏是"少编一段代码"，
+//     IDE 里看得见、LDF 也不会因为少一个 .cpp 而少扫出依赖；两者效果一样但前者更难踩坑。
+#if !defined(LINK_LOOPBACK_FIRMWARE)
+
 // ★ 开机自检与 esp_partition 只有**设备端**才有(宿主机没有 ESP.* / esp_partition.h)。
 //   用 ARDUINO 判定:真 Arduino 框架(esp32dev / esp32s3)会定义它,
 //   pcpreview 的宿主机桩不定义 —— 于是同一份 main.cpp 两端都能编。
@@ -11,11 +19,26 @@
 #include "data_service.h"
 #include "dash_display.h"
 #include "dash_ui.h"
+#include "expression.h"   // Face（STATUS.left_face 要报"左屏当前档位"，§3）
 #include "image_load.h"
+#include "link_app.h"     // 双板链路 v1 的应用层接线（§1.2 ③ / §3 / §4 / §5）
+#include "link_phy_pins.h"
+#include "link_role.h"    // LINK_ROLE / kLocalRole（编译期是唯一权威，§5）
+#include "link_time.h"
+#include "link_tx.h"
 #include "theme_store.h"
 #include "ui_model.h"
 #include "van_phy.h"
 #include "van_replay.h"
+
+#if LINK_ROLE == 1
+// 链路物理层（真实 UART）只在**主板**这一侧编译：从板（LINK_ROLE==0）不发车数据、
+// 只收 —— 而"收"用的还是同一个 LinkPhyUart 类，但把类编进来会拉上 dash_log.h 那条
+// 编译期闸门（见 link_phy_uart.cpp 文件头）。本轮按 §5 的口径只把**主板**这一侧
+// 接上（编译期 env 是唯一权威）；从板的接收路径由 lib/link 的用例整条覆盖
+// （test/test_dashcore/test_link_app.cpp 的端到端那一条：发 → 收 → 喂进 data_service）。
+#include "link_phy_uart.h"
+#endif
 
 // ============================================================================
 //  OBD(K 线)串口接线 —— 2026-09-21 启用(此前一直是注释,设备端从不问 OBD)
@@ -191,6 +214,75 @@ private:
 
 static VanLogSink g_van_log;
 
+// ============================================================================
+//  双板链路 v1 的接线（**两个角色共用**：收帧 → 路由）
+// ============================================================================
+//  契约：ARCHITECTURE.md「## 双板链路协议 v1 范围」的 §1.2（发送侧三条硬约束）、
+//  §3（消息表）、§4（时基）、§5（角色）。
+//
+//  ★ 为什么"收"这一段两个角色共用：主板收 B 的 STATUS/EVENT（只进日志），从板收
+//    A 的 TICK/DATA（进数据层）——**同一套解帧、重同步、角色自检**，只是消费方式
+//    不同。所以两边的解帧都走 `dashlink::LinkRx`，且都只从主循环里 poll。
+//
+//  ★ 三条纪律（§1.2，违反了不会有编译期信号）：
+//    ① **不在 ISR/回调里发**：链路帧只进 `LinkTx` 的环（纯内存），真的写 UART 的
+//       只有主循环末尾那两次 `pump()`；VAN 的 ISR（`van_isr_thunk`）一行都不碰链路。
+//    ② **不够就丢整帧**：`LinkTx::enqueue` 空间不够就整帧丢并计数；
+//       `LinkPhyUart::availableForWrite()` 报 0 时一个字节都不写（绝不忙等）。
+//    ③ **从快照发、不从回调发**：DATA 的内容来自 `g_data.update(now)` 的**返回值**
+//       （主循环里的快照），而不是 VAN 帧回调里顺手发。
+//
+//  ★ 与日志口的关系：链路走 UART0（43/44，§0），而 `dash_log.h` 也往 UART0 写
+//    （§0「载体」那条**待办**：显示构建必须关掉 UART0 文本日志）。本轮没有改
+//    dash_log.h，所以在 platformio.ini 里显式写了
+//    `-DLINK_PHY_UART_ALLOW_LOG_ON_UART0=1` 承认这个现状 —— 那个宏就是那道闸门的
+//    开关（见 lib/link/link_phy_uart.cpp 文件头）。**上板前必须把日志那一路关掉**，
+//    否则日志文本会混进链路数据流（从板会拿它当 VAN 回放行去解）。
+#if LINK_ROLE == 1
+static dashlink::LinkPhyUart g_link_phy;   // §0：115200 8N1，UART0，TX=GPIO43 / RX=GPIO44
+static dashlink::LinkTx      g_link_tx;    // §1.2 ②：自有环 ≥512 B，整帧进出
+static dashlink::LinkRx      g_link_rx;    // §2 的重同步 + §5 的角色冲突自检
+static dashlink::TickGen     g_link_tick;  // §3 的 TICK（50 Hz / 20 ms）
+static dashlink::DataSender  g_link_data;  // §3 的 DATA（跟随 0x824 到达，不另建定时器）
+
+// 主板自己的固件版本/构建标记（§3 的 HELLO：`fw_ver` 与协议 `VER` **分开**）。
+// 取值口径：仓库里没有既有编码（§3 也这么说），所以先定 0/0 并把出处写在这里 ——
+// 真要拿它判"两块板是不是同一份固件"，得在两块板各自刷同一份固件时才可比。
+static const uint16_t kLinkFwVer    = 0;
+static const uint16_t kLinkBuildTag = 0;
+
+static uint32_t g_link_hello_ms = 0;         // 上一次发 HELLO 的时刻（0 = 还没发过）
+static uint32_t g_link_peer_ms  = 0;         // 最近一次收到**对端任何一帧**的时刻
+static bool     g_link_hello_acked = false;  // 收到过对端 HELLO ⇒ 停止重发（§3）
+#endif  // LINK_ROLE == 1
+
+// ★ 一条"UART 还没接上"的桩 PHY —— **只在从板侧**用。
+//
+//   为什么从板侧本轮不接真 UART（这是**刻意的**，不是漏了）：
+//     · 从板的接收路径与主板共用同一套 `LinkRx`/`LinkTime`/`applyLinkData`，
+//       这套逻辑已经由 native 用例**整条**跑通（发一帧 → 过假 PHY → 收到 →
+//       喂进 VehicleDataService → 断言值变成 Link，见 test_link_app.cpp）；
+//     · 剩下没验的那一段是"这块板子上 43/44 的电平长什么样" —— 那是**最终 2.8"板**
+//       到手之后的事（§5：两个角色 env 要等它落地；§8 L1 还留着 ⓐⓑⓒ 三条要实测）；
+//     · 用真实 UART 的话，这块**裸 S3 devkit** 上从板会去读 GPIO44 —— 而那个脚接的是
+//       板载 CH343P 桥（§8 L1），拿它当输入到底干不干净正是待实测的 ⓑ。
+//   ⇒ 接真 UART 只需要把 g_link_phy_slave 换成 `LinkPhyUart`、在 setup 里 begin()
+//      （一行），并恢复 platformio.ini 里那条闸门。**本轮不猜、不预置**。
+class LinkPhyNull : public dashlink::LinkPhy {
+ public:
+  int available() override { return 0; }
+  int read() override { return -1; }              // 非阻塞契约：没有就是 -1
+  int availableForWrite() override { return 0; }  // 0 ⇒ 上层一个字节都不写（§1.2 ②）
+  size_t write(const uint8_t*, size_t) override { return 0; }
+  bool online() const override { return false; }  // 没接线 ⇒ 不读不写
+};
+
+#if LINK_ROLE != 1
+static LinkPhyNull        g_link_phy_slave;  // ★ 见上面 LinkPhyNull 的说明（本轮刻意不接真 UART）
+static dashlink::LinkRx    g_link_rx;        // 收：§2 的重同步 + §5 的角色冲突自检
+static dashlink::LinkTime  g_link_time;      // §4：TICK 偏移估计 + 三级超时
+#endif
+
 static uint32_t last_ui_ms = 0;
 static uint32_t last_status_ms = 0;
 
@@ -325,6 +417,176 @@ static void print_selftest(const char* tag) {
 }
 #endif  // DASH_DEVICE_SELFTEST
 
+// ============================================================================
+//  链路（**两个角色共用**的一步）：收帧 → 路由
+// ============================================================================
+// ★ 为什么共用：主板收 B 的 STATUS/EVENT（只进日志，§3 的单一日志出口），从板收
+//   A 的 TICK/DATA（进数据层，§3 + §4）—— 解帧、重同步、角色自检、时基是**同一套**。
+// ★ §3 已自记的缺口就落在这里：`FieldSource` 原来只有 None/Sim/Obd/Van，从板
+//   "没有本地源"这件事表达不出来 ⇒ 本轮给 data_service 加了第五档 Link
+//   （见 lib/dashcore/data_service.h 与 applyLinkData() 的实现口径）。
+//
+// 返回 true = 这一轮里有 DATA 被喂进了数据层。
+// ★ 调用时机是硬的：必须在 `g_data.update(now)` **之前** —— 这样"这一圈收到的
+//   数据"当圈就能进快照与上屏（`applyLinkData` 只是存下来，合并发生在 update 里）。
+// ★ 本函数是**从板侧**的收帧形状（顺带喂时基、喂数据层）。主板侧另有
+//   link_poll_inbound()：它要按 §3 的"单一日志出口"把 B 的状态转成自己的一行日志，
+//   两边的差别就在"非 TICK/DATA 的帧怎么处理"这一处，各写一遍更清楚。
+#if LINK_ROLE != 1
+static bool link_poll_frames_slave(uint32_t now) {
+  bool got_data = false;
+  dashlink::Frame f;
+  // ★ 注意 `LinkData` 是**全局作用域**的（它在 lib/dashcore/data_service.h 里，
+  //   与 dashlink 命名空间无关）—— 写成 dashlink::LinkData 会编不过。
+  ::LinkData ld;
+  while (g_link_rx.poll(g_link_phy_slave, &f)) {
+    if (dashlink::handleInbound(f, &g_link_time, now, &ld)) {
+      // TICK / DATA：handleInbound 已经把 TICK 喂了时基、把 DATA 解成了 LinkData。
+      if (f.type == (uint8_t)dashlink::MsgType::Data) {
+        g_data.applyLinkData(ld);   // §3：从板把收到的 DATA 喂进自己的数据层
+        got_data = true;
+      }
+      continue;
+    }
+    // HELLO / STATUS / EVENT：v1 实际只用 B→A（§3），A→B 收到只说明"对端在说话"，
+    // 不参与数据面 —— 从板这一侧本轮不打日志（它自己的 USB-C 上要看的是数据层那几行）。
+  }
+  g_link_time.update(now);   // §4：推进年龄与三级超时（100 ms/500 ms/3 s）
+  return got_data;
+}
+#endif
+
+#if LINK_ROLE == 1
+// ============================================================================
+//  链路（主板侧）：一行日志 + 主循环里的四个动作
+// ============================================================================
+// 这一段把 §1.2/§3/§4/§5 里"主板该做的"收在一处，loop() 里只留两个调用点。
+// 收到的 STATUS/EVENT 按 §3「单一日志出口」转成**自己 USB-C 上的一行**。
+static void link_log_peer_line(const dashlink::Frame& f) {
+  switch (f.type) {
+    case (uint8_t)dashlink::MsgType::Status: {
+      dashlink::StatusMsg s;
+      if (!dashlink::unpackStatus(f.payload, f.len, &s)) {
+        dash_logf("link: B STATUS 载荷解不出(len=%u)\n", (unsigned)f.len);
+        return;
+      }
+      dash_logf("link: B uptime=%lums rx_ok=%u dropped=%u crc=%u gap=%u face=%u flags=0x%02X\n",
+                (unsigned long)s.uptime_ms, (unsigned)s.frames_ok,
+                (unsigned)s.frames_dropped, (unsigned)s.crc_err,
+                (unsigned)s.last_gap_ms, (unsigned)s.left_face, (unsigned)s.flags);
+      break;
+    }
+    case (uint8_t)dashlink::MsgType::Event: {
+      dashlink::EventMsg e;
+      if (!dashlink::unpackEvent(f.payload, f.len, &e)) return;
+      dash_logf("link: B EVENT id=0x%02X value=%u face=%u%s\n", (unsigned)e.evt_id,
+                (unsigned)e.value, (unsigned)e.face,
+                dashlink::evtIdKnown(e.evt_id) ? "" : "  <-- 本机不认识的 evt_id(次版本只加东西)");
+      break;
+    }
+    case (uint8_t)dashlink::MsgType::Hello: {
+      dashlink::HelloMsg h;
+      if (!dashlink::unpackHello(f.payload, f.len, &h)) return;
+      dash_logf("link: B HELLO fw=%u build=%u boot=%u%s\n", (unsigned)h.fw_ver,
+                (unsigned)h.build_tag, (unsigned)h.boot_reason,
+                (h.fw_ver == kLinkFwVer && h.build_tag == kLinkBuildTag)
+                    ? ""
+                    : "  <-- 与本机 fw/build 不同(§3：HELLO 就是用来对账这个的)");
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+// 从板侧要报的那些"结构化状态"在主板这一侧只进日志（§3 的单一日志出口）。
+static void link_poll_inbound(uint32_t now) {
+  static bool announced_peer = false;
+  static bool announced_conflict = false;
+  static bool announced_ver = false;
+
+  dashlink::Frame f;
+  while (g_link_rx.poll(g_link_phy, &f)) {
+    g_link_peer_ms = now;   // 收到的任何一帧都算"从板还活着"（§8 L13 的 30 s 判据用它）
+    if (!announced_peer) {
+      announced_peer = true;
+      dash_logf("link: 首次收到从板帧(%s, role=%u)\n", dashlink::msgTypeName(f.type),
+                (unsigned)f.role);
+    }
+    if (f.ver_mismatch && !announced_ver) {
+      announced_ver = true;
+      dash_logf("link: ver 不匹配(本机 0x%02X, 对端 0x%02X) —— §2：不断链、不降级\n",
+                (unsigned)dashlink::kVer, (unsigned)f.ver);
+    }
+    // 主板侧**不需要** LinkData（那是从板喂数据层用的）⇒ 传 nullptr。
+    if (dashlink::handleInbound(f, nullptr, now, nullptr)) {
+      // TICK/DATA 从从板过来 = 角色刷反（§5 ①）。LinkRx 那边**已经丢帧并计数**了，
+      // 这里只补一行说明 —— 不升级为"只收不发"、更不改本机角色（定案 L12）。
+      dash_logf("link: B 发来 %s(不该由从板发,检查 §5 的角色)\n",
+                dashlink::msgTypeName(f.type));
+      continue;
+    }
+    if (f.type == (uint8_t)dashlink::MsgType::Hello) g_link_hello_acked = true;
+    link_log_peer_line(f);   // §3 的"单一日志出口"：B 的状态变成 A 的一行
+  }
+  if (g_link_rx.roleConflictSeen() && !announced_conflict) {
+    announced_conflict = true;
+    dash_logf("link: 角色冲突(对端 ROLE 与本机相同=%u) —— 已丢帧计数(§5 ①, 定案 L12)\n",
+              (unsigned)dashlink::kLocalRole);
+  }
+}
+
+// 主循环每圈的四步（顺序与理由见 loop() 里那段注释）。
+// ★ 四个动作都只"入队"或"排水"，**没有任何一处写 UART** —— 写 UART 的只有最后
+//   那两次 `pump()`。这是 §1.2 ①（不在 ISR/回调里发）在主板侧的可读形态。
+// ★ `snapshot` 必须由调用方传**刚刚 g_data.update(now) 的返回值**进来 ——
+//   这就是 §1.2 ③ 的"从快照发"。别在这个函数里自己再调一次 g_data.update()。
+static void link_master_tick(uint32_t now, const VehicleState& snapshot) {
+  // ① TICK：50 Hz（§3）。主循环被 LVGL 拖慢时**不补发突发**（见 TickGen::due）。
+  dashlink::TickMsg tm;
+  if (g_link_tick.due(now, &tm)) {
+    uint8_t payload[dashlink::kTickLen];
+    if (dashlink::packTick(tm, payload)) {
+      // 空间不够时 enqueueFrame 会**整帧丢**并计数（§1.2 ②）—— 这里不重试、不等待。
+      g_link_tx.enqueueFrame((uint8_t)dashlink::MsgType::Tick, payload, dashlink::kTickLen,
+                             dashlink::kLocalRole);
+    }
+  }
+
+  // ② HELLO：上电 1 次，之后每 5 s 重发，**直到收到对端 HELLO**（§3）。
+  if (!g_link_hello_acked &&
+      (g_link_hello_ms == 0u || (now - g_link_hello_ms) >= 5000u)) {
+    g_link_hello_ms = now;
+    dashlink::HelloMsg hm;
+    hm.fw_ver = kLinkFwVer;
+    hm.build_tag = kLinkBuildTag;
+    hm.boot_reason = 0;   // 仓库里没有既有编码（§3 原话）⇒ 先恒 0
+    uint8_t payload[dashlink::kHelloLen];
+    if (dashlink::packHello(hm, payload)) {
+      g_link_tx.enqueueFrame((uint8_t)dashlink::MsgType::Hello, payload, dashlink::kHelloLen,
+                             dashlink::kLocalRole);
+    }
+  }
+
+  // ③ DATA：跟随 VAN 0x824 到达（§3，≈79.7 Hz，**不另建定时器**）。
+  //    snapshot_ms = 0x824 最后一次到达的时刻（0 = 到现在一帧都没收到过）。
+  //    ★ 拿的是**上面 g_data.update(now) 之后**的快照与来源表（§1.2 ③）。
+  dashlink::DataMsg dm;
+  if (g_link_data.due(now, g_data.vanSource().lastUpdateMs(), snapshot, g_data.status(),
+                      &dm)) {
+    uint8_t payload[dashlink::kDataLen];
+    if (dashlink::packData(dm, payload)) {
+      g_link_tx.enqueueFrame((uint8_t)dashlink::MsgType::Data, payload, dashlink::kDataLen,
+                             dashlink::kLocalRole);
+    }
+  }
+
+  // ④ 排水：`LinkTx` 的两级环 → PHY 的环 → UART 的 FIFO。两步都**只走能走的那些字节**。
+  g_link_tx.pump(g_link_phy);
+  g_link_phy.pumpTx();
+}
+#endif  // LINK_ROLE == 1
+
 void setup() {
   dash_log_begin(115200);
   delay(200);
@@ -367,6 +629,25 @@ void setup() {
   g_van_phy.setSink(&g_van_log);
   g_van_phy.begin();
   BOOT_STAGE(3);
+#if LINK_ROLE == 1
+  // 链路物理层（主板侧）：§0 的 43 发 / 44 收、§1.1 的 115200 8N1。
+  // ★ 必须在 `dash_log_begin()` **之后**：那一步已经把 UART0 抢去当日志口了，
+  //   这里再 begin 一次会把 43/44 按链路的口径重新配一遍 —— 这正是 §0「载体」那条
+  //   待办要暴露出来的冲突（日志文本会混进链路数据流）。见本文件上方那段说明与
+  //   platformio.ini 里 -DLINK_PHY_UART_ALLOW_LOG_ON_UART0=1 的注释。
+  g_link_phy.begin(false);
+  g_link_rx.setLocalRole(dashlink::kLocalRole);
+  g_link_tick.reset(millis());   // §4：tick_ms 是主板**自己**的单调毫秒(从复位起算)
+  dash_logf("link: 主板侧就绪 TX=GPIO%d RX=GPIO%d @%u 8N1(§0/§1.1)\n",
+            (int)g_link_phy.txPin(), (int)g_link_phy.rxPin(), (unsigned)dashlink::kLinkBaud);
+#else
+  // 从板侧：只需要"我知道我是谁"（§5 的角色自检）+ 时基状态机的初值。
+  // ★ 这里**不 begin 任何 UART**：本轮从板的 PHY 是 LinkPhyNull（见上面那段说明）。
+  g_link_rx.setLocalRole(dashlink::kLocalRole);
+  g_link_time.reset();
+  dash_logf("link: 从板侧就绪(§5, LINK_ROLE=0) —— 收帧路径已就位,PHY 本轮是桩"
+            "(真实 UART 等最终 2.8\" 板到手,见 main.cpp 里 LinkPhyNull 的说明)\n");
+#endif
   // 主题:先默认值(由 dash_ui_init 兜底),再尝试用 flash 里的主题文件覆盖。
   // 加载失败不影响启动 —— 降级到默认主题继续跑。
   theme_load();
@@ -411,8 +692,32 @@ void loop() {
                          // (桩 / GPIO 收帧两种实现共用这一个接口,见 van_phy.h:
                          //  加 -DVAN_PHY_GPIO=1 时这里就是真的 GPIO 收帧)
   van_replay_poll(now);  // 串口贴帧离线回放(和物理层等价,先到的先写)
+
+#if LINK_ROLE != 1
+  // ---- 链路（从板侧）：**先收后合并** ----
+  // ★ 顺序是硬要求：收到的 DATA 必须先 `applyLinkData()`、再 `g_data.update(now)`，
+  //   这样这一圈收到的值当圈就进快照与上屏（晚一圈也行，但没必要）。
+  // ★ 本轮从板的 PHY 是 `LinkPhyNull`（见上面那段说明）：真实 UART 要等最终 2.8"
+  //   板到手、且 §8 L1 的 ⓐⓑⓒ 三条实测做完才接 —— 这套"收 → 喂数据层"的逻辑
+  //   已经由 native 用例整条跑通（test_link_app.cpp 的端到端那一条）。
+  link_poll_frames_slave(now);
+#endif
+
   const VehicleState st = g_data.update(now);
   BOOT_STAGE(7);
+
+#if LINK_ROLE == 1
+  // ---- 链路（主板侧）：收 → 发 TICK / HELLO / DATA → 排水 ----
+  // ★ 三个顺序上的口径：
+  //   ① 收在 `g_data.update()` **之后**：收到的 STATUS/EVENT 只进日志，不参与本机的
+  //      数据合并（本机的真值来自它自己的 VAN/OBD，§1.2 ③ 也不许它回头影响快照）。
+  //   ② TICK/HELLO/DATA 用的都是**刚才那一份快照**（`st` 与 `g_data.status()`）——
+  //      这就是 §1.2 ③ 的"从快照发、不从回调发"。
+  //   ③ 排水放在**同一轮的最末尾**：先把该排的都排完，下一圈再进新的。两步都有上界、
+  //      都不忙等（见 link_tx.h / link_phy_uart.h）。
+  link_poll_inbound(now);
+  link_master_tick(now, st);
+#endif
   dash_ui_tick(now);   // LVGL 心跳,每个循环都跑
   dash_display_poll(); // 设备上为空;pcpreview 落 BMP 帧
   BOOT_STAGE(8);
@@ -459,8 +764,37 @@ void loop() {
     // 实测刷新率:判断"K 线够不够用"的唯一依据(见 obd_source.h 的时隙账)
     dash_logf("SRC-Hz rpm=%.1f cool=%.1f intake=%.1f speed=%.1f\n",
                   s.obd_rpm_hz, s.obd_coolant_hz, s.obd_intake_hz, s.obd_speed_hz);
+#if LINK_ROLE == 1
+    // 链路质量（§7 的失败模式表：链路断/从板无响应那一行就看这里）。
+    // ★ §8 L13：STATUS 超时门限 **30 s**（不是 5 s），而且**只用于日志、不上屏**
+    //   （owner 裁决 2026-09-22）。从板可能只是刚上电/重启/没接线 ⇒ 主板**照常发数据**。
+    {
+      const dashlink::LinkRxStats& rs = g_link_rx.stats();
+      const bool alive = (g_link_peer_ms != 0u) && ((now - g_link_peer_ms) < 30000u);
+      dash_logf("link: tx=%luB rx_ok=%lu crc=%lu bad_len=%lu unk=%lu role=%lu   %s(对端已 %lums 没动静)\n",
+                (unsigned long)g_link_tx.sentBytes(), (unsigned long)rs.frames_ok,
+                (unsigned long)rs.crc_err, (unsigned long)rs.bad_len,
+                (unsigned long)rs.unknown_type, (unsigned long)rs.role_conflict,
+                alive ? "B 在线" : "从板无响应",
+                (unsigned long)(g_link_peer_ms == 0u ? now : (now - g_link_peer_ms)));
+    }
+#else
+    // 从板侧：§4 的三级超时状态就是它唯一要看的链路指标。
+    // ★ §8 L10（owner 裁决）：>500 ms 降级 = **冻结最后值 + 表情退常态**；
+    //   >3 s 仍没恢复 ⇒ 回退 Sim（§3 的 DATA 行）。回退 Sim 这一档已经由
+    //   data_service 的 3 秒规则自然实现了（LinkData 也吃同一套 fresh() 判据）。
+    //   ★ L10 的"冻结最后值"要冻的是**UI 上的弧**，那是 dash_ui 侧的事，
+    //   本轮没做（见回报里的"下一轮还差什么"）。
+    dash_logf("link: %s tick_age=%ums seen=%u seq_gap=%u miss=%u offset=%ldms\n",
+              dashlink::linkTimeStateName(g_link_time.state()),
+              (unsigned)g_link_time.tickAgeMs(), (unsigned)g_link_time.ticksSeen(),
+              (unsigned)g_link_time.seqGaps(), (unsigned)g_link_time.seqMissing(),
+              (long)g_link_time.offsetMs());
+#endif
 #if VAN_SNIFF
     van_sniff_report(now);
 #endif
   }
 }
+
+#endif  // !defined(LINK_LOOPBACK_FIRMWARE)

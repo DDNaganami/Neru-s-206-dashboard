@@ -1,7 +1,7 @@
 // 双板链路协议 v1 —— 时基实现（§4）。纯逻辑：不碰 Arduino / 寄存器 / 堆。
 #include "link_time.h"
 
-namespace link {
+namespace dashlink {
 
 namespace {
 
@@ -180,4 +180,4 @@ uint32_t LinkTime::masterNowMs() const {
   return (uint32_t)(mNowMs + (uint32_t)mOffset);
 }
 
-}  // namespace link
+}  // namespace dashlink

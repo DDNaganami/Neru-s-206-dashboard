@@ -10,7 +10,7 @@
 
 #include "link_time.h"
 
-using namespace link;
+using namespace dashlink;
 
 namespace {
 

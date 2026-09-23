@@ -21,7 +21,7 @@
 //      这条由调用方保证，本层只提供"先入自有环形缓冲、再由主循环排出"的形状。
 // ============================================================
 
-namespace link {
+namespace dashlink {
 
 class LinkPhy {
  public:
@@ -45,4 +45,4 @@ class LinkPhy {
   virtual bool online() const { return true; }
 };
 
-}  // namespace link
+}  // namespace dashlink

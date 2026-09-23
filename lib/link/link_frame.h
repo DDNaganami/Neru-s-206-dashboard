@@ -4,6 +4,16 @@
 // ============================================================
 // 双板链路协议 v1 —— **帧层**（纯逻辑，无 Arduino / 寄存器 / 动态分配依赖）
 //
+// ★★ 命名空间为什么叫 `dashlink` 而不是 `link`（2026-09-23，实测踩到）
+//   LVGL 在 `lv_obj.h` 的**全局作用域**里声明了一个函数：
+//       int link(const char* src, const char* dst);   // 硬链接一个文件
+//   于是"LVGL + 本模块"同时进一个翻译单元时，`namespace link` 会与那个函数同名
+//   **冲突**（GCC 原文：`'namespace link { }' redeclared as different kind of
+//   symbol` / `note: previous declaration 'int link(const char*, const char*)'`），
+//   而这个组合是**必然**要出现的 —— 显示固件的 `src/main.cpp` 里两者都要 include。
+//   ⇒ 改名一次、彻底躲开，比"以后每次 include 都得排序/隔离"稳。
+//   ★ 改名**只动了命名空间**：所有类名、常量名、宏名、协议口径一个都没变。
+//
 // 契约：ARCHITECTURE.md「## 双板链路协议 v1 范围」的 §2（帧格式）。
 // 本文件只做"字节 ↔ 帧结构"，不做消息语义（那是 link_msg.h）、
 // 不做字节流分帧与重同步（那是 link_rx.h）、不碰任何引脚（§1.3 / §6）。
@@ -39,7 +49,7 @@
 //   只把**未知 TYPE / 越界 LEN** 丢帧并计数；**不断链、不降级**。
 // ============================================================
 
-namespace link {
+namespace dashlink {
 
 // ---- 字面量（唯一权威定义，别在别处抄数字） ----
 static const uint8_t kSync     = 0x5Au;
@@ -164,4 +174,4 @@ uint16_t encodeFrame(uint8_t type, const uint8_t* payload, uint8_t len, uint8_t 
 // ★ out == nullptr 或 buf == nullptr 按 ShortFrame 处理（没有可读的字节）。
 DecodeErr decodeFrame(const uint8_t* buf, uint16_t n, Frame* out);
 
-}  // namespace link
+}  // namespace dashlink

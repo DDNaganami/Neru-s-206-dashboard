@@ -96,7 +96,7 @@
 //   怀疑线、怀疑固件、怀疑板子）。所以这里用**无条件**的模板 static_assert：
 //   任何翻译单元（含 native 用例）编到这儿都得过。同一组判据在用例里还有一份
 //   可执行断言（test_link_phy_uart.cpp），两边互为"影子"。
-namespace link {
+namespace dashlink {
 namespace pins_detail {
 
 template <int Delay>
@@ -127,18 +127,18 @@ static const bool kLoopbackWiringSane =
     (LINK_LOOPBACK_RX_PIN != 43) && (LINK_LOOPBACK_RX_PIN != 44) &&
     (LINK_LOOPBACK_UART_PORT != LINK_UART_PORT);
 
-}  // namespace link
+}  // namespace dashlink
 
 namespace {
 // include 本头文件就编译一次上面那个检查 ⇒ 三个常量被改坏时**编译期**就炸。
 // （匿名命名空间、没有人调它：没有运行期开销，也不会 ODR 冲突。）
 inline void linkPhyPinsSelfCheck() {
-  link::pins_detail::checkLoopbackWiring<0>();
+  dashlink::pins_detail::checkLoopbackWiring<0>();
 }
 }  // namespace
 
 // ---- 运行期可见的常量（用例读它们，别再抄数字）----
-namespace link {
+namespace dashlink {
 
 // §1.1 的波特率：115200 8N1
 static const uint32_t kLinkBaud = (uint32_t)LINK_BAUD;
@@ -157,4 +157,4 @@ static const int8_t kLoopbackRxPinC   = (int8_t)LINK_LOOPBACK_RX_PIN;     // 18
 // ★ 一条"改坏了会静默"的口径，写成常量让用例盯着：链路与回环**不是同一个 UART**。
 static const bool kLoopbackUsesOwnUart = (kLoopbackUartPort != kLinkUartPort);
 
-}  // namespace link
+}  // namespace dashlink

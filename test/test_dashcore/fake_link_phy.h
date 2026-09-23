@@ -23,7 +23,7 @@
 //   ② 对端 `up == false` 时，本端 write() 照样成功（本地 FIFO 收下了），
 //      字节记进 `lostBytes` —— 这正是"对端掉电、本端还不知道"的样子。
 // ============================================================
-class FakeLinkPhy : public link::LinkPhy {
+class FakeLinkPhy : public dashlink::LinkPhy {
  public:
   // ---- 接线 ----
   void connect(FakeLinkPhy* peer) { mPeer = peer; }
@@ -41,7 +41,7 @@ class FakeLinkPhy : public link::LinkPhy {
   uint32_t droppedBytes = 0;     // 注入丢掉的字节数
   uint32_t lostBytes    = 0;     // 对端不在/未接线而丢掉的字节数
 
-  // ---- link::LinkPhy ----
+  // ---- dashlink::LinkPhy ----
   int available() override { return up ? (int)mRx.size() : 0; }
 
   int read() override {

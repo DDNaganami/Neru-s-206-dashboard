@@ -14,7 +14,7 @@
 #include "link_rx.h"
 #include "link_tx.h"
 
-using namespace link;
+using namespace dashlink;
 
 namespace {
 

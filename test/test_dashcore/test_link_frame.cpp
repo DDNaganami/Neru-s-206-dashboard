@@ -17,7 +17,7 @@
 #include "link_role.h"
 #include "van_wire.h"   // 只为对照：van::crc15_van_iso / fcsFieldFromCrc（反例用）
 
-using namespace link;
+using namespace dashlink;
 
 namespace {
 

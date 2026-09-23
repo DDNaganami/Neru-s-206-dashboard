@@ -5,7 +5,7 @@
 //   只会表现成"两板的 tick_ms 差了 16777216 ms"。
 #include "link_msg.h"
 
-namespace link {
+namespace dashlink {
 
 namespace {
 
@@ -190,4 +190,4 @@ uint8_t tempToRaw(float celsius) {
 
 float rawToTempC(uint8_t raw) { return (float)raw - kTempOffsetC; }
 
-}  // namespace link
+}  // namespace dashlink

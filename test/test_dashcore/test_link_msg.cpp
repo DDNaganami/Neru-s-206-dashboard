@@ -16,7 +16,7 @@
 #include "link_frame.h"
 #include "link_msg.h"
 
-using namespace link;
+using namespace dashlink;
 
 // 2 位来源编码与 data_service.h 的 FieldSource **数值一一对应**（编译期就炸，
 // 免得以后有人给 FieldSource 插一档、把链路上的编码挤歪）。

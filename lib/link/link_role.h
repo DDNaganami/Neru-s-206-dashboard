@@ -38,7 +38,7 @@ static_assert(LINK_ROLE == 0 || LINK_ROLE == 1,
               "LINK_ROLE 只能是 0(从板/左) 或 1(主板/右)—— §2 的 ROLE 字段就这两位取值，"
               "别的值一定是 -D 写错了(宁可在编译期炸掉，也不要运行期猜角色)");
 
-namespace link {
+namespace dashlink {
 
 // 本机角色：编译期定死，运行期**没有任何**代码能改它（只报警、不改角色，§5）。
 static const uint8_t kLocalRole = (uint8_t)LINK_ROLE;
@@ -67,4 +67,4 @@ inline bool slaveSelfCheckLooksLikeMaster(uint8_t local_role, uint32_t van_edges
   return local_role == kRoleSlave && van_edges > 0u;
 }
 
-}  // namespace link
+}  // namespace dashlink

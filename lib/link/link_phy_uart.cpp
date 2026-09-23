@@ -9,6 +9,15 @@
 
 #if defined(LINK_PHY_UART)
 
+// ★ 只在 S3 上编。经典 ESP32 上 `Serial0` 这个对象**不存在**（`HardwareSerial.h`
+//   只在 `ARDUINO_USB_CDC_ON_BOOT == 1` 时声明它，而经典板没有 CDC）⇒ 本文件在那边
+//   会炸出一堆 `'Serial0' was not declared`，看着像"代码写错了"，其实只是"这块板不是
+//   双板架构的板子"（契约 §0 的 43/44 是 S3 的 UART0 脚）。所以在这里给一条**说得清
+//   原因**的编译期错误，别让下一个人去猜。
+#if defined(ARDUINO_ARCH_ESP32) && !defined(CONFIG_IDF_TARGET_ESP32S3)
+#error "link_phy_uart 只在 ESP32-S3 上编(契约 §0 的 43/44 是 S3 的 UART0 脚;经典 ESP32 没有 Serial0,也不是双板架构的板子)。请去掉该 env 的 -DLINK_PHY_UART。"
+#endif
+
 // ★ 这两个头放在**一起**是这道闸门的前提：`dash_log.h` 就是"日志要写 UART0"那件事
 //   的全部证据（它的 dash_log_begin/dash_logf 硬编码 Serial0，见文件头）。
 #include "dash_log.h"
@@ -26,31 +35,22 @@
 // （从板会拿它当 VAN 回放行去解，见 §2 的分流）。
 //
 // ★ 本轮的边界：**没有改 `dash_log.h`**（口径明确是"别去改它"）。所以今天这条闸门
-//   是**关着**的 —— 想把链路 PHY 编进固件，就得显式给出路（下面两条之一）。
+//   是**关着**的 —— 想把链路 PHY 编进固件，就得显式给出路（下面三条之一）。
 //   这不是"多此一举的仪式"：它把 §0 那条待办从"文档里的提醒"变成"编译期必须做的
 //   决定"。真把日志改成只走 USB-CDC 之后，定义
 //   `-DLINK_PHY_UART_ALLOW_LOG_ON_UART0=1` 即可（或删掉这一段）。
+//
+// ★ 为什么用 `#error` 而不是 `static_assert`（2026-09-23 实测踩过）：
+//   一开始写的是"套一层模板的 static_assert + 显式实例化"，结果**它不报**（GCC 对
+//   显式实例化里的 static_assert 在 -Os 下的求值时机与预期不同，实测三种写法都没拦住）。
+//   这种闸门唯一的价值就是"一定拦得住"，所以换成最朴素、最没有解释余地的 `#error`。
+//   代价：报错信息里看不到那段中文长说明（`#error` 的文本会原样打出来，见下面）。
 // ============================================================
 #if (LINK_UART_PORT == 0) && (!LINK_PHY_UART_ALLOW_LOG_ON_UART0)
-// ★ 为什么套一层模板：`static_assert(false, ...)` 在 C++ 里是"独立表达式"，
-//   即使写在没被实例化的模板里也要求立刻成立（[temp.res]）⇒ 那样写等于"
-//   include 本 .cpp 就报错"，跟条件无关。把条件写进**依赖模板参数**的表达式，
-//   判据就回到"实例化时求值"这条正常规则上。
-template <int Delay>
-struct LogUartMustNotShareLinkUart {
-  static_assert(Delay == 0,
-                "链路占了 UART0（契约 §0 的 43/44），而日志也要写 UART0："
-                "dash_log.h 的 dash_log_begin/dash_logf 硬编码 Serial0，日志文本会混进"
-                "链路数据流（§0「载体」那条待办：显示构建必须关掉 UART0 文本日志，"
-                "日志只走原生 USB-CDC）。三条出路，择一："
-                "① 把日志改成只写 USB-CDC（那条待办本身）；"
-                "② 确认链路不在 UART0 上（-DLINK_UART_PORT=1/2，注意别与 OBD 的 UART1 抢）；"
-                "③ 已确认无碍时，定义 -DLINK_PHY_UART_ALLOW_LOG_ON_UART0=1 关掉本条。");
-};
-template struct LogUartMustNotShareLinkUart<0>;
+#error "link_phy_uart: 链路占了 UART0(契约 §0 的 43/44),而日志也要写 UART0 —— dash_log.h 的 dash_log_begin/dash_logf 硬编码 Serial0,日志文本会混进链路数据流(§0「载体」那条待办:显示构建必须关掉 UART0 文本日志,日志只走原生 USB-CDC). 三条出路择一: (1) 把日志改成只写 USB-CDC(那条待办本身); (2) 确认链路不在 UART0 上(-DLINK_UART_PORT=1/2,注意别与 OBD 的 UART1 抢); (3) 已确认无碍时定义 -DLINK_PHY_UART_ALLOW_LOG_ON_UART0=1 关掉本条."
 #endif
 
-namespace link {
+namespace dashlink {
 
 void LinkPhyUart::begin(bool loopback) {
   // 说明：端口号在编译期由 LINK_UART_PORT 定死（0 = UART0，见契约 §0），这里只选
@@ -189,6 +189,6 @@ uint16_t LinkPhyUart::pumpTx() {
   return wrote;
 }
 
-}  // namespace link
+}  // namespace dashlink
 
 #endif  // LINK_PHY_UART

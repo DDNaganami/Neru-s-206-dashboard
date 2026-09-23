@@ -2,7 +2,7 @@
 // 纯逻辑：不碰 Arduino/寄存器/堆；缓冲是成员数组，没有一次动态分配。
 #include "link_rx.h"
 
-namespace link {
+namespace dashlink {
 
 void LinkRx::reset() {
   mLen = 0;
@@ -143,4 +143,4 @@ bool LinkRx::poll(LinkPhy& phy, Frame* out, uint16_t max_bytes) {
   }
 }
 
-}  // namespace link
+}  // namespace dashlink
