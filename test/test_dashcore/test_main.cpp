@@ -19,6 +19,8 @@ void register_data_service_tests(void);
 void register_expression_tests(void);
 void register_face_stage_tests(void);
 void register_link_crc_coverage_tests(void);   // 双板链路 v1:CRC-15 检错覆盖枚举(§8 L4)
+void register_link_frame_tests(void);          // 双板链路 v1:帧层(§2)—— 布局/帧长/CRC 覆盖/拒绝路径
+void register_link_msg_tests(void);            // 双板链路 v1:消息载荷(§3)—— 逐字节打包/量纲/钳制
 
 int main(void) {
   UNITY_BEGIN();
@@ -37,6 +39,8 @@ int main(void) {
   // ★ 必须排在 face_stages 之前:test_face_stages.cpp 有一个**既有崩溃**
   //   (进程 exit 3,见 ACCEPTANCE.md),排在它后面的用例根本跑不到。
   register_link_crc_coverage_tests();
+  register_link_frame_tests();
+  register_link_msg_tests();
   register_face_stage_tests();
   return UNITY_END();
 }
