@@ -85,8 +85,14 @@ void test_replay_feeds_data_service(void) {
 
   const VehicleState st = svc.update(1000);
   TEST_ASSERT_TRUE(svc.status().speed == FieldSource::Van);
-  TEST_ASSERT_EQUAL_FLOAT(100.0f, st.speed_kmh);
-  TEST_ASSERT_EQUAL_FLOAT(799.0f, st.rpm);
+  // ★ 车速期望值**由标度常量推导**,不写 km/h 字面量:
+  //   行里 data[2] = 0x64 = 100 个计数(帧内容,先用一条断言单独钉住,与标度无关),
+  //   换算 = 计数 x VanSource::kSpeedScale(2026-09-22 实测定标,见 van_source.h)。
+  //   旧写法是写死的 `100.0f` —— kSpeedScale 从 1.0 改成 2.56 时(c596351)它就陈旧了
+  //   (同文件另两条在 test_data_service.cpp)。推导写法让标度再变也自动跟着走。
+  TEST_ASSERT_EQUAL_UINT8(0x64, p.data[VanSource::kSpeedOffset]);   // = 100 个计数
+  TEST_ASSERT_EQUAL_FLOAT(0x64 * VanSource::kSpeedScale, st.speed_kmh);
+  TEST_ASSERT_EQUAL_FLOAT(799.0f, st.rpm);                          // 0x18F8 x kRpmScale(0.125)
 }
 
 void register_van_replay_tests(void) {

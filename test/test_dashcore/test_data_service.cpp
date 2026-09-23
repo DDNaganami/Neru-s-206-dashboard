@@ -11,6 +11,14 @@ static void advance(VehicleDataService& svc, uint32_t& t, uint32_t ms) {
   }
 }
 
+// ★ 车速期望值一律**由标度常量推导**,不写 km/h 字面量(2026-09-23 修 3 条陈旧断言时立的规矩):
+//   VAN 上 1 个车速计数 = VanSource::kSpeedScale km/h(2026-09-22 实测定标,见 van_source.h)
+//   ⇒ 期望值写成 `计数 x VanSource::kSpeedScale`。
+//   为什么要这样写:kSpeedScale 从 1.0 改成 2.56 时(c596351),本文件与 test_van_replay.cpp
+//   里按「1 计数 = 1 km/h」写死的 `100.0f` 没跟着改 ⇒ 3 条陈旧断言。
+//   推导写法让标度**再变一次**时期望值自动跟着走,不会再出现"改了代码忘了改测试"。
+static const uint8_t kVanSpeedCount = 0x64;   // 帧内容:100 个计数(与标度无关)
+
 void test_sim_only(void) {
   VehicleDataService svc(nullptr);
   svc.begin();
@@ -96,14 +104,14 @@ void test_van_speed_and_fallback(void) {
   p.iden = VanSource::kSpeedIden;
   p.len = 7;
   p.data[0] = 0x18; p.data[1] = 0xF8;  // 799 rpm
-  p.data[2] = 0x64;                    // 100 km/h(★ 单字节,1 计数 = 1 km/h)
+  p.data[2] = kVanSpeedCount;          // 100 个计数 ⇒ 100 x 2.56 = 256 km/h
   p.rx_ms = t;
   svc.onVanPacket(p);
 
   const VehicleState st = svc.update(t);
   TEST_ASSERT_TRUE(svc.status().speed == FieldSource::Van);
   TEST_ASSERT_TRUE(svc.status().rpm == FieldSource::Van);  // 无 OBD 时 VAN 转速兜底
-  TEST_ASSERT_EQUAL_FLOAT(100.0f, st.speed_kmh);
+  TEST_ASSERT_EQUAL_FLOAT(kVanSpeedCount * VanSource::kSpeedScale, st.speed_kmh);
 
   advance(svc, t, 3500);
   TEST_ASSERT_TRUE(svc.status().speed == FieldSource::Sim);
@@ -167,19 +175,19 @@ void test_speed_priority_van_obd_sim(void) {
   TEST_ASSERT_TRUE(svc.status().speed == FieldSource::Obd);
   TEST_ASSERT_EQUAL_FLOAT(60.0f, st.speed_kmh);
 
-  // 2) VAN 来一帧 100 km/h → 立刻压过 OBD(不是"等 OBD 过期")
+  // 2) VAN 来一帧 100 个计数(= 100 x 2.56 = 256 km/h) → 立刻压过 OBD(不是"等 OBD 过期")
   VanPacket p{};
   p.iden = VanSource::kSpeedIden;
   p.len = 7;
   p.data[0] = 0x18; p.data[1] = 0xF8;
-  p.data[2] = 0x64;                            // 100 km/h(单字节)
+  p.data[2] = kVanSpeedCount;                  // 单字节计数;换算值由 kSpeedScale 决定
   p.rx_ms = t;
   svc.onVanPacket(p);
   st = svc.update(t);
   TEST_ASSERT_TRUE(svc.status().speed == FieldSource::Van);
-  TEST_ASSERT_EQUAL_FLOAT(100.0f, st.speed_kmh);
+  TEST_ASSERT_EQUAL_FLOAT(kVanSpeedCount * VanSource::kSpeedScale, st.speed_kmh);
 
-  // 3) 两个都断 3.5 秒 → 回假数据(既不是停在 100,也不是停在 60)
+  // 3) 两个都断 3.5 秒 → 回假数据(既不停在 VAN 那个值,也不停在 OBD 的 60)
   advance(svc, t, 3500);
   TEST_ASSERT_TRUE(svc.status().speed == FieldSource::Sim);
 }
