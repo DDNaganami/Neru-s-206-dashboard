@@ -1,6 +1,6 @@
 #include "image_blob.h"
 #include <string.h>
-#include "dash_log.h"   // 日志同时打到 USB-CDC 与 UART0(见文件头说明)
+#include "dash_log.h"   // 日志默认打 USB-CDC+UART0;带链路 PHY 的构建只打 USB-CDC(见文件头)
 
 // ============================================================
 // 图片镜像的解析与加载。设计与格式见 image_blob.h。

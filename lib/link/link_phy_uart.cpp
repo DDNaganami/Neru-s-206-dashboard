@@ -18,8 +18,8 @@
 #error "link_phy_uart 只在 ESP32-S3 上编(契约 §0 的 43/44 是 S3 的 UART0 脚;经典 ESP32 没有 Serial0,也不是双板架构的板子)。请去掉该 env 的 -DLINK_PHY_UART。"
 #endif
 
-// ★ 这两个头放在**一起**是这道闸门的前提：`dash_log.h` 就是"日志要写 UART0"那件事
-//   的全部证据（它的 dash_log_begin/dash_logf 硬编码 Serial0，见文件头）。
+// ★ 这两个头放在**一起**是这道闸门的前提：`dash_log.h` 就是"日志要不要写 UART0"那件事
+//   的唯一出处（`DASH_LOG_UART0`，见那个文件头）。
 #include "dash_log.h"
 
 // ============================================================
@@ -34,11 +34,15 @@
 // UART0 文本日志**，日志只走原生 USB-CDC，否则日志文本会混进链路数据流
 // （从板会拿它当 VAN 回放行去解，见 §2 的分流）。
 //
-// ★ 本轮的边界：**没有改 `dash_log.h`**（口径明确是"别去改它"）。所以今天这条闸门
-//   是**关着**的 —— 想把链路 PHY 编进固件，就得显式给出路（下面三条之一）。
-//   这不是"多此一举的仪式"：它把 §0 那条待办从"文档里的提醒"变成"编译期必须做的
-//   决定"。真把日志改成只走 USB-CDC 之后，定义
-//   `-DLINK_PHY_UART_ALLOW_LOG_ON_UART0=1` 即可（或删掉这一段）。
+// ★★ 2026-09-23：**§0 那条待办已经做掉了** —— `dash_log.h` 新增 `DASH_LOG_UART0` 这个
+//   编译期开关（有 `LINK_PHY_UART` 时默认 0 ⇒ UART0 一个字节都不写，日志只走 USB-CDC）。
+//   于是：
+//     · **显示/链路构建不再需要任何豁免宏**（旧写法是在 platformio.ini 里写
+//       `-DLINK_PHY_UART_ALLOW_LOG_ON_UART0=1` 承认现状），本条判据直接成立；
+//     · 而这道闸门**留着、而且是常开的** —— 它现在挡的是另一件事：谁要是在 env 里
+//       显式 `-DDASH_LOG_UART0=1` 把 UART0 日志打开（连同 `LINK_PHY_UART`），
+//       那就是"日志与链路共用一个外设"这个危险组合本身 ⇒ 编译期直接拦住。
+//   ⇒ 正常构建里这条**永远不会触发**；它触发就说明有人主动把日志又放回了链路那根线上。
 //
 // ★ 为什么用 `#error` 而不是 `static_assert`（2026-09-23 实测踩过）：
 //   一开始写的是"套一层模板的 static_assert + 显式实例化"，结果**它不报**（GCC 对
@@ -46,8 +50,8 @@
 //   这种闸门唯一的价值就是"一定拦得住"，所以换成最朴素、最没有解释余地的 `#error`。
 //   代价：报错信息里看不到那段中文长说明（`#error` 的文本会原样打出来，见下面）。
 // ============================================================
-#if (LINK_UART_PORT == 0) && (!LINK_PHY_UART_ALLOW_LOG_ON_UART0)
-#error "link_phy_uart: 链路占了 UART0(契约 §0 的 43/44),而日志也要写 UART0 —— dash_log.h 的 dash_log_begin/dash_logf 硬编码 Serial0,日志文本会混进链路数据流(§0「载体」那条待办:显示构建必须关掉 UART0 文本日志,日志只走原生 USB-CDC). 三条出路择一: (1) 把日志改成只写 USB-CDC(那条待办本身); (2) 确认链路不在 UART0 上(-DLINK_UART_PORT=1/2,注意别与 OBD 的 UART1 抢); (3) 已确认无碍时定义 -DLINK_PHY_UART_ALLOW_LOG_ON_UART0=1 关掉本条."
+#if (LINK_UART_PORT == 0) && (DASH_LOG_UART0)
+#error "link_phy_uart: 链路占了 UART0(契约 §0 的 43/44),而这份固件又把日志也放在 UART0 上(DASH_LOG_UART0=1) —— 日志文本会混进链路数据流,从板会拿它当 VAN 回放行去解(§0「载体」那条待办的原始风险). 正常构建不会走到这里: dash_log.h 在定义了 LINK_PHY_UART 时默认 DASH_LOG_UART0=0(UART0 不写日志,只走原生 USB-CDC). 两条出路择一: (1) 去掉那个显式覆盖(推荐,就是默认行为); (2) 确认链路不在 UART0 上(-DLINK_UART_PORT=1/2,注意别与 OBD 的 UART1 抢)."
 #endif
 
 namespace dashlink {
@@ -82,6 +86,8 @@ void LinkPhyUart::start(HardwareSerial* s, int8_t port, int8_t tx, int8_t rx, bo
 
   // ★ 显式给引脚（不走板级默认）：契约 §0 要的是 43/44，而"哪个脚"是我们这边定的。
   //   115200 8N1 = §1.1。
+  //   ★ 这里与日志口的关系：`dash_log_begin()` 在链路构建里**不再碰 UART0**
+  //     （`DASH_LOG_UART0=0`，见文件头那道闸门）—— 所以这一行是 UART0 上唯一的占用者。
   s->begin(kLinkBaud, SERIAL_8N1, rx, tx);
 
   // 入方向：把环读出来（一次 read(len) 拷一批）。UART0 的驱动环默认 256 B，

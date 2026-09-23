@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include "dash_log.h"   // 日志同时打到 USB-CDC 与 UART0(见文件头说明)
+#include "dash_log.h"   // 日志默认打 USB-CDC+UART0;带链路 PHY 的构建只打 USB-CDC(见文件头)
 
 // ★ 单板回环验证固件（`env:esp32s3-linkloop`）要与本文件**二选一**：同一个 env 只能
 //   有一个 setup()/loop()。开了这个宏就把整个 main.cpp 摘掉，由 src/link_loopback.cpp
@@ -33,8 +33,9 @@
 
 #if LINK_ROLE == 1
 // 链路物理层（真实 UART）只在**主板**这一侧编译：从板（LINK_ROLE==0）不发车数据、
-// 只收 —— 而"收"用的还是同一个 LinkPhyUart 类，但把类编进来会拉上 dash_log.h 那条
-// 编译期闸门（见 link_phy_uart.cpp 文件头）。本轮按 §5 的口径只把**主板**这一侧
+// 只收 —— 而"收"用的还是同一个 LinkPhyUart 类，但把类编进来会拉上 link_phy_uart.cpp
+// 那条"链路 UART 与日志 UART 不许是同一个"的编译期闸门（判据现在是 dash_log.h 的
+// DASH_LOG_UART0，见那个文件头）。本轮按 §5 的口径只把**主板**这一侧
 // 接上（编译期 env 是唯一权威）；从板的接收路径由 lib/link 的用例整条覆盖
 // （test/test_dashcore/test_link_app.cpp 的端到端那一条：发 → 收 → 喂进 data_service）。
 #include "link_phy_uart.h"
@@ -232,12 +233,14 @@ static VanLogSink g_van_log;
 //    ③ **从快照发、不从回调发**：DATA 的内容来自 `g_data.update(now)` 的**返回值**
 //       （主循环里的快照），而不是 VAN 帧回调里顺手发。
 //
-//  ★ 与日志口的关系：链路走 UART0（43/44，§0），而 `dash_log.h` 也往 UART0 写
-//    （§0「载体」那条**待办**：显示构建必须关掉 UART0 文本日志）。本轮没有改
-//    dash_log.h，所以在 platformio.ini 里显式写了
-//    `-DLINK_PHY_UART_ALLOW_LOG_ON_UART0=1` 承认这个现状 —— 那个宏就是那道闸门的
-//    开关（见 lib/link/link_phy_uart.cpp 文件头）。**上板前必须把日志那一路关掉**，
-//    否则日志文本会混进链路数据流（从板会拿它当 VAN 回放行去解）。
+//  ★ 与日志口的关系：链路走 UART0（43/44，§0），而**日志已经不占 UART0 了** ——
+//    §0「载体」那条待办（2026-09-23）已由 `lib/dashcore/dash_log.h` 的
+//    `DASH_LOG_UART0` 收口：只要这份固件里有链路 PHY（`-DLINK_PHY_UART=1`，见
+//    platformio.ini 的 [env:esp32s3]），`dash_log_begin()` 就不开 `Serial0`、
+//    `dash_logf()` 也不写 `Serial0`，日志只走原生 USB-CDC ⇒ 43/44 上是**只有链路**
+//    一个占用者（下面 `g_link_phy.begin(false)` 那一行）。
+//    ★ 这条关系在编译期还有一道闸门看着（link_phy_uart.cpp）：谁要显式
+//    `-DDASH_LOG_UART0=1` 把日志又放回 UART0，就与链路撞车、直接编不过。
 #if LINK_ROLE == 1
 static dashlink::LinkPhyUart g_link_phy;   // §0：115200 8N1，UART0，TX=GPIO43 / RX=GPIO44
 static dashlink::LinkTx      g_link_tx;    // §1.2 ②：自有环 ≥512 B，整帧进出
@@ -293,6 +296,12 @@ static uint32_t last_status_ms = 0;
 //   UART 口是 Serial0(UART0)—— 手头只有一根线,插哪个口都得能贴帧
 //   (2026-09-18:就是把线插去了 UART 口,才有了这条)。
 //   一行只允许来自一个口,所以两个口各自维护自己的行缓冲(共用一个 len 会串行)。
+//   ★ 2026-09-23 补一句边界:链路构建(dash_log.h 的 `DASH_LOG_UART0=0`)里
+//     **日志已不写 UART0**,但下面这段**仍然从 Serial0 读**(回放输入)——
+//     读与链路的"收"共用同一个 RX FIFO,谁先取走谁处理:两边都是非阻塞的、都不改写
+//     对方的配置,所以没有新的冲突;真要拿 43/44 跑链路时,链路那一路优先。
+//     (链路自己 `begin()` 时会把 43/44 按 §0 §1.1 重新配一遍,那时 Serial0 的读
+//      拿到的是链路字节 —— 那是"贴帧口被链路占着"这个既定事实,不是新问题。)
 static void van_replay_feed(const char c, char* line, uint8_t& len, uint32_t now) {
   if (c == '\r' || c == '\n') {
     if (len) {
@@ -631,10 +640,11 @@ void setup() {
   BOOT_STAGE(3);
 #if LINK_ROLE == 1
   // 链路物理层（主板侧）：§0 的 43 发 / 44 收、§1.1 的 115200 8N1。
-  // ★ 必须在 `dash_log_begin()` **之后**：那一步已经把 UART0 抢去当日志口了，
-  //   这里再 begin 一次会把 43/44 按链路的口径重新配一遍 —— 这正是 §0「载体」那条
-  //   待办要暴露出来的冲突（日志文本会混进链路数据流）。见本文件上方那段说明与
-  //   platformio.ini 里 -DLINK_PHY_UART_ALLOW_LOG_ON_UART0=1 的注释。
+  // ★ 顺序上的一个已知事实（不改行为，只记清楚）：`dash_log_begin()` 在**本构建**里
+  //   只开 USB-CDC（`DASH_LOG_UART0=0`，见本文件上方那段），所以它**不碰** UART0；
+  //   下面这一行才是 UART0/43/44 上唯一的占用者。
+  //   ★ 而 VAN 采集那个构建（不带 `-DLINK_PHY_UART`）里没有这一段：那边
+  //     `dash_log_begin()` 照旧开着 UART0 双通道日志 —— 行为一字未变。
   g_link_phy.begin(false);
   g_link_rx.setLocalRole(dashlink::kLocalRole);
   g_link_tick.reset(millis());   // §4：tick_ms 是主板**自己**的单调毫秒(从复位起算)

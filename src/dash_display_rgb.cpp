@@ -43,7 +43,7 @@
 
 #include "dash_display.h"
 #include "ui_theme.h"
-#include "dash_log.h"     // 日志同时打到 USB-CDC 与 UART0(见那个文件头)
+#include "dash_log.h"     // 日志默认打 USB-CDC+UART0;带链路 PHY 的构建只打 USB-CDC(见文件头)
 
 #if defined(DASH_DISPLAY_RGB)
 

@@ -66,11 +66,14 @@
 #endif
 
 #ifndef LINK_PHY_UART_ALLOW_LOG_ON_UART0
-// 见 link_phy_uart.cpp 的「链路 UART 与日志 UART 必须是两个不同外设」：
-// 链路占 UART0 时，日志**不许**也往 UART0 写。dash_log.h 里那条待办（显示构建关掉
-// UART0 文本日志）还没做，所以这里默认 0 ⇒ 谁把链路 PHY 编进固件，谁就在
-// **link_phy_uart.cpp 里那条编译期闸门**上撞车（本文件不做这个判断 —— 见下）。
-// 真到了"日志只走 USB-CDC"的那一天，把这条改成 1（或删掉）即可。
+// ★ **已退役（2026-09-23）**：这条宏是"链路占了 UART0、而日志也写 UART0"的**豁免**开关
+//   —— `§0「载体」`那条待办做完之后它就**没有消费者**了。
+//   现在那条判据的**唯一出处**是 `lib/dashcore/dash_log.h` 的 `DASH_LOG_UART0`
+//   （有 `LINK_PHY_UART` 时默认 0 ⇒ 日志不写 UART0），闸门在 `link_phy_uart.cpp`：
+//   真有人显式 `-DDASH_LOG_UART0=1`，那道 `#error` 会当场拦住。
+//   ★ 这里保留一个**恒为 0** 的同名宏，只为一件事：万一还有旧文档/旧命令带着
+//     `-DLINK_PHY_UART_ALLOW_LOG_ON_UART0=1`，它**不会再让闸门失效**
+//     （闸门已经不读它了）。**别再给新 env 加这一条** —— 显示构建现在不需要任何豁免。
 #define LINK_PHY_UART_ALLOW_LOG_ON_UART0 0
 #endif
 
@@ -83,9 +86,9 @@
 // ★ 本文件（link_phy_pins.h）是**宿主机也编**的纯头文件：它的消费者除了固件，还有
 //   native 用例（接线常量得能在宿主机上被钉住）。所以这里的守卫只用**宏 + 无条件
 //   static_assert**，不依赖任何"谁 include 了我"的判断。
-//   ★ "链路占 UART0 而日志也写 UART0" 那条**不在这里** —— 它需要知道"这份固件里有没有
-//     人调 dash_logf()"，那是 link_phy_uart.cpp（同时 include dash_log.h 的那一个
-//     翻译单元）才能回答的问题。见那个文件里的编译期闸门。
+//   ★ "链路占 UART0 而日志也写 UART0" 那条**不在这里** —— 它需要知道"这份固件把日志
+//     放在哪个 UART 上"，那是 `dash_log.h` 的 `DASH_LOG_UART0`，而判它的人是
+//     link_phy_uart.cpp（同时 include dash_log.h 的那一个翻译单元）。见那个文件的闸门。
 #if LINK_TX_PIN == LINK_RX_PIN
 #error "LINK_TX_PIN 与 LINK_RX_PIN 不能是同一根脚：TX 是推挽输出、RX 是输入，同一根脚上两者互斥（契约 §0：43 发、44 收）"
 #endif

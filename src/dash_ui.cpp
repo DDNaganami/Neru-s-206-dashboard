@@ -7,7 +7,7 @@
 #include <lvgl.h>
 #include <Arduino.h>
 #include <math.h>
-#include "dash_log.h"   // 日志同时打到 USB-CDC 与 UART0(见文件头说明)
+#include "dash_log.h"   // 日志默认打 USB-CDC+UART0;带链路 PHY 的构建只打 USB-CDC(见文件头)
 
 // 表情槽位下标 = (uint8_t)Face —— 两者必须一样长,否则数组会越界
 static_assert((uint8_t)Face::Count == kFaceSlotCount,
