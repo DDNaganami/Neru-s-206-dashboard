@@ -14,7 +14,11 @@ abstract: |-
 
   Licensing is layered: code is MIT, documentation (*.md) is CC BY 4.0, and
   artwork / image and binary assets are declared separately with all rights
-  reserved. See LICENSE, LICENSE-DOCS, LICENSE-ARTWORK and THIRD-PARTY.md.
+  reserved. The root LICENSE holds the plain MIT text only; the layered scope
+  is stated in LICENSING.md, with licensing details in LICENSE-DOCS,
+  LICENSE-ARTWORK and THIRD-PARTY.md. This mix is also why the entry below
+  exists: the MIT license field of this software entry does not describe the
+  documentation, which is cited separately as CC BY 4.0.
 
 type: software
 authors:
@@ -33,3 +37,18 @@ keywords:
   - LVGL
   - instrument cluster
   - reverse engineering
+
+# Documentation-side citation: the measured VAN / AEE2001 reference is published
+# under CC BY 4.0 (see LICENSE-DOCS), NOT under the MIT license of the software
+# entry above. Cite this entry when you reference VAN-PROTOCOL.md.
+preferred-citation:
+  type: generic
+  title: "VAN-PROTOCOL.md — measured PSA / AEE2001 VAN comfort-bus reference"
+  authors:
+    - name: "DDNaganami"
+  year: 2026
+  license: CC-BY-4.0
+  identifiers:
+    - type: url
+      value: "https://github.com/DDNaganami/Neru-s-206-dashboard/blob/main/VAN-PROTOCOL.md"
+  url: "https://github.com/DDNaganami/Neru-s-206-dashboard/blob/main/VAN-PROTOCOL.md"
