@@ -21,6 +21,8 @@ void register_face_stage_tests(void);
 void register_link_crc_coverage_tests(void);   // 双板链路 v1:CRC-15 检错覆盖枚举(§8 L4)
 void register_link_frame_tests(void);          // 双板链路 v1:帧层(§2)—— 布局/帧长/CRC 覆盖/拒绝路径
 void register_link_msg_tests(void);            // 双板链路 v1:消息载荷(§3)—— 逐字节打包/量纲/钳制
+void register_link_time_tests(void);           // 双板链路 v1:时基(§4)—— tick 生成/偏移估计/三级超时
+void register_link_phy_tests(void);            // 双板链路 v1:传输层(§1/§2 重同步)—— 假 PHY/非阻塞收发
 
 int main(void) {
   UNITY_BEGIN();
@@ -41,6 +43,8 @@ int main(void) {
   register_link_crc_coverage_tests();
   register_link_frame_tests();
   register_link_msg_tests();
+  register_link_time_tests();
+  register_link_phy_tests();
   register_face_stage_tests();
   return UNITY_END();
 }
