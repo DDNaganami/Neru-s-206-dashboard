@@ -50,7 +50,7 @@ struct DataSourceStatus {
 
 // 板间链路（主板 → 从板）送过来的**一份快照**。
 //
-// 为什么要单独一个结构、而不是让 data_service 直接吃 link::DataMsg：
+// 为什么要单独一个结构、而不是让 data_service 直接吃 dashlink::DataMsg：
 //   `data_service.h` 是**数据层**（`-I lib/dashcore`），而 `DATA` 的载荷布局是**协议层**
 //   （`-I lib/link`）。让数据层 include 协议头会倒过来依赖，而且 `link_msg.h` 里那套
 //   量纲换算函数（rpmToRaw / rawToRpm…）是"线上格式"的事，数据层只需要**已经换算好的
