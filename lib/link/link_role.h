@@ -53,6 +53,36 @@ inline bool roleConflict(uint8_t frame_role, uint8_t local_role) {
   return frame_role == local_role;
 }
 
+// 对端角色（0 ↔ 1）。§2 的 ROLE 只有两种取值，所以"对端"就是取反。
+inline uint8_t peerRoleOf(uint8_t role) {
+  return (uint8_t)(role == kRoleMaster ? kRoleSlave : kRoleMaster);
+}
+
+// ============================================================
+// ★★ **单板回环**的两个角色（`src/link_loopback.cpp` 用；这里是唯一出处，
+//    宿主机用例读的是同一份 —— test_link_phy.cpp 的背靠背用例与角色口径用例）
+//
+// 一块板同时扮演两端时，上面那条 §5 ① 就是最容易踩的坑：
+//   · **发端**写进帧里的 ROLE = **本机**角色（`kLoopbackTxRole`）—— 与生产固件
+//     一字不差，线上字节不变；
+//   · **收端**必须扮演**对端**（`kLoopbackRxRole = peerRoleOf(kLocalRole)`）——
+//     回环里回来的字节就是本机 TX 自己的字节，而真实链路上收到这些字节的是
+//     **对端那块板**，所以回环的收端要按对端的身份做 §5 ① 自检。
+//
+// ★ 两边都写本机角色会怎样（2026-09-23 上板实测，症状极具误导性）：回环里回来的
+//   **每一帧**都满足 `frame_role == local_role` ⇒ 帧在 `decodeFrame()` 返回 **Ok
+//   之后**被丢（`LinkRx::advance()` 的 role_conflict 分支），于是串口上看到的是
+//   "收到 2841 字节 / 0 帧 / CRC 错 0 / bad_len 0 / 未知类型 0 / 噪声 1 字节" ——
+//   **所有"帧坏了"的计数都不动**，只有 role_conflict 在涨（而它当时还没进汇总）。
+//   ⇒ 别再把它当成"PHY 或者分帧坏了"去查。
+//
+//   ★ 为什么收端扮演对端**不是**"绕开 §5 ①"：回环里回来的字节在真实链路上是
+//     对端那块板收到的，所以按对端身份自检才是这条链路的实际形态；反过来说，
+//     §5 ① 的判据一行都没动（两块板刷了同一份固件时照样丢帧 + 报警）。
+// ============================================================
+static const uint8_t kLoopbackTxRole = kLocalRole;
+static const uint8_t kLoopbackRxRole = peerRoleOf(kLocalRole);
+
 // §5 ②：主板侧的自检 —— "本机像从板"。
 // 判据（三个都要成立）：本机是主板角色、开着 VAN 物理层却一个边沿都没有、
 // 而且已经收到了对端的 DATA 帧（说明这条链路上有人在发数据）。

@@ -63,6 +63,7 @@ struct Counters {
   uint16_t tx_overflow = 0;             // PHY 的 TX 环满（write() 少收的字节）
   uint16_t rx_overflow = 0;             // PHY 的 RX 环满（丢掉的字节）
   uint16_t payload_bad = 0;             // 解出来的字段与载荷字节对不上（字节序错）
+  uint16_t role_bad = 0;                // 帧上的 ROLE 与回环发端写的不一致
 };
 
 uint8_t typeIndex(uint8_t type) {
@@ -123,7 +124,7 @@ uint16_t enqueueOne(uint8_t idx, uint16_t i) {
   const uint8_t len = payloadLen(idx);
   uint8_t payload[dashlink::kLenMax];
   for (uint8_t k = 0; k < len; ++k) payload[k] = seedByte(type, i, k);
-  if (!g_tx.enqueueFrame(type, payload, len, dashlink::kLocalRole)) {
+  if (!g_tx.enqueueFrame(type, payload, len, dashlink::kLoopbackTxRole)) {
     ++g_c.tx_dropped;
     return 0;
   }
@@ -136,6 +137,10 @@ void onFrame(const dashlink::Frame& f) {
   const uint8_t idx = typeIndex(f.type);
   if (idx == 0xFF) return;                       // 不该发生（帧层已挡掉未知 TYPE）
   ++g_c.got[idx];
+
+  // §2 的 ROLE 字节往返：回环里收到的那一帧就是本机发出去的 ⇒ ROLE 必须原样。
+  // ★ 2026-09-23 那次的根因就在这个字段上（收端角色口径），所以这里也盯一眼。
+  if (f.role != dashlink::kLoopbackTxRole) ++g_c.role_bad;
 
   // 载荷自校验：拿"解析出来的字段"与"载荷里的原始字节"对一遍。
   // ★ 这是本固件最值钱的一条断言：大端写反、字节序不一致这类错**编译期完全看不出来**，
@@ -172,6 +177,7 @@ uint16_t g_i     = 0;                 // 当前类型里第几帧
 uint32_t g_next_send_ms = 0;
 uint32_t g_phase_start_ms = 0;
 uint32_t g_last_report_ms = 0;
+bool     g_reported = false;           // Done 阶段只打一次汇总（见下面 case Done）
 
 void report(bool final_pass) {
   const uint16_t total_sent = (uint16_t)(g_c.sent[0] + g_c.sent[1] + g_c.sent[2] +
@@ -190,24 +196,33 @@ void report(bool final_pass) {
   Serial.printf("linkloop: CRC 错 %lu / bad_len %lu / 未知类型 %lu / 重同步噪声 %lu 字节\n",
                 (unsigned long)st.crc_err, (unsigned long)st.bad_len,
                 (unsigned long)st.unknown_type, (unsigned long)st.noise_bytes);
+  // ★ 这一行是 2026-09-23 那次"收了很多字节却 0 帧"留下的：角色冲突丢帧发生在
+  //   decodeFrame() **成功之后**，所以 CRC/bad_len/未知类型一个都不动 —— 不把
+  //   role_conflict 打出来，现场看起来就像"帧根本没组装起来"（见回报）。
+  Serial.printf("linkloop: 角色冲突 %lu / 长度不符 %lu / 帧头错 %lu（回环里这三个都必须 0）\n",
+                (unsigned long)st.role_conflict, (unsigned long)st.len_mismatch,
+                (unsigned long)st.bad_sync);
   Serial.printf("linkloop: 丢帧: LinkTx 环满 %u / PHY-TX 环满 %u 字节 / PHY-RX 环满 %u 字节\n",
                 (unsigned)g_c.tx_dropped, (unsigned)g_c.tx_overflow,
                 (unsigned)g_c.rx_overflow);
-  Serial.printf("linkloop: 载荷自校验失败 %u 处\n", (unsigned)g_c.payload_bad);
+  Serial.printf("linkloop: 载荷自校验失败 %u 处 / ROLE 不符 %u 处\n",
+                (unsigned)g_c.payload_bad, (unsigned)g_c.role_bad);
   Serial.printf("linkloop: PHY 统计 rxTotal=%lu txTotal=%lu\n",
                 (unsigned long)g_phy.rxTotal(), (unsigned long)g_phy.txTotal());
 
   // ---- 判据（写死在这里，别只看"有输出就算过"）----
   const bool ok = (total_sent == kFramesPerType * 5u) && (total_got == total_sent) &&
                   (st.crc_err == 0u) && (st.bad_len == 0u) && (st.unknown_type == 0u) &&
-                  (g_c.payload_bad == 0u) && (g_c.tx_dropped == 0u) &&
+                  (st.role_conflict == 0u) && (st.len_mismatch == 0u) && (st.bad_sync == 0u) &&
+                  (g_c.payload_bad == 0u) && (g_c.role_bad == 0u) && (g_c.tx_dropped == 0u) &&
                   (g_c.tx_overflow == 0u) && (g_c.rx_overflow == 0u);
   if (final_pass) {
     Serial.printf("linkloop: %s\n", ok ? "PASS" : "FAIL");
     if (!ok) {
       Serial.printf("linkloop: 排查顺序 ① GPIO17/18 真的短接了吗(万用表通断) "
                     "② 串口 115200 8N1 ③ 有没有别的外设占着 17/18 "
-                    "④ UART1 是否被 OBD 抢走(17/18 默认就是 OBD 那对脚!)\n");
+                    "④ UART1 是否被 OBD 抢走(17/18 默认就是 OBD 那对脚!) "
+                    "⑤ 角色冲突不为 0 ⇒ 回环收端必须扮演对端(link_role.h 的 kLoopbackRxRole)\n");
     }
   }
 }
@@ -223,12 +238,16 @@ void setup() {
   Serial.printf("\nlinkloop: 206 dash 双板链路 v1 —— 单板回环验证固件\n");
   Serial.printf("linkloop: 芯片=%s rev%d  编译期口径 LINK_ROLE=%d\n", ESP.getChipModel(),
                 (int)ESP.getChipRevision(), (int)LINK_ROLE);
+  // ★ 两个角色都打出来：它们是回环里最容易配错的一对（§5 ①），配成一样时
+  //   每一帧都会被当角色冲突丢掉，而 CRC/bad_len/未知类型一个都不动（见回报）。
+  Serial.printf("linkloop: 回环角色: 帧上写 %d(=本机) / 收端按 %d(=对端) 自检 §5①\n",
+                (int)dashlink::kLoopbackTxRole, (int)dashlink::kLoopbackRxRole);
   Serial.printf("linkloop: ★ 请确认 **GPIO%d 与 GPIO%d 已短接**（就这一根线）\n",
                 (int)dashlink::kLoopbackTxPinC, (int)dashlink::kLoopbackRxPinC);
   Serial.printf("linkloop: 回环走 UART%d；日志走 USB-CDC 的 Serial（不碰 43/44）\n",
                 (int)dashlink::kLoopbackUartPort);
 
-  g_rx.setLocalRole(dashlink::kLocalRole);
+  g_rx.setLocalRole(dashlink::kLoopbackRxRole);
   g_phy.begin(true);   // true = 回环模式：UART1 + GPIO17/18（见 link_phy_uart.h）
   Serial.printf("linkloop: PHY 就绪 port=%d tx=GPIO%d rx=GPIO%d @%u 8N1\n",
                 (int)g_phy.port(), (int)g_phy.txPin(), (int)g_phy.rxPin(),
@@ -267,7 +286,13 @@ void loop() {
       if ((now - g_phase_start_ms) >= kDrainMs) g_phase = Phase::Done;
       break;
     case Phase::Done:
-      report(true);
+      // ★ 汇总**只打一次**（2026-09-23 修）：这里是 loop()，原先每圈都无条件调
+      //   report(true) ⇒ 那一整段汇总被无限刷屏（"停在这里，不再刷屏"是注释里的
+      //   承诺，代码没兑现）。一串 PASS 只会把串口淹掉，判据本身一行就够。
+      if (!g_reported) {
+        g_reported = true;
+        report(true);
+      }
       // 停在这里，不再刷屏；复位/重新上电才会再跑一轮。
       break;
   }
