@@ -68,6 +68,7 @@ python -m platformio device monitor -e esp32s3-linkloop -p COM4 -b 115200
 ```
 linkloop: 206 dash 双板链路 v1 —— 单板回环验证固件
 linkloop: 芯片=ESP32-S3 rev0  编译期口径 LINK_ROLE=1
+linkloop: 回环角色: 帧上写 1(=本机) / 收端按 0(=对端) 自检 §5①
 linkloop: ★ 请确认 **GPIO17 与 GPIO18 已短接**（就这一根线）
 linkloop: 回环走 UART1；日志走 USB-CDC 的 Serial（不碰 43/44）
 linkloop: PHY 就绪 port=1 tx=GPIO17 rx=GPIO18 @115200 8N1
@@ -84,12 +85,19 @@ linkloop:   TICK   sent=40  got=40
 linkloop:   DATA   sent=40  got=40
 linkloop:   STATUS sent=40  got=40
 linkloop:   EVENT  sent=40  got=40
-linkloop: CRC 错 0 / bad_len 0 / 未知类型 0 / 重同步噪声 0 字节
+linkloop: CRC 错 0 / bad_len 0 / 未知类型 0 / 重同步噪声 1 字节
+linkloop: 角色冲突 0 / 长度不符 0 / 帧头错 0（回环里这三个都必须 0）
 linkloop: 丢帧: LinkTx 环满 0 / PHY-TX 环满 0 字节 / PHY-RX 环满 0 字节
-linkloop: 载荷自校验失败 0 处
-linkloop: PHY 统计 rxTotal=3460 txTotal=3460
+linkloop: 载荷自校验失败 0 处 / ROLE 不符 0 处
+linkloop: PHY 统计 rxTotal=2841 txTotal=2840
 linkloop: PASS
 ```
+
+> 上面是我这边（2026-09-23）实测的**原样**读数：`重同步噪声 1 字节` 与
+> `rxTotal = txTotal + 1` 是**同一个字节** —— UART 初始化那一下 RX 脚上的一个毛刺
+> （`txTotal=2840` 正好是 40×(12+12+13+23+11)，一帧不多不少）。它只进噪声计数、
+> 不进 PASS 判据，后面 200 帧一帧不受影响。**别把它当成"线上丢了一个字节"。**
+> 汇总只打**一次**（Done 阶段不再刷屏）；要再看一轮就复位/重新上电。
 
 **判据就是最后那一行 `linkloop: PASS`**（它把下面这些合起来判）：
 
@@ -98,14 +106,57 @@ linkloop: PASS
 | `发送 200 帧 / 收到 200 帧` | 两边都是 **200** | 五类消息各 40 帧，一帧都没丢 —— 帧编解码 + CRC + 重同步在**真实 UART 字节流**上站得住 |
 | `CRC 错 0` | **0** | 没有误码；有的话说明线上真有问题（或波特率/接线不对） |
 | `bad_len 0` / `未知类型 0` | **0** | 帧长判据与 TYPE 表一致 |
-| `重同步噪声 0 字节` | **0** | 没有半截帧被丢掉再重新找 SYNC |
+| `角色冲突 0` | **0** | ★ **回环的收端角色是对的**（详见下面「回环里的角色」）—— 这一格不为 0 时，收发数会直接掉成 0，而 CRC/bad_len/未知类型**全是 0** |
+| `长度不符 0` / `帧头错 0` | **0** | 帧层那两条独立拒绝路径也没被走到 |
+| `重同步噪声` | 0 或 1 | 0 = 干净；1 = 开机那个毛刺字节（见上）。**再大**就说明真有半截帧被丢 |
 | `LinkTx 环满 0` | **0** | 契约 §1.2 ② 的"整帧丢"没发生（发送节奏淹不掉环） |
 | `PHY-TX / PHY-RX 环满 0 字节` | **0** | UART 的两级环都没溢出 |
-| `载荷自校验失败 0 处` | **0** | **大端字节序**：把解出来的字段与载荷原始字节逐字段对了一遍 |
-| `rxTotal == txTotal` | 相等 | 发出去多少字节、收回来多少字节（回环里两者必然相等） |
+| `载荷自校验失败 0 处` / `ROLE 不符 0 处` | **0** | **大端字节序**：把解出来的字段与载荷原始字节逐字段对了一遍；ROLE 字节也往返一致 |
+| `rxTotal == txTotal (+1)` | 相等或差 1 | 发出去多少字节、收回来多少字节（差的那 1 个就是上面那个毛刺） |
 
 `发送 N 帧 / 收到 N 帧` 这两个数**在心跳行里也应该同步在涨**（我这边是每 2 ms 一帧
 ⇒ 心跳那一秒里大概各涨 30~40）。如果**发送在涨、收到不动**，按下面排查。
+
+---
+
+## 2.5 ★ 回环里的角色：**收端必须扮演对端**（2026-09-23 修）
+
+单板回环是**一块板同时扮演两端**，于是就撞上 §5 ① 那条自检：
+
+```c
+// lib/link/link_role.h
+inline bool roleConflict(uint8_t frame_role, uint8_t local_role) {
+  return frame_role == local_role;      // 对端 ROLE == 本机 ROLE ⇒ 丢帧
+}
+```
+
+- **发端**：帧上写的 ROLE 是**本机**角色（`kLoopbackTxRole = kLocalRole`）——
+  与生产固件一字不差，线上字节不变；
+- **收端**：必须按**对端**角色自检（`kLoopbackRxRole = peerRoleOf(kLocalRole)`）——
+  回环里回来的字节在真实链路上是**对端那块板**收到的，所以按对端身份自检才是这
+  条链路的实际形态。
+
+★ **两边都写本机角色**（这一版原先就是这样）的后果：回环里回来的**每一帧**都满足
+`frame_role == local_role` ⇒ 帧在 `decodeFrame()` 返回 **Ok 之后**被丢掉。串口上看到的是：
+
+```
+linkloop: 发送 200 帧 / 收到 0 帧   (期望 200)
+linkloop:   HELLO  sent=40  got=0          ← 五类全是 got=0
+linkloop: CRC 错 0 / bad_len 0 / 未知类型 0 / 重同步噪声 1 字节
+linkloop: 角色冲突 200 / 长度不符 0 / 帧头错 0
+linkloop: PHY 统计 rxTotal=2841 txTotal=2840
+linkloop: FAIL
+```
+
+**最误导人的地方**：`rxTotal` 明明收到了 2841 字节（通路是通的），而 CRC/bad_len/
+未知类型**一个都不动** —— 看起来像"帧根本没组装起来"，其实是"组装好了、判定通过了、
+然后因为角色冲突被丢了"。所以汇总里现在**单独打一行 `角色冲突`**，并且它进了 PASS 判据。
+⇒ 见到 `角色冲突` 不为 0，改的就一处：`lib/link/link_role.h` 的 `kLoopbackRxRole`
+（宿主机用例 `test_link_loopback_rx_role_must_be_peer` 与
+`test_link_rx_backtoback_stream_decodes_all_frames` 盯着这一对角色，改错会当场红）。
+
+> ★ 这不是"绕开 §5 ①"：判据一行都没改，两块板刷同一份固件时照样丢帧 + 报警
+> （`main.cpp` 的两侧都按 `kLocalRole` 自检，那是对的 —— 真实链路里收到的一定是对端）。
 
 ---
 
@@ -119,9 +170,11 @@ linkloop: PASS
 4. ★ **UART1 会不会被 OBD 抢走**：`src/main.cpp` 里 OBD 用的是 **UART1 + GPIO17/18**！
    本固件把 `main.cpp` 整个摘掉了（`-DLINK_LOOPBACK_FIRMWARE=1`），所以 OBD 那段**不在**，
    UART1 是干净的。但你要是拿别的固件来试回环，这条一定先查。
-5. **`CRC 错` 在涨但收发数都到 200** ⇒ 线上有误码（线太长/接触不良/共地不好），
+5. ★ **`角色冲突` 不为 0 ⇒ 收发数会掉成 0，而其它计数全是 0** —— 先看 §2.5，
+   别去怀疑线、PHY 或分帧（那 1 个噪声字节不是原因）。
+6. **`CRC 错` 在涨但收发数都到 200** ⇒ 线上有误码（线太长/接触不良/共地不好），
    回环里基本只会是"杜邦线没插实"。
-6. **`PHY-RX 环满` 在涨** ⇒ 主循环被别的东西拖住了（本固件里不该发生；这是给你改代码后用的）。
+7. **`PHY-RX 环满` 在涨** ⇒ 主循环被别的东西拖住了（本固件里不该发生；这是给你改代码后用的）。
 
 ---
 
@@ -141,8 +194,12 @@ linkloop: PASS
 - **43/44 的电气**：`ARCHITECTURE.md` §8 L1 里剩下的 ⓐ（`SEL` 默认电平）
   ⓑ（不插 UART Type-C 时 44 对地电平）ⓒ（插上 Type-C 时链路按预期失效）；
 - **跨板电平/共地**、`5V` 支路能不能带得动从板（§8 L6）；
-- **两块板的角色对账**（§5：`HELLO` 交换、`role_conflict`）—— 回环里
-  收发是同一角色，`role_conflict` 那条路径**不会**被走到；
+- **两块板的角色对账**（§5：`HELLO` 交换、两块板各自报 `role_conflict`）—— 回环里只有
+  一块板、帧上写的就是它自己的角色，所以"两块板刷了同一份固件"那种**真实的**角色冲突
+  测不出来；
+  ★ 但 §5 ① 的**判据本身**在回环里是**每一帧都在跑**的（收端按对端角色自检）：配错时
+  它会把每一帧都丢掉。别再把这条读成"回环里不会碰到 role_conflict" —— 2026-09-23 那次
+  "收了很多字节却 0 帧"就是踩在这上面（见 §2.5）；
 - **中断密度对 VAN 采集的影响**（§8 L2）、**临界区允许多长**（§8 L3）；
 - **跨屏扫表对齐**（§8 L5）。
 
@@ -159,6 +216,7 @@ linkloop: PASS
 | `lib/link/link_phy_pins.h` | 接线常量 + **编译期守卫**（回环不许用 43/44、回环 UART ≠ 链路 UART） |
 | `platformio.ini` 的 `[env:esp32s3-linkloop]` | 那四个 `-D`（含**为什么**这么定） |
 | `test/test_dashcore/test_link_phy_uart.cpp` | 同一套接线口径在**宿主机**上的用例（改坏了会红） |
+| `test/test_dashcore/test_link_phy.cpp` | 回环在宿主机上的两条：`test_link_rx_backtoback_stream_decodes_all_frames`（**帧间零空闲**的 200 帧必须全解出来）+ `test_link_loopback_rx_role_must_be_peer`（§2.5 的角色口径） |
 
 ### 想改成"两块板对接"的同款自检？
 
