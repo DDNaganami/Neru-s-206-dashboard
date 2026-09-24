@@ -3123,16 +3123,17 @@ rgb: vsync=357(+65/s) swap=56(+5/s) flush=194 copy_max=3012us copy_avg=897us swa
 * **只烧 COM6** ✓（COM7 一次没碰）；**没跑 `pio clean`、没删 `.pio`** ✓；构建与烧写全部在
   `C:\206dash-scratch\Neru`（ASCII 副本）✓；
 * **native / JS 五套**：本轮**没有改 `lib/`、没有改 `test/`**，也没有改 native / pcpreview 的编译口径
-  （`src/dash_display_rgb.cpp` 只在 `-DDASH_DISPLAY_RGB` 下参与编译）⇒ 与上一节 ⑤ 的记录**逐位相同**
-  （native 234 / 2 skipped / 232 succeeded / 0 失败；JS 71 / 429 / 259 / 155 / 369 + syntax-check 12）；
-  ★ **本轮复跑的结果：native 在这台机器上跑不起来** ——
-  `pio test -e native` 在编译阶段就报 `'gcc' is not recognized as an internal or external command`
-  （这台台式机上**没有系统 gcc / MinGW**，`where gcc` 为空；native 那套用的是宿主机 gcc，不是 PlatformIO
-  的工具链）。⇒ 这一条**不是本轮改动引起的回归**：本轮只动了 `src/dash_display_rgb.cpp`（只在
-  `-DDASH_DISPLAY_RGB` 下编译）与 `[env:esp32s3-rgb]` 的 build_flags，**native 构建两者都够不到** ✓。
-  要复跑得在装了 gcc 的机器上（或给这台装 MinGW 再把它加进 PATH）—— 命令：`pio test -e native`。
-  JS 五套同理：本轮没碰 `tools/theme-editor/`，**没有下降的可达路径** ✓（未复跑，如实记）。
-* **五个 env**：本轮只重建了 `esp32s3-rgb`（**RAM 48.1% / 157,616B，Flash 84.8% / 888,927B**）；
+  （`src/dash_display_rgb.cpp` 只在 `-DDASH_DISPLAY_RGB` 下参与编译）⇒ 与上一节 ⑤ 的记录**逐位相同**；
+  **本轮已复跑，数字与基线一致** ✓：
+  * **native**：`pio test -e native` ⇒ **234 test cases: 2 skipped, 232 succeeded**（0 失败）✓
+    ★ 前置条件（踩过一次，写在这儿）:这台台式机**没有系统 gcc**，必须把 **`C:\206dash-scratch\zigbin`**
+    （zig 转发桩：`gcc.cmd`/`cc.cmd`/`g++.cmd`/`c++.cmd` → `C:\ziglang\zig.exe cc %*`）**挂到 PATH 最前面**，
+    否则会在编译阶段报 `'gcc' is not recognized as an internal or external command` ⇒ 那是环境问题、
+    **不是回归** ✓；
+  * **JS 五套**（`node tools/theme-editor/test-*.js`）：**71 / 429 / 259 / 155 / 369** 全绿 ✓
+    （外加 `syntax-check-pages.js` **12** ✓）。
+* **五个 env**：本轮重建 `esp32s3-rgb` 两次 —— 最后一次（第六轮，绘制缓冲 16 行）是
+  **RAM 37.6% / 123,080B，Flash 84.8% / 889,247B**（RAM 比上一版少 34.5KB：绘制缓冲 40→16 行）；
   另四条 env（`esp32dev` / `esp32s3` / `esp32s3-linkloop` / `pcpreview`）本轮**没有重建** ——
   改动只在 2.8C 那条 env 的 build_flags 与一个只在 RGB 构建里编译的源文件里，
   对它们**没有可达路径** ✓。
@@ -3149,3 +3150,37 @@ rgb: vsync=357(+65/s) swap=56(+5/s) flush=194 copy_max=3012us copy_avg=897us swa
   **重画一遍**顶掉拷贝（PSRAM 流量更小，但每次刷新都会再触发一次重画 ⇒ 会变成 30Hz 常亮刷新，
   代价反而大 ✗）；② 干脆单 fb + bounce + 写像素锁在帧边界之间（**微雪官方默认档**，但我们的
   UI 单次脏区 ~90KB，写它要 ~6ms > 一帧的消隐期 ⇒ 会撕 ✗）。两条都记在 docs 11.6。
+
+### ⑧ 第六轮（同日稍后）：车主"**时有时无**"⇒ 把**仅剩的那一笔**也压下去
+
+车主反馈"只是好转了一点：**有时消失、有时继续抖动+横纹**" ⇒ 这是**带宽争用**的指纹
+（余量够就没事，一有别的 PSRAM 活动就被吃掉）。查下来还剩一笔大搬运：**"当次脏区"那一笔**
+（= 一次 LVGL flush 的数据量 = 绘制缓冲高 × 480 × 2B；40 行 ⇒ 38.4KB ⇒ 实测 `blit_max ≈ 3ms` ✗）。
+它**没法再摊平**（必须等 LVGL 回用这块缓冲才能 `flush_ready` ⇒ 不能跨圈拖着拷 ✗），
+所以**只改了一个变量：绘制缓冲 40 行 → 16 行（15.36KB）** —— 依据是两块 bounce buffer 合计
+19.2KB、只能吸收这个量级的赤字，**15.36KB < 19.2KB ⇒ 这一笔能被吸收** ✓（40 行的 38.4KB 不能 ✗）。
+
+**实测（COM6 原始串口行）**：
+
+```
+rgb: 脏区单笔上限=16行(15360B) —— bounce 两块共18KB,能吸收 ~19KB 赤字
+rgb: vsync=242(+54/s) wrap=242(+54/s) swap=48(+5/s) flush=211 blit_max=1325us step_max=950us copy_max=1325us copy_avg=695us swap_wait_max=10675us phase_max=17106us timeout=0 fb=0/1 catchup=48(+5/s 436KB/s forced0KB) refresh=200898/199362/205120us fullrb=0/s bounce=23MB/s 模式=局部刷新 psram=7285KB heap=217KB
+```
+
+| 指标 | 40 行（第五轮） | **16 行（本轮交付档）** |
+|---|---|---|
+| `blit_max`（当次脏区那一笔，**车主要的诊断**） | ~3011~33739µs ✗ | **1325~1332µs** ✓ |
+| `step_max`（补拷一步 8 行） | — | **950~966µs** ✓ |
+| `copy_max`（全系统最大单笔 PSRAM 搬运） | **33739µs** ✗ | **1332µs** ✓（**降 25 倍**） |
+| `catchup=…forced?KB` | ~450KB/s | **+5/s、429~461KB/s、`forced0KB`** ✓（兜底一次没触发） |
+| `refresh=avg/min/max` | 199/192/211ms | **199~201 / 186~199 / 205~214ms** ✓ |
+| `wrap`vs`vsync` / `timeout` / `fullrb` / `bounce` / PSRAM | 1:1 / 0 / 0/s / 23MB/s / 7285KB | **1:1 / 0 / 0/s / 23MB/s / 7285KB** ✓ |
+| **RAM / heap（内部）** | 48.1% / 183KB | **37.6% / 123,080B；heap 217KB** ✓（省 34.5KB） |
+| Flash | 84.8% | 84.8%（889,247B） |
+
+⇒ **全系统最大单笔 PSRAM 搬运：33.7ms → 1.33ms（两轮共降 25 倍）**，现在任何一笔都落在
+bounce 能吸收的范围内。**主观结论仍然只能由车主那一眼收口**（本轮**没有**再叠加别的不确定改动：
+PCLK 15MHz、bounce 10 行都保持不变，一次只动绘制缓冲行数 ✓）。
+
+若还"时有时无"，按 docs 12.4 的顺序各来一次：① PCLK 15→12MHz；② `-DRGB_BOUNCE_LINES=40`；
+③ 两个便宜的排除法（静音 1Hz 日志 30 秒 / 对齐时间戳看是否与 UI 刷新同拍）。

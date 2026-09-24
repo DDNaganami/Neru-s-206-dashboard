@@ -377,6 +377,15 @@ static uint32_t g_skip_count = 0;            // 面板没建起来时直接放�
 static uint32_t g_copy_us_max = 0;
 static uint32_t g_copy_us_sum = 0;
 static uint32_t g_copy_n = 0;
+// ★ 第五轮:把"单笔 PSRAM 搬运"按**来源**分开计 —— 车主要的诊断是
+//   "**每一笔**搬运的最大耗时"(要能看出"当次脏区"那一笔有多大):
+//     · `blit_max` = 当次脏区的 memcpy(受 LVGL 绘制缓冲大小限制,见 RGB_DRAW_BUF_LINES)
+//     · `step_max` = 小碎步补拷**一步**的耗时(≤ RGB_CATCHUP_STEP_ROWS 行)
+//     · `forced_kb` = 被"刷新提前开始"逼出来的一次性补完量(pend_finish 走的那条兜底路)
+static uint32_t g_blit_max_us = 0;
+static uint32_t g_step_max_us = 0;
+static uint32_t g_forced_kb = 0;
+static bool     g_in_forced = false;
 
 // 本次刷新覆盖了哪些**整行**(只统计"整行都写了"的,用位图记 —— 480 行 = 15 个 u32)。
 //   它的唯一用途:判断这一次刷新是不是"整屏"(是的话,目标 fb 从此算完整)。
@@ -564,6 +573,8 @@ static bool pend_step() {
   // ★ 换帧还没生效(屏障没动)时**不能写**:那一刻 back 还是"正在显示/正在被读"的那块
   if (swap_barrier() == g_swap_barrier) return true;   // 留着,等下一圈
 
+  const uint32_t t0 = micros();
+  const uint32_t kb0 = g_catchup_kb;
   int budget = RGB_CATCHUP_STEP_ROWS;
   while (budget > 0 && g_pend_active) {
     RgbRect r;
@@ -595,16 +606,23 @@ static bool pend_step() {
     }
   }
   if (!g_pend_active) ++g_catchup_n;
+  const uint32_t dt = (uint32_t)(micros() - t0);
+  if (g_in_forced) g_forced_kb += (g_catchup_kb - kb0);   // 兜底那一次的量单独记
+  else if (dt > g_step_max_us) g_step_max_us = dt;        // 正常小碎步:记单步最大耗时
   return g_pend_active;
 }
 
 // 刷新真要动手了还没补完 ⇒ 把剩下的**一次补完**(正确性兜底:back 必须完整才能换上去)。
 //   调用前必须已经过了 wait_swap_settled()(那道门),否则这里会白等。
+//   ★ 这条路上会出现"一大笔"搬运(稳态几乎不会走到:两次刷新之间有 ~200ms 给小碎步),
+//     所以它的量记进 `forced_kb`,用来盯"兜底有没有被频繁触发"。
 static void pend_finish() {
   uint32_t guard = 0;
+  g_in_forced = true;
   while (pend_step()) {
     if (++guard > 4096u) { g_pend_active = false; break; }   // 兜底:绝不死循环
   }
+  g_in_forced = false;
 }
 
 // 换帧:把驱动的 cur_fb_index 指到 back —— DMA 会在**下一个帧边界**整块换过去。
@@ -708,6 +726,7 @@ static void rgb_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px)
   g_refr_copy_us += dt;
   ++g_copy_n;
   if (dt > g_copy_us_max) g_copy_us_max = dt;
+  if (dt > g_blit_max_us) g_blit_max_us = dt;   // ★"当次脏区那一笔"单独记(车主要的诊断)
 
   // ⑤ 记账:① 这一笔进"本次脏区";② 整行都写了就标进整屏判据
   dmg_add(x1, y1, x2, y2);
@@ -944,13 +963,21 @@ void dash_display_init() {
   // LVGL 的绘制缓冲:**内部 SRAM 的小 PARTIAL 缓冲**(480 行里的一小段),
   // 不是整屏缓冲 —— 渲染完一段就由 flush 搬进 back fb。整屏缓冲没必要:
   // 450KB×2 已经在 PSRAM 里当 framebuffer 了(见 cfg.num_fbs)。
+  // ★★ 这一行同时决定**"当次脏区"那一笔 memcpy 有多大**(= 一次 flush 的最坏情况):
+  //   40 行 ⇒ 38.4KB ⇒ 实测 ~3ms 的 PSRAM 突发 ✗ —— 它和 bounce 的填充撞上就是
+  //   "那一帧吐旧行"(车主看到的"**时有时无**的横纹" ✓)。本轮缩到 **16 行(15.4KB ≈1.2ms)**,
+  //   而两块 bounce buffer 合计能吸收 ~19KB 的赤字 ⇒ 这一笔**能被吸收** ✓。
+  //   代价:整屏刷新从 12 块变 30 块(每块固定开销变大),稳态 UI 是局部刷新,几乎无感 ✓。
   // ★★ `aligned(LV_DRAW_BUF_ALIGN)` **一个字都不能少**(2026-09-24 实机踩的坑):
   //   LVGL 9.3 的 `lv_display_set_buffers()` 会先校验
   //       buf1 == lv_draw_buf_align(buf1)      // 即 buf1 必须按 LV_DRAW_BUF_ALIGN(=4) 对齐
   //   不满足就**静默 return**(LV_USE_LOG=0 时连一行警告都没有)⇒ 这条缓冲**根本没装上**。
   //   症状:面板在扫(`vsync` 每秒 +64.7,分毫不差)、UI 树齐全,但 `flush=0`、屏全黑。
   //   而 `lv_color_t` 是 24 位(3 字节)⇒ 这个数组只保证 2 字节对齐,实测 misalign=1。
-  static lv_color_t draw_buf[THEME_DISPLAY_RES * 40]
+#ifndef RGB_DRAW_BUF_LINES
+#define RGB_DRAW_BUF_LINES 16
+#endif
+  static lv_color_t draw_buf[THEME_DISPLAY_RES * RGB_DRAW_BUF_LINES]
       __attribute__((aligned(LV_DRAW_BUF_ALIGN)));
   lv_display_set_buffers(d0, draw_buf, nullptr, sizeof(draw_buf),
                          LV_DISPLAY_RENDER_MODE_PARTIAL);
@@ -987,8 +1014,14 @@ void dash_display_init() {
                 (unsigned)RGB_FULL_REFRESH_ALTERNATE_MS);
   // ★ 两块 fb 靠什么"内容一致":把上一次的脏区在空闲时间里小碎步补到另一块(见 pend_step)。
   //   少了它,局部刷新会让两块 fb 内容分叉 ⇒ 屏上"表情/进度条来回跳"。
-  dash_logf("rgb: 两块fb收敛=空闲时间小碎步补拷上一次的脏区(每步8行,pend_step)"
-            " ⇒ 局部刷新也不会跳回旧内容;换帧=帧边界锁存\n");
+  dash_logf("rgb: 两块fb收敛=空闲时间小碎步补拷上一次的脏区(每步%d行,pend_step)"
+            " ⇒ 局部刷新也不会跳回旧内容;换帧=帧边界锁存\n", (int)RGB_CATCHUP_STEP_ROWS);
+  // ★ "当次脏区那一笔"有多大 = LVGL 绘制缓冲的大小(见 RGB_DRAW_BUF_LINES):
+  //   它是**仅剩的、没法再摊平**的一笔(必须等 LVGL 回用缓冲),所以压到 bounce 能吸收的量级。
+  dash_logf("rgb: 脏区单笔上限=%d行(%uB) —— bounce 两块共%uKB,能吸收 ~19KB 赤字\n",
+            (int)RGB_DRAW_BUF_LINES,
+            (unsigned)((uint32_t)RGB_DRAW_BUF_LINES * THEME_DISPLAY_RES * 2u),
+            (unsigned)((size_t)RGB_BOUNCE_LINES * THEME_DISPLAY_RES * 2u * 2u / 1024u));
   dash_logf("rgb: 板=微雪 ESP32-S3-LCD-2.8C(非触控) ST7701 RST=EXIO1 CS=EXIO3 "
             "BL=GPIO%d/PWM%d @%u%%\n",
                 (int)RGB_PIN_BL, (int)RGB_BL_LEDC_HZ,
@@ -1025,6 +1058,7 @@ void dash_display_poll() {
   static uint32_t last_swap = 0;
   static uint32_t last_catchup = 0;
   static uint32_t last_catchup_kb = 0;
+  static uint32_t last_forced_kb = 0;
   static uint32_t last_copy_sum = 0;
   static uint32_t last_copy_n = 0;
   const uint32_t now = millis();
@@ -1067,28 +1101,34 @@ void dash_display_poll() {
   const uint32_t fill_mb = (uint32_t)(((uint64_t)(wp - last_wrap) * RGB_FB_BYTES) / (1024ull * 1024ull));
   const uint32_t dcatch = g_catchup_n - last_catchup;
   const uint32_t dcatch_kb = g_catchup_kb - last_catchup_kb;
+  const uint32_t dforced = g_forced_kb - last_forced_kb;
   const uint32_t iv_avg = g_swap_int_n ? (uint32_t)(g_swap_int_sum_us / g_swap_int_n) : 0u;
   const uint32_t iv_min = (g_swap_int_n && g_swap_int_min_us != 0xFFFFFFFFu) ? g_swap_int_min_us : 0u;
-  dash_logf("rgb: vsync=%u(+%u/s) wrap=%u(+%u/s) swap=%u(+%u/s) flush=%u copy_max=%uus "
-            "copy_avg=%uus swap_wait_max=%uus phase_max=%uus timeout=%u fb=%u/%u "
-            "catchup=%u(+%u/s %uKB/s) refresh=%u/%u/%uus fullrb=%u/s bounce=%uMB/s 模式=%s "
-            "psram=%uKB heap=%uKB\n",
+  // ★ 车主要的诊断:**每一笔 PSRAM 搬运的最大耗时,按来源分开**
+  //   blit_max = 当次脏区那一笔(受 RGB_DRAW_BUF_LINES 限制) / step_max = 小碎步一步
+  dash_logf("rgb: vsync=%u(+%u/s) wrap=%u(+%u/s) swap=%u(+%u/s) flush=%u "
+            "blit_max=%uus step_max=%uus copy_max=%uus copy_avg=%uus swap_wait_max=%uus "
+            "phase_max=%uus timeout=%u fb=%u/%u "
+            "catchup=%u(+%u/s %uKB/s forced%uKB) refresh=%u/%u/%uus fullrb=%u/s bounce=%uMB/s "
+            "模式=%s psram=%uKB heap=%uKB\n",
                 (unsigned)v, (unsigned)(v - last_vsync),
                 (unsigned)wp, (unsigned)(wp - last_wrap),
                 (unsigned)sw, (unsigned)(sw - last_swap),
                 (unsigned)g_flush_count,
+                (unsigned)g_blit_max_us, (unsigned)g_step_max_us,
                 (unsigned)g_copy_us_max, (unsigned)(dn ? (dsum / dn) : 0u),
                 (unsigned)g_swap_wait_max_us,
                 (unsigned)g_swap_phase_max_us,
                 (unsigned)g_swap_timeout,
                 (unsigned)g_front, (unsigned)g_back,
-                (unsigned)g_catchup_n, (unsigned)dcatch, (unsigned)dcatch_kb,
+                (unsigned)g_catchup_n, (unsigned)dcatch, (unsigned)dcatch_kb, (unsigned)dforced,
                 (unsigned)iv_avg, (unsigned)iv_min, (unsigned)g_swap_int_max_us,
                 (unsigned)g_fullrb_n,
                 (unsigned)fill_mb,
                 g_full_refresh ? "全屏重绘" : "局部刷新",
                 (unsigned)(ESP.getFreePsram() / 1024u),
                 (unsigned)(ESP.getFreeHeap() / 1024u));
+  last_forced_kb = g_forced_kb;
   // 刷新节奏统计:每秒清零重来(min 用 0xFFFFFFFF 当"还没测到")
   g_swap_int_n = 0;
   g_swap_int_sum_us = 0;

@@ -835,3 +835,72 @@ cd C:\206dash-scratch\Neru; & 'C:\.platformio\penv\Scripts\platformio.exe' run -
 ```
 
 判据：**官方也撕/也横纹 ⇒ 供电/线材层面**（同一块板同一根线）；**官方干净、我们还有 ⇒ 继续在驱动侧收**。
+
+---
+
+## 12. 2026-09-24 第六轮：**"时有时无" ⇒ 带宽争用**（把"仅剩的那一笔"也压下去）
+
+### 12.1 车主的判据：**"有时消失、有时继续抖动+横纹" = 带宽争用的指纹**
+
+余量够就没事、一有别的 PSRAM 活动就被吃掉 ⇒ 说明**还有一笔大搬运**。查下来是
+**"当次脏区"那一笔**（不是补拷 —— 补拷上一轮已经改成小碎步了）：
+
+* 那一笔的大小 = **一次 LVGL flush 的数据量** = 绘制缓冲的高 × 屏宽 × 2B；
+* 上一版绘制缓冲是 **40 行 ⇒ 38.4KB ⇒ 实测 `blit_max ≈ 3ms`** ✗（按 13MB/s 算）；
+* 它**没法再摊平**（必须等 LVGL 把这块缓冲收回去才能 `flush_ready` ⇒ 不能跨圈拖着拷 ✗），
+  所以只能**把它变小**：本轮把绘制缓冲改成 **16 行 ⇒ 15.36KB** ✓。
+
+### 12.2 本轮的改动（一次一个变量：**只动绘制缓冲的行数**）
+
+```c
+#ifndef RGB_DRAW_BUF_LINES
+#define RGB_DRAW_BUF_LINES 16          // 原 40 行
+#endif
+static lv_color_t draw_buf[THEME_DISPLAY_RES * RGB_DRAW_BUF_LINES] __attribute__((aligned(LV_DRAW_BUF_ALIGN)));
+```
+
+为什么是 16 行：两块 bounce buffer 合计 **19.2KB**，它能吸收的"赤字"上限就是这个量级；
+**15.36KB < 19.2KB ⇒ 这一笔能被吸收** ✓；40 行的 38.4KB 则吸收不了 ✗。
+代价：整屏刷新从 12 块变 30 块（每块固定开销变大）；稳态是局部刷新 ⇒ 几乎无感 ✓，
+而且**内部 SRAM 反而省了 34.5KB**（RAM 48.1% → **37.6%**，`heap` 183KB → **217KB** ✓）。
+
+另外把"单笔搬运"按来源拆开打点（车主要的诊断）：`blit_max`（当次脏区）/ `step_max`（补拷一步）/
+`copy_max`（全系统最大单笔）/ `catchup=…forced?KB`（被"刷新提前开始"逼出来的兜底量）。
+
+### 12.3 数字（同一块板 COM6，原始串口行）
+
+```
+rgb: 脏区单笔上限=16行(15360B) —— bounce 两块共18KB,能吸收 ~19KB 赤字
+rgb: vsync=242(+54/s) wrap=242(+54/s) swap=48(+5/s) flush=211 blit_max=1325us step_max=950us copy_max=1325us copy_avg=695us swap_wait_max=10675us phase_max=17106us timeout=0 fb=0/1 catchup=48(+5/s 436KB/s forced0KB) refresh=200898/199362/205120us fullrb=0/s bounce=23MB/s 模式=局部刷新 psram=7285KB heap=217KB
+```
+
+| 指标 | 40 行绘制缓冲（上一版） | **16 行（交付档）** |
+|---|---|---|
+| **`blit_max`**（当次脏区那一笔） | ~3011~33739µs ✗ | **1325~1332µs** ✓（≈1.33ms） |
+| `step_max`（补拷一步，8 行） | — | **950~966µs** ✓ |
+| `copy_max`（全系统最大单笔） | **33739µs** ✗ | **1332µs** ✓（**降 25 倍**） |
+| `catchup` / `forced` | ~450KB/s | **+5/s、429~461KB/s、`forced0KB`** ✓（兜底一次都没触发） |
+| `refresh=avg/min/max` | 199/192/211ms | **199~201 / 186~199 / 205~214ms** ✓ |
+| `wrap`vs`vsync` / `timeout` / `fullrb` / `bounce` | 1:1 / 0 / 0/s / 23MB/s | **1:1 / 0 / 0/s / 23MB/s** ✓ |
+| **RAM / heap（内部）** | 48.1% / 183KB | **37.6% / 217KB** ✓（省 34.5KB） |
+| Flash | 84.8% | 84.8% |
+
+⇒ **全系统最大的单笔 PSRAM 搬运从 33.7ms 降到 1.33ms**（两轮共降 **25 倍**），
+而 bounce 的填充预算只有 ~0.6ms/ 块的量级 ⇒ 现在任何一笔都**落在能被吸收的范围内** ✓。
+**"时有时无"应当就此消失** —— 这一句只能由车主那一眼收口。
+
+### 12.4 如果还"时有时无" ⇒ 按这个顺序（各一次、只改一个）
+
+1. `RGB_PIXEL_CLOCK_HZ` **15 → 12MHz**（24MB/s、43.2Hz；只改一个数）；
+2. `-DRGB_BOUNCE_LINES=10 → 40`（绝对余量 ×4；★ 代价 76.8KB 内部 SRAM，当前 heap 217KB ⇒ 装得下，
+   但要实测 heap 与 RAM 占比，别把别的路径饿死）；
+3. 便宜的排除法（只作诊断、别长期改）：把 1Hz 的 `BEACON`/`SRC*`/每秒行**静音 30 秒**看横纹是否变稀
+   （⇒ 周期活动参与其中）；以及**对齐时间戳**看横纹是否与"UI 每秒刷新"严格同拍（同拍 ⇒ 就是 12.1 那条）。
+
+### 12.5 本轮补跑的两套回归（上一轮因为没挂 gcc 桩而没跑成）
+
+* **native**：把 `C:\206dash-scratch\zigbin`（zig 转发桩：`gcc.cmd` → `zig cc`）挂上 PATH 后
+  `pio test -e native` ⇒ **234 test cases: 2 skipped, 232 succeeded**（与基线逐位相同 ✓）。
+  ★ 坑记在这儿：**没挂这个桩就会报 `'gcc' is not recognized`**，那是环境问题、不是回归。
+* **JS 五套**：`node tools/theme-editor/test-*.js` ⇒ **71 / 429 / 259 / 155 / 369** 全绿 ✓
+  （外加 `syntax-check-pages.js` **12** ✓）。
