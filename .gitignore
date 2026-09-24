@@ -22,3 +22,9 @@ id_*
 *.key
 dsh_*
 known_hosts*
+# ★ 车主本地产物（2026-09-24）：导出/导入的文件不提交 —— 美术资产的许可是
+#   "保留所有权利"，误提交会让 LICENSE-ARTWORK 的声明与仓库内容不符。
+#   主题文件仍留在 tools/theme-editor/theme.json（试跑与页面按路径找它），只是隐掉状态。
+/tools/theme-editor/local/*
+!/tools/theme-editor/local/README.md
+/tools/theme-editor/theme.json
