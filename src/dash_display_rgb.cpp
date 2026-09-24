@@ -1338,6 +1338,10 @@ void dash_display_init() {
   //   不满足就**静默 return**(LV_USE_LOG=0 时连一行警告都没有)⇒ 这条缓冲**根本没装上**。
   //   症状:面板在扫(`vsync` 每秒 +64.7,分毫不差)、UI 树齐全,但 `flush=0`、屏全黑。
   //   而 `lv_color_t` 是 24 位(3 字节)⇒ 这个数组只保证 2 字节对齐,实测 misalign=1。
+  //   ★ 2026-09-24：这条"3 字节"现在由**编译器自证**（开机那行 `编译期事实 … sizeof(lv_color_t)=…`），
+  //     它**与 `LV_COLOR_DEPTH`(=16 ⇒ 显示格式 RGB565 ⇒ 2 字节/像素)不是一回事** ——
+  //     前者是 LVGL 9 里 `lv_color_t` 这个**元素类型**的大小（固定的 RGB888 结构），
+  //     后者是**显示格式**的每像素字节数。两者都对，不矛盾；混起来就是下面那行日志原来的错。
 #ifndef RGB_DRAW_BUF_LINES
 #define RGB_DRAW_BUF_LINES 16
 #endif
@@ -1380,11 +1384,53 @@ void dash_display_init() {
   //   少了它,局部刷新会让两块 fb 内容分叉 ⇒ 屏上"表情/进度条来回跳"。
   dash_logf("rgb: 两块fb收敛=空闲时间小碎步补拷上一次的脏区(每步%d行,pend_step)"
             " ⇒ 局部刷新也不会跳回旧内容;换帧=帧边界锁存\n", (int)RGB_CATCHUP_STEP_ROWS);
-  // ★ "当次脏区那一笔"有多大 = LVGL 绘制缓冲的大小(见 RGB_DRAW_BUF_LINES):
-  //   它是**仅剩的、没法再摊平**的一笔(必须等 LVGL 回用缓冲),所以压到 bounce 能吸收的量级。
-  dash_logf("rgb: 脏区单笔上限=%d行(%uB) —— bounce 两块共%uKB,能吸收 ~19KB 赤字\n",
-            (int)RGB_DRAW_BUF_LINES,
-            (unsigned)((uint32_t)RGB_DRAW_BUF_LINES * THEME_DISPLAY_RES * 2u),
+  // ★ "当次脏区那一笔"有多大 = LVGL 交给 flush 的**那块区域**(上限就是绘制缓冲的容量):
+  //   它是**仅剩的、没法再摊平**的一笔(必须等 LVGL 回用缓冲)。
+  //
+  // ★★ 2026-09-24 修正（**只改打印出来的数 + 加一行编译期自证；行为零改动** ——
+  //   绘制缓冲的行数/大小/对齐属性、PCLK、bounce 一个字节都没动）：
+  //   原来这里算的是 `RGB_DRAW_BUF_LINES × 480 × 2u` ⇒ 打出 "16行(15360B)"，**两个数都错**：
+  //     · 数组的元素是 `lv_color_t` —— LVGL 9 里它是**固定的 3 字节** RGB888 结构
+  //       （`include/lvgl/draw/lv_color.h` 的 blue/green/red 三个 `uint8_t`），
+  //       **与 `LV_COLOR_DEPTH` 不是一回事**：后者定的是"**显示格式**"
+  //       （本构建 `include/lv_conf.h` = 16 ⇒ RGB565 ⇒ **2 字节/像素**）。
+  //       原来那两个 `2u` 正是把"元素字节"当成了"像素字节" ⇒ 才算出 15360。
+  //     · 而"一次 flush 能有多大"是 **LVGL 自己按字节算的**：
+  //       `lv_refr.c` 的 `get_max_row()`：`max_row = buf_act->data_size / stride`
+  //       （stride = 宽 × 显示格式每像素字节数）⇒ 23040B ÷ (480×2B) = **24 行**；
+  //       并且 LVGL **先按 max_row 把脏区切成子块、再逐块回调 flush**
+  //       （`lv_refr.c` 里那个 `for(row = …; row += max_row)` 的循环）
+  //       ⇒ **flush 矩形不会超过这个行数**（实测每秒行里的 `fmax=480x24` 就是它）。
+  //   ⇒ 下面几个数**全部现算**（sizeof 缓冲 / 显示格式），以后再有人动缓冲大小，
+  //     这两行日志自己跟着对，不会再出现"写死的 2u"。
+  const uint32_t draw_buf_bytes = (uint32_t)sizeof(draw_buf);          // 整块绘制缓冲的字节数
+  const uint32_t el_bytes = (uint32_t)sizeof(lv_color_t);              // 一个元素多大(编译器说了算)
+  // ★ "每像素几字节"也按**配置**算，不写死：`LV_COLOR_DEPTH`(=16) 推出的
+  //   `LV_COLOR_FORMAT_DEFAULT` = RGB565 ⇒ 2B/px。它与"显示对象当前的格式"**恒等**
+  //   —— `lv_display_create()` 建屏时就是 `disp->color_format = LV_COLOR_FORMAT_DEFAULT`
+  //   （`lv_display.c`），而本文件从头到尾没有 `lv_display_set_color_format()`。
+  //   ⇒ 全是编译期常量（与原来写死 `2u` 一样不花 flash，但**改配置会自动跟着变**）。
+  const uint32_t px_bytes = (uint32_t)LV_COLOR_FORMAT_GET_SIZE(LV_COLOR_FORMAT_DEFAULT);
+  const uint32_t stride_bytes = (uint32_t)THEME_DISPLAY_RES * px_bytes;  // 一行多少字节(= LVGL 的 stride)
+  const uint32_t el_rows = draw_buf_bytes / (el_bytes * (uint32_t)THEME_DISPLAY_RES);
+  const uint32_t flush_rows = stride_bytes ? (draw_buf_bytes / stride_bytes) : 0u;
+  // ★ 一行"编译期事实"：把"到底几字节"交给**编译器**回答，不靠读文件推理 ——
+  //   机型/配置换一代（比如哪天把绘制缓冲改成 uint16_t），这行自己就变了。
+  dash_logf("rgb: 编译期事实 LV_COLOR_DEPTH=%d sizeof(lv_color_t)=%u sizeof(draw_buf)=%u"
+            " 元素行=%u flush行上限=%u(每行%uB)\n",
+            (int)LV_COLOR_DEPTH,
+            (unsigned)sizeof(lv_color_t),
+            (unsigned)sizeof(draw_buf),
+            (unsigned)el_rows,
+            (unsigned)flush_rows,
+            (unsigned)stride_bytes);
+  // ★ 这一行是"那一笔有多大"的结论行；后半句按 §12 收口后的**真值口径**写：
+  //   bounce 两块合计 18KB 的老判据（"单笔能被吸收"）**已被实测推翻** ——
+  //   单笔 23040B **大于**它 ⇒ 成立的只有实测（`blit_max≈1.3ms`、`refresh` ±1ms）。
+  dash_logf("rgb: 脏区单笔上限=%u行(%uB) —— bounce 两块共%uKB(单笔比它大,旧口径不成立)"
+            " 以实测 blit_max 为准\n",
+            (unsigned)flush_rows,
+            (unsigned)draw_buf_bytes,
             (unsigned)((size_t)RGB_BOUNCE_LINES * THEME_DISPLAY_RES * 2u * 2u / 1024u));
   dash_logf("rgb: 板=微雪 ESP32-S3-LCD-2.8C(非触控) ST7701 RST=EXIO1 CS=EXIO3 "
             "BL=GPIO%d/PWM%d @%u%%\n",
