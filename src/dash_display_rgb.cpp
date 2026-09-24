@@ -1638,6 +1638,8 @@ uint32_t dash_panel_guard_rd_ok(void)  { return g_panel_guard.rdOk(); }
 uint32_t dash_panel_guard_fix(void)    { return g_panel_guard.fixExio(); }
 uint32_t dash_panel_guard_bl(void)     { return g_panel_guard.fixBl(); }
 uint32_t dash_panel_guard_anomalies(void) { return g_panel_guard.anomalies(); }
+// ★ 给临时注入路径用的：注入要正好落在"下一次检查之前"（见 main.cpp 里那段说明）。
+uint32_t dash_panel_guard_next_check_ms(void) { return g_panel_guard.nextCheckMs(); }
 
 // ============================================================
 // ★★ 临时故障注入（**默认构建里一个字节都不存在**）

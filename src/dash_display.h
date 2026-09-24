@@ -75,6 +75,10 @@ uint32_t dash_panel_guard_rd_ok(void);
 uint32_t dash_panel_guard_fix(void);
 uint32_t dash_panel_guard_bl(void);
 uint32_t dash_panel_guard_anomalies(void);
+// 守护**下一次检查**的到期时刻（ms，与 `millis()` 同一时基）。
+// ★ 临时注入路径要它：注入必须落在"守护下一次检查之前"，否则那一次检查读到的
+//   是**已经修好**的值（修复动作 = 按影子重写，一瞬间就完成）⇒ 攒不出"连续异常"。
+uint32_t dash_panel_guard_next_check_ms(void);
 // ★ 临时故障注入（**默认构建里永远是 0**，见 .cpp 里那一段）：
 //   把扩展器输出寄存器的某一位**故意写错**，用来在真机上验守护能不能发现并修回来。
 //   0 = 不注入。测完这条路径整个删掉（它只在 `-DPANEL_GUARD_FAULT_INJECT=1` 里存在）。
