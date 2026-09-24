@@ -469,6 +469,99 @@ void test_sys_preview_keys(void) {
   TEST_ASSERT_FALSE(f.sim_ok_set);
 }
 
+// ============================================================
+// 十六、条件③的**前提**：值不变只有在"发动机在转 / 车在动"时才可疑
+//      （2026-09-24 追加；消掉"熄火停车听歌"那一类**假警报**）
+//
+// ★ 判据（一行）：`rpm > kTrustEngineRunningRpm || speed_kmh > 0`
+//   —— `rpm` 那半条是**严格大于**（恰好 500 不算"在转"），
+//   `speed` 那半条是"只要 > 0 就算在动"。
+// ★ 为什么要车速那半条（下面第 ③ 条）：万一 VAN 冻在"转速读 0 但车在跑"
+//   那一帧，只看 rpm 会把**真故障**漏掉。
+// ★ 这四条只动**前提**，不动窗口：20 s 的冻结窗口 + 1500 ms 的去抖窗口
+//   一个字都没改（所以"要报"的那几条里，时刻推到 22500 才上屏）。
+// ============================================================
+
+// ① 停车熄火：车速 0、转速 0、**值 30 秒一个字节都没变** ⇒ **不报**
+//    （熄火通电在车里听歌就是这个状态：这两个数本来就该不动）
+void test_sys_freeze_parked_engine_off_is_quiet(void) {
+  SystemStatus s;
+  SysStatusInputs in = healthy();
+  in.speed_kmh = 0.0f;
+  in.rpm = 0.0f;
+  s.update(in, 1000);                    // 这一拍立基线
+  for (uint32_t t = 2000; t <= 31000; t += 1000) {
+    TEST_ASSERT_TRUE(s.update(in, t) == DataTrustReason::kNone);
+  }
+  TEST_ASSERT_FALSE(s.untrusted());      // 角标一次都不该出现
+  TEST_ASSERT_EQUAL_UINT32(0u, s.episodes());
+  TEST_ASSERT_FALSE(s.beepDue());        // 也不该有那一声轻提示
+}
+
+// ② 发动机在转（rpm = 800）：车停着（speed = 0）但值冻结 20 秒 ⇒ **报**
+//    ★ 尾巴那三行顺带钉住"前提不会自己锁存"：熄火（rpm 掉到 0，这一拍值也变了）
+//      ⇒ 判据不再成立 ⇒ 角标按 800 ms 的恢复窗口撤掉。
+void test_sys_freeze_engine_running_reports(void) {
+  SystemStatus s;
+  SysStatusInputs in = healthy();
+  in.speed_kmh = 0.0f;                   // 停着（怠速等红灯）
+  in.rpm = 800.0f;                       // 但发动机在转
+  s.update(in, 1000);
+  TEST_ASSERT_TRUE(s.update(in, 20000) == DataTrustReason::kNone);  // 窗口没到
+  TEST_ASSERT_TRUE(s.update(in, 21000) == DataTrustReason::kNone);  // 判据到了、去抖没过
+  TEST_ASSERT_TRUE(s.update(in, 22500) == DataTrustReason::kDataFrozen);
+  TEST_ASSERT_TRUE(s.untrusted());
+  TEST_ASSERT_EQUAL_STRING("data-frozen", dataTrustReasonName(s.active()));
+  TEST_ASSERT_TRUE(s.beepDue());
+  TEST_ASSERT_EQUAL_UINT32(1u, s.episodes());
+
+  // 熄火：值也变了（800 → 0）⇒ 窗口重置 + 前提不再成立 ⇒ 恢复窗口后角标撤掉
+  in.rpm = 0.0f;
+  s.update(in, 22600);
+  TEST_ASSERT_TRUE(s.update(in, 23500) == DataTrustReason::kNone);
+  TEST_ASSERT_FALSE(s.untrusted());
+  TEST_ASSERT_EQUAL_UINT32(1u, s.episodes());   // 累计计数不清（与既有口径一致）
+}
+
+// ③ 车在动（speed = 60）而转速读 0，值冻结 ⇒ **照样报**
+//    ★ 这一条就是"VAN 冻在转速读 0 那一帧"的兜底：只看 rpm 会把真故障漏掉。
+void test_sys_freeze_moving_speed_only_reports(void) {
+  SystemStatus s;
+  SysStatusInputs in = healthy();
+  in.speed_kmh = 60.0f;
+  in.rpm = 0.0f;                         // 转速这一格坏在 0 上
+  s.update(in, 1000);
+  TEST_ASSERT_TRUE(s.update(in, 20000) == DataTrustReason::kNone);
+  TEST_ASSERT_TRUE(s.update(in, 21000) == DataTrustReason::kNone);
+  TEST_ASSERT_TRUE(s.update(in, 22500) == DataTrustReason::kDataFrozen);
+}
+
+// ④ 边界：`rpm` 恰好 500 **不算**"在转"（判据是严格 `>`），501 就算
+//    ★ 这条用例把常量的值本身也钉住 —— 它就是 ARCHITECTURE 参数表里那一行。
+void test_sys_freeze_rpm_boundary_500(void) {
+  TEST_ASSERT_EQUAL_UINT32(500u, kTrustEngineRunningRpm);
+
+  // 恰好 500 + 车速 0 + 值冻结 30 s ⇒ 不报
+  SystemStatus s;
+  SysStatusInputs in = healthy();
+  in.speed_kmh = 0.0f;
+  in.rpm = 500.0f;
+  s.update(in, 1000);
+  for (uint32_t t = 2000; t <= 31000; t += 1000) {
+    TEST_ASSERT_TRUE(s.update(in, t) == DataTrustReason::kNone);
+  }
+  TEST_ASSERT_FALSE(s.untrusted());
+
+  // 501（刚过门槛）⇒ 同一条时间线下**报到**（边界两侧都钉住）
+  SystemStatus s2;
+  SysStatusInputs in2 = healthy();
+  in2.speed_kmh = 0.0f;
+  in2.rpm = 501.0f;
+  s2.update(in2, 1000);
+  TEST_ASSERT_TRUE(s2.update(in2, 21000) == DataTrustReason::kNone);
+  TEST_ASSERT_TRUE(s2.update(in2, 22500) == DataTrustReason::kDataFrozen);
+}
+
 void register_system_status_tests(void) {
   RUN_TEST(test_sys_idle_by_default);
   RUN_TEST(test_sys_sim_fallback_debounce_and_recover);
@@ -485,4 +578,9 @@ void register_system_status_tests(void) {
   RUN_TEST(test_diag_pages_and_bounds);
   RUN_TEST(test_sys_names);
   RUN_TEST(test_sys_preview_keys);
+  // 十六、条件③的前提（2026-09-24 追加；四条）
+  RUN_TEST(test_sys_freeze_parked_engine_off_is_quiet);
+  RUN_TEST(test_sys_freeze_engine_running_reports);
+  RUN_TEST(test_sys_freeze_moving_speed_only_reports);
+  RUN_TEST(test_sys_freeze_rpm_boundary_500);
 }

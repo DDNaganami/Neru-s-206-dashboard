@@ -95,17 +95,20 @@ void SystemStatus::debounce(Cond& c, bool raw, uint32_t now_ms, uint32_t need_ms
   if (!c.on && (uint32_t)(now_ms - c.since_ms) >= need_ms) c.on = true;
 }
 
-// 数据冻结：值有没有在本窗口内**一个字节都没变**。
-// ★ 两个刻意的前置：
+// 数据冻结：值有没有在本窗口内**一个字节都没变**（而且"值不变"本身可疑）。
+// ★ 三个刻意的前置：
 //   ① `van_live`（帧还在来）—— 帧不来那一档由 kTrustVanStaleMs 管，两个条件
 //      各自独立判；否则"断流 20 秒"会同时报成"冻结"，屏上多一条无意义的理由。
-//   ② 判据取**车速与转速两个都不动**：转速停在怠速是**正常**的。车速 20 秒
-//      一个字节不变在真车上意味着"车没动"——那时提示"冻结"是**误报**。
-//      这条边界写在 ARCHITECTURE 的显示约定一节：宁可偶发误报，
-//      也不能在假数据上静默（那是这一整层存在的理由）。
-static bool freezeCheck(float speed, float rpm, bool van_live, uint32_t now_ms,
-                        float& last_speed, float& last_rpm, bool& armed,
-                        uint32_t& since_ms) {
+//   ② ★★ `engine_or_moving`（**发动机在转 / 车在动**）—— 这是本判据的前提，
+//      理由与代价见 system_status.h 的 `kTrustEngineRunningRpm`：熄火停车时
+//      车速/转速恒 0 是**正常**的，没有这一条就会挂一个假警报。
+//      ★ 车速那半条（`speed_kmh > 0`）不是冗余：VAN 冻在"转速读 0 而车在跑"
+//        那一帧时，只看 rpm 会把真故障漏掉。
+//   ③ 判据只看**车速与转速**两个数（**不含水温/进气**：那两格长时间不变是
+//      正常的，把它们算进来角标会常挂 —— 见头文件那段 ✗）。
+static bool freezeCheck(float speed, float rpm, bool van_live, bool engine_or_moving,
+                        uint32_t now_ms, float& last_speed, float& last_rpm,
+                        bool& armed, uint32_t& since_ms) {
   if (!armed) {
     armed = true;
     last_speed = speed;
@@ -121,6 +124,9 @@ static bool freezeCheck(float speed, float rpm, bool van_live, uint32_t now_ms,
     since_ms = now_ms;
     return false;
   }
+  // ★ 前提先判：值不变但"本来就不该动"（熄火停车）⇒ 不报，也不去动窗口簿记
+  //   （窗口照旧从"上一次值变化"算起，所以发动机一着、值一跳就重新计时）。
+  if (!engine_or_moving) return false;
   if (!van_live) return false;      // 断流那一档不归这里判（见上）
   return (uint32_t)(now_ms - since_ms) >= kTrustFreezeWindowMs;
 }
@@ -138,7 +144,13 @@ DataTrustReason SystemStatus::evaluate(const SysStatusInputs& in, uint32_t now_m
   // ③ 数据冻结：帧还在来，值却长时间一个字节都不变。
   const bool van_live = in.van_ever_framed && in.van_age_ms != UINT32_MAX &&
                         in.van_age_ms <= kTrustVanStaleMs;
-  freeze_now_ = freezeCheck(in.speed_kmh, in.rpm, van_live, now_ms,
+  // ★ 冻结判据的**前提**：发动机在转（`rpm` **严格**大于 500）或车在动（`speed > 0`）。
+  //   两个理由（为什么两半都要）见头文件 kTrustEngineRunningRpm 那一段：
+  //     ① 熄火停车时这两个数本来就该不动 ⇒ 没有前提就是假警报；
+  //     ② 只看 rpm 会漏掉"VAN 冻在转速读 0 而车在跑"那一帧。
+  const bool engine_or_moving = (in.rpm > (float)kTrustEngineRunningRpm) ||
+                                (in.speed_kmh > 0.0f);
+  freeze_now_ = freezeCheck(in.speed_kmh, in.rpm, van_live, engine_or_moving, now_ms,
                             last_speed_, last_rpm_, freeze_armed_, freeze_since_ms_);
 
   // ④ 来源回退到 Sim：车速 / 转速 / 水温 / 进气四格里有任何一格是 Sim。

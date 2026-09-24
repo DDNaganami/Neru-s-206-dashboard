@@ -3539,3 +3539,170 @@ native 的 **+19 例** = 本轮新增 `test/test_dashcore/test_system_status.cpp
    ⇒ 现在显示 `panel=- (driver n/a)`；等驱动那个 getter 落地后接上（**本轮不碰那个文件**）。
 5. **静音掉电保存**：开机前设为静音 → 断电重上 → 是否仍是静音。
 
+---
+
+## 数据冻结的前提 + 诊断页真机入口（串口 `d`/`m`）+ **上板实测**（2026-09-24，COM6）
+
+★ 本轮**上板了**（车主已批准；只碰 **COM6**，**COM7** 一次都没打开）：
+起点 `59f6321` ⇒ 新固件烧进 COM6，下面是原始串口行。
+
+### ① 数据冻结判据加了**前提**（消掉"停车熄火"那一类假警报）
+
+- **改法**：冻结判据从"车速/转速 20 s 一个字节都没变"改成**同时要求**
+  `rpm > kTrustEngineRunningRpm || speed_kmh > 0`（= **发动机在转 / 车在动**）。
+- **常量**：`kTrustEngineRunningRpm = 500u`（`lib/dashcore/system_status.h`）——
+  怠速约 700~900 ⇒ 500 以下一律当"不在转"；★ 判据是**严格大于**：`rpm` 恰好
+  500 **不算**"在转"（边界由用例 `test_sys_freeze_rpm_boundary_500` 两侧钉住）。
+- **为什么除了转速还要看车速**：万一 VAN 冻在"转速读 0 但车其实在跑"那一帧，
+  只看 `rpm` 会把**真故障**漏掉 ⇒ 车在动时，静止的数据一律可疑。
+- **为什么水温/进气不算进来**（写进头文件注释，免得以后"顺手补全"）：那两格
+  20 秒不变是**正常**的（热惯量那么大）⇒ 算进来判据会一直成立、角标常挂。
+- **代价**（`ARCHITECTURE.md`「显示约定」§2 同款）：**停车且熄火时的真实冻结
+  不再报**；另有 ①来源回退 `Sim` ②VAN 断流 两条网仍在 —— 真坏了照样报。
+- **用例**：`test/test_dashcore/test_system_status.cpp` 追加 **4 例**
+  （十六节）：停车熄火 30 s ⇒ **不报** / `rpm=800` 冻结 20 s ⇒ **报** /
+  `speed=60, rpm=0` 冻结 ⇒ **报** / 边界 `500` 不算、`501` 算。
+
+### ② 诊断页的真机入口 = **串口单字符命令**（这块板上没有可用的按键）
+
+板子上能当输入用的只剩 12PIN 的 `GPIO0`（BOOT strap）与排针上的 `GPIO7`
+（I2C 的 SCL）⇒ 入口走**串口**（Type-C = 板载 CH343P = `Serial0`/UART0 = `COMx`，
+本来就是看日志要接的那根线，**零额外引脚**）：
+
+| 命令 | 作用 | 回执（原始串口行） |
+|---|---|---|
+| **`d`** | 诊断页：与预览的 `K` **同一个循环**（关着 ⇒ 打开第 1 页；还有下一页 ⇒ 翻页；最后一页 ⇒ 关闭） | `diag: open page=1/2` / `diag: open page=2/2` / `diag: closed page=2/2` |
+| **`m`** | **静音开关取反 + 写 NVS**（掉电保存） | `mute: 1 (saved)` / `mute: 0 (saved)` |
+
+- **编译门 = 既有的 `DASH_DISPLAY_RGB` 宏**（platformio.ini 里早就有、且**只有**
+  `[env:esp32s3-rgb]` 定义）⇒ `[env:esp32s3]`/`[env:esp32dev]`（VAN 抓帧盒）与
+  `-vaninv`/`-vansniff` 的编译单元里**这两段代码一行都不存在**。
+  ★ **`platformio.ini` 一个字节都没动**（没有新增任何 `-D`）。
+- 另加**一行**（同样只在 RGB 构建里）：`setup()` 里 `mute_load()` 之后打
+  `mute: N (loaded from NVS)` —— "掉电保存成不成立"因此**可测**（复位后这一行就是证据）。
+- ★ 命令**只认"行首"**（该口当前没有未完成的一行）：回放行里的十六进制**本来就可能
+  含 `d`**（例 `VAN 824 18F8271D000000`）⇒ 不这么判会悄悄吃掉回放数据；**唯一例外**
+  是"缓冲里那串字节不可能是回放行"（首字节不是 `V`/`v`）—— 那时也认命令并清掉它，
+  免得一颗杂散字节把命令通道堵到下一个换行为止（上板用一颗 `x` 验过）。
+
+### ③ 回归数字（前 → 后，全部真跑）
+
+| 项 | 前 | 本 轮 |
+|---|---|---|
+| native（`-e native`，挂 zig 桩） | 253 例（2 skipped / 251 succeeded） | **257 例（2 skipped / 255 succeeded），0 失败** |
+| `test-gauge-geometry` | 71 | **71** |
+| `test-face-stages` | 429 | **429** |
+| `test-theme-json` | 259 | **259** |
+| `test-asset-spec` | 174 | **174** |
+| `test-image-blob-build` | 369 | **369** |
+| `syntax-check-pages` | 14 | **14** |
+| `platformio run -e pcpreview` | SUCCESS | **SUCCESS**（19.0 s） |
+| `platformio run -e esp32s3-rgb` | SUCCESS（RAM 38.3% / Flash 86.0% / **901,699 B**） | **SUCCESS**（RAM **38.3% / 125,416 B**；Flash **86.1% / 902,759 B**） |
+
+- **Flash 涨了 1,060 B**（901,699 → 902,759；86.0% → 86.1%），**RAM 没动**（125,416 B）。
+  涨的就是这两条命令 + 那一行 `mute: … (loaded from NVS)`。
+- 构建在 ASCII 副本（`C:\206dash-scratch\Neru-frz`）里跑；**没跑 `pio clean`、没删 `.pio`**；
+  `tools/theme-editor/theme.json`（未跟踪）全程未碰。
+- ★ 两次**环境**报错（都不是回归，如实记）：`pcpreview` 第一次 8.4 s 就 FAILED、
+  报 `'gcc' is not recognized` —— `PATH` 上没挂 `C:\206dash-scratch\zigbin` 的 zig 转发桩；
+  挂上之后 **SUCCESS**（19.0 s）。
+
+### ④ 上板实测（COM6；下面全是**原始串口行**）
+
+**取证（先记下"板上原来是什么"，烧回用得到）**
+
+- **开工前**（复位后抓的开机日志）：有 `206 dash boot`、有 `alerts: 已就绪(…)`、
+  有第六轮那些 `rgb:` 行，**但一条 `trust:` 都没有** ⇒ **板上当时跑的不是
+  `59f6321`（= 上一轮"健康显示"）那一版固件**，而是一个**早于 `a8ddea0`** 的
+  esp32s3-rgb 构建。
+- 两个镜像都留下来了（"一条命令烧回去"）：
+  - **板上原样**（`esptool read_flash 0x10000 0x100000`，SHA256 `04BAAAB1…`）→
+    `C:\206dash-scratch\asfound-app0.bin`；
+  - **`59f6321` 的 esp32s3-rgb 构建**（本机重编，Flash 901,699 B，SHA256 `22E0735A…`）→
+    `C:\206dash-scratch\rollback-59f6321-esp32s3-rgb.bin`。
+- 烧回命令（esptool 5.3.0 在 `C:\206dash-scratch\pio-core-mix\penv`）：
+  `python -m esptool --chip esp32s3 --port COM6 --baud 921600 --after hard_reset write_flash 0x10000 <那个 .bin>`
+
+**烧写**：`python -m platformio run -e esp32s3-rgb -t upload --upload-port COM6`
+⇒ `[SUCCESS] Took 44.96 seconds`、bootloader/partitions/boot_app0/app 四处
+`Hash of data verified.`、`Hard resetting via RTS pin...`；**最终**烧进去的
+`firmware.bin` SHA256 = `3C2E3682…`（下面 1~6 条都是在**这一份**上跑出来的；
+中途只改过一次注释也重编重刷过 —— 镜像里带编译时间戳，所以以最后一次为准）。
+★ 收尾时把板子**放回原来那个状态**：发一次 `m` ⇒ `mute: 0 (saved)`（开工前就是
+"有声"；现在板上仍是这个状态，NVS 里 `mute=0`）。
+
+1. **角标出现 + 一声轻提示**（复位后，`mute=0` 那一档）：
+
+   ```
+   mute: 0 (loaded from NVS)
+   trust: none (episodes=0)
+   trust: sim-fallback  <-- 屏上出现数据不可信提示 beep (episodes=1)
+   ```
+
+   （静音那一档同样验过：`trust: sim-fallback  <-- 屏上出现数据不可信提示 muted (episodes=1)`）
+   ★ **"那一声是不是很短"没人替我听过** —— 机上没有能听声音的东西；客观证据是
+   这一行里的 `beep` 标记 + `kTrustBeepMs = 120 ms`（`static_assert(<= 300 ms)` 钉着），
+   **没有长鸣**这条限制由常量与断言保证，听感要请车主/在座的人确认。
+
+2. **诊断页**（发 `d` 三次，原始行按顺序）：
+
+   ```
+   diag: open page=1/2
+   diag: open page=2/2
+   diag: closed page=2/2
+   ```
+
+   （回执格式与预览那一行**逐字同一条**；★ 一个既有口径：**关闭后再打开仍停在第 2 页**
+   —— 页号不被关闭动作复位，预览的 `K` 本来就是这么走的，本轮没改。）
+
+3. **诊断页里的数字是真的**：`heap=` / `psram=` 那一格的**同源**数字在真机日志里是
+   真实值 —— `BEACON 17  step=6(loop: 刚开始一轮)  uptime=17s heap=214KB psram=8192KB flash=16MB`
+   （预览里是 `heap=0 psram=-`）；`van frames=` 应为 **0**：台上没接 VAN ⇒
+   整段日志**一行 `van: ` 都没有**、`SRC speed=sim …` + `link: sim tick_age=… seen=0`。
+   ★ **如实说清边界**：屏幕上的那几格字**没有机器读回来**（板上没有回读通路、也没有相机）
+   ⇒ 这一条的"像素级"证据**拿不到**；能证明的是"喂给它的数是真的"（同一份
+   `ESP.getFreeHeap()`/`getFreePsram()`/帧计数）。`panel=` 那一格仍是 `- (driver n/a)`
+   （RGB 驱动还没有那个出口，与上一轮同一条已知项）。
+
+4. **静音持久化**（掉电保存 + 恢复有声）：
+
+   ```
+   mute: 1 (loaded from NVS)      ← 复位/重刷之后仍然记着"静音"
+   diag: open page=1/2            ← 紧接着发 d
+   diag: open page=2/2
+   diag: closed page=2/2
+   mute: 0 (saved)                ← 再发一次 m ⇒ 恢复有声
+   ```
+
+   旁证：静音那一段里 `SRC-VAN age … | alert=overspeed beeps=0 muted`（一声都没响），
+   恢复之后同一行变成 `… alert=overspeed beeps=5`（又开始计哔数了）。
+
+5. **显示没被搞坏**（四行原文，全部来自**烧完之后的最终固件**）：
+
+   ```
+   rgb: vsync=834(+54/s) wrap=834(+54/s) swap=103(+5/s) flush=519 blit_max=1324us step_max=948us copy_max=1324us copy_avg=713us swap_wait_max=3434us phase_max=18014us timeout=0 fb=1/0 catchup=103(+5/s 466KB/s forced0KB) refresh=201021/184836/216178us fullrb=0/s bounce=23MB/s 模式=局部刷新 psram=7285KB heap=214KB
+   rgb: vsync=888(+54/s) wrap=888(+54/s) swap=108(+5/s) flush=549 blit_max=1324us step_max=948us copy_max=1324us copy_avg=695us swap_wait_max=3434us phase_max=18014us timeout=0 fb=0/1 catchup=108(+5/s 429KB/s forced0KB) refresh=199390/195242/201305us fullrb=0/s bounce=23MB/s 模式=局部刷新 psram=7285KB heap=214KB
+   206 dash ok  spd= 83% rpm= 14% coolant=91C face=idle/overspeed
+   206 dash ok  spd= 78% rpm= 13% coolant=91C face=idle/overspeed
+   ```
+
+   ⇒ `vsync +54/s`、`swap +5/s`、`copy_max≈1.32ms`、**`timeout=0`**、**`fullrb=0/s`**、
+   `206 dash ok` 每秒不断 —— 与上一轮同一量级，**没有黑屏/花屏的驱动级征兆**
+   （★ 屏幕本身是给人看的：机上没有相机，这条是**驱动级**证据）。
+
+6. **台上"角标常挂"是预期**：没接 VAN ⇒ 四格来源全是 `Sim`、`link: sim` ⇒
+   `trust: sim-fallback` 一直成立、角标挂着 —— **不是坏** ✗（这正是产品要求
+   "不是实测数据就必须看得出来"在台面上的正常表现）。
+
+### ⑤ 红线复核
+
+- `platformio.ini`：**一个字节都没碰** ✓（两条命令的门用的是既有的 `DASH_DISPLAY_RGB`）
+- `[env:esp32s3]`/`[env:esp32dev]`（抓帧盒）与其 `espressif32@7.1.3` 钉法：**未动** ✓
+  （新增命令只编进 `[env:esp32s3-rgb]`；① 的判据改动在 `lib/dashcore/system_status.*`，
+  那是 a8ddea0 起就有的共享显示层，**不碰 VAN 抓帧/协议那一路**）
+- 240(DualEye) 驱动、CRC/SOF/`kSpeedScale=2.56`/VAN 脚极性：**全未动** ✓
+- **没新开 L 号**、没改任何既有 L 裁决 ✓
+- `tools/theme-editor/theme.json`（未跟踪）：**未碰** ✓
+- **只开了 COM6**；**COM7 一次都没打开** ✓
+- `src/dash_display_rgb.cpp` / `dash_display_spi.cpp`：**未动** ✓
+

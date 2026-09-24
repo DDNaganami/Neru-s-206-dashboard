@@ -582,6 +582,104 @@ static SysStatusInputs sys_inputs_build(uint32_t now_ms) {
 //     对方的配置,所以没有新的冲突;真要拿 43/44 跑链路时,链路那一路优先。
 //     (链路自己 `begin()` 时会把 43/44 按 §0 §1.1 重新配一遍,那时 Serial0 的读
 //      拿到的是链路字节 —— 那是"贴帧口被链路占着"这个既定事实,不是新问题。)
+// ============================================================================
+//  真机的**串口单字符命令**（2026-09-24 新增）—— 「诊断页 / 静音」的真机入口
+// ============================================================================
+// ★ 为什么真机入口是串口、不是按键：**这块板上没有可用的按键** ——
+//   2.8C 整板上能当输入用的只剩 12PIN 的 `GPIO0`（= BOOT strap，不建议）
+//   与排针上剩下的 `GPIO7`（I2C 的 SCL）。而 Type-C 口（板载 CH343P =
+//   `Serial0`/UART0 = COMx）**本来就是**要接的那根线（看日志走同一个口）
+//   ⇒ 用串口命令当下入口：零额外引脚、零额外接线。
+//   与诊断页的既有口径一致：**平时不显示**，只有收到命令才唤出（L11 合规
+//   说明见 system_status.h 的文件头）。
+//
+// ★★ 为什么整段只在 `DASH_DISPLAY_RGB`（= `[env:esp32s3-rgb]`）里编 ✗：
+//   `[env:esp32s3]` / `[env:esp32dev]`（以及 extends 它们的 `-vaninv`/`-vansniff`）
+//   是 **VAN 抓帧盒** —— 它们的串口上跑的是**抓帧数据/回放文本**，一个字节都
+//   不许被吃掉。所以这两个命令**只**进真屏那一份构建，而且**不新增任何 `-D`**：
+//   `DASH_DISPLAY_RGB` 是 platformio.ini 里**早就有的**、且**只有**
+//   `[env:esp32s3-rgb]` 定义的那一个宏（见 dash_display.cpp 的驱动分支）
+//   ⇒ 其余 env 的编译单元里**这段代码一行都不存在**，行为逐字节不变 ✓。
+//
+// ★ 命令（小写单字符，收到即回一行确认日志；**不做**行缓冲、不等回车）：
+//   · `d` ⇒ 诊断页：与预览的 `K` **同一个循环** —— 关着 ⇒ 打开第 1 页；
+//           还有下一页 ⇒ 翻页；在最后一页 ⇒ 关闭。回执与预览逐字同一行
+//           （`diag: open page=1/2` / `diag: closed page=2/2`）。
+//   · `m` ⇒ **静音开关取反**，并**写 NVS**（掉电保存；与 `setup()` 里读回的
+//           是同一对 load/save）⇒ 车主**不用按键**就能静音。回执 `mute: 1 (saved)`。
+//
+// ★★ 命令**只认"行首"**（这个口上当前没有未完成的一行）—— 判据在下面
+//   `serial_cmd_handle` 里：回放行里的十六进制**本来就可能含 `d`**（例
+//   `VAN 824 18F8271D000000`）⇒ "缓冲里已经有东西"时不能无脑当命令；
+//   **例外**是那串东西**不可能是回放行**（首字节不是 V/v）—— 串口线上一颗杂散
+//   字节就能把"行首"这个位置一直占着、让后面每条命令都失联，所以那种时刻要认。
+//   认不出来的字节一律原样交给下面既有的回放路径（一个字都不多吃）。
+//   两个口（`Serial` = 原生 USB / `Serial0` = 板载 CH343P）共用这一个判据，
+//   各自维护自己的行缓冲。
+#if defined(DASH_DISPLAY_RGB)
+// 诊断页那一个键的三步循环。★ 与 loop() 里预览那一支（`#if defined
+// (DASH_DISPLAY_PREVIEW)` 的 `K`）**逐字同一条**：改这里要连那一段一起改
+// （两处都只是"把请求喂给 dash_ui 的三个函数"，判据与页数都在 system_status.h）。
+static void diag_key_press() {
+  if (!dash_ui_diag_open()) {
+    dash_ui_diag_toggle();
+  } else if ((uint8_t)(dash_ui_diag_page() + 1u) >= kDiagPageCount) {
+    dash_ui_diag_toggle();
+  } else {
+    dash_ui_diag_next();
+  }
+  // ★ 这一行与预览的回执**同一格式**（它只报页号，不报 fps —— 理由见 loop() 里
+  //   那一段：`g_ui_fps10` 在本拍渲染之前读只会是 0 或上一拍的旧值）。
+  dash_logf("diag: %s page=%u/%u\n", dash_ui_diag_open() ? "open" : "closed",
+            (unsigned)(dash_ui_diag_page() + 1u), (unsigned)kDiagPageCount);
+}
+
+// 静音取反 + **落盘**（`Preferences`/NVS，命名空间 `dash`、键 `mute`，见上面那段）。
+// ★ 三件事的顺序是有意的：先改内存态（这一拍就生效）→ 写 NVS（掉电记住）
+//   → 同步给告警层（`g_alerts` 与 `g_beep_muted` 是两份状态，必须一起动）。
+static void mute_toggle_from_serial() {
+  g_beep_muted = !g_beep_muted;
+  mute_save(g_beep_muted);
+  g_alerts.setMuted(g_beep_muted);
+  dash_logf("mute: %d (saved)\n", g_beep_muted ? 1 : 0);
+}
+
+// ★★ 什么时候才认这一颗字节是命令（`line`/`len` = **这个口**的回放行缓冲）：
+//   ① 缓冲是空的（最常见：命令就是单独一个字符）；**或者**
+//   ② 缓冲里攒下的那几个字节**不可能**是回放行 —— 回放行的头三个字符必须是
+//      `VAN`/`van`（`van_replay.cpp` 的 `parseVanReplayLine` 逐字要求，大小写都认）
+//      ⇒ 首字节不是 V/v 的那一串**永远成不了一帧回放数据**，只可能是串口线上的
+//      一颗杂散字节（上电/复位时 RX 悬空、或串口桥开合时的抖动）。
+//      ★ 只判"缓冲空不空"**不够**：那一颗字节会把"行首"这个位置一直占着，于是
+//        后面发的命令**全被判成回放数据**、一条都没反应 —— 直到有人发一个换行
+//        把它冲掉为止（"按了没反应"是最难查的一类现象）。
+//      ⇒ 与其让车主记住"先按一下回车"，不如在这里把这种时刻**认出来**：
+//        清掉那串字节（它不可能是回放行，留着只会在下次换行时 echo 出一行
+//        `VAN? …`），然后把这一颗字节当命令。
+//        ★ 这条路径 2026-09-24 **上板验过**（不是纸上推的）：先发一颗 `x`
+//          把那种杂散字节**造出来**，再发 `m` ⇒ `mute: 1 (saved)` 照常出来，
+//          而且**没有** `VAN? x` 回显（缓冲确实被清掉了）。
+//   ★ 首字节是 V/v 时**一律不动它**：那可能就是一行正在贴进来的回放帧，
+//     命令字符（`d`/`m`）在 hex 里本来就可能出现（例 `VAN 824 18F8271D000000`）。
+//   ★ 回放路径（`van_replay_feed`）**一个字都没动** —— 上面这套判据只决定
+//     "这一颗字节要不要当命令吃掉"。
+static bool serial_cmd_handle(char c, char* line, uint8_t& len) {
+  if (len != 0u) {
+    if (line[0] == 'V' || line[0] == 'v') return false;   // 可能是回放行 ⇒ 交给它
+    len = 0;                                             // 不可能是回放行 ⇒ 清掉
+  }
+  if (c == 'd') {
+    diag_key_press();
+    return true;
+  }
+  if (c == 'm') {
+    mute_toggle_from_serial();
+    return true;
+  }
+  return false;
+}
+#endif  // DASH_DISPLAY_RGB
+
 static void van_replay_feed(const char c, char* line, uint8_t& len, uint32_t now) {
   if (c == '\r' || c == '\n') {
     if (len) {
@@ -603,14 +701,24 @@ static void van_replay_poll(uint32_t now) {
   static char line_usb[80];
   static uint8_t len_usb = 0;
   while (Serial.available()) {
-    van_replay_feed((char)Serial.read(), line_usb, len_usb, now);
+    const char c = (char)Serial.read();
+#if defined(DASH_DISPLAY_RGB)
+    // ★ 真屏构建才有这两个命令（`d` / `m`，见上面那一段）；其余构建里这两行
+    //   根本不存在 ⇒ 抓帧盒的字节流一个字节都不会被吃掉。
+    if (serial_cmd_handle(c, line_usb, len_usb)) continue;
+#endif
+    van_replay_feed(c, line_usb, len_usb, now);
   }
 #if defined(ARDUINO) && defined(ARDUINO_USB_CDC_ON_BOOT) && (ARDUINO_USB_CDC_ON_BOOT == 1)
   // 只有 CDC_ON_BOOT 时 Serial0 才是"另一个口";经典 ESP32 上两者是同一个 UART0
   static char line_uart[80];
   static uint8_t len_uart = 0;
   while (Serial0.available()) {
-    van_replay_feed((char)Serial0.read(), line_uart, len_uart, now);
+    const char c = (char)Serial0.read();
+#if defined(DASH_DISPLAY_RGB)
+    if (serial_cmd_handle(c, line_uart, len_uart)) continue;
+#endif
+    van_replay_feed(c, line_uart, len_uart, now);
   }
 #endif
 }
@@ -918,6 +1026,15 @@ void setup() {
   // 静音开关的掉电保存（默认有声；静音是车主的选择，要跨上电记住）。
   mute_load();
   g_alerts.setMuted(g_beep_muted);
+#if defined(DASH_DISPLAY_RGB)
+  // ★ 真屏构建：把"**这一板上电时记着的是什么**"打出来。
+  //   静音开关在这块板上没有按键入口（见上面串口命令那一段），"掉电保存成不成立"
+  //   就全靠这一行可测：发过 `m` 之后复位/断电重上，这里应当是
+  //   `mute: 1 (loaded from NVS)`；再发一次 `m` 就回到 0。
+  //   ★ 只编进 `[env:esp32s3-rgb]`（`DASH_DISPLAY_RGB`，见上面那一段的说明）——
+  //     抓帧盒两个 env 的串口日志**一个字节都不变** ✓。
+  dash_logf("mute: %d (loaded from NVS)\n", g_beep_muted ? 1 : 0);
+#endif
   g_data.begin();
   BOOT_STAGE(2);
 
