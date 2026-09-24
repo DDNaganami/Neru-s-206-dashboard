@@ -78,6 +78,7 @@ python tools/serial-capture/capture.py COM4         # 抓复位后的完整开�
 | `ARCHITECTURE.md` | 分层与数据流，以及每个取舍的理由 |
 | `PINOUT.md` | 接线：VAN 三处取信号、开箱先量什么、抓帧盒怎么用 |
 | `PURCHASE.md` | 采购：清单、到货后的验证动作、别买 CAN-only |
+| `tools/web/index.html` | **四个网页的统一入口（导航页）**：四张卡片 + 工作流顺序（配色 → 图片 → 刷写 → 预览）+ 刷写命令 + 已知限制；双击 `tools/web/open.bat` 同效 |
 | `tools/theme-editor/README.md` | 两个网页编辑器（配色 / 图片）、`image.bin` 格式与刷写偏移 |
 | `tools/van-decode/` + `tools/serial-capture/` | 抓包解帧与串口回放的脚本 |
 

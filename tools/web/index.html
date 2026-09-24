@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>206Dash 工具入口 · 四个网页</title>
+<!-- ============================================================
+     tools/web/index.html —— 四个网页的**统一入口**（导航页）
+
+     ★ 为什么是"导航页"而不是"合并成一个 SPA"：
+       那四页各自都是**已经被实测过的静态页**（双击打开就能用、没有构建、
+       没有框架）。把它们重写成一块应用，等于把验过的逻辑全部翻新一遍 ——
+       收益只有"少点三次"，风险却是"四个页面一起坏"。所以这里只做入口。
+
+     ★ 四条硬规矩（改这一页时别破坏）：
+       1. **不引任何 CDN / 框架 / 字体**：这一页要能**离线双击打开**；
+       2. 链接一律用**相对路径**（四页分布在 tools/theme-editor/ 与 preview/
+          两个目录里，写绝对路径或 file:// 都会在换目录/换机器时断掉）；
+       3. 刷写命令里的**偏移与大小**不许在这里另抄一份：
+          它们的出处是 partitions-s3.csv 的 theme / image 两行
+          （0x210000 / 0x4000、0x254000 / 0x800000），
+          tools/theme-editor/README.md 与两个编辑器印的也是同一对数。
+          分区表一改，这里要跟着改；
+       4. 六个"已知限制"那一段是**口径**，与 docs/PREVIEW.md 第 4 节、
+          tools/theme-editor/README.md 是同一份说法 —— 别只改一处。
+     ============================================================ -->
+<style>
+  :root{
+    --bg:#12141a; --panel:#1b1e26; --line:#2b3040; --text:#e6e9f0;
+    --dim:#98a0b3; --accent:#39C5FF; --warn:#ffcc66; --ok:#7CFF6B; --bad:#ff8080;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:14px/1.6 "Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:980px;margin:0 auto;padding:22px 20px 60px}
+  /* 四页顶部那条统一导航条的样式（纯 CSS，不引任何框架/外部资源）。
+     ★ 本页是**入口/首页**，自己不需要那条导航条（没有"返回"可返回），
+       也不需要返回按钮 —— 这几条规则只写在这里，是为了让"四页共用同一套观感"
+       这件事在一处看得见：改导航条样式时，四页各有一份**逐字相同**的副本
+       （tools/theme-editor/index.html、image-editor.html、
+        preview/preview.html、preview-28c.html）。
+       结构：一个 <div class="navstrip">，里面的 <a> 分两种：
+       a.navback（最左边那个「← 返回导航页」）与 a.navitem（四个页面按钮，
+       当前页加 .on 高亮）；<span class="navsep"> 是那一小道竖线。 */
+  .navstrip{background:#171a22;border-bottom:1px solid var(--line)}
+  .navstrip-in{max-width:980px;margin:0 auto;padding:7px 16px;
+             display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .navstrip a.navitem{color:var(--dim);font-size:12px;text-decoration:none;
+                      border:1px solid var(--line);border-radius:5px;padding:3px 9px}
+  .navstrip a.navitem:hover{background:#262b38;color:var(--text)}
+  .navstrip a.navitem.on{color:var(--bg);background:var(--accent);
+                         border-color:var(--accent);font-weight:600}
+  .navstrip a.navitem .sub{color:#6f7788;margin-left:6px}
+  .navstrip a.navitem.on .sub{color:#2c4b5c}
+  .navstrip .navhint{color:var(--dim);font-size:12px;margin-left:6px}
+  .navstrip .navhint a{color:var(--accent)}
+  .navstrip a.navback{color:#cfe9ff;background:#1d4f6b;border:1px solid #2a6f96;
+                      border-radius:5px;padding:4px 11px;font-size:13px;font-weight:600;
+                      text-decoration:none}
+  .navstrip a.navback:hover{background:#246b91;color:#fff}
+  .navstrip .navsep{width:1px;height:16px;background:var(--line);margin:0 2px}
+
+  h1{font-size:19px;margin:0 0 6px;font-weight:600}
+  h2{font-size:13px;margin:30px 0 10px;color:var(--accent);
+     text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+  p{margin:0 0 10px}
+  .hint{color:var(--dim);font-size:12px}
+  a{color:var(--accent)}a:visited{color:#8ab4d8}
+  code{background:#0e1016;border:1px solid var(--line);border-radius:4px;
+       padding:1px 5px;font:12px Consolas,monospace;color:#fd8}
+  .lead{border-left:3px solid var(--accent);padding:2px 0 2px 12px;margin:14px 0 0}
+
+  /* 四张卡片：两列，窄屏自动变一列 */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+        padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+  .card h3{font-size:15px;margin:0;font-weight:600}
+  .card .role{color:var(--accent);font-size:12px;letter-spacing:.04em}
+  .card .kv{font-size:12px;margin:0}
+  .card .kv b{color:var(--dim);font-weight:400}
+  .card .go{margin-top:auto;padding-top:8px}
+  /* ★ 四张卡的进入按钮：做成**明显的按钮**而不是一行链接字
+     （车主的用法是"点进去"）。四页顶部那条导航条里的「← 返回导航页」就是回到本页。 */
+  .card .go a{display:block;text-align:center;background:#1d4f6b;border:1px solid #2a6f96;
+              border-radius:6px;padding:9px 13px;text-decoration:none;font-size:14px;
+              font-weight:600;color:#e6e9f0}
+  .card .go a:hover{background:#246b91;color:#fff}
+  .card .go a.faint{background:#262b38;border-color:var(--line);font-weight:400;font-size:13px}
+  .card .go a.faint:hover{background:#303749}
+  .card .path{color:var(--dim);font-size:11px;font-family:Consolas,monospace;
+              text-align:center;margin-top:4px}
+
+  /* 工作流：四步，带序号圆点 */
+  ol.flow{list-style:none;counter-reset:step;margin:0;padding:0}
+  ol.flow li{counter-increment:step;position:relative;padding:10px 0 10px 40px;
+             border-bottom:1px solid var(--line)}
+  ol.flow li:last-child{border-bottom:0}
+  ol.flow li::before{content:counter(step);position:absolute;left:0;top:10px;
+        width:24px;height:24px;border-radius:50%;background:#1d4f6b;
+        border:1px solid #2a6f96;color:var(--text);text-align:center;
+        line-height:22px;font-size:12px}
+  ol.flow .t{font-size:14px}
+  ol.flow .d{color:var(--dim);font-size:12px}
+  .two{background:#171a22;border:1px solid var(--line);border-radius:6px;
+       padding:9px 12px;margin-top:10px;font-size:12px;color:var(--warn)}
+
+  /* 命令块 */
+  .cmdbox{background:#0e1016;border:1px solid var(--line);border-radius:6px;
+          padding:10px 12px;margin:10px 0;overflow-x:auto}
+  .cmdbox pre{margin:0;font:12px/1.5 Consolas,monospace;color:var(--text);white-space:pre}
+  .cmdbox .c{color:var(--dim)}          /* 注释行 */
+  .cmdbox .k{color:#fd8}                /* 关键参数 */
+
+  table{border-collapse:collapse;margin:8px 0 0;font-size:12px}
+  th,td{border:1px solid var(--line);padding:4px 9px;text-align:left;vertical-align:top}
+  th{color:var(--accent);font-weight:400;white-space:nowrap}
+  td.n{font-family:Consolas,monospace;white-space:nowrap;color:#fd8}
+
+  ul.limits{margin:6px 0 0 18px;padding:0}
+  ul.limits li{margin:6px 0;font-size:13px}
+  .bad{color:var(--bad)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>206Dash 工具入口</h1>
+  <p class="lead">
+    这是 <b>206 仪表盘</b>的主题 / 素材工具：把<b>配色</b>和<b>图片</b>做成两个文件，
+    用 esptool 刷进仪表的两个分区就生效 —— <b>换配色、换图都不用重新编译固件</b>。
+  </p>
+  <p class="hint">
+    下面四页都是<b>双击打开就能用的静态网页</b>：不需要联网、不需要装东西、不需要起本地服务。
+    本页只是入口，四页本身一个字节都没被合并。
+  </p>
+  <p class="hint">
+    四页顶部都有一条<b>同一条导航条</b>：最左边那个「← 返回导航页」就是回到这里，
+    右边四个按钮可以直接在这四页之间互相跳 —— 不需要再用浏览器的后退键。
+  </p>
+
+  <h2>四个页面</h2>
+  <div class="cards">
+
+    <div class="card">
+      <h3>① 配色（主题编辑器）</h3>
+      <div class="role">底色 + 四条弧 + 四处读数文字颜色</div>
+      <p class="kv"><b>干什么：</b>调背景色、两条外弧（转速 / 车速）与两条内弧（水温 / 进气温度）的
+        点亮色 / 轨道色 / 角度 / 半径 / 线宽，以及屏上四处文字（大数字、单位、水温、进气温度）的颜色、
+        字号档位与位置；还能播开机动画。</p>
+      <p class="kv"><b>什么时候用：</b>想改颜色、想调弧的开口方向或粗细、觉得读数位置不合适时。
+        换了一张浅色底图之后"屏上的字看不见"也是一个典型场景（那一页和图片页都能改字的颜色）。</p>
+      <p class="kv"><b>产出：</b><code>theme.json</code> ⇒ 刷 <code>theme</code> 分区。</p>
+      <div class="go"><a href="../theme-editor/index.html">打开配色页 →</a>
+        <div class="path">tools/theme-editor/index.html</div></div>
+    </div>
+
+    <div class="card">
+      <h3>② 图片素材（图片编辑器）</h3>
+      <div class="role">加图片 + 选用途 + 导出 image.bin</div>
+      <p class="kv"><b>干什么：</b>把 <b>PNG / JPG / WebP</b> 拖进去，给每张图选<b>用途</b>
+        （表盘背景，或左屏 / 右屏各 5 档表情之一），页面按目标板做规格检查与自动转换
+        （尺寸、透明通道、圆形可视区），并给出两屏合成预览与占空间条。</p>
+      <p class="kv"><b>什么时候用：</b>要放自己的背景图或表情图时 —— <b>这是唯一的上传入口</b>
+        （预览那两页没有上传）。同一页也能改配色并导出 theme.json。</p>
+      <p class="kv"><b>产出：</b><code>image.bin</code> ⇒ 刷 <code>image</code> 分区。</p>
+      <div class="go"><a href="../theme-editor/image-editor.html">打开图片页 →</a>
+        <div class="path">tools/theme-editor/image-editor.html</div></div>
+    </div>
+
+    <div class="card">
+      <h3>③ 看帧（宿主机预览）</h3>
+      <div class="role">看 pcpreview 落盘的真实渲染帧</div>
+      <p class="kv"><b>干什么：</b>循环播放 <code>preview/frames/</code> 里的 <code>l_*.bmp</code> /
+        <code>r_*.bmp</code> —— 那是 <b>LVGL 在宿主机上用与真屏同一套 UI 代码</b>渲染出来的，
+        并且页面上写着怎么把它跑出来。</p>
+      <p class="kv"><b>什么时候用：</b>刷板之前先看一眼"这一套配色 / 图片到底长什么样"。
+        跑一次 <code>pcpreview</code> 会落 150 对帧（30 秒、5fps）。</p>
+      <div class="go"><a href="../../preview/preview.html">打开看帧页 →</a>
+        <div class="path">preview/preview.html</div></div>
+    </div>
+
+    <div class="card">
+      <h3>④ 圆屏参照（双 2.8C）</h3>
+      <div class="role">圆边虚线 + px ↔ mm + 能验 / 验不了</div>
+      <p class="kv"><b>干什么：</b>同一个帧播放，但页面上多一圈<b>青色虚线 = 真机能看见的边界</b>
+        （虚线圈以外在真机上看不见），另给出画布 px 与面板 mm 的换算表、键盘与控制文件的
+        注入清单、以及"这一页能验什么、验不了什么"。</p>
+      <p class="kv"><b>什么时候用：</b>做素材时判断"内容有没有伸到圆外"、或者要确认
+        "某件事根本不该指望在预览里看出来"时。</p>
+      <div class="go"><a href="../../preview/preview-28c.html">打开 2.8C 参照页 →</a>
+        <div class="path">preview/preview-28c.html</div></div>
+    </div>
+
+  </div>
+
+  <h2>工作流顺序（按这个顺序做，不会白做）</h2>
+  <ol class="flow">
+    <li>
+      <div class="t"><b>先配颜色</b> —— 打开<a href="../theme-editor/index.html">① 配色页</a>，
+        调底色、四条弧、四处读数文字，满意后点右上角「导出主题文件」得到 <code>theme.json</code>。</div>
+      <div class="d">先定色再配图：底色和弧色的深浅会决定你要选什么颜色的表情图。</div>
+    </li>
+    <li>
+      <div class="t"><b>再做图片</b> —— 打开<a href="../theme-editor/image-editor.html">② 图片页</a>，
+        拖图进去、逐张选「用途」、看规格检查有没有报警，然后点「导出 image.bin」。</div>
+      <div class="d">配色页导出的 theme.json 可以在这一页「读入」，预览就与配色一致了（两页也共用同一份本机配色）。</div>
+    </li>
+    <li>
+      <div class="t"><b>刷进设备</b> —— 用 esptool 把两个文件写到各自的分区，然后复位。</div>
+      <div class="d">命令见下面「刷写命令」，偏移与大小都从分区表现场核对过。</div>
+    </li>
+    <li>
+      <div class="t"><b>再跑一次 pcpreview 看效果</b> ——
+        跑 <code>python -m platformio run -e pcpreview -t exec</code>（跑够了几秒按 Ctrl+C），
+        然后打开<a href="../../preview/preview.html">③ 看帧页</a>或
+        <a href="../../preview/preview-28c.html">④ 圆屏参照页</a>。</div>
+      <div class="d">帧里的画面与真屏是同一套 UI 代码渲染的，所以配色与素材的改动在这一步就能看到。</div>
+    </li>
+  </ol>
+  <div class="two">
+    ★ <b>两个分区是两次刷写</b>：配色在 <code>theme</code> 分区、图片在 <code>image</code> 分区。
+    只改了颜色就只刷 theme，只换了图就只刷 image；两个都改了就要<b>各刷一次</b>
+    （刷一个不会带上另一个 —— 这一点最容易漏，漏了的症状是"改了没生效"）。
+  </div>
+
+  <h2>刷写命令（把端口改成你自己的）</h2>
+  <p class="hint">
+    目标板 = <b>双 2.8C 圆屏（最终板）</b>：两块 480×480 圆屏，各由一块
+    <b>ESP32-S3 N16R8（16MB flash）</b>驱动，分区表是 <code>partitions-s3.csv</code>。
+    两块屏刷<b>同一份</b> <code>image.bin</code> 与 <code>theme.json</code>。
+  </p>
+
+  <table>
+    <tr><th>分区</th><th>偏移</th><th>大小</th><th>刷什么</th></tr>
+    <tr><td><code>theme</code></td><td class="n">0x210000</td><td class="n">0x4000（16 KB）</td><td><code>theme.json</code></td></tr>
+    <tr><td><code>image</code></td><td class="n">0x254000</td><td class="n">0x800000（8 MB）</td><td><code>image.bin</code></td></tr>
+  </table>
+  <p class="hint" style="margin-top:6px">
+    出处：<code>partitions-s3.csv</code> 的 <code>theme</code> 行与 <code>image</code> 行
+    （偏移与经典板的 <code>partitions.csv</code> 刻意相同）。设备端 theme 缓冲只有
+    <b>4096 字节</b>（<code>lib/themetool/theme_store.h</code>），所以 <code>theme.json</code>
+    别超过 4 KB —— 配色页导出时会自己检查并提示。
+  </p>
+
+  <div class="cmdbox">
+<pre><span class="c"># ① 配色 ⇒ theme 分区（COM6 是这台机器上的口，改成你自己的）</span>
+python -m esptool --chip <span class="k">esp32s3</span> --port <span class="k">COM6</span> --baud 921600 write_flash <span class="k">0x210000</span> theme.json
+
+<span class="c"># ② 图片 ⇒ image 分区（8 MB）</span>
+python -m esptool --chip <span class="k">esp32s3</span> --port <span class="k">COM6</span> --baud 921600 write_flash <span class="k">0x254000</span> image.bin</pre>
+  </div>
+  <p class="hint">
+    ★ <b>端口改成你自己的</b>：<code>COM6</code> 只是这台机器上的值，在设备管理器里看一眼再填。
+    2.8C 的刷写与监视走板载 UART（那个 Type-C 口，板载 CH343P）。
+  </p>
+  <div class="cmdbox">
+<pre><span class="c"># ③ esptool 没装在系统 python 里时（报 No module named 'esptool' / 'intelhex'）：</span>
+<span class="c">#    先把三个路径挂上 PYTHONPATH。这台机器上的写法（路径照抄自 tools/theme-editor/README.md）：</span>
+$env:PYTHONPATH='C:\Users\Public\206dash\.pio-core\packages\tool-esptoolpy;C:\Users\Public\206dash\stubs;C:\Users\张九思\206Dash\.pio-pylibs'</pre>
+  </div>
+  <p class="hint">
+    成功以 esptool 最后那行 <code>Hash of data verified.</code> 为准。
+    ★ 写错偏移 <b>esptool 照样会打这句话</b> —— 症状是"屏上什么都没变"；
+    而且写偏了有可能会压掉旁边那个只有 16 KB 的 <code>theme</code> 区，所以偏移别凭记忆填。
+  </p>
+
+  <h2>预览看不到什么（别被预览误导）</h2>
+  <p>
+    ③④ 两页放的是宿主机落下来的帧，它们能证明的是"<b>该画的东西画出来了、位置 / 配色 / 亮灭对不对、
+    有没有伸到圆外</b>"。而下面这几类在预览里<b>结构上不可能出现</b> ——
+    不是"还没做"，是"预览这条路根本没有那一段"：
+    <b>撕裂</b>、<b>图像残留</b>、<b>横纹 / 抖动</b>、<b>真实帧率与时序</b>。
+  </p>
+  <p class="hint">
+    原因与完整清单（含面板初始化、字体墨迹、圆屏物理边框内缩）见
+    <code>docs/PREVIEW.md</code> 的 <b>第 4 节「★ 预览看不到什么」</b> ——
+    那一节是这条口径的唯一出处，判据与打点在 <code>docs/RGB-PANEL-2.8C.md</code>。
+    所以"预览看着没问题"≠"真机没问题"。
+  </p>
+
+  <h2>已知限制（都是预期，不是故障）</h2>
+  <ul class="limits">
+    <li>
+      <b>③④ 两页只显示落盘的帧，没有上传入口。</b>
+      要传图片素材请用<a href="../theme-editor/image-editor.html">② 图片页</a>
+      （那里才有"加图片 / 选用途 / 导出 image.bin"）。
+      另外这两页显示的是 <code>preview/frames/</code> 里<b>已经存在</b>的帧：
+      目录是空的时候页面上就是两块黑画布 —— 先跑一次 <code>pcpreview</code> 再开。
+    </li>
+    <li>
+      <b>底下那六格指示灯是程序化画的占位图形，不需要任何素材。</b>
+      它们是代码里的简单几何（方框 + 图形），<b>不占 image 分区</b>、也不用你准备图片；
+      它们的<b>颜色</b>在<a href="../theme-editor/index.html">① 配色页</a>里改。
+    </li>
+    <li>
+      <b>台上不接 VAN 时：六格全灭 + 表盘右缘出现 <code>SIM</code> 角标 = 预期，不是故障。</b>
+      没有真实车辆数据时，车速 / 转速 / 水温 / 进气四格的来源恒为"模拟"，
+      于是"数据不可信"提示按判据（正确地）亮起来，六格灯全部熄灭。
+      接上 VAN、有真实帧之后角标自己就消失 —— 不需要改任何设置。
+    </li>
+  </ul>
+
+  <h2>还有别的文档</h2>
+  <table>
+    <tr><th>文件</th><th>讲什么</th></tr>
+    <tr><td class="n">tools/theme-editor/README.md</td>
+        <td>两个编辑器的完整说明：素材规格（可接受格式 / 尺寸上限 / 圆形可视区）、
+            <code>image.bin</code> 的二进制格式、刷写命令与踩过的坑</td></tr>
+    <tr><td class="n">docs/PREVIEW.md</td>
+        <td>宿主机预览怎么跑、每个键与控制文件是什么、<b>第 4 节：预览看不到什么</b></td></tr>
+    <tr><td class="n">docs/RGB-PANEL-2.8C.md</td>
+        <td>2.8C 圆屏那一段真机链路的判据（撕裂 / 残留 / 横纹 / 帧率都在这里看）</td></tr>
+    <tr><td class="n">ACCEPTANCE.md</td>
+        <td>真机上验收过什么、当时看到的原文</td></tr>
+  </table>
+
+  <p class="hint" style="margin-top:26px">
+    本页与另外四页都是纯 HTML + 内联 CSS：没有框架、没有构建、不引任何外部资源，
+    所以可以整个目录拷到别的机器上照样双击打开。
+    本页不需要 JavaScript —— 没有脚本，也就没有"脚本挂了页面就白"这回事。
+  </p>
+
+</div>
+</body>
+</html>

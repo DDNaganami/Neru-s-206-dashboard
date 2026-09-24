@@ -58,9 +58,44 @@
   .warn { color: #f88; }
   ul { margin: 4px 0 0 18px; padding: 0; }
   li { margin: 2px 0; }
+  /* 四页共用的导航条（纯 CSS，不引任何框架/外部资源）。
+     结构见 <body> 里那段：.navstrip > .navstrip-in > a.navitem / span.navhint。
+     相对路径按**本页所在目录**写：本页在 preview/ ⇒ 编辑器在 ../tools/theme-editor/。 */
+  .navstrip { background: #171a22; border-bottom: 1px solid #2b3040; }
+  .navstrip-in { max-width: 980px; margin: 0 auto; padding: 7px 16px;
+                 display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .navstrip a.navitem { color: #98a0b3; font-size: 12px; text-decoration: none;
+                        border: 1px solid #2b3040; border-radius: 5px; padding: 3px 9px; }
+  .navstrip a.navitem:hover { background: #262b38; color: #e6e9f0; }
+  .navstrip a.navitem.on { color: #12141a; background: #39C5FF; border-color: #39C5FF;
+                           font-weight: 600; }
+  .navstrip a.navitem .sub { color: #6f7788; margin-left: 6px; }
+  .navstrip a.navitem.on .sub { color: #2c4b5c; }
+  .navstrip .navhint { color: #98a0b3; font-size: 12px; margin-left: 6px; }
+  .navstrip .navhint a { color: #39C5FF; }
+  /* ★「← 返回导航页」：导航条里**最左边**那一个，比其它链接更显眼
+     （车主会频繁来回跳）。四页里是同一段结构、同一套样式。 */
+  .navstrip a.navback { color: #cfe9ff; background: #1d4f6b; border: 1px solid #2a6f96;
+                        border-radius: 5px; padding: 4px 11px; font-size: 13px;
+                        font-weight: 600; text-decoration: none; }
+  .navstrip a.navback:hover { background: #246b91; color: #fff; }
+  /* 返回键与后面四个页面之间加一道竖线，视觉上分开「回入口」和「换页面」 */
+  .navstrip .navsep { width: 1px; height: 16px; background: #2b3040; margin: 0 2px; }
 </style>
 </head>
 <body>
+<!-- 四页统一导航条（纯 HTML/CSS）：本页 = ④ 圆屏参照。
+     ★ 相对路径按 **preview/ 这一层**写（本页在仓库根下的 preview/，只深一层）：
+       入口页 = ../tools/web/index.html、编辑器 = ../tools/theme-editor/。
+       （写成 ../../tools/... 就多退了一层 —— syntax-check-pages.js 会当场报错。） -->
+<div class="navstrip"><div class="navstrip-in">
+<a class="navback" href="../tools/web/index.html">← 返回导航页</a>
+<span class="navsep"></span>
+<a class="navitem" href="../tools/theme-editor/index.html">① 配色<span class="sub">theme.json</span></a>
+<a class="navitem" href="../tools/theme-editor/image-editor.html">② 图片<span class="sub">image.bin</span></a>
+<a class="navitem" href="preview.html">③ 看帧</a>
+<a class="navitem on" href="preview-28c.html">④ 圆屏（2.8C）</a>
+</div></div>
 <h1>206 dash 预览 · 双 2.8C（最终板）</h1>
 <p class="hint">
   最终板是<b>两块</b>微雪 <b>ESP32-S3-LCD-2.8C</b>（同型号、同分辨率），

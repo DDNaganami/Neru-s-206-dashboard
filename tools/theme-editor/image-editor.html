@@ -105,9 +105,44 @@
   .ro-edit input[type=text]{width:78px;background:#0e1016;border:1px solid var(--line);
                             color:var(--text);border-radius:4px;padding:3px 5px;
                             font:12px Consolas,monospace}
+  /* 四页共用的导航条（纯 CSS，不引任何框架/外部资源）。
+     结构见 <body> 里那段：.navstrip > .navstrip-in > a.navitem / span.navhint。
+     相对路径按**本页所在目录**写：本页在 tools/theme-editor/ ⇒ 入口页在 ../web/。 */
+  .navstrip{background:#171a22;border-bottom:1px solid var(--line)}
+  .navstrip-in{max-width:980px;margin:0 auto;padding:7px 16px;
+               display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .navstrip a.navitem{color:var(--dim);font-size:12px;text-decoration:none;
+                      border:1px solid var(--line);border-radius:5px;padding:3px 9px}
+  .navstrip a.navitem:hover{background:#262b38;color:var(--text)}
+  .navstrip a.navitem.on{color:var(--bg);background:var(--accent);
+                         border-color:var(--accent);font-weight:600}
+  .navstrip a.navitem .sub{color:#6f7788;margin-left:6px}
+  .navstrip a.navitem.on .sub{color:#2c4b5c}
+  .navstrip .navhint{color:var(--dim);font-size:12px;margin-left:6px}
+  .navstrip .navhint a{color:var(--accent)}
+  /* ★「← 返回导航页」：导航条里**最左边**那一个，比其它链接更显眼
+     （车主会频繁来回跳）。四页里是同一段结构、同一套样式。 */
+  .navstrip a.navback{color:#cfe9ff;background:#1d4f6b;border:1px solid #2a6f96;
+                      border-radius:5px;padding:4px 11px;font-size:13px;font-weight:600;
+                      text-decoration:none}
+  .navstrip a.navback:hover{background:#246b91;color:#fff}
+  /* 返回键与后面四个页面之间加一道竖线，视觉上分开「回入口」和「换页面」 */
+  .navstrip .navsep{width:1px;height:16px;background:var(--line);margin:0 2px}
 </style>
 </head>
 <body>
+<!-- 四页统一导航条（纯 HTML/CSS）：本页 = ② 图片。
+     相对路径按 tools/theme-editor/ 这一层写：入口页在 ../web/、预览页在 ../../preview/。
+     ★ 这一页是**唯一的上传入口**，所以末尾那行专门写明这件事。 -->
+<div class="navstrip"><div class="navstrip-in">
+<a class="navback" href="../web/index.html">← 返回导航页</a>
+<span class="navsep"></span>
+<a class="navitem" href="index.html">① 配色<span class="sub">theme.json</span></a>
+<a class="navitem on" href="image-editor.html">② 图片<span class="sub">image.bin</span></a>
+<a class="navitem" href="../../preview/preview.html">③ 看帧</a>
+<a class="navitem" href="../../preview/preview-28c.html">④ 圆屏（2.8C）</a>
+<span class="navhint">要传图片素材 ⇒ <a href="image-editor.html">② 图片页</a>（就是本页）</span>
+</div></div>
 <header>
   <h1>206Dash 图片编辑器</h1>
   <span class="hint">拖图进来 → 选用途 → 导出 image.bin → 刷到 image 分区（固件不用重编译）</span>
@@ -1307,7 +1342,8 @@ function drawReadout(ctx, W, which, sc, st) {
 }
 
 // 预览哪一屏:480×480 里按用途贴图
-//   背景 → 弧线 → 表情（左右屏各取自己那一套,缺图按降级链退）
+//   背景 → 表情 → 弧线 → 读数（层序与固件逐层一致：**弧永远在表情之上**、
+//   读数最高；左右屏各取自己那一套,缺图按降级链退）
 // 注意:**没有"开机画面"预览** —— 开机画面是程序化扫表动画(boot_anim.cpp),
 // 不依赖任何图片资源,所以这里没必要预演。
 function drawScreen(cv, which, stage, faceKeyOverride) {
@@ -1321,12 +1357,27 @@ function drawScreen(cv, which, stage, faceKeyOverride) {
   // 放在 if 里的话"关掉弧线预览"会把读数一起弄没,而且 sc 出了块就看不见了)
   const sc = gTheme.screens[which] || ARC_FALLBACK.screens[which];
 
-  // 1. 背景图（铺在弧线下面；两屏共用一张）
+  // 1. 背景图（最底层；两屏共用一张）
   const bgItem = pick(ImageBlob.ROLE.Background);
   if (bgItem) blitCentered(ctx, bgItem, cx, cy, cv.width, cv.height);
 
-  // 2. 弧线（进度按当前阶段算:转速看转速、左屏内弧看水温、右屏看车速）
+  // 2. 表情图（在弧**下面**）
+  // ★★ 层序 2026-09-24 改口径：**表盘弧永远在最上层**（车主定稿）。
+  //    固件那一侧的层序由创建顺序决定，现在是
+  //      背景图 → 表情(程序化+图片) → 弧 → 灯 → 读数
+  //    （见 src/dash_ui.cpp 的「图层顺序」那一段）。这里必须与它逐层一致，
+  //    否则"预览里弧压在脸上"与真机相反，这一页就不再是把关人。
+  //    ★ 代价（设计如此，不是 bug）：表情**图片**很大时会伸进弧带，
+  //      而弧画在它上面 ⇒ 那一圈被弧裁掉。尺寸上限（480 档 320）**不放宽**。
+  // ★ **每屏各取各的状态**:左屏看 stage.left、右屏看 stage.right ——
+  //   这就是"每屏一套独立表情"在预览里的体现。
+  const faceKey = faceKeyOverride || FaceStages.faceOf(stage, which);
+  const r = pickFaceResolved(which, faceKey);
+  if (r.item) blitCentered(ctx, r.item, cx, cy, cv.width, cv.height);
+
+  // 3. 弧线（进度按当前阶段算:转速看转速、左屏内弧看水温、右屏看车速）
   //    颜色/半径/角度就是**当前主题**里的那一份(本页可改、可导出),与真车一致
+  //    ★ 画在表情**之后** ⇒ 弧压住表情（与固件同一层序）。
   if (document.getElementById("show-arcs").checked) {
     const count = sc.arc_count === undefined ? sc.arcs.length : sc.arc_count;
     for (let i = 0; i < count && i < sc.arcs.length; i++) {
@@ -1341,19 +1392,11 @@ function drawScreen(cv, which, stage, faceKeyOverride) {
     }
   }
 
-  // 3. 读数文字(弧之上、表情之下 —— 与固件的创建顺序一致:
-  //    读数标签在弧**之后**建,而表情图是最上层)
+  // 4. 读数文字（**最高层** —— 固件里读数标签是最后一个建的）
   //    ★ 这一步是这次才加的:以前预览里**根本不画读数**,
   //      于是"换了一张白底图,字看不见"在页面上完全看不出来 ——
   //      而这正是用户要调读数颜色的理由。"预览就是这里的把关人"靠的就是它。
   drawReadout(ctx, cv.width, which, sc, stage);
-
-  // 4. 表情图（最上层）
-  // ★ **每屏各取各的状态**:左屏看 stage.left、右屏看 stage.right ——
-  //   这就是"每屏一套独立表情"在预览里的体现。
-  const faceKey = faceKeyOverride || FaceStages.faceOf(stage, which);
-  const r = pickFaceResolved(which, faceKey);
-  if (r.item) blitCentered(ctx, r.item, cx, cy, cv.width, cv.height);
 }
 
 // ------------------------------------------------------------
