@@ -1229,3 +1229,54 @@ buzzer: 自检任务结束(要再听一遍:复位/重新上电一次即可;若�
    出事后**没法一眼归因** —— 这是本轮真正的代价，也是上面第 1/2 条要固化下来的原因。
 5. 任何**会写共享外设**的自检，都要有一条**一键恢复**的路（本轮：`pio run -e esp32s3-rgb
    -t upload --upload-port COM6` 用默认固件覆盖 + 复位 ⇒ 面板重跑初始化）。
+
+---
+
+## 14. 2026-09-24 构建环境：这台机器上的**四个 PlatformIO core**（"怎么才能编出真目标"）
+
+**先看症状**（两条都是环境问题，**不是**仓库回归 ✗）：
+
+- `SSL: CERTIFICATE_VERIFY_FAILED`，URL 是
+  `…/pioarduino/platform-espressif32/releases/download/55.03.39/platform-espressif32.zip`
+  ⇒ 那个 core 里**没装** pioarduino 平台，PlatformIO 去 github 拿 —— 而本机对 `github.com` 的
+  DNS/SSL 是坏的（见 `PINOUT`/同步那几节的同一条已知问题）。
+- `Failed to install Python dependencies into penv` / `uv installation via pip failed with exit code 106`
+  ⇒ 那个 core 里有一个**残缺的 `penv`**，PlatformIO 于是想"就地重装依赖"，而重装要联网。
+
+**实测的四个 core 分工**（2026-09-24 逐个 `platforms/` 列表 + `platform.json` 版本）：
+
+| core | `platforms/` 里有什么 | 能不能用 |
+|---|---|---|
+| `C:\.platformio` | `espressif32` = **55.03.39**（pioarduino）、`espressif32@7.1.3`、`native` | 平台与包**都在这里** ✓，但 `penv` 残缺 ⇒ **直接用会触发联网重装** ✗ |
+| `C:\Users\Public\206dash\.pio-core` | `espressif32` = 7.1.3、`native` | 没有 pioarduino 平台 ✗；**没有 `penv`** ⇒ 用当前解释器 ✓（native 回归一直用它 ✓） |
+| `C:\Users\张九思\206Dash\.pio-core` | `native` | 只够 native 回归 ✓ |
+| `C:\Users\张九思\.platformio` | （没有 `platforms/`） | 空壳 ✗ |
+
+**可用做法：用 junction 拼一个"只读组合 core"** —— **不改任何既有 core 的一个字节** ✓：
+
+```powershell
+$core='C:\206dash-scratch\pio-core-mix'
+New-Item -ItemType Directory -Force "$core\platforms" | Out-Null
+New-Item -ItemType Junction -Path "$core\platforms\espressif32"       -Target 'C:\.platformio\platforms\espressif32'       | Out-Null
+New-Item -ItemType Junction -Path "$core\platforms\espressif32@7.1.3" -Target 'C:\.platformio\platforms\espressif32@7.1.3' | Out-Null
+New-Item -ItemType Junction -Path "$core\platforms\native"            -Target 'C:\Users\Public\206dash\.pio-core\platforms\native' | Out-Null
+New-Item -ItemType Junction -Path "$core\packages"                    -Target 'C:\.platformio\packages'                    | Out-Null
+# ★ 故意**不**挂 penv:挂了就又变成"就地重装依赖" ⇒ 用当前解释器才对
+```
+
+```powershell
+$env:PLATFORMIO_CORE_DIR='C:\206dash-scratch\pio-core-mix'
+$env:PYTHONPATH='C:\Users\张九思\206Dash\.pio-pylibs'   # ★ `platformio` 这个包在这里(机器上的 python 里没有它)
+$env:PYTHONUTF8='1'; $env:PYTHONIOENCODING='utf-8'
+cd C:\206dash-scratch\Neru-sys                        # HEAD 的 ASCII 副本
+python -m platformio run -e esp32s3-rgb
+```
+
+**实测数字**（2026-09-24，`Neru-sys` = 提交 `ca08467` 的 ASCII 副本，203 s）：`SUCCESS`、
+**RAM 38.3% / 125,416 B**、**Flash 86.0% / 901,699 B**（Flash 还剩 14% ✓）。
+
+**两条判据纪律**：
+
+1. PlatformIO 在这台机器上**成功也返回非 0 退出码** ⇒ **看 `SUCCESS` 行，不看退出码**
+   （`robocopy` 的 1/3 同理：1 和 3 都是成功 ✓）。
+2. 忘了 `PYTHONPATH` 会报 `No module named platformio` —— **不是**仓库问题 ✗。
