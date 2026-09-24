@@ -749,13 +749,19 @@ diag: geom box=416x416 at 32,32 title=384x56 at 58,50 body=368x320 at 58,114 fon
 |---|---|---|---|
 | **1 短哔** | `Short` | 1 × `Short`（默认 120 ms） | 「数据不可信」那一声轻提示（`kTrustBeepMs = 120 ms`） |
 | **2 短哔** | —— | —— | ★ **还没有调用方**：词表先留着（有源蜂鸣器只有"几次"这一个自由度，两短哔是自然的下一档）；要加的时候**只改 `alerts` 的模式映射**，驱动不用动 |
-| **3 短哔** | `Triple` / `Urgent` / **`Long`（降级）** | 3 ~ 4 × ≤300 ms，中间隔 80 ms | 红区（`Triple`=3 声）/ 超速（`Urgent`=4 声）/ 门（`Long` ⇒ 降级 3 声） |
+| **3 短哔** | `Triple` / **`Long`（降级）** | 3 × ≤300 ms，中间隔 80 ms | 红区（`Triple` = 3 声）/ 门（`Long` ⇒ 降级 3 声） |
+| **4 短哔** ★ | `Urgent` | 4 × ≤300 ms，中间隔 80 ms | 超速（`Urgent` = **4 声** —— `lib/dashcore/buzzer_exio.cpp` 的 `pulsesFor()` 是唯一事实来源） |
 | **长鸣** ✗ | `Long`（**本意**） | ★ **禁止** —— 在真机上被降级成 **3 短哔** | 无（机制 B 排除前不恢复） |
 
 * ★ **为什么 `Urgent` 是 4 声、不是"更响"**：音量不可调、频率不可调 ⇒ "更急"只能靠
-  **更多声**。而 `Urgent`（4 声）与 `Triple`/`Long`（都是 3 声）在这块板上
-  **听起来一样** —— 这是有源蜂鸣器的自由度决定的**已知代价**，不是 bug。
-  要区分它们就得换硬件（飞线到一个能走 LEDC 的普通 GPIO），不在本轮范围。
+  **更多声**。而 `Urgent`（**4** 声）与 `Triple`/`Long`（都是 **3** 声）在这块板上
+  **只差一声** —— 声数就是全部的自由度，所以两者的区分度天然很弱。
+  这是有源蜂鸣器的自由度决定的**已知代价**，不是 bug。
+  要真正区分它们就得换硬件（飞线到一个能走 LEDC 的普通 GPIO），不在本轮范围。
+  ★ **2026-09-24 更正**：本表原先把 `Urgent` 与 `Triple`/`Long` 并成一行"**3** 短哔"、
+  并写成"听起来一样" —— 那是**文档错**：`pulsesFor(BeepPattern::Urgent)` 一直是
+  **4 声**（`lib/dashcore/buzzer_exio.cpp`，native 用例 `test_buzzer_exio.cpp` 的
+  `pulse_counts` 用 `ASSERT_EQUAL_UINT8(4, …)` 钉着）。这里按**代码**对齐。
 * ★ **禁止长鸣的理由**：见第 2 条（机制 B 未排除）。**单次哔 ≤ 300 ms** 是硬上限，
   在 `lib/dashcore/buzzer_exio.h` 的 `kMaxPulseMs` 里，并且有
   `static_assert(kTrustBeepMs <= 300u)`（`system_status.h`）与 native 用例
