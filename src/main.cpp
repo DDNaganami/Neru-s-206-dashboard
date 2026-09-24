@@ -247,21 +247,35 @@ static void boot_note() {
     g_prefs.putUInt(kPrefsBootKey, n);
     g_prefs.end();
   }
-  // ★ 芯片温度一起报（**车上特有的风险**里那一条"温度"）：它就是片上温度传感器
-  //   那个读数，±10°C 级别的粗值，只够看"热不热"。车上仪表台夏天暴晒 + 屏背光
-  //   自发热，而温度是面板掉状态/液晶变慢的一条常见诱因 ⇒ 有一个随手的读数，
-  //   比事后争论"当时到底多热"强。★ 它**没有**精度承诺（要准确的舱温得另加传感器）。
-  const float tc = temperatureRead();
+  // ★★ 2026-09-24 深夜**撤回**：这里原来还有一项 `tc=%.1fC`（片上温度）。
+  //   它被砍掉的理由是**代价与收益不成比例**（不是"没用"）：
+  //     · 收益：车上"温度"那条风险（`ARCHITECTURE.md` §3.5.3）多一个随手读数；
+  //     · 代价：实测 **+6,080 B flash** —— 本构建这一版 **arduino-esp32 3.3.9** 的
+  //       `temperatureRead()`（`cores/esp32/esp32-hal-misc.c`）在 **S3** 上走的是
+  //       `#elif SOC_TEMP_SENSOR_SUPPORTED` 那一支，也就是 **IDF 的
+  //       `temperature_sensor` 驱动**（`temperature_sensor_install/enable/get_celsius`），
+  //       不是旧 ESP32 那条"读一个 ROM 函数"的免费路径 ⇒ 整个驱动被链进来。
+  //       ★ "换成 Arduino 的 `temperatureRead()` 会不会便宜"这条**已经试过**：
+  //         这里用的**就是**它 ⇒ 没得再省。
+  //     · 而且 **片上温度 ≠ 环境温度** ✗（那是芯片自己的**结温**，还会被自己的功耗抬起来）
+  //       —— 我们真正要问的那个问题是"**车上那个温度传感器的读数**"，
+  //       那属于 VAN 那一单，不归这里。
+  //   ⇒ 一行日志换 6 KB flash 不值当，砍掉。
+  //
+  //   ★★ **想加回来怎么做**（照这个顺序，代价已知 ≈6 KB）：
+  //     ① 这里加回 `const float tc = temperatureRead();`
+  //     ② 格式串加回 `tc=%.1fC`，参数加 `(double)tc`；
+  //     ③ 重新量一次 flash（`pio run -e esp32s3-rgb` 的 `Flash:` 行）确认代价仍是 ~6 KB；
+  //     ④ 想清楚要它回答的是什么问题 —— 若是"舱内温度"，**应该从 VAN 取**，不是加这个。
   // ★ 一行打完（`dash_logf` 一行上限 320 字节，中文一个字 3 字节 —— 这行是 ASCII）。
   //   `raw=` 是枚举的数值：万一这一版 IDF 的名字与这里对不上，原始值还能查表。
   //   `nvs=` 说明次数到底有没有存下来（NVS 坏了就报 `-`，而不是假装 0 次）。
-  dash_logf("boot: reason=%s n=%lu%s (raw=%d) up=%ums tc=%.1fC\n",
+  dash_logf("boot: reason=%s n=%lu%s (raw=%d) up=%ums\n",
             resetReasonName(r),
             (unsigned long)(have ? n : 0u),
             have ? "" : "(nvs-)",
             (int)r,
-            (unsigned)millis(),
-            (double)tc);
+            (unsigned)millis());
 }
 
 #else
@@ -852,8 +866,10 @@ static void reinit_from_serial() {
 
 // ★★ 临时故障注入的串口入口（`i`）—— **默认构建里恒为 false**。
 //
-//   用途（本单最有价值的一步）：在**真机**上验"守护能不能在约 2 秒内发现
-//   扩展器输出寄存器被改错一位、按影子修回来、计数 +1、屏自己回来"。
+//   用途（两个上板判据共用这一条路径）：
+//     ② "最坏自愈窗 2s → ~200ms"：**注入一次** ⇒ 看守护多快发现；
+//     ③ "自动重初始化"：**连续注入若干次** ⇒ 让守护"连续 3 次修不好"⇒
+//        触发 `panelguard: anomaly x3 -> auto reinit`（那是唯一没上板验过的路径）。
 //   ★ 打开方式：在 `[env:esp32s3-rgb]` 的 build_flags 里**临时**加
 //     `-DPANEL_GUARD_FAULT_INJECT=1`（就是驱动里那个同一个宏），测完删掉。
 //   ★ 默认构建（没有那个 `-D`）：本函数**恒返回 false**
@@ -863,14 +879,58 @@ static void reinit_from_serial() {
 //   ★ 注入什么：把 `g_exio_out` 的**对位写反**（只写那一位到真寄存器，
 //     影子故意不动）⇒ "影子 vs 回读"立刻不一致，正是黑屏那条最可能的路径。
 //     位的含义：bit0=LCD_RST(EXIO1) / bit2=LCD_CS(EXIO3) / bit7=蜂鸣器(EXIO8)。
+//
+//   ★★★ 为什么要"按守护的节拍"注入（这一段是本单踩出来的关键，别改回去）：
+//     守护的修复动作是"**按影子重写**"⇒ 注入之后**只要它检查一次就修好了**。
+//     所以"连续 3 次异常"**不可能**靠"随便连点几下 `i`"造出来：第二次注入如果落在
+//     "上一次检查之后、下一次检查之前"，那一次检查读到的就是**干净的**（影子已经被
+//     写回去了）⇒ `streak_` 被清零 ⇒ 永远攒不够 3 次。
+//     ⇒ 注入必须**正好落在守护下一次检查之前**（让它一读就撞上坏值）。
+//     为此这里按"下一次检查的时刻"排注入：每 `kInjectGapMs` 一次、每次都在
+//     `nextCheckMs() - kInjectLeadMs` 那一刻写坏，共 `kInjectTimes` 次。
+//   ★ 安全：**只做一轮**、次数写死（不许循环折腾）；任何时刻屏都会在 ~1 个检查周期
+//     内被修回来（最坏 200ms），并且"久不恢复就烧回"的镜像一直在手边。
+#if defined(PANEL_GUARD_FAULT_INJECT) && (PANEL_GUARD_FAULT_INJECT == 1)
+static const uint8_t  kInjectTimes    = 4u;    // 一共注入几次（4 次 ⇒ 必然攒够 3 次连续异常）
+static const uint32_t kInjectGapMs    = 300u;  // 两次注入之间至少隔多久（车主看着屏时的观感）
+static const uint32_t kInjectLeadMs   = 40u;   // 提前多久写坏（必须 > 一次 I2C 写事务）
+static uint8_t  g_inject_left = 0;             // 还剩几次
+static uint32_t g_inject_next_ms = 0;          // 下一次注入的时刻
+#endif
+
 static bool fault_inject_from_serial() {
 #if defined(PANEL_GUARD_FAULT_INJECT) && (PANEL_GUARD_FAULT_INJECT == 1)
-  // ★ 一次只注入**一位**：RST 那一位（EXIO1 = bit0）—— 这一位被打错就是一次
-  //   面板复位（而面板复位不会自己回来），正是要复现的那条路径。
-  dash_panel_guard_fault_inject(0u);
+  // ★ 一次**开启**一串：`i` 进来之后由 `fault_inject_poll()` 按守护的节拍打完
+  //   （它**不阻塞**这里 —— 串口路径上不许等）。
+  //   位固定取 bit0（EXIO1 = LCD_RST）：这一位被打错就是一次面板复位，
+  //   正是要复现的那条路径。
+  g_inject_left = kInjectTimes;
+  g_inject_next_ms = millis();      // 第一次立刻（下一轮 poll 就写）
+  dash_logf("inject: armed x%u gap=%ums lead=%ums bit0(LCD_RST)\n",
+            (unsigned)kInjectTimes, (unsigned)kInjectGapMs, (unsigned)kInjectLeadMs);
   return true;
 #else
   return false;
+#endif
+}
+
+// 每轮调一次：到点就把"注入 → 守护检查"这一步走完（**不阻塞**）。
+// ★ 默认构建里这个函数体是空的（`#if` 那一支不存在）⇒ 主循环一个指令都没多。
+static void fault_inject_poll(uint32_t now) {
+#if defined(PANEL_GUARD_FAULT_INJECT) && (PANEL_GUARD_FAULT_INJECT == 1)
+  if (g_inject_left == 0u) return;
+  // 目标时刻 = **守护下一次检查之前** `kInjectLeadMs`（它一读就撞上坏值）。
+  const uint32_t target = dash_panel_guard_next_check_ms();
+  const bool on_target =
+      (int32_t)(now - target) >= -(int32_t)kInjectLeadMs &&
+      (int32_t)(now - target) < 0;
+  if (!on_target) return;
+  if ((int32_t)(now - g_inject_next_ms) < 0) return;   // 两次之间至少隔 kInjectGapMs
+  --g_inject_left;
+  g_inject_next_ms = now + kInjectGapMs;
+  dash_panel_guard_fault_inject(0u);
+#else
+  (void)now;
 #endif
 }
 
@@ -1525,6 +1585,12 @@ void loop() {
 #endif
 
   dash_ui_tick(now);   // LVGL 心跳,每个循环都跑
+#if defined(PANEL_GUARD_FAULT_INJECT) && (PANEL_GUARD_FAULT_INJECT == 1)
+  // ★ 临时注入路径（默认构建里**这一行不存在**）：按守护的节拍把故障写进去。
+  //   放在 `dash_display_poll()` **之前**：那一拍里守护可能会做检查 ⇒
+  //   先写坏、再让它读，才是"一次注入 = 一次异常"。
+  fault_inject_poll(now);
+#endif
   dash_display_poll(); // 设备上为空;pcpreview 落 BMP 帧
   BOOT_STAGE(8);
 
