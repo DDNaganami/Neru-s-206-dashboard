@@ -51,11 +51,17 @@ void PanelGuard::begin(uint32_t now_ms) {
   //   那时的扩展器/背光状态本来就在变，插一次检查只会得到假警报。
   next_ms_ = deadline(now_ms, kPanelGuardPeriodMs);
   streak_ = 0;
+  clean_ = 0;
+  in_fast_ = false;
   req_ = false;
 }
 
 void PanelGuard::noteReinit(uint32_t now_ms) {
   streak_ = 0;
+  // ★ 重初始化刚刚把面板/扩展器重新交代过一遍 ⇒ 退回稳态周期等它（2000ms），
+  //   并且**不**认为"已经连续干净"（那要等真的读到几次一致才算）。
+  clean_ = 0;
+  in_fast_ = false;
   req_ = false;                       // 已经做过了，请求作废
   last_auto_ms_ = now_ms;             // 起算冷却期
   next_ms_ = deadline(now_ms, kPanelGuardPeriodMs);
@@ -70,15 +76,29 @@ bool PanelGuard::takeReinitRequest() {
 void PanelGuard::tick(uint32_t now_ms) {
   if (!started_) return;                       // 没 begin 过 ⇒ 什么都不做
   if (!due(now_ms, next_ms_)) return;          // 没到点 ⇒ 零成本（几次整数比较）
-  next_ms_ = deadline(now_ms, kPanelGuardPeriodMs);
-  doCheck(now_ms);
+  // ★★ 自适应周期（2026-09-24 深夜，"把最坏自愈窗从 2 秒压到 ~200ms"）：
+  //   判据只有下面这一行 —— 收口在**一处**，别在别处再写一遍：
+  //     "还没稳"（`in_fast_`，由 `doCheck()` 按 `stable_` 更新）⇒ 下一拍 200ms 之后；
+  //     "稳了" ⇒ 下一拍回到 2000ms 稳态。
+  //   ★ 为什么不按"这一拍 bad 不 bad"取：发现异常 ⇒ 按影子重写 ⇒ **同一拍里**
+  //     读回来的影子已经被写回去了 ⇒ **修复那一拍往往不是 bad**，按 bad 取就会在
+  //     "刚被改过一次"的下一秒退回 2000ms —— 而那正是最该多盯两眼的时候。
+  //   ★ 为什么"稳了"那一拍仍按 200ms 排下一拍：见 `doCheck()` 里 ③ 那段账
+  //     （要让"连续 3 次复检"真的是 3 个 200ms 窗口）。
+  const bool bad = doCheck(now_ms);
+  (void)bad;   // 间隔只看 `in_fast_`（`doCheck()` 已按上面那三条判据更新好它）
+  next_ms_ = deadline(now_ms, in_fast_ ? kPanelGuardFastMs : kPanelGuardPeriodMs);
 }
 
-void PanelGuard::doCheck(uint32_t now_ms) {
+bool PanelGuard::doCheck(uint32_t now_ms) {
   ++checks_;
+  last_check_ms_ = now_ms;
 
   // ---- ① 扩展器输出寄存器：回读 vs 影子 ----
-  bool exio_bad = false;
+  bool bad = false;      // "这一拍读到了坏值"（**不含**读失败 —— 见下）
+  bool murky = false;    // "这一拍状态不明"（读失败）。★ 与 bad 分开：它值得多盯两眼
+                         //   （进快速复检），但**不许**算进"连续异常 ⇒ 自动重初始化"
+                         //   —— 总线一时不应答就去反复重跑 41 步初始化是错的。
   if (read_exio_ != nullptr) {
     uint8_t rb = 0;
     const bool ok = read_exio_(&rb, ctx_);
@@ -89,14 +109,15 @@ void PanelGuard::doCheck(uint32_t now_ms) {
         // ★ 读失败**不算**"不一致"（见 panel_guard_exio_matches 的说明）：
         //   总线无应答与"寄存器真被改了"是两件事，前者重写没有意义。
         ++rd_err_;
+        murky = true;
         if (log_ != nullptr) log_(kPanelGuardLogRdErr, 0u, 0u, ctx_);
       }
     } else {
-      exio_bad = true;
+      bad = true;
       ++rd_ok_;                   // 读本身是成功的（拿到了字节）
       ++anomalies_;
       // ★★ 修复动作 = **按影子重写**（不是读-改-写、更不是接受读回来的值）。
-      //    这一条正是"面板复位位（LCD_RST/LCD_CS）被意外改写"那条黑屏路径的修复。
+      //    这一条正是"面板复位位（LCD_RST/LED_CS）被意外改写"那条黑屏路径的修复。
       if (write_exio_ != nullptr) write_exio_(shadow_, ctx_);
       ++fix_exio_;
       if (log_ != nullptr) log_(kPanelGuardLogExio, (uint32_t)rb, (uint32_t)shadow_, ctx_);
@@ -108,7 +129,7 @@ void PanelGuard::doCheck(uint32_t now_ms) {
   if (read_duty_ != nullptr) {
     const uint32_t cur = read_duty_(ctx_);
     if (!panel_guard_backlight_matches(cur, duty_)) {
-      exio_bad = true;            // "这一拍有异常"（连续计数的口径见下）
+      bad = true;                 // 背光被改也是"坏值"（要修、也要计数）
       ++anomalies_;
       if (write_duty_ != nullptr) write_duty_(duty_, ctx_);
       ++fix_bl_;
@@ -117,11 +138,32 @@ void PanelGuard::doCheck(uint32_t now_ms) {
   }
 
   // ---- ③ 连续异常 ⇒ 请求自动重初始化一次（**不是**周期性重初始化）----
-  if (exio_bad) {
+  //   ★ 只有 `bad`（读到坏值）进这个计数；`murky`（读失败）**不进** ——
+  //     它只让下一拍提前到 200ms（"状态不明，多看两眼"）。
+  if (bad) {
     if (streak_ < 0xFFu) ++streak_;
+    clean_ = 0;
   } else {
     streak_ = 0;
+    if (clean_ < 0xFFu) ++clean_;
   }
+  // ★★ 快速复检的**进出判据只有这一处**（`tick()` 照它取下一拍的间隔）。
+  //   这一拍读到坏值（`bad`）**或**状态不明（`murky`，读失败）⇒ 立刻进快速复检；
+  //   **修好之后连续 `kPanelGuardCleanToRelax` 次复检都干净** ⇒ 下一拍起回 2000ms。
+  //   ★★ 三个坑都在这儿（前两个各踩过一次，都记着）：
+  //     ① `bad ||` 一个字符都不能少 —— 只看 `clean_` 的话，发现异常之后的那**一次
+  //        干净复检**会把计数加到自己身上（先 ++ 再比），于是"第 1 次复检"就被判成
+  //        "稳了"；实测那次的间隔是 `2000 → 2200 → 4400`，中间两次复检全丢了。
+  //     ② 比较必须是 `>`（不是 `>=`）：`clean_` 是**先按这一拍更新、再比**，
+  //        而"发现异常并按影子修好"的那一拍**自己也**读到干净 ⇒ 是第 1 次干净。
+  //        ⇒ `clean_ == kPanelGuardCleanToRelax` 恰好就是**最后一次**复检那一拍，
+  //          此时还不能退回稳态（不然"3 次复检"只剩下 2 个 200ms 窗口）。
+  //        账（正是判据要的那条）：t=2000 发现并修好 → **2200 / 2400 两次复检**（都干净，
+  //        到这一拍 clean_=3 ⇒ 稳）→ **2600 起**回 2000ms 周期（`next=4600`）。
+  //        ⇒ 从注入到稳态，中间是 **3 个 200ms 的窗口**，最坏发现窗就是一个窗口。
+  //     ③ `in_fast_` 与间隔方向**不能写反**：true = **还在**快速复检（间隔取 200ms）。
+  in_fast_ = bad || murky || (clean_ <= kPanelGuardCleanToRelax);
+
   if (streak_ >= kPanelGuardAnomalyStreak) {
     // 冷却期：刚自动重初始化过就不再赌（否则会变成"周期性重跑 41 步"⇒ 屏定期闪）。
     const bool cooled =
@@ -136,4 +178,5 @@ void PanelGuard::doCheck(uint32_t now_ms) {
       if (log_ != nullptr) log_(kPanelGuardLogAuto, (uint32_t)streak, 0u, ctx_);
     }
   }
+  return bad;
 }

@@ -42,7 +42,26 @@
 // ============================================================
 
 // ---- 默认周期（ms）。★ 判据"守护在约 2 秒内发现"就是这一个数 ----
+//   ★★ 2026-09-24 深夜补：**稳态 2000ms，但发现异常之后自动转 200ms 的快速复检**
+//     （见 `kPanelGuardFastMs`）—— 稳态低频（不占时间线、不刷日志），
+//     而"已经出事了"的那几百毫秒里高频（**把最坏自愈窗从 2 秒压到 ~200ms**）。
 static const uint32_t kPanelGuardPeriodMs = 2000u;
+
+// ---- 快速复检周期（ms）----
+// ★★ 为什么要有它（这一条直接关系"常亮"）：只按 2000ms 稳态查的话，
+//   一次"位被改写"最坏要等满一个周期才被发现 ⇒ **屏可能黑 2 秒**。仪表盘上两秒很难看。
+//   ⇒ 一旦**这一拍发现异常**（不一致，或回读失败），下一次检查提前到 **200ms** 之后；
+//   此后只要**连续 3 次**（`kPanelGuardCleanToRelax`）读到"与影子一致"，就退回 2000ms 稳态。
+//   ★ 代价可忽略：200ms 一次只在"刚出过异常"的那一小段里发生（几百毫秒），
+//     而且每次仍然只是一次 I2C 读（~400µs）；
+//   ★ 它**不是**"更频繁地重写"：修复动作仍然只在**真的不一致**时发生
+//     （一致 ⇒ 一次都不写，这条纪律没变）。
+static const uint32_t kPanelGuardFastMs = 200u;
+
+// ---- 从"快速复检"退回稳态，需要连续几次**干净**的检查 ----
+// ★ 为什么不是 1 次：一次"读到影子"可能只是"写下去了、但那一拍还没生效"。
+//   连续 3 次（= 600ms）都干净 ⇒ 才认为真的稳了（期间仍然每 200ms 盯着）。
+static const uint8_t  kPanelGuardCleanToRelax = 3u;
 
 // ---- 连续多少次检查都异常 ⇒ 请求自动重初始化一次 ----
 // ★ 为什么是"连续"，以及为什么**不是周期性重初始化**：
@@ -55,7 +74,9 @@ static const uint32_t kPanelGuardAutoReinitCooldownMs = 60000u;
 // EXIO 输出寄存器的**纯判据**（注入回读的返回值与影子）。
 // ★ `read_ok == false` ⇒ 返回 false：读失败**不算**"不一致"
 //   —— 总线一时无应答与"寄存器真的被改了"是两件事，前者重写一遍没有意义
-//   （而且会在总线坏了的时候每 2 秒写一次）。读失败单独计数（`rd_err`）。
+//   （而且会在总线坏了的时候每 2 秒写一次）。读失败单独计数（`rd_err`），
+//   但它**同样会让守护转入快速复检**（见 `kPanelGuardFastMs`）：读不到也是"状态不明"，
+//   而"状态不明"在面板这件事上值得多看两眼。
 inline bool panel_guard_exio_matches(bool read_ok, uint8_t readback, uint8_t shadow) {
   if (!read_ok) return true;
   return readback == shadow;
@@ -120,6 +141,9 @@ class PanelGuard {
   // ★ 非阻塞、**不做 I2C 以外的任何事**；没到点就是几次整数比较。
   // ★ 到点那一次做三件事：① 读回输出寄存器并按影子对账（不一致 ⇒ 按影子重写）；
   //   ② 读回背光占空比（不一致 ⇒ 重设）；③ 判"连续异常够不够多 ⇒ 请求重初始化"。
+  // ★★ 周期是**自适应**的：稳态 `kPanelGuardPeriodMs`(2000ms)；这一拍**出了异常**
+  //   （不一致 / 回读失败）⇒ 下一拍提前到 `kPanelGuardFastMs`(200ms)；
+  //   连续 `kPanelGuardCleanToRelax`(3) 次干净 ⇒ 退回 2000ms。
   void tick(uint32_t now_ms);
 
   // 显示驱动"刚刚重初始化完"时告诉守护一声。
@@ -138,9 +162,26 @@ class PanelGuard {
   uint32_t reinitCount() const { return reinit_count_; }  // 自动重初始化的次数
   uint32_t anomalies() const { return anomalies_; }   // 不一致的**检查次数**（含已修的）
   uint8_t  streak()    const { return streak_; }      // 当前连续异常次数
+  // 当前**连续干净**的检查次数（够 `kPanelGuardCleanToRelax + 1` 才"稳"——见 .cpp 里那段账）。
+  // ★ 口径（别读歪）：它是在**这一拍判完 bad 不 bad 之后**加的，而"发现异常并按影子修好"
+  //   的那一拍**自己也**读到干净 ⇒ 它是第 1 次干净；`kPanelGuardCleanToRelax` 次**复检**
+  //   都干净之后，`clean_` 才到 `kPanelGuardCleanToRelax + 1`。
+  uint8_t  cleanRun()  const { return clean_; }
+  // 这一拍是不是"快速复检"档（= 上一次检查出过异常，还没连续 3 次干净）。
+  // ★ 这条是**判据**（用例与诊断都用它），不是内部细节。
+  bool     fastMode()  const { return in_fast_; }
   uint8_t  shadow()    const { return shadow_; }      // 当前要求的扩展器输出
   uint32_t duty()      const { return duty_; }        // 当前要求的背光占空比
   uint32_t checks()    const { return checks_; }      // 到点后真正做过的检查次数
+  // 最近一次检查的**时刻**（`tick(now)` 传进来的那个 now；还没检查过时是 0）。
+  // ★ 加它是为了让"**两次检查之间隔了多久**"在真机上**可测**：上板验证"最坏自愈窗
+  //   压到 ~200ms"这条判据时，日志里要能看出"检查 → 200ms 后又检查"这件事，
+  //   而不是只能从"发现耗时"倒推。
+  uint32_t lastCheckMs() const { return last_check_ms_; }
+  // 下一次检查的**到期时刻**（`tick()` 排的那个点）。
+  // ★ 这是"当前处在 2000ms 稳态还是 200ms 快速复检"的**直接读数**：
+  //   `nextCheckMs() - lastCheckMs()` 就是这一拍的间隔。
+  uint32_t nextCheckMs() const { return next_ms_; }
 
   // 这一拍有没有"守护请求重初始化"？★ 读一次就清（边沿语义）：
   //   主循环看到 true ⇒ 在**安全时刻**（LVGL 那一拍之外）执行重初始化。
@@ -150,7 +191,11 @@ class PanelGuard {
   bool     takeReinitRequest();
 
  private:
-  void doCheck(uint32_t now_ms);
+  // 做一次检查，返回"这一拍有没有异常"（不一致 / 读失败 / 背光不符）。
+  // ★ 返回值只用于**计数类**判断（连续异常 ⇒ 自动重初始化）；
+  //   "下一拍多远"看的是 `in_fast_` 那个**状态**（见 tick 里那段说明 —— 这个区别踩过坑：
+  //   修复那一拍往往并不 `bad`，因为它读回来的时候影子已经被写回去了）。
+  bool doCheck(uint32_t now_ms);
 
   PanelGuardReadExioFn  read_exio_  = nullptr;
   PanelGuardWriteExioFn write_exio_ = nullptr;
@@ -167,7 +212,10 @@ class PanelGuard {
   bool     started_ = false;
 
   uint8_t  streak_ = 0;         // 连续异常次数
+  uint8_t  clean_  = 0;         // 连续**干净**次数（> kPanelGuardCleanToRelax 才算稳）
+  bool     in_fast_ = false;    // 当前是不是"快速复检"档
   bool     req_ = false;        // 待处理的重初始化请求
+  uint32_t last_check_ms_ = 0;  // 最近一次检查的时刻（诊断/日志用）
 
   uint32_t rd_ok_ = 0, rd_err_ = 0, fix_exio_ = 0, fix_bl_ = 0;
   uint32_t reinit_count_ = 0, anomalies_ = 0, checks_ = 0;
