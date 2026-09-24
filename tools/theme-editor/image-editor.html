@@ -163,6 +163,13 @@
         <label>阶段</label>
         <select id="stage"></select>
       </div>
+      <!-- ★ 阶段说明**有自己的一行**，不写进 #status（2026-09-24 修）。
+           它原来走 say()，#status 全页只有一个，而 updateStageLabel() 是
+           refresh() 的一步 ⇒ 每次刷新都会把刚写进去的"✗ 这张图不能用：…"
+           当场刷掉：上传失败时用户看不到任何理由，只觉得"没反应"。
+           职责分家之后：#status 只讲上传/导出/主题的结果，这里只讲当前阶段。 -->
+      <div class="hint" id="stage-info"
+           style="color:var(--dim);font-size:12px;margin-top:6px;white-space:pre-line"></div>
       <div class="row">
         <label>左屏表情</label>
         <select id="face-left"></select>
@@ -1771,7 +1778,14 @@ function updateStageLabel() {
                FaceStages.stateLabel(side, key) + " —— " + use.text +
                (stageFaceOverride[side] ? "（手动指定，不跟随阶段）" : ""));
   }
-  say(lines.join("\n"));
+  // ★ 写进**自己的元素**，不走 say()（2026-09-24 修）：
+  //   say() 写的是 #status —— 全页**唯一**那个状态区，而 refresh() 会调到这里，
+  //   于是"上传被拒"的理由刚写进 #status 就被这一行刷成阶段说明 ⇒
+  //   用户看到的是"没反应"（这正是车主报的那个症状的第二个成因）。
+  //   现在职责分开：#status 只讲**上传/导出/主题**的结果（成功、拒绝理由、警告），
+  //   阶段说明留在它自己这一行。以后往这里加东西也别再用 say()。
+  const info = document.getElementById("stage-info");
+  if (info) info.textContent = lines.join("\n");
 }
 
 // ------------------------------------------------------------
@@ -1818,8 +1832,16 @@ function addFiles(files) {
     //   拒绝理由一律**人能看懂**（说清"为什么不行"和"该怎么办"），
     //   规则与文案都在 asset-spec.js 的 checkUpload() 里 —— 那一份是唯一权威，
     //   网页、命令行与文档引用同一份（改动不会分叉）。
+    //   ★ 递进去的是**用途名**（"background" 这种），不是编号 ——
+    //     checkUpload() 收的就是名字（见它的签名与文档）。本页内部一律用编号
+    //     （ImageBlob.ROLE.*，与固件/打包器同一套），换算交给 roleIdForNumber()
+    //     ——**不要**在这里另写一张表（会与 asset-spec 分叉）。
+    //     以前这里直接递 role0（数字）⇒ 恒判"不认识的用途：1" ⇒ **任何图片都进不了
+    //     列表**，而且页面上一个字都不打（理由被 refresh() 刷掉了，见 #stage-info 处）。
+    //     （checkUpload 现在两种入参都收，但这一侧仍然该给名字：语义最清楚。）
     const role0 = defaultRoleForNewItem();
-    const chk = AssetSpec.checkUpload(f.name, f.type, role0, curTarget);
+    const roleName0 = roleIdForNumber(role0);
+    const chk = AssetSpec.checkUpload(f.name, f.type, roleName0, curTarget);
     if (!chk.ok) {
       say("✗ 「" + f.name + "」不能用在这个用途上：\n" + chk.errors.join("\n"), "err");
       if (--pending === 0) refresh();
@@ -1879,9 +1901,17 @@ function addFiles(files) {
             (upscaled ? "（有图被放大了，见每张的「原图/输出」）" : ""));
       }
     };
+    // ★ 浏览器**解不开**这张图（手机相册的 .heic、截断/损坏的文件……）时走这里。
+    //   没有这一段的话 pending 永远不归零 ⇒ refresh() 不跑、一个字不打，
+    //   用户看到的就是又一次"没反应"。所以三件事都要做：
+    //     ① 说清**是哪个文件**；② 给人话 + 出路；③ 照常 --pending
+    //   （无论成败，pending 都必须归零 —— 它是"这一批处理完了没有"的唯一计数）。
     img.onerror = () => {
       URL.revokeObjectURL(url);
-      say("「" + f.name + "」打不开，可能不是浏览器认得的图片格式。", "err");
+      say("✗ 「" + f.name + "」浏览器解不开这张图" +
+          (f.type ? "（" + f.type + "）" : "") +
+          "：文件可能损坏，或者是手机相册那种浏览器不认的格式。\n" +
+          "请把它另存为 PNG 或 JPG 再传一次。", "err");
       if (--pending === 0) refresh();
     };
     img.src = url;
@@ -2027,7 +2057,18 @@ buildStageSelects();
 // 否则用固件默认值
 const hadSavedTheme = restoreSavedTheme();
 applyThemeToUi();
-say("就绪。\n" +
+// ★ 开机这一行**必须点名当前目标板**（2026-09-24）：
+//   页面上的画布上限 / 分区大小 / 占用百分比**全是跟着目标板变的**（见 ImageBlob.TARGETS）。
+//   不点名的话，人会拿"最终板(双 2.8C)"的语境去读另一块板的数 ——
+//   以前默认是经典板（1MB / 旧口径）时就是这个坑。
+//    ★ 标签与提示都问 ImageBlob.targetInfo()，**别在页面里写死板名与分区大小**。
+//    ★ 这一行是**纯文本**（say() 用 textContent 写 #status，不渲染 markdown）
+//      ⇒ 说人话就行，别在句子里塞 **加粗**（会原样显示成星号）。
+const tinfo0 = ImageBlob.targetInfo(curTarget);
+say("就绪。当前目标板：" + tinfo0.label + "\n" +
+    "　（image 分区 " + (partBytes() / 1024) + " KB；" +
+    "画布上限、占用百分比都按这块板算。两块 2.8C 屏刷同一份 image.bin，" +
+    "占用按单块板算。要换板在「占用」那一栏改「目标板」。）\n" +
     "1) 加图片  2) 选「用途」（背景 / 表情）  3) 导出 image.bin\n" +
     "左上「仪表配色」可以直接改四条弧的颜色，以及**读数文字**（大数字/单位/水温/进气）的颜色，\n" +
     "改完点「导出 theme.json」刷到 theme 分区。\n" +

@@ -358,9 +358,20 @@ function main() {
   console.log("  占 image 分区 " + pct + "%  (" + res.totalBytes + "/" +
               partBytes + " 字节)");
   if (res.totalBytes > partBytes) {
+    // ★ 建议要按**当前目标板**给,不能按"默认板"给 ——
+    //   这里原来写的是 `args.target === IB.DEFAULT_TARGET ? "(板上如果是 S3 那块,
+    //   加 --target s3…)"`,也就是"你用的是默认板(那时是 classic)才提醒换 S3"。
+    //   2026-09-24 默认板改成 s3(2.8C)之后,这句话会在**已经**是 s3 的时候
+    //   还教人加 `--target s3` —— 指鹿为马。改成:找一个**分区比当前大**的档位
+    //   (有就给,没有就不乱建议),与默认值是哪个板无关。
+    const bigger = Object.keys(IB.TARGETS)
+      .map(id => IB.TARGETS[id])
+      .filter(t => t.partitionBytes > partBytes)
+      .sort((a, b) => b.partitionBytes - a.partitionBytes)[0];
     console.error("✗ 超出分区大小,刷进去会被截断!" +
-                  (args.target === IB.DEFAULT_TARGET
-                    ? "(板上如果是 S3 那块,加 --target s3:它的 image 分区是 8MB)"
+                  (bigger
+                    ? "(板上如果是「" + bigger.label + "」,加 --target " + bigger.id +
+                      ":它的 image 分区是 " + (bigger.partitionBytes / 1024 / 1024) + "MB)"
                     : ""));
     return 3;
   }

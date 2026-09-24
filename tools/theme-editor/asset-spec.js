@@ -431,6 +431,16 @@
   // ------------------------------------------------------------
   // 七、上传前的整份检查（文件级：格式认不认、能不能用在这个角色上）
   //   返回 { ok, errors[], warnings[] } —— errors 非空就不该放进列表。
+  //
+  //   ★ 用途的**两种写法都收**（2026-09-24 修，这是一次真实故障的根因）：
+  //     · **用途名** —— "background" / "face_idle"（本文件、文档、命令行用的就是名字）
+  //     · **用途编号** —— 1 / 3 / 12（`ImageBlob.ROLE.Background` 这种；
+  //       **页面里 addFiles() 拿到的就是数字**）
+  //   以前这里只认名字，而页面递进来的是编号 ⇒ 恒判 "不认识的用途：1"，
+  //   返回的又是 ok:false ⇒ **任何图片都进不了列表**。所以这一层归一化是必须的：
+  //   谁传错都只会拿到一条看得懂的错，不会再静默失效。
+  //   两边那份编号表由 test-asset-spec.js 钉住（"编号 → 用途"必须与
+  //   `ImageBlob.ROLE` 逐个对得上；这条以前**没有人钉过**，正是根因）。
   // ------------------------------------------------------------
   function checkUpload(fileName, mime, roleId, targetId) {
     var res = { ok: true, errors: [], warnings: [], format: null };
@@ -443,10 +453,19 @@
       return res;
     }
     res.format = f.id;
-    var box = slotBox(roleId, targetId);
+    // 编号 → 名字。认不出来的编号**原样**留着，交给下面的 slotBox 报出来
+    // （报错里要显示调用方真正传的那个值，不然没法按提示去查）。
+    var roleKey = roleId;
+    if (typeof roleId === "number") {
+      var byNum = roleByNumber(roleId);
+      roleKey = byNum ? byNum.id : roleId;
+    }
+    var box = slotBox(roleKey, targetId);
     if (!box) {
       res.ok = false;
-      res.errors.push("不认识的用途：" + roleId);
+      res.errors.push("不认识的用途：" + roleId +
+                      "。用途要给**名字**（如 \"background\" / \"face_idle_r\"）" +
+                      "或者给**编号**（如 1 / 3 / 12 —— 那是 `ImageBlob.ROLE` 里的数）。");
       return res;
     }
     if (box.alpha === "required" && f.alpha === "none") {

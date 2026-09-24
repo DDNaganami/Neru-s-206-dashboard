@@ -150,6 +150,51 @@ section("二之二、档位口径：480 = 2.8C（最终板）/ 240 = 历史 Dual
   ok(/2\.8C/.test(IB.FACE_SIZE_TIERS[0].label), "480 分辨率档标签里有 2.8C");
   ok(/历史/.test(IB.FACE_SIZE_TIERS[1].label), "240 分辨率档标签里有「历史」");
 
+  // ---- ★ 2026-09-24 口径变更：**默认目标板 = 2.8C（最终板）= s3** ----
+  //   车主原话："默认就改成 2.8C 最终版吧，而且是双 2.8C"。
+  //   这条必须钉住：默认板决定页面一打开看到的规格、画布上限与分区大小
+  //   （拿经典板的 1MB 口径去做最终板的图，是这一档最容易犯的错）。
+  eq(IB.DEFAULT_TARGET, "s3", "默认目标板是 s3（2.8C 最终板），不是 classic");
+  eq(IB.targetInfo().id, "s3", "不给 target 时 targetInfo() 给的就是 2.8C 那一档");
+  eq(IB.partitionBytesFor(), IB.TARGETS.s3.partitionBytes,
+     "不给 target 时分区分母按 2.8C 算（8MB），不是经典板的 1MB");
+  eq(AS.tierOf().displayRes, 480, "默认档是 480 屏");
+
+  // ---- ★ 双 2.8C 的口径：两块同型号同分辨率的屏 ----
+  //   label 是下拉框里那行字；hint 是选中后紧跟的一行 —— 两处都要说"双"，
+  //   并且要把"刷同一份 image.bin / 占用按单块板算"讲清楚
+  //   （含糊其辞会让人以为预算要按两块相加）。
+  ok(/双\s*2\.8C/.test(IB.TARGETS.s3.label), "s3 的 label 写明**双** 2.8C："
+     + IB.TARGETS.s3.label);
+  ok(/双\s*2\.8C/.test(IB.TARGETS.s3.hint), "s3 的 hint 也写明双 2.8C");
+  ok(/两块/.test(IB.TARGETS.s3.hint), "hint 里点明是**两块**屏");
+  ok(/同型号同分辨率/.test(IB.TARGETS.s3.hint), "hint 里点明两块屏同型号同分辨率");
+  ok(/左屏/.test(IB.TARGETS.s3.hint) && /转速表/.test(IB.TARGETS.s3.hint),
+     "hint 里写清左屏 = 转速表");
+  ok(/右屏/.test(IB.TARGETS.s3.hint) && /速度表/.test(IB.TARGETS.s3.hint),
+     "hint 里写清右屏 = 速度表");
+  ok(/同一份\s*image\.bin/.test(IB.TARGETS.s3.hint),
+     "hint 里写清两块板刷**同一份** image.bin");
+  ok(/单块板/.test(IB.TARGETS.s3.hint),
+     "hint 里写清占用/预算按**单块板**算（不是两块相加）");
+  // 左右屏的区别靠**用途**表达 —— 两屏的表情角色本来就是分开的两组，且数量相同
+  {
+    const left = AS.ROLES.filter(r => r.id === "face_idle" || r.id === "face_cruise" ||
+                                      r.id === "face_sport" || r.id === "face_high" ||
+                                      r.id === "face_redline");
+    const right = AS.ROLES.filter(r => r.id === "face_idle_r" || r.id === "face_city_r" ||
+                                       r.id === "face_cruise_r" || r.id === "face_sport_r" ||
+                                       r.id === "face_overspeed_r");
+    eq(left.length, 5, "左屏(转速表)5 个表情用途");
+    eq(right.length, 5, "右屏(速度表)5 个表情用途");
+    eq(left.filter(r => right.indexOf(r) >= 0).length, 0,
+       "左右屏的用途**不重叠**（两块屏靠用途区分，不是靠「第几块板」）");
+  }
+  // 预算按单块板：2.8C 那一档的整套必须装得进**一个** 8MB 分区
+  ok(AS.budget("s3").fullSetBytes < AS.budget("s3").partitionBytes,
+     "整套素材装得进单块 2.8C 板的 image 分区（" + AS.budget("s3").fullSetBytes +
+     " < " + AS.budget("s3").partitionBytes + "）");
+
   // ---- 物理口径（出处：PURCHASE.md 第六节「Ø 有效区」那一列）----
   eq(AS.ROUND_PANEL.res480.activeAreaMm10, 7013, "2.8C 有效区 Ø70.13mm（单位 1e-2 mm）");
   eq(AS.ROUND_PANEL.res240.activeAreaMm10, null,
@@ -206,6 +251,84 @@ section("三、可接受格式与拒绝路径");
   eq(r4.ok, false, "SVG 被拒");
   ok(/PNG/.test(r4.errors[0]) && /JPEG/.test(r4.errors[0]) && /WebP/.test(r4.errors[0]),
      "拒绝理由里列出了可接受格式");
+}
+
+// ============================================================
+// ★ 三之二、用途的**两种写法必须等价**（2026-09-24 的真实故障，钉死它）
+//
+//   故障现场：`image-editor.html` 的 addFiles() 把 `ImageBlob.ROLE.Background`
+//   （**数字** 1）递给 checkUpload()，而那一侧当时只认**名字** ⇒ 恒判
+//   `ok:false, errors:["不认识的用途：1"]` ⇒ **任何图片都进不了列表**，
+//   页面上还一个字都不打（理由被 refresh() 刷掉）。车主的原话就是"上传图片没有任何反应"。
+//
+//   根因不是"页面写错了一行"，而是**两边的编号表没有人钉过**：
+//   `ImageBlob.ROLE`（打包器/固件那一侧）与 `asset-spec.js` 的 ROLES
+//   （上传端那一侧）各有一份编号，靠人眼对齐。下面这两组断言就是那道闸门：
+//     ① 每个 ImageBlob.ROLE 的**数字**都能在 asset-spec 里解析出用途；
+//     ② 同一个用途，传**数字**与传**名字**得到的检查结果**逐字节相同**。
+//   任何一边改了编号而忘了另一边，这里立刻红。
+// ============================================================
+section("三之二、用途：数字与名字必须等价（上传端与打包器的编号表对账）");
+{
+  // ① 每个编号都要能反查出用途 —— 这一条覆盖**所有**角色，不只是背景。
+  //    漏掉一个编号，页面里那个用途的图就会被静默拒收（正是这次的症状）。
+  for (const key of Object.keys(IB.ROLE)) {
+    const num = IB.ROLE[key];
+    const r = AS.roleByNumber(num);
+    ok(r !== null, "ImageBlob.ROLE." + key + "（编号 " + num + "）能在 asset-spec 里反查出用途");
+    if (r) {
+      eq(r.role, num, "反查出来的 " + r.id + " 的编号还是 " + num + "（来回一致）");
+      eq(r.key, key, "反查出来的 " + r.id + " 的 key 与 ImageBlob.ROLE 的键名一致（" + key + "）");
+    }
+  }
+  // 反向也要成立：asset-spec 表里每个角色，按它的**名字**能查到、按它的**编号**也能查到同一个
+  for (const r of AS.ROLES) {
+    eq(AS.roleById(r.id), r, "roleById(" + r.id + ") 拿回同一条");
+    eq(AS.roleByNumber(r.role), r, "roleByNumber(" + r.role + ") 拿回同一条");
+  }
+
+  // ② 同一个用途、同一个文件：传数字与传名字，结果必须**完全一致**。
+  //    覆盖"会通过"和"会被拒"两条路 —— 只测通过的那条会漏掉
+  //    "两边都拒但理由不同"这种更难查的分叉。
+  const cases = [
+    // [文件, MIME, 数字用途, 用途名, 目标板]
+    ["x.png", "image/png", IB.ROLE.Background, "background", "s3"],
+    ["x.png", "image/png", IB.ROLE.FaceIdle, "face_idle", "s3"],
+    ["x.png", "image/png", IB.ROLE.FaceOverspeedR, "face_overspeed_r", "s3"],
+    ["x.png", "image/png", IB.ROLE.FaceCityR, "face_city_r", "s3_240"],
+    // JPEG 当表情 = 两边都该**拒**，而且拒绝理由要一模一样（alpha 那条）
+    ["face.jpg", "image/jpeg", IB.ROLE.FaceIdle, "face_idle", "s3"],
+    // 认不出的格式 = 两边都该拒（格式那条与用途无关，也要一致）
+    ["face.svg", "image/svg+xml", IB.ROLE.FaceIdle, "face_idle", "s3"],
+    // WebP 当表情 = 两边都该给同一条警告
+    ["face.webp", "image/webp", IB.ROLE.FaceIdle, "face_idle", "s3"]
+  ];
+  for (const [file, mime, num, name, target] of cases) {
+    const byNum = AS.checkUpload(file, mime, num, target);
+    const byName = AS.checkUpload(file, mime, name, target);
+    eq(JSON.stringify(byNum), JSON.stringify(byName),
+       "「" + file + "」当 " + name + "（" + target + "）：传编号 " + num +
+       " 与传名字结果一致");
+  }
+
+  // ③ 认不出来的**编号**仍然要拒（别把"归一化"写成"什么都放行"）——
+  //    保留编号 2 与一个从没出现过的号都必须拒绝，且理由里带上调用方传的那个值。
+  for (const bad of [AS.RESERVED_ROLES[0], AS.NEXT_FREE_ROLE, 999]) {
+    const r = AS.checkUpload("x.png", "image/png", bad, "s3");
+    eq(r.ok, false, "编号 " + bad + " 没有对应用途 ⇒ 要拒");
+    ok(r.errors[0].indexOf(String(bad)) >= 0,
+       "拒绝理由里带上了调用方传的值 " + bad + "：" + r.errors[0]);
+  }
+  // 完全没给用途（undefined）也不能被当成合法
+  eq(AS.checkUpload("x.png", "image/png", undefined, "s3").ok, false, "不给用途要拒");
+
+  // ④ 认不出的**目标板**要"响亮地失败"，不许静默兜底成 480 档 ——
+  //    板名写错就悄悄按另一块板算规格，比直接抛错危险得多
+  //    （ImageBlob.targetInfo() 里就是 throw，这里把它钉住）。
+  throws(() => AS.checkUpload("x.png", "image/png", IB.ROLE.Background, "no_such_board"),
+         "未知目标板要抛错（传编号）");
+  throws(() => AS.checkUpload("x.png", "image/png", "background", "no_such_board"),
+         "未知目标板要抛错（传名字）");
 }
 
 // ============================================================

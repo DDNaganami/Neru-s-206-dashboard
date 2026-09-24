@@ -366,8 +366,18 @@ section("刷写命令与 C 头文件");
   //   症状是"刷进去了但设备说没有图片资源"(刷到了别的地方)。
   ok(cmd.includes("0x254000"), "刷写偏移必须是 image 分区起始 0x254000");
   ok(cmd.includes("COM7"), "端口要带上");
-  // ★ --chip 必须跟着目标板:拿 --chip esp32 去刷 S3 会被 esptool 当场拒掉
-  ok(cmd.includes("--chip esp32 "), "经典板用 --chip esp32");
+  // ★ --chip 必须跟着目标板:拿 --chip esp32 去刷 S3 会被 esptool 当场拒掉。
+  //   ★ 2026-09-24:不给目标板时用的是**默认板**,而默认板从 classic 改成了
+  //     s3(2.8C 最终板)。所以这里**不写死** "esp32",而是问 DEFAULT_TARGET ——
+  //     这条测的是"命令里的 chip 与默认板一致",不是"默认板必须是经典板"。
+  ok(cmd.includes("--chip " + IB.TARGETS[IB.DEFAULT_TARGET].chip + " "),
+     "不给目标板时用默认板(" + IB.DEFAULT_TARGET + ")的 --chip " +
+     IB.TARGETS[IB.DEFAULT_TARGET].chip);
+  eq(IB.DEFAULT_TARGET, "s3", "默认板是 s3(双 2.8C 最终板)—— 2026-09-24 车主口径");
+  // 经典板仍然必须能印出 --chip esp32(它还在,只是不再是默认档了)
+  const cmdClassic = IB.esptoolCommand("COM7", "image.bin", "classic");
+  ok(cmdClassic.includes("--chip esp32 "), "经典板用 --chip esp32");
+  ok(cmdClassic.includes("0x254000"), "经典板的刷写偏移同样是 0x254000");
   const cmdS3 = IB.esptoolCommand("COM7", "image.bin", "s3");
   ok(cmdS3.includes("--chip esp32s3 "), "S3 板必须用 --chip esp32s3");
   ok(cmdS3.includes("0x254000"),
