@@ -168,18 +168,68 @@
     return Math.floor(s / 4) * 4;                      // 向下对齐到 4 的倍数
   }
 
+  // ------------------------------------------------------------
+  // 四之二、**两块圆屏的物理口径**（2026-09-24 新增）
+  //
+  // ★ 为什么要有这张表：`image-editor.html` 会把"这块屏是圆的"讲给用户，
+  //   而那句话里的数字（可视直径 / 像素↔毫米）**只能有一份**。
+  //   写进页面 HTML 就成了第三份（固件 panel_view.h、本文件、页面各一份），
+  //   所以页面从 `AssetSpec.ROUND_PANEL` 取，`test-asset-spec.js` 逐条钉住，
+  //   而 native 侧（`lib/dashcore/panel_view.h` 的 panelInscribedSquareSide）
+  //   用**同一套算式**算内切正方形 —— 两条链在 336 / 168 上对齐。
+  //
+  // ★ 数字的出处（**别自己发明**）：
+  //   · 2.8C 有效区 Ø70.13 mm —— `PURCHASE.md` 第六节表格「Ø 有效区」那一列
+  //     （Dwin / 微雪 2.8C / 鑫洪泰 / Wisecoco 四家同数，70.128~70.13）。
+  //   · DualEye 1.28" 那块没有独立量过有效区，所以这一栏**留空**——
+  //     不编一个数出来（它的**像素**口径 168 仍然有效，那是纯几何）。
+  // ------------------------------------------------------------
+  var ROUND_PANEL = {
+    res480: {
+      id: "res480",
+      tier: "480×480 屏 · 2.8C（最终板）",
+      displayRes: 480,
+      activeAreaMm10: 7013,             // 70.13 mm（Ø 有效区）
+      hint: "2.8C（最终板）：微雪 ESP32-S3-LCD-2.8C，480×480 圆屏 ST7701S，" +
+            "可视圆 Ø70.13mm。"
+    },
+    res240: {
+      id: "res240",
+      tier: "240×240 屏 · 历史：DualEye（已退货）",
+      displayRes: 240,
+      activeAreaMm10: null,             // 没量过 ⇒ 不编（见上面那条）
+      hint: "历史档：微雪 ESP32-S3-DualEye-Touch-LCD-1.28（两块 240×240 GC9A01A），" +
+            "2026-09-22 已退货；档位保留且仍然有效。"
+    }
+  };
+
+  // 一行"像素 ↔ 毫米"的换算（只在有效区有数时给得出来）。
+  // ★ 单位是 **1e-4 mm**（与 C++ 侧 `panelMmPerPx10000` 逐位同口径）：
+  //   480 档：70.13mm / 480px = 0.1461 mm/px ⇒ **1461**
+  //   （踩过：写成 ×1000 会得到 14610 = 1.46 mm/px，屏在文档里就变成 701 mm。
+  //    这个数只用于显示，算错不会崩 —— 所以 test-asset-spec.js 里钉着它，
+  //    而且它与 lib/dashcore/panel_view.h 的断言是同一个数。）
+  function mmPerPixelX10000(panel) {
+    if (!panel || !panel.activeAreaMm10) return null;
+    // activeAreaMm10 的单位是 1e-2 mm ⇒ ×100 抬到 1e-4 mm，再除以像素数。
+    return Math.round(panel.activeAreaMm10 * 100 / panel.displayRes);
+  }
+
   function tierOf(targetId) {
     var t = ImageBlob.faceTierInfo(targetId);
     var is240 = t.id === "res240";
+    var res = is240 ? 240 : 480;
     return {
       id: t.id,
-      label: t.label,
-      displayRes: is240 ? 240 : 480,
+      label: t.label,                                  // ← 2.8C（最终板）/ 历史：DualEye
+      displayRes: res,
       faceCanvasMax: t.faceCanvasMax,                  // 320 / 160
       faceRecommended: t.faceSizeRecommended,          // 300 / 152
       faceInnerMostRadius: t.faceInnerMostRadius,      // 163 / 81
-      backgroundSide: is240 ? 240 : 480,
-      circleSafe: circleSafeSide(is240 ? 240 : 480)    // 336 / 168
+      backgroundSide: res,
+      circleSafe: circleSafeSide(res),                 // 336 / 168
+      // 这块屏的物理口径（2.8C 有 Ø70.13；DualEye 那一档是 null —— 没量过）
+      panel: ROUND_PANEL[is240 ? "res240" : "res480"]
     };
   }
 
@@ -419,6 +469,8 @@
     formatOf: formatOf, roleById: roleById, roleByNumber: roleByNumber,
     suggestedName: suggestedName,
     circleSafeSide: circleSafeSide, tierOf: tierOf, slotBox: slotBox,
+    // 两块圆屏的物理口径（页面取它来显示"这块屏是圆的"，见上面那段）
+    ROUND_PANEL: ROUND_PANEL, mmPerPixelX10000: mmPerPixelX10000,
     budget: budget, prepareAsset: prepareAsset, checkUpload: checkUpload
   };
 });

@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>206 dash 预览 · 2.8C（最终板）</title>
+<!-- ============================================================
+     preview-28c.html —— 「2.8C（最终板）」档的预览页（2026-09-24 新增）
+
+     ★ 与 preview.html 的分工：
+       · preview.html      —— 老页面，纯帧播放（左/右两块画布，无标注）。
+       · preview-28c.html  —— 这一档：**加上真机的圆边**。页面上那圈虚线
+         就是"真机能看见的边界"，虚线圈**以外**的部分在真机上是不可见的
+         （落盘的帧里那些像素已经被压暗 + 打点，见
+         lib/dashcore/panel_view.h 的着色规则）。
+
+     ★ 为什么圈要画在页面上（而不是只靠帧里那层压暗）：
+       帧里的压暗是**烧进 BMP** 的（那是"证据"），而页面上这圈虚线是
+       **参照**：把鼠标放上去、"素材是不是伸到圈外了"一眼就能判。
+       两个都在，判读时互相印证。
+
+     ★ 数字的出处（别改这里的字而不改那份）：
+       · 480×480 / ST7701S / 可视圆 Ø70.13mm —— PURCHASE.md 第六节表格
+       · 1 像素 = 70.13/480 = 0.1461 mm —— 本页按同一个数显示
+       · 内切正方形 336 —— tools/theme-editor/asset-spec.js 的 circleSafeSide()
+         与 lib/dashcore/panel_view.h 的 panelInscribedSquareSide() 同一套算式
+       · 这段"预览看不到什么"与 docs/PREVIEW.md 第 4 节是同一份口径
+     ============================================================ -->
+<style>
+  body { background: #111; color: #ddd; font-family: monospace; margin: 24px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 14px; margin: 22px 0 6px; color: #9cf; }
+  .row { display: flex; gap: 40px; align-items: flex-start; flex-wrap: wrap; }
+  figure { margin: 0; text-align: center; }
+  .screen { position: relative; width: 480px; height: 480px; background: #000; }
+  .screen img { width: 480px; height: 480px; display: block; }
+  /* 内切圆：圆心 (240,240)、半径 240 ⇒ width/height = 480 - 1 的圆环。
+     用 border-radius 画一个"只有边框"的圆，虚线表示"这是标注，不是画面"。 */
+  .circle {
+    position: absolute; left: 0; top: 0; width: 478px; height: 478px;
+    border: 1px dashed #0ff; border-radius: 50%;
+    box-sizing: border-box; pointer-events: none; opacity: .85;
+  }
+  .cross {
+    position: absolute; background: #0ff; opacity: .35; pointer-events: none;
+  }
+  .cross.h { left: 0; top: 239px; width: 480px; height: 1px; }
+  .cross.v { left: 239px; top: 0; width: 1px; height: 480px; }
+  figcaption { margin-top: 8px; color: #bbb; }
+  table { border-collapse: collapse; margin: 6px 0 0; }
+  th, td { border: 1px solid #333; padding: 3px 8px; text-align: left; }
+  th { color: #9cf; font-weight: normal; }
+  code { color: #fd8; }
+  .hint { color: #888; }
+  .warn { color: #f88; }
+  ul { margin: 4px 0 0 18px; padding: 0; }
+  li { margin: 2px 0; }
+</style>
+</head>
+<body>
+<h1>206 dash 预览 · 2.8C（最终板）</h1>
+<p class="hint">
+  这块板：微雪 <b>ESP32-S3-LCD-2.8C</b>，480×480 圆屏（ST7701S，RGB 并口），
+  <b>可视圆 Ø70.13 mm</b>。帧由 LVGL 在**宿主机**上用与真屏同一套代码渲染
+  （<code>env:pcpreview</code>），页面上那圈青色虚线 = 真机能看见的边界。
+</p>
+
+<div class="row">
+  <figure>
+    <div class="screen">
+      <img id="l" alt="左屏 2.8C">
+      <div class="cross h"></div><div class="cross v"></div>
+      <div class="circle"></div>
+    </div>
+    <figcaption>左屏：转速弧 + 水温弧 + 表情（+ 底部六格指示灯）</figcaption>
+  </figure>
+  <figure>
+    <div class="screen">
+      <img id="r" alt="右屏 2.8C">
+      <div class="cross h"></div><div class="cross v"></div>
+      <div class="circle"></div>
+    </div>
+    <figcaption>右屏：车速弧 + 进气温度弧 + 表情（+ 底部六格指示灯）</figcaption>
+  </figure>
+</div>
+
+<h2>怎么跑</h2>
+<pre class="hint">
+# 纯 ASCII 副本里跑（中文路径会让 ld 写 map 失败）
+$env:PYTHONPATH='C:\Users\张九思\206Dash\.pio-pylibs'
+$env:PLATFORMIO_CORE_DIR='C:\Users\Public\206dash\.pio-core'
+$env:PATH='C:\206dash-scratch\zigbin;' + $env:PATH        # native 的 gcc 转发桩
+python -m platformio run -e pcpreview -t exec             # 跑 30 秒（150 对帧）后 Ctrl+C
+# 然后打开 preview/preview.html（老页面）或本页（2.8C 档）</pre>
+
+<h2>画布 px ↔ 面板 mm</h2>
+<table>
+  <tr><th>量</th><th>值</th><th>怎么来的</th></tr>
+  <tr><td>像素矩阵</td><td>480 × 480</td><td>ST7701S 的 active area（= <code>THEME_DISPLAY_RES</code>）</td></tr>
+  <tr><td>可视圆直径</td><td>Ø70.13 mm</td><td>PURCHASE.md 第六节「Ø 有效区」那一列</td></tr>
+  <tr><td>1 像素</td><td>≈ 0.1461 mm</td><td>70.13 / 480</td></tr>
+  <tr><td>内切正方形</td><td>336 × 336</td><td>floor(480/√2)=339 向下取到 4 的倍数（asset-spec.js 与 panel_view.h 同一套）</td></tr>
+  <tr><td>圆外像素</td><td>约占画布 21%</td><td>四角那四块 —— 真机上不存在</td></tr>
+</table>
+<p class="hint">
+  所以"四角为什么不可见"不是渲染问题：屏是 480×480 的方矩阵，外面套了一个
+  Ø70.13 的圆窗口。几何按 480 基准设计、渲染时统一乘 <code>theme_scale()</code>
+  （= <code>THEME_DISPLAY_RES / 480</code>）—— 换屏只改那一个宏，本页与预览都不需要新几何。
+</p>
+
+<h2>这个页面上能验什么 / 验不了什么</h2>
+<ul>
+  <li><b>能验</b>：内容有没有伸到圆外（虚线外 = 真机看不见）；六格指示灯条亮没亮、
+      告警那一条有没有描边；表情/弧/读数的位置与配色；告警触发时串口那行
+      <code>BEEP pattern=…</code>（蜂鸣器走 <code>BuzzerHost</code>，加
+      <code>-DBUZZER_HOST_SOUND=1</code> 还会真出声）。</li>  <li class="warn"><b>验不了</b>：撕裂 / 残留 / 横纹 / 抖动 —— 预览的 flush 是<b>即时</b>的
+      （flush 回调直接把像素拷进帧缓冲，没有 PSRAM、没有 DMA、没有面板扫描），
+      那些问题在预览里<b>结构上不可能出现</b>。它们只能上真机看
+      （判据在 <code>docs/RGB-PANEL-2.8C.md</code>）。</li>
+  <li class="warn"><b>验不了</b>：真实帧率与刷新时序（预览是 200ms 一帧、固定 150 对）。</li>
+  <li class="warn"><b>验不了</b>：字体墨迹 —— 预览用的字体与设备端不同，位置/字号可信，
+      字宽只是近似（要卡像素请用 <code>check-preview-frame.js</code> 读帧）。</li>
+  <li class="warn"><b>验不了</b>：圆屏的物理边框内缩 —— 这里按"内切圆"算，
+      真机面板还有自己的边框/黑边，实际可视角会比 70.13 略小。</li>
+</ul>
+
+<h2>注入（键盘 / preview/inject.txt）</h2>
+<table>
+  <tr><th>键</th><th>作用</th><th>键</th><th>作用</th></tr>
+  <tr><td><code>←</code> / <code>→</code></td><td>左 / 右转向灯（开关，屏上会闪）</td>
+      <td><code>O</code></td><td>超速（车速 = 130 &gt; 阈值 120）</td></tr>
+  <tr><td><code>空格</code></td><td>双闪（左右箭头 + 双闪格一起）</td>
+      <td><code>R</code></td><td>红区（转速 = 6000 &gt; 阈值 5800）</td></tr>
+  <tr><td><code>L</code></td><td>近光</td><td><code>M</code></td><td>静音（只掐蜂鸣器，屏上照报）</td></tr>
+  <tr><td><code>P</code></td><td>仪表盘灯</td><td><code>V</code></td><td>圆屏遮罩开关（落盘帧上的可视圈标注）</td></tr>
+  <tr><td><code>D</code></td><td>门（"动过"，不是"门开着"）</td>
+      <td><code>X</code> / <code>Esc</code></td><td>全部复位</td></tr>
+</table>
+<p class="hint">
+  控制文件 <code>preview/inject.txt</code> 每帧重读（保存即生效）：
+  <code>left=1 right=1 hazard=1 low_beam=1 position=1 door=1 mute=1 mask=0 speed=140 rpm=6000 clear=1</code>。
+  值是**绝对值**：删掉一行不会退回假数据，要退就写 <code>clear=1</code>。
+  完整说明见 <code>docs/PREVIEW.md</code>。
+</p>
+
+<script>
+  // 播放 preview/frames/ 里落下的帧（与 preview.html 同一批文件、同一个节奏：
+  // 200ms 一帧、150 对）。★ 不在这里画任何遮罩之外的东西 —— 帧里的像素就是
+  // 真机画面（圆外那层压暗是落盘时烧进去的，见 lib/dashcore/panel_view.h）。
+  const l = document.getElementById('l'), r = document.getElementById('r');
+  const N = 150;
+  let i = 0;
+  function tick() {
+    const idx = String(i).padStart(4, '0');
+    l.src = 'frames/l_' + idx + '.bmp';
+    r.src = 'frames/r_' + idx + '.bmp';
+    i = (i + 1) % N;
+    setTimeout(tick, 200);
+  }
+  tick();
+</script>
+</body>
+</html>

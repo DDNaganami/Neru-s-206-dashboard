@@ -56,7 +56,7 @@
   var TARGETS = {
     classic: {
       id: "classic",
-      label: "经典 ESP32(4MB flash)",
+      label: "经典 ESP32(4MB flash) + 480 屏",
       // ★ chip 是**刷写命令里那个 --chip**(见 esptoolCommand)。
       //   它必须按板子取:拿 --chip esp32 去刷 S3 会被 esptool 当场拒掉
       //   ("Chip is ESP32-S3 ... but --chip esp32 was specified")。
@@ -72,12 +72,16 @@
     },
     s3: {
       id: "s3",
-      label: "ESP32-S3 N16R8(16MB flash)",
+      label: "ESP32-S3 N16R8(16MB flash) + 2.8C 圆屏（最终板）",
       chip: "esp32s3",
       partitionBytes: 8 * 1024 * 1024,
       partitionsCsv: "partitions-s3.csv",
-      faceTier: "res480",          // 最终那块 2.8" 屏仍是 480×480
-      hint: "image 分区 8MB:240×240 一整套表情 + 480×480 背景都放得下"
+      faceTier: "res480",          // ★ 最终板(微雪 2.8C)就是这块屏:480×480 圆屏 ST7701S
+      // ★ 2026-09-24:这条 hint 是用户**每次选目标板都会看到**的那行字,所以
+      //   除了分区大小,把"屏是圆的"这件事也写进去(它是这一档最容易踩的约束:
+      //   四角不可见,见 asset-spec.js 的 circleSafeSide)。
+      hint: "2.8C 最终板:480×480 圆屏(ST7701S),可视圆 Ø70.13mm," +
+            "四角不可见(矩形内容 ≤336);image 分区 8MB,整套表情 + 480×480 背景都放得下"
     },
     // ★ 240 档验证用的那块板(微雪 ESP32-S3-DualEye-Touch-LCD-1.28)。
     //   ★ 2026-09-22 已退货,现在手上没有这块硬件;s3_240 这一档(含下面的画布上限)**保留且仍然有效**。
@@ -88,12 +92,15 @@
     //   分区表的对账(下面 test 里读 csv 那节)按 partitionsCsv 走,两块板共用一份。
     s3_240: {
       id: "s3_240",
-      label: "ESP32-S3 微雪双屏 240×240(1.28\")",
+      // ★ 2026-09-24：label 里明确写「历史」与「已退货」—— 它**不是**目标板了，
+      //   但档位保留且仍然有效（下方 160/152 的画布口径一个字都没改）。
+      label: "历史：ESP32-S3 微雪双屏 240×240(1.28\", DualEye 已退货)",
       chip: "esp32s3",             // 同一块 S3 板,只是屏是 240×240
       partitionBytes: 8 * 1024 * 1024,
       partitionsCsv: "partitions-s3.csv",
       faceTier: "res240",          // ★ 屏是 240×240 → 画布上限 160 / 推荐 152
-      hint: "屏是 240×240:表情最大 160、推荐 152(再大就盖住内圈副弧);" +
+      hint: "历史档(DualEye 已于 2026-09-22 退货,手上没有这块硬件;档位仍有效)。" +
+            "屏是 240×240:表情最大 160、推荐 152(再大就盖住内圈副弧);" +
             "背景别按 480 做 —— 240 的图铺不满整屏,弧带那一圈会露底色"
     }
   };
@@ -186,10 +193,15 @@
   //   480 档:floor((2×163 - 4)/4)*4 = **320**(老值,一个字节没变)
   //   240 档:floor((2×81  - 4)/4)*4 = **160**
   var FACE_CANVAS_MARGIN = 4;
+  // ★ 2026-09-24：这两条的 **label 文案**是给用户看的档位名 ——
+  //   480 档 = **2.8C（最终板）**（微雪 ESP32-S3-LCD-2.8C，480×480 圆屏 ST7701S），
+  //   240 档 = **历史：DualEye（已退货）**（微雪 ESP32-S3-DualEye-Touch-LCD-1.28，
+  //   两块 240×240 GC9A01A，2026-09-22 退货；档位**保留且仍然有效**，
+  //   只是它不是目标板）。几何数字一个都没动 —— 只改了文案。
   var FACE_SIZE_TIERS = [
-    { id: "res480", label: "480×480 屏（480 基准几何）", faceInnerMostRadius: 163,
+    { id: "res480", label: "480×480 屏 · 2.8C（最终板）", faceInnerMostRadius: 163,
       faceCanvasMax: 320, faceSizeRecommended: 300 },
-    { id: "res240", label: "240×240 屏（微雪 1.28\" 那块）", faceInnerMostRadius: 81,
+    { id: "res240", label: "240×240 屏 · 历史：DualEye（已退货）", faceInnerMostRadius: 81,
       faceCanvasMax: 160, faceSizeRecommended: 152 }
   ];
   // 兼容老名字：默认档 = 480（加了 240 之后，老的“320 / 300 / 163”三个常量

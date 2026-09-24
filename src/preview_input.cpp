@@ -70,6 +70,10 @@ static PreviewKey win_read_key() {
     case 'o': case 'O': return PreviewKey::Overspeed;
     case 'r': case 'R': return PreviewKey::Redline;
     case 'm': case 'M': return PreviewKey::Mute;
+    // 圆屏遮罩开关（2.8C 档）：`v` 而不是别的字母 —— 它标的是"可见区(visible)"。
+    // ★ 与 `x`/Esc 分开：X 是"全清"（回到假数据），V 只翻遮罩这一位，
+    //   按 V 不该把转向灯/门那些注入一起清掉。
+    case 'v': case 'V': return PreviewKey::ToggleMask;
     case 'x': case 'X': return PreviewKey::Clear;
     default:            return PreviewKey::None;
   }
@@ -93,7 +97,7 @@ void preview_input_begin(const char* ctl_path) {
   // 两行回执：告诉用户"键盘能用、控制文件在哪"。
   // ★ 纯 ASCII —— README 那条纪律：预览/测试输出里的中文会在 GBK 控制台上
   //   抛 UnicodeEncodeError，把统计打乱（这条只有踩过才知道）。
-  printf("preview input: keys <- -> [space] L P D O R M X/Esc\n");
+  printf("preview input: keys <- -> [space] L P D O R M V X/Esc\n");
   printf("preview input: control file = %s\n", g_ctl_path);
 }
 
@@ -146,6 +150,10 @@ bool preview_input_poll(PreviewInput& in) {
       if (file_in.speed_set)    { in.speed_kmh = file_in.speed_kmh; in.speed_set = true; }
       if (file_in.rpm_set)      { in.rpm = file_in.rpm;             in.rpm_set = true; }
       in.mute = file_in.mute;
+      // 遮罩：**只有控制文件里真的写了 `mask=` 才覆盖**（判据是那个 `_set` 旗标，
+      // 不是"值不等于默认"）。★ 少了这条判断，键盘按 V 关掉遮罩之后会被下一帧
+      // 文件重读按默认值（开）盖回去 —— 看着就是"V 没用"，而那是这一层最典型的坑。
+      if (file_in.panel_mask_set) in.panel_mask = file_in.panel_mask;
       handled = true;
     }
   }

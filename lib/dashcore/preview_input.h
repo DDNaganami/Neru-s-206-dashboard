@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>   // strtof
+#include "vehicle_state.h"   // preview_apply_snapshot() 要写这些字段
 
 // ============================================================
 // pcpreview 的**输入注入**（2026-09-24 新增）
@@ -34,11 +35,13 @@
 //   D           门（"动过"，不是"门开着"）
 //   O           超速（车速 = 130）        R      红区（转速 = 6000）
 //   M           静音开关（蜂鸣器）
+//   V           圆屏遮罩开关（2.8C 档的"可见区"那层标注；默认开）
 //   X  /  Esc   全部复位（回到假数据）
 //
 // 控制文件同一套键名（数值版，便于精确摆位）:
 //   left=1 right=1 hazard=1 low_beam=1 position=1 door=1 mute=1
 //   speed=140 rpm=6000 clear=1
+//   mask=0      ← 关掉圆屏遮罩（等价于按 V；只影响落盘的那张图）
 //
 // ★ 语义三条（这是"注入"最容易搞混的地方，写清楚）:
 //   ① 注入**优先于**假数据与 VAN/OBD：只要 `speed` / `rpm` 被注入过，
@@ -52,7 +55,11 @@
 
 enum class PreviewKey : uint8_t {
   None = 0,
-  Left, Right, Hazard, LowBeam, PositionLamp, Door, Overspeed, Redline, Mute, Clear
+  Left, Right, Hazard, LowBeam, PositionLamp, Door, Overspeed, Redline, Mute, Clear,
+  // 遮罩开关（2026-09-24）：**不是**车辆状态，而是"预览这一层怎么画"。
+  // ★ 它刻意与其它键放在同一个枚举里：注入的入口只有一个（键盘 + 控制文件），
+  //   多开一个入口就等于多一处"只在某个页面生效"的坑。
+  ToggleMask
 };
 
 // 一份"手动注入的快照"。
@@ -67,6 +74,16 @@ struct PreviewInput {
   float speed_kmh = 0.0f;
   float rpm = 0.0f;
   bool mute = false;          // 蜂鸣器静音（这个没有 *_set：默认不静音）
+  // 圆屏遮罩（2.8C 档）：**默认开** —— 预览落的第一张图就该带可视圈标注，
+  // 否则"忘了开"会让素材四角的问题在 PC 上被漏掉（那正是这一档要抓的东西）。
+  // ★ 它不属于"车辆状态"，所以不进 any()：按 V 不该让 `inject:` 那行回执
+  //   看起来像"车状态变了"（回执里单列一个 mask 字段）。
+  // ★ `panel_mask_set` 这个旗标**必须有**：控制文件是每帧重读的，而
+  //   "文件里没写 mask"是常态 —— 没有旗标的话，每帧新建的那份输入都会把
+  //   遮罩按默认值（开）覆盖回去，于是键盘按 V 关掉之后下一帧又亮起来
+  //   （看着就是"V 没用"，而那是这一层最典型的坑）。
+  bool panel_mask = true;
+  bool panel_mask_set = false;
   bool any() const {
     return left_set || right_set || hazard_set || low_beam_set ||
            position_set || door_set || speed_set || rpm_set;
@@ -92,8 +109,15 @@ inline bool preview_apply_key(PreviewInput& in, PreviewKey k) {
     case PreviewKey::Overspeed: in.speed_kmh = 130.0f; in.speed_set = true; break;
     case PreviewKey::Redline:   in.rpm = 6000.0f;      in.rpm_set = true;   break;
     case PreviewKey::Mute:      in.mute = !in.mute;                            break;
+    case PreviewKey::ToggleMask:
+      in.panel_mask = !in.panel_mask;
+      in.panel_mask_set = true;      // 显式选择过 ⇒ 控制文件不许把它盖回去
+      break;
     case PreviewKey::Clear:
-      in = PreviewInput{};      // 全部复位（含各 *_set 旗标）
+      // 全部复位（含各 *_set 旗标）。
+      // ★ 遮罩**刻意回到默认的"开"**（而不是留在关掉的状态）：clear 的语义是
+      //   "回到假数据的样子"，而 2.8C 档的默认样子就是带可视圈标注的。
+      in = PreviewInput{};
       break;
     default:
       return false;
@@ -177,12 +201,54 @@ inline int preview_apply_control_text(PreviewInput& in, const char* text) {
     else if (eqIgnoreCase(key, "position")) { in.position = truthy(val); in.position_set = true; n++; }
     else if (eqIgnoreCase(key, "door"))     { in.door = truthy(val);     in.door_set = true; n++; }
     else if (eqIgnoreCase(key, "mute"))     { in.mute = truthy(val);     n++; }
+    // 圆屏遮罩（2.8C 档）：`mask=0` 关掉、`mask=1` 打开。
+    // ★ 它不需要单独的 *_set 旗标：默认值就是"开"，而"写了 mask=0"与
+    //   "从没写过"对**结果**的影响是可区分的（前者覆盖默认值）——
+    //   和 mute 一样是"值即语义"的那一类。`clear=1` 会把它复位成"开"。
+    else if (eqIgnoreCase(key, "mask"))     { in.panel_mask = truthy(val); in.panel_mask_set = true; n++; }
     else if (eqIgnoreCase(key, "speed"))    { in.speed_kmh = strtof(val, nullptr); in.speed_set = true; n++; }
     else if (eqIgnoreCase(key, "rpm"))      { in.rpm = strtof(val, nullptr);       in.rpm_set = true; n++; }
     else if (eqIgnoreCase(key, "clear"))    { if (truthy(val)) { in = PreviewInput{}; n++; } }
     // 其它键：不认（返回值里不算它，调用方据此打一行提示）
   }
   return n;
+}
+
+// ------------------------------------------------------------
+// 纯函数部分③：把注入**落到一份车状态快照**上
+//
+// ★ 2026-09-24 从 `src/main.cpp` 的 `preview_apply()` 里搬过来（**只搬了纯的
+//   那一半**：打印与遮罩推送留在 main）。为什么要搬：这一段里有两条语义
+//   （双闪把左右箭头一起点亮、`hazard=0` 连左右箭头一起清）**是错的会让人
+//   当成 bug 查的那一类**，而 main.cpp 不参与 native 链接 ⇒ 只有搬进 lib/
+//   才测得到（与 preview_apply_key 当初搬过来的理由逐字相同）。
+//
+// 语义（每一条都有用例钉住，见 test/test_dashcore/test_ui_lamps.cpp）：
+//   ① 只有 `*_set` 成立的那一项才被覆写 —— "没注入过"不等于"注入成 0"；
+//   ② 双闪**先**施加、左右箭头**后**施加：
+//      · `hazard=1` ⇒ 左右两位一起置位（数据层 §4.3 的位域语义：
+//        `0x0C = 0x04|0x08`；注入照抄，免得"双闪但不亮箭头"在预览里成立、
+//        真车上不成立）；
+//      · `hazard=0` ⇒ 左右两位一起清。控制文件是每帧重读的**绝对值**，而它
+//        通常只写"我关心的那几位"：只清双闪位会留下上一次写进去的箭头位，
+//        屏上看着就是"双闪关了、箭头还在闪"（实测踩到）。
+//      · 顺序让 `hazard=1 left=0 right=0` 这种组合同样表达得出来；
+//        反过来写就没有这个表达力。
+//   ③ speed/rpm 直接写值（注入优先于 sim/VAN/OBD，但**只在 pcpreview**）。
+// ------------------------------------------------------------
+inline void preview_apply_snapshot(const PreviewInput& in, VehicleState& st) {
+  if (in.hazard_set) {
+    st.hazard = in.hazard;
+    st.indicator_left = in.hazard;
+    st.indicator_right = in.hazard;
+  }
+  if (in.left_set)      st.indicator_left = in.left;
+  if (in.right_set)     st.indicator_right = in.right;
+  if (in.low_beam_set)  st.low_beam = in.low_beam;
+  if (in.position_set)  st.position_lamp = in.position;
+  if (in.door_set)      st.door_activity = in.door;
+  if (in.speed_set)     st.speed_kmh = in.speed_kmh;
+  if (in.rpm_set)       st.rpm = in.rpm;
 }
 
 // ------------------------------------------------------------

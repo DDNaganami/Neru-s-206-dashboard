@@ -118,6 +118,17 @@ static PreviewInput g_preview;
 static PreviewInput g_preview_prev;
 static uint32_t g_lamp_pulse_ms = 0;
 static bool g_lamp_pulse = false;
+// ★ 2026-09-24：告警那一拍的"屏上闪"要**落进帧里**才算数。
+//   起因（实测会误导人）：`Alerts::beeping()` 只持续 `beep_ms`（120ms），
+//   而预览**每 200ms 才落一帧** ⇒ 有将近一半的落帧时刻那一拍已经过去了。
+//   于是"按 O 触发超速，屏上却没闪"会时不时出现 —— 而判据本身是对的
+//   （真机 60fps 下每次都看得见），纯粹是**采样**问题。
+//   修法：脉冲开始时记住当时的帧号，**一直保持到显示侧真的落了新的一帧**
+//   （`dash_display_preview_frames()` 变了）为止。判据/去抖/蜂鸣器一个字
+//   都没改（那三层在 lib/dashcore/alerts.*，native 用例逐条钉着）——
+//   这里只是"让那一拍活到被拍下来"。
+static uint32_t g_lamp_pulse_frame = 0;
+static bool g_lamp_pulse_armed = false;
 
 // 把注入施加到快照上。
 // ★ 施加的位置在 `g_data.update()` **之后**、`make_view()` **之前**：
@@ -128,25 +139,22 @@ static void preview_apply(const PreviewInput& in, VehicleState& st) {
   //   不变时刷屏没意义。
   const bool changed = memcmp(&in, &g_preview_prev, sizeof(PreviewInput)) != 0;
   g_preview_prev = in;
-  if (changed && in.any()) {
-    dash_logf("inject: L=%d R=%d haz=%d low=%d pos=%d door=%d spd=%.0f rpm=%.0f mute=%d\n",
-              (int)in.left, (int)in.right, (int)in.hazard, (int)in.low_beam,
-              (int)in.position, (int)in.door, in.speed_kmh, in.rpm, (int)in.mute);
+  if (changed) {
+    // ★ 遮罩那一位（`mask`）与车辆状态**分开报**：`in.any()` 只看车状态，
+    //   所以"只按了 V"这一种变化单列一行 —— 否则按 V 之后屏幕上一行回执都没有，
+    //   而"按了没反应"是最难查的现象。
+    if (in.any()) {
+      dash_logf("inject: L=%d R=%d haz=%d low=%d pos=%d door=%d spd=%.0f rpm=%.0f mute=%d\n",
+                (int)in.left, (int)in.right, (int)in.hazard, (int)in.low_beam,
+                (int)in.position, (int)in.door, in.speed_kmh, in.rpm, (int)in.mute);
+    }
+    dash_logf("inject: round mask = %s (2.8C tier; key V)\n", in.panel_mask ? "ON" : "OFF");
+    dash_display_preview_set_panel_mask(in.panel_mask);
   }
-  if (in.left_set)      st.indicator_left = in.left;
-  if (in.right_set)     st.indicator_right = in.right;
-  if (in.hazard_set) {
-    st.hazard = in.hazard;
-    // ★ 双闪的语义在数据层是"两位同时置位"（§4.3 的位域证据就是 `0x0C = 0x04|0x08`）。
-    //   注入也照这个来 —— 不然"双闪但不亮左右箭头"这件事在真机上根本不存在，
-    //   会造成预览与真车行为分叉。
-    if (in.hazard) { st.indicator_left = true; st.indicator_right = true; }
-  }
-  if (in.low_beam_set)  st.low_beam = in.low_beam;
-  if (in.position_set)  st.position_lamp = in.position;
-  if (in.door_set)      st.door_activity = in.door;
-  if (in.speed_set)     st.speed_kmh = in.speed_kmh;
-  if (in.rpm_set)       st.rpm = in.rpm;
+  // ★ 施加的**纯逻辑**在 lib/dashcore/preview_input.h 的 preview_apply_snapshot()
+  //   （双闪与左右箭头的合并语义、*_set 的"没注入过 ≠ 注入成 0"都在那里，
+  //    由 native 用例逐条钉住）—— 这里只留下"回执 + 遮罩推送 + 静音"三件 IO。
+  preview_apply_snapshot(in, st);
   g_alerts.setMuted(in.mute);
 }
 #endif  // DASH_DISPLAY_PREVIEW
@@ -747,6 +755,9 @@ void setup() {
   // 预览的输入注入：键盘 + preview/inject.txt（用法见 src/preview_input.h）
   preview_input_begin("preview/inject.txt");
   g_preview_prev = g_preview;     // 免得第一帧就报"变了"
+  // 把遮罩的初值推给显示侧（默认开；启动时**不打**那行 inject 回执，
+  // 免得盖住 banner）。
+  dash_display_preview_set_panel_mask(g_preview.panel_mask);
 #endif
   // 物理层 → 打印层 → 数据源。打印层只旁观,不影响数据流
   // (抓帧时那行文本就是回放格式,见 VanLogSink 的说明)。
@@ -875,8 +886,24 @@ void loop() {
 #if defined(DASH_DISPLAY_PREVIEW)
   // 屏上告警闪与蜂鸣器**同一拍**：这里用"刚响过的那一拍"当相位源
   // （听起来在叫、看起来在闪 = 一条信息；两者不同步会很怪）。
-  if (g_alerts.beeping()) { g_lamp_pulse = true; g_lamp_pulse_ms = now; }
-  else if (g_lamp_pulse && (uint32_t)(now - g_lamp_pulse_ms) > 150u) g_lamp_pulse = false;
+  if (g_alerts.beeping()) {
+    if (!g_lamp_pulse) {
+      // 新的一拍：记下**当前已经落了几帧**，等它落出下一帧再放开。
+      g_lamp_pulse = true;
+      g_lamp_pulse_armed = true;
+      g_lamp_pulse_frame = dash_display_preview_frames();
+      g_lamp_pulse_ms = now;
+    }
+  } else if (g_lamp_pulse) {
+    // 蜂鸣器已经不响了（`beep_ms` = 120ms 的窗口过去了），但**先别急着熄**：
+    // 预览每 200ms 才落一帧，这一拍必须活到被拍下来为止（见上面的说明）。
+    const bool captured = g_lamp_pulse_armed &&
+                          (dash_display_preview_frames() != g_lamp_pulse_frame);
+    if (captured || (uint32_t)(now - g_lamp_pulse_ms) > 1500u) {
+      g_lamp_pulse = false;
+      g_lamp_pulse_armed = false;
+    }
+  }
   const LampView lamps = make_lamps(st_mut, alert_id, now, g_lamp_pulse);
 #else
   // 设备侧：告警闪的相位由 beep 的节奏给（真机上蜂鸣器一响，屏上就闪那一拍）。

@@ -198,13 +198,21 @@
         <button class="tiny" id="btn-copy">复制</button>
       </div>
       <div class="hint" style="color:var(--dim);font-size:12px;margin-top:6px">
-        ① 端口改成你电脑上的（设备管理器里看）：<b>这块 DualEye 板走原生 USB 口</b>，
-        本机是 <code>COM5</code>，不是命令里占位的 COM3。
-        （<b>该板已于 2026-09-22 退货，本行保留供同类板参考</b>。）<br>
+        <!-- ★ 2026-09-24 改口径：这一行原来写的是「这块 DualEye 板走原生 USB 口，
+             本机是 COM5」—— 那是 240 档验证板（2026-09-22 已退货）的说法，
+             而现在的目标板是微雪 2.8C：它的 UART0(GPIO43/44) 接板载 CH343P，
+             也就是**唯一的 Type-C 口**（原生 USB 只引到 12PIN 排针上）。
+             口径出处：docs/RGB-PANEL-2.8C.md 第 7 节。 -->
+        ① 端口改成你电脑上的（设备管理器里看）：<b>2.8C（最终板）刷写与监视走板载
+        UART 口 = 那个 Type-C 口</b>（板载 CH343P，就是 COMx）；它的原生 USB
+        (GPIO19/20) 只引到 12PIN 排针上，没有杜邦线时够不着。
+        <b>历史档（DualEye 240 那块）反过来：走原生 USB（当时是 COM5）</b> ——
+        该板已于 2026-09-22 退货，这句只作同类板参考。<br>
         ② 直接 <code>python -m esptool</code> 在没装 esptool 的 python 上会报
         <code>No module named esptool</code>（或 <code>intelhex</code>）——
         刷之前先把三个路径挂上 PYTHONPATH，完整命令见
-        <code>tools/theme-editor/README.md</code> 的「微雪双屏 240×240」那一节。<br>
+        <code>tools/theme-editor/README.md</code> 的「微雪双屏 240×240」那一节
+        （含 2.8C 的对应口径）。<br>
         ③ 成功以 esptool 最后那行 <code>Hash of data verified.</code> 为准。
       </div>
       <div class="toolbar" style="margin-top:10px">
@@ -235,7 +243,9 @@
 
   <div class="right">
     <div class="hint" id="preview-note" style="color:var(--dim);font-size:12px;margin-bottom:10px">
-      下面按 480×480（设备分辨率）合成。背景图铺在弧线下面，表情图盖在最上层。
+      <!-- ★ 这两段都由 applyPreviewSize() 按**目标板**填（别在 HTML 里写死 480） -->
+      <span id="preview-note-main"></span><br>
+      <span id="round-note"></span>
     </div>
     <div class="previews">
       <div class="screen">
@@ -1557,11 +1567,28 @@ function applyPreviewSize() {
     // CSS 尺寸单独给:240 的画布在页面上放大约 1.5 倍,看得清(只是显示大小)
     cv.style.width = cv.style.height = Math.round(side * 1.5) + "px";
   }
-  const note = document.getElementById("preview-note");
-  if (note) {
-    note.textContent = "下面按 " + side + "×" + side + "（" +
-      (side === 240 ? "这块板的屏" : "设备分辨率") +
-      "，1 像素 = 屏上 1 像素）合成。背景图铺在弧线下面，表情图盖在最上层。";
+  const noteMain = document.getElementById("preview-note-main");
+  const roundNote = document.getElementById("round-note");
+  const isTier240 = side === 240;
+  const panel = AssetSpec.ROUND_PANEL[isTier240 ? "res240" : "res480"];
+  const safe = AssetSpec.circleSafeSide(side);
+  if (noteMain) {
+    // ★ 纯文本（这个页面用 textContent 填字，所以这里不写 ** 那种强调标记 ——
+    //   它们会原样画在页面上）。
+    noteMain.textContent =
+      "下面按目标板的屏合成：" + side + "×" + side + "（" + panel.tier +
+      "，1 像素 = 屏上 1 像素）。背景图铺在弧线下面，表情图盖在最上层。";
+  }
+  if (roundNote) {
+    // ★ 这块屏是**圆的** —— 这句必须每次跟着目标板重算，而且数字只从
+    //   AssetSpec.ROUND_PANEL 取（别在页面里再抄一份直径）。
+    const mm = AssetSpec.mmPerPixelX10000(panel);
+    roundNote.textContent =
+      "屏是圆的：" + panel.hint +
+      (mm ? "1 像素 = " + (mm / 10000).toFixed(4) + " mm（" + side + " 像素 = " +
+            (panel.activeAreaMm10 / 100).toFixed(2) + " mm）。" : "") +
+      "画布四角在实际屏上不可见：矩形内容的对角线一半不能超过半径" +
+      "（480 档内切正方形边长 " + safe + "，超过就会被圆边切掉）。";
   }
 }
 

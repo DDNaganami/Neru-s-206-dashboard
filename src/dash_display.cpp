@@ -41,6 +41,16 @@ void dash_display_poll() {}   // 桩:无事可做
 //      跑几秒后 Ctrl+C,浏览器打开 preview/preview.html 看双屏扫表动画。
 // 渲染走的是同一套 dash_ui/boot_anim/ui_theme,和真屏逻辑完全一致。
 //
+// ★ 2026-09-24:「2.8C(最终板)」档 —— 默认就把**圆屏可视区**标在落盘的帧上。
+//   这块板是 480×480 的**圆屏**(微雪 ESP32-S3-LCD-2.8C,有效区 Ø70.13mm),
+//   画布四角真机上根本看不见 ⇒ 预览必须把那个圆画出来,否则"素材伸到四角"
+//   这类错在 PC 上看着好好的、装到表里才发现被圆边吃掉。
+//   遮罩的几何在 lib/dashcore/panel_view.h(唯一一份,native 用例钉住),这里
+//   只负责"把它落到落盘的那张图上"——LVGL 的渲染缓冲一个像素都不动,
+//   所以帧里的可见区就是真机画面(不是"预览自己画了一版")。
+//   按 `V` 可以开关这层遮罩(见 src/preview_input.h 的键表):
+//   关掉之后落盘的就是**裸的画布**,想看四角里到底画了什么时用它。
+//
 // 踩坑记录(写实驱动前必读):
 // 1) LVGL v9 的 lv_color_t 恒为 3 字节通用类型;flush 的 px 是显示格式的
 //    原始像素(16 位=RGB565 / 32 位=XRGB8888),不能按 lv_color_t 拷贝。
@@ -55,6 +65,7 @@ void dash_display_poll() {}   // 桩:无事可做
 #include <string.h>
 #include <direct.h>
 #include <Arduino.h>   // millis()(预览桩)
+#include "panel_view.h"   // 圆屏可视区几何（只在这个分支里用）
 
 #if LV_COLOR_DEPTH == 32
 typedef uint32_t fb_pixel_t;
@@ -79,6 +90,69 @@ static lv_display_t* g_left = nullptr;
 static lv_display_t* g_right = nullptr;
 static uint32_t last_frame_ms = 0;
 static uint32_t frame_no = 0;
+
+// ---- 「2.8C(最终板)」档的那层遮罩（见上面文件头那一段）----
+// 默认开。`V` 键可以关掉（关掉之后落盘的是裸画布）。
+static bool g_panel_mask = true;
+// 落帧计数（每次 poll 落一对帧 +1）。主循环用它判断"告警那一拍有没有被拍到"。
+static uint32_t g_frames_written = 0;
+static bool g_panel_banner_printed = false;
+
+// 把遮罩落到一份 24bpp 的落盘副本上，**不动 LVGL 的缓冲**。
+// ★ 为什么是"落盘的那一份"而不是原地改 fb：fb 是渲染的真值，改了就再也
+//   回不去了（按 V 关掉遮罩之后屏幕内容已经被压暗过）。这里逐行现算，
+//   每帧多一次 480 行的通道缩放 —— 宿主机上可以忽略（真机上不编这一段）。
+static void write_bmp_panel(const char* path, const fb_pixel_t* fb, int32_t w, int32_t h) {
+  FILE* f = fopen(path, "wb");
+  if (!f) return;
+  const uint32_t row = (w * 3u + 3u) & ~3u;
+  const uint32_t data_size = row * (uint32_t)h;
+  const uint32_t file_size = 54 + data_size;
+  uint8_t hdr[54] = {0};
+  hdr[0] = 'B'; hdr[1] = 'M';
+  hdr[2] = (uint8_t)(file_size); hdr[3] = (uint8_t)(file_size >> 8);
+  hdr[4] = (uint8_t)(file_size >> 16); hdr[5] = (uint8_t)(file_size >> 24);
+  hdr[10] = 54;
+  hdr[14] = 40;
+  hdr[18] = (uint8_t)(w); hdr[19] = (uint8_t)(w >> 8);
+  hdr[20] = (uint8_t)(w >> 16); hdr[21] = (uint8_t)(w >> 24);
+  hdr[22] = (uint8_t)(h); hdr[23] = (uint8_t)(h >> 8);
+  hdr[24] = (uint8_t)(h >> 16); hdr[25] = (uint8_t)(h >> 24);
+  hdr[26] = 1; hdr[28] = 24;
+  hdr[34] = (uint8_t)(data_size); hdr[35] = (uint8_t)(data_size >> 8);
+  hdr[36] = (uint8_t)(data_size >> 16); hdr[37] = (uint8_t)(data_size >> 24);
+  fwrite(hdr, 1, sizeof(hdr), f);
+  // BMP 是自下而上存的；遮罩按"屏坐标"算，所以这里逐行反着走但坐标照常用。
+  for (int32_t y = h - 1; y >= 0; --y) {
+    for (int32_t x = 0; x < w; ++x) {
+      fb_pixel_t c = fb[y * w + x];
+      const uint16_t k = panelShadeAt(x, y, w);
+      if (k < kPanelShadeInside) {
+#if LV_COLOR_DEPTH == 32
+        uint8_t r = px_r(c), g = px_g(c), b = px_b(c);
+        r = (uint8_t)(((uint32_t)r * k + kPanelShadeInside / 2u) / kPanelShadeInside);
+        g = (uint8_t)(((uint32_t)g * k + kPanelShadeInside / 2u) / kPanelShadeInside);
+        b = (uint8_t)(((uint32_t)b * k + kPanelShadeInside / 2u) / kPanelShadeInside);
+        c = ((fb_pixel_t)r << 16) | ((fb_pixel_t)g << 8) | (fb_pixel_t)b;
+#else
+        // 16 位 RGB565：与 panel_view.h 的 panelApplyOverlayRgb565 **同一套**
+        // 通道缩放（这里手写一遍是为了就地复用 px_b/px_g/px_r，别无第二套口径）。
+        const uint8_t r = (uint8_t)((c >> 11) & 0x1Fu);
+        const uint8_t g = (uint8_t)((c >> 5) & 0x3Fu);
+        const uint8_t b = (uint8_t)(c & 0x1Fu);
+        c = (fb_pixel_t)((panelScaleRgb565Channel(r, k) << 11) |
+                         (panelScaleRgb565Channel(g, k) << 5) |
+                          panelScaleRgb565Channel(b, k));
+#endif
+      }
+      fputc(px_b(c), f);
+      fputc(px_g(c), f);
+      fputc(px_r(c), f);
+    }
+    for (uint32_t p = w * 3u; p < row; ++p) fputc(0, f);
+  }
+  fclose(f);
+}
 
 static void preview_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px) {
   fb_pixel_t* fb = (fb_pixel_t*)lv_display_get_user_data(disp);
@@ -159,17 +233,41 @@ void buzzer_host_printf(const char* line) {
   fflush(stdout);   // ★ 不 flush 的话这一行会卡在缓冲里，"按了怎么没反应"最难查
 }
 
+// ---- 「2.8C(最终板)」档：遮罩的运行时开关 + 帧号（见文件头）----
+void dash_display_preview_set_panel_mask(bool on) { g_panel_mask = on; }
+bool dash_display_preview_panel_mask() { return g_panel_mask; }
+uint32_t dash_display_preview_frames() { return g_frames_written; }
+
+// 开机 banner：把"这块屏是圆的、可视圆是多少"打进日志。
+// ★ 一次性：它在报告里是可以直接引用的一行（"这轮跑的是 2.8C 档"）。
+// ★ 纯 ASCII：README 那条纪律（中文在 GBK 控制台上会抛 UnicodeEncodeError）。
+static void print_panel_banner_once() {
+  if (g_panel_banner_printed) return;
+  g_panel_banner_printed = true;
+  char line[192];
+  panelDescribe(line, sizeof(line), THEME_DISPLAY_RES);
+  printf("preview: %s\n", line);
+  printf("preview: round mask %s (key V toggles; frames are 480x480 with the mask burned into the BMP)\n",
+         g_panel_mask ? "ON" : "OFF");
+  fflush(stdout);
+}
+
 // 每 200ms 落一对 BMP(共 150 对 = 30 秒,够看开机动画 + 假数据走动)
 void dash_display_poll() {
   if (frame_no >= 150) return;
   if (millis() - last_frame_ms < 200) return;
   last_frame_ms = millis();
+  print_panel_banner_once();
   char path[64];
   snprintf(path, sizeof(path), "preview/frames/l_%04u.bmp", frame_no);
-  write_bmp(path, fb_left, THEME_DISPLAY_RES, THEME_DISPLAY_RES);
+  // ★ 开关决定**落盘的那一份**要不要压暗四角；LVGL 的 fb 一个像素都不动。
+  if (g_panel_mask) write_bmp_panel(path, fb_left, THEME_DISPLAY_RES, THEME_DISPLAY_RES);
+  else              write_bmp(path, fb_left, THEME_DISPLAY_RES, THEME_DISPLAY_RES);
   snprintf(path, sizeof(path), "preview/frames/r_%04u.bmp", frame_no);
-  write_bmp(path, fb_right, THEME_DISPLAY_RES, THEME_DISPLAY_RES);
+  if (g_panel_mask) write_bmp_panel(path, fb_right, THEME_DISPLAY_RES, THEME_DISPLAY_RES);
+  else              write_bmp(path, fb_right, THEME_DISPLAY_RES, THEME_DISPLAY_RES);
   ++frame_no;
+  g_frames_written = frame_no;   // 主循环读它判断"告警那一拍被拍到没有"
 }
 
 #elif defined(DASH_DISPLAY_SPI)

@@ -17,10 +17,14 @@ const path = require("path");
 
 const dir = __dirname;
 // 三个页面:两个编辑器在 tools/theme-editor/,预览页在 preview/
+// ★ 2026-09-24:预览页变成**两张**(preview.html 纯帧播放;
+//   preview-28c.html 是「2.8C(最终板)」档,页面上多一圈真机圆边虚线)。
+//   两张都要查 —— 它们是"双击打开的静态页",语法错的表现同样是"一片空白"。
 const pages = [
   path.join(dir, "index.html"),
   path.join(dir, "image-editor.html"),
-  path.join(dir, "..", "..", "preview", "preview.html")
+  path.join(dir, "..", "..", "preview", "preview.html"),
+  path.join(dir, "..", "..", "preview", "preview-28c.html")
 ];
 
 let pass = 0, fail = 0;

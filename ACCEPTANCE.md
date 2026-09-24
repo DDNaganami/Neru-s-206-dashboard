@@ -3310,3 +3310,106 @@ rgb: vsync=1050(+53/s) wrap=1050(+53/s) swap=123(+5/s) flush=643 blit_max=1332us
 ```
 
 ⇒ `vsync` 有增量（+53~54/s）✓、`copy_max` 回到 **1332µs** ✓、`timeout=0` ✓、`fullrb=0/s` ✓。
+
+---
+
+## ⑨-bis 预览/主题编辑器跟上"2.8C 是最终板"（2026-09-24，**不动固件行为**）
+
+范围：`env:pcpreview` + `tools/theme-editor/` + 文档。**没有**改 `src/dash_display*` 的
+真驱动那一支、`lib/dashcore/*` 的任何判据、`platformio.ini` 的任何 env ——
+固件行为逐位不变（本轮 `platformio.ini` **一个字节都没动**：2.8C 档是 `pcpreview`
+的默认行为，不是新 env、也不是新编译开关）。
+
+### ① `pcpreview` 的「2.8C（最终板）」档 = 落盘的帧上带"圆屏可视区"
+
+* 板子口径：微雪 ESP32-S3-LCD-2.8C，480×480 圆屏，**可视圆 Ø70.13mm**
+  （`PURCHASE.md` 第六节）、1 像素 = **0.1461 mm**、内切正方形 **336**。
+* 几何**只有一份**：`lib/dashcore/panel_view.h`（纯头，不依赖 LVGL/Arduino ⇒ native 可测）。
+  着色规则三段：圆内 256（**一个像素都不改**）、圆外 3px 圈带 128、更外四角 32/64 打点。
+  **LVGL 帧缓冲不动** —— 压暗是在写 BMP 时对"落盘那一份"现算的（关掉遮罩不留痕）。
+* 运行时开关：键 `V` / 控制文件 `mask=0`（默认开）。
+* 落第一帧时打一行 banner（纯 ASCII）：
+  `preview: panel 2.8C: 480x480 px = 70.13 mm active dia | inscribed square 336 px | corners outside the circle are NOT visible` ✓ 实测。
+* 实测（本机 `C:\206dash-scratch`，注入时间线跑 17.5s，落 80 对帧）：
+  圆外像素 `px(2,2)` = `0/4/0`（= 主题底色 20,20,20 的 1/8 + 斑点）✓；
+  按 `mask=0` 之后同一像素回到 `16/20/16`（= 底色的 1/2，只有 1 px 边界被圈带压暗）✓。
+
+### ② 六格指示灯条 + 告警在预览里**确实看得见**（逐帧读像素）
+
+用 480 基准几何（`kLampSize=40 / kLampGap=6 / kLampCy=415 / kLampX0=105`）逐帧统计六格的
+点亮像素数（亮格 340..690 px、误入格内的小字墨迹 ≈50 px ⇒ 阈值取 250）：
+
+| 注入 | 帧上看到的 | 结论 |
+|---|---|---|
+| `low_beam=1` + `door=1` | `lamps=[Low,Door]` | 稳态灯不闪 ✓ |
+| `+hazard=1` | 交替 `[L,R,Haz,Low,Door]` ↔ `[Low,Door]` | 转向/双闪**在闪** ✓ |
+| `speed=130`（>120） | 左右两格借位闪 + 描边（`outline=[R,…]`）+ `alert: overspeed` + `BEEP pattern=urgent` | 超速告警 ✓ |
+| `rpm=6000`（>5800） | 仪表盘灯格借位闪 + `alert: redline` + `BEEP pattern=triple` | 红区告警 ✓ |
+| `door=1` 连续 200ms | `alert: door` + `BEEP pattern=long` + Door 格描边 | 门告警 ✓ |
+| `left=1`（20 s 后 = 转向灯忘关） | 本演示只跑到"亮+闪"（忘关窗口 20s，未在预览里等够） | 判据在 native 用例里 ✓ |
+
+★ **告警那一拍为什么会漏、以及怎么修的**（预览侧专有，判据/蜂鸣器一个字没改）：
+`Alerts::beeping()` 只持续 `beep_ms` = 120ms，而预览 **200ms 才落一帧** ⇒ 真机 60fps 下
+每次都拍得到、预览会漏。修法：脉冲开始时记住帧号，**保持到显示侧真的落了新的一帧**
+（`dash_display_preview_frames()`），另有 1500ms 兜底。修前"按 O 偶尔不见闪"、修后逐帧可见 ✓。
+
+### ③ 注入语义修掉一个真踩到的坑（**预览侧**）
+
+控制文件是每帧重读的"绝对值"，但用户只写自己关心的那几位 ⇒ `hazard=1` 之后再来一次
+`hazard=0`（或只写 `left=1`）时，上次写进 `indicator_left/right` 的 true 没人清，
+屏上表现是"双闪关了、左右箭头还在闪"（实测踩到：演示脚本里写了 `left=1`，屏上却一直是双闪的样子）。
+修法：`hazard` 在数据层的语义就是"两位同时置位"（`0x0C = 0x04|0x08`）⇒ 注入也照这个来，
+**`hazard=0` 连左右箭头一起清**，并把顺序定成"双闪先、箭头后"（于是 `hazard=1 left=0 right=0`
+这种组合仍然表达得出来）。纯逻辑搬进 `lib/dashcore/preview_input.h` 的
+`preview_apply_snapshot()`（main.cpp 不参与 native 链接 ⇒ 不搬就测不到），用例钉住。
+
+### ④ 主题编辑器：480 = 2.8C（最终板）/ 240 = 历史：DualEye（已退货）
+
+* `image-blob-build.js`：`FACE_SIZE_TIERS[0].label` = `480×480 屏 · 2.8C（最终板）`；
+  `[1].label` = `240×240 屏 · 历史：DualEye（已退货）`；`TARGETS.s3.label`
+  = `ESP32-S3 N16R8(16MB flash) + 2.8C 圆屏（最终板）`（hint 里补了"四角不可见、矩形 ≤336"）；
+  `TARGETS.s3_240.label` = `历史：ESP32-S3 微雪双屏 240×240(1.28", DualEye 已退货)`。
+  **几何数字一个都没动**（320/300/163、160/152/81 逐位不变）。
+* `asset-spec.js`：新增 `ROUND_PANEL`（480 档 `activeAreaMm10 = 7013` = Ø70.13mm；
+  240 档 **留空** —— 那块板没量过有效区，不编数）+ `mmPerPixelX10000()`（480 档 = **1461**）。
+  页面从这里取，不在 HTML 里再抄一份。
+* `image-editor.html`：预览说明改成"按目标板的屏合成（默认 480×480 · 2.8C（最终板）…）"，
+  并新增一行**圆形可视区**说明（Ø70.13mm / 0.1461 mm/px / 内切正方形 336 / 四角不可见）；
+  刷写那栏原来写的"这块 DualEye 板走原生 USB 口，本机是 COM5"改成 2.8C 的实际口径
+  （**板载 CH343P = 唯一的 Type-C 口**，见 `docs/RGB-PANEL-2.8C.md` 第 7 节），
+  并把 COM5 那句明确标成"**针对 DualEye 的历史说明**"。
+* `tools/theme-editor/README.md`：新增「★ 档位口径」表、「★ 2.8C（最终板）的素材规格」一节
+  （含内切正方形 336 与"四角不可见"）与「2.8C 档」一节；240 那一节标题加上"历史档"。
+
+### ⑤ 文档
+
+新增 `docs/PREVIEW.md`：怎么跑（ASCII 副本 / zig 桩 / 两个环境变量）、每个键与每个注入项、
+画布 px ↔ 面板 mm、**四角为什么不可见**、同一份代码在哪一层、
+以及**第 4 节「预览看不到什么」**（撕裂/残留/横纹/抖动/帧率/面板时序/字体墨迹/物理边框
+—— 逐条写清"为什么在这个预览里结构上不可能出现"）。
+新增 `preview/preview-28c.html`（页面上画真机圆边虚线 + px↔mm 表 + 能验/验不了清单），
+并把它加进 `syntax-check-pages.js` 的检查清单。
+
+### ⑥ 回归数字（前 → 后）
+
+| 项 | 基线 | 本轮 |
+|---|---|---|
+| `test-gauge-geometry` | 71 | **71** |
+| `test-face-stages` | 429 | **429** |
+| `test-theme-json` | 259 | **259** |
+| `test-asset-spec` | 155 | **174**（+19，新增档位口径/物理口径/换算） |
+| `test-image-blob-build` | 369 | **369** |
+| `syntax-check-pages` | 12 | **14**（+2：多查一张预览页） |
+| native（`-e native`） | 238 例（2 skipped / 236 succeeded） | **238 例（2 skipped / 236 succeeded）**，其中 `test_ui_lamps.cpp` 由 6 例 → **10 例**（+4：遮罩开关、注入→快照、圆屏几何、遮罩不误伤圆内） |
+| `platformio run -e pcpreview` | SUCCESS | **SUCCESS**（含本轮改动） |
+
+构建在纯 ASCII 副本里跑（`C:\206dash-scratch\Neru-pcp`），`PATH` 挂了
+`C:\206dash-scratch\zigbin` 的 zig 转发桩；没跑 `pio clean`、没删 `.pio`。
+`tools/theme-editor/theme.json`（未跟踪）全程未碰。
+
+### ⑦ 红线复核
+
+固件行为**未动**：`src/dash_display_rgb.cpp` / `dash_display_spi.cpp` / `platformio.ini`
+本轮**零改动**；`lib/dashcore/*` 只动了 `preview_input.h`（新增预览注入的纯函数与两个键，
+设备端不编这段调用点）；`src/main.cpp` 的改动全部落在 `#if defined(DASH_DISPLAY_PREVIEW)` 里。
+

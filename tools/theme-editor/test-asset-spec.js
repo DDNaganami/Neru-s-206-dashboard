@@ -130,6 +130,46 @@ section("二、圆形可视区约束（480 圆屏 ⇒ 内容落在内切圆内�
 }
 
 // ============================================================
+section("二之二、档位口径：480 = 2.8C（最终板）/ 240 = 历史 DualEye（已退货）");
+{
+  // ★ 2026-09-24：这两条 label/tier 文案是**给用户看的档位名**，
+  //   它们必须说清"哪个是目标板、哪个只是历史档" —— 措辞被改回去就会红。
+  ok(/2\.8C/.test(AS.ROUND_PANEL.res480.tier), "480 档点名 2.8C："
+     + AS.ROUND_PANEL.res480.tier);
+  ok(/最终板/.test(AS.ROUND_PANEL.res480.tier), "480 档写明「最终板」");
+  ok(/历史/.test(AS.ROUND_PANEL.res240.tier), "240 档写明「历史」："
+     + AS.ROUND_PANEL.res240.tier);
+  ok(/退货/.test(AS.ROUND_PANEL.res240.tier), "240 档写明「已退货」");
+  ok(/DualEye/.test(AS.ROUND_PANEL.res240.tier), "240 档点名 DualEye（历史那块板）");
+
+  // 目标板 label 也必须带上这些口径（它是下拉框里用户唯一看得见的那行字）
+  ok(/2\.8C/.test(IB.TARGETS.s3.label + IB.TARGETS.s3.hint), "s3 目标的 label/hint 里写了 2.8C");
+  ok(/退货|历史/.test(IB.TARGETS.s3_240.label + IB.TARGETS.s3_240.hint),
+     "s3_240 目标的 label/hint 里写了退货/历史");
+  // 480 档标签同样（下拉框里选"分辨率档"时显示的就是 FACE_SIZE_TIERS[].label）
+  ok(/2\.8C/.test(IB.FACE_SIZE_TIERS[0].label), "480 分辨率档标签里有 2.8C");
+  ok(/历史/.test(IB.FACE_SIZE_TIERS[1].label), "240 分辨率档标签里有「历史」");
+
+  // ---- 物理口径（出处：PURCHASE.md 第六节「Ø 有效区」那一列）----
+  eq(AS.ROUND_PANEL.res480.activeAreaMm10, 7013, "2.8C 有效区 Ø70.13mm（单位 1e-2 mm）");
+  eq(AS.ROUND_PANEL.res240.activeAreaMm10, null,
+     "DualEye 那一档**没有**量过有效区 ⇒ 留空，不许编一个数");
+  eq(AS.ROUND_PANEL.res480.displayRes, 480, "2.8C 是 480×480");
+  eq(AS.ROUND_PANEL.res240.displayRes, 240, "DualEye 是 240×240");
+
+  // 1 像素 = 0.1461 mm（单位 1e-4 mm ⇒ 1461），与 C++ 侧 panelMmPerPx10000 同一个数
+  eq(AS.mmPerPixelX10000(AS.ROUND_PANEL.res480), 1461, "1 像素 = 0.1461 mm");
+  eq(AS.mmPerPixelX10000(AS.ROUND_PANEL.res240), null,
+     "没有有效区数据时给不出换算 ⇒ null（不许瞎算）");
+
+  // tierOf() 要把这块屏的物理口径挂上去（页面用它渲染"屏是圆的"那句）
+  eq(AS.tierOf("s3").panel.activeAreaMm10, 7013, "tierOf(s3).panel 带上 Ø70.13mm");
+  eq(AS.tierOf("s3_240").panel.activeAreaMm10, null, "tierOf(s3_240).panel 没有那个数");
+  eq(AS.tierOf("s3").circleSafe, 336, "tierOf(s3).circleSafe = 336（内切正方形）");
+  eq(AS.tierOf("s3_240").circleSafe, 168, "tierOf(s3_240).circleSafe = 168");
+}
+
+// ============================================================
 section("三、可接受格式与拒绝路径");
 {
   eq(AS.formatOf("a.png").id, "png", "PNG 认");
