@@ -405,12 +405,29 @@ static int32_t readout_value(ArcKind k, const ArcDashView& v) {
   }
 }
 
-// 读数用标签:定宽 + 文字居中,所以文本从"8"变到"8000"也不会左右挪位。
+// 读数用标签:**内容宽度** + 对象居中 ⇒ 文本从"8"变到"8000"也不会左右挪位，
+// 而"脏"的范围就是**文字自己的外框**（见下面那段"为什么不再强制整屏宽"）。
 static lv_obj_t* make_readout_label(lv_obj_t* parent, const lv_font_t* font,
                                     lv_color_t color, int32_t cy480) {
   lv_obj_t* l = lv_label_create(parent);
   lv_obj_remove_style_all(l);          // 只要文字:清掉内边距,免得隐形边框压住弧
-  lv_obj_set_width(l, LV_PCT(100));
+  // ★★ 2026-09-24 第七轮：**不再** `lv_obj_set_width(l, LV_PCT(100))`。
+  //
+  //   旧写法把标签设成**整屏宽 480**、靠 `LV_TEXT_ALIGN_CENTER` 把文字摆在中间；
+  //   而 LVGL 的 `lv_label_set_text*()` 失效的是**整个标签对象** ⇒ 数字每变一次
+  //   就脏一条 **480×52** 的带（与单位标签并成 **480×78 = 一屏的 16.2%**），
+  //   UI 5 拍/秒 ⇒ 每秒脏掉 **~86% 的一屏** —— 屏上表现就是车主说的
+  //   "数字一跳，整块表像被刷了一刀"（每个刷新重画一条**横跨整屏**的读数带）。
+  //
+  //   改成"内容宽"之后：标签的框 = 文字自己的外框（大数字约 115×52、单位约 34×21），
+  //   失效范围跟着缩到那一小块 —— 落帧实测（pcpreview 2.8C 档，静画）：
+  //       单次最大脏矩形  480×78(16.2%) → **115×78(3.8%)**
+  //       每秒脏面积      82.7k~98.1k px² → **25.8k~27.4k px²**（两屏合计，=单屏 11~12%）
+  //   而 flash **一个字节都不涨**（这是**删**一行，没有新增任何数据/字体）。
+  //   ★ 与"读数位置"无关：`lv_obj_align(..., LV_ALIGN_CENTER, 0, dy)` 居中的是
+  //     **对象**，框变窄之后文字仍然在正中间（落帧实测墨迹 x/y 区间一个像素没变）。
+  //   ★ 也没有引入新字体/图集/渲染路径 —— 仍旧是 LVGL 的 `lv_label`（数字串整体重画，
+  //     只是重画的范围小了一个量级）。
   lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_font(l, font, 0);
   lv_obj_set_style_text_color(l, color, 0);
