@@ -66,6 +66,7 @@ void dash_display_poll() {}   // 桩:无事可做
 #include <direct.h>
 #include <Arduino.h>   // millis()(预览桩)
 #include "panel_view.h"   // 圆屏可视区几何（只在这个分支里用）
+#include "flush_stats.h"  // 每秒"脏了多少"（与真机驱动同一份口径，见该文件头）
 
 #if LV_COLOR_DEPTH == 32
 typedef uint32_t fb_pixel_t;
@@ -97,6 +98,13 @@ static bool g_panel_mask = true;
 // 落帧计数（每次 poll 落一对帧 +1）。主循环用它判断"告警那一拍有没有被拍到"。
 static uint32_t g_frames_written = 0;
 static bool g_panel_banner_printed = false;
+
+// ★ 每秒"脏了多少"（口径与真机驱动同一份：lib/dashcore/flush_stats.h）。
+//   ★ 两份显示（左/右）**共用这一个累计器** ⇒ 打出来的和是"两屏合计"，
+//     而占比按**单屏**面积算（两屏的 UI 一样重，合计 ≈ 单屏的 2 倍）。
+static FlushStats g_fstats = {0u, 0u, 0, 0, 0u};
+static uint32_t   g_fstats_last_ms = 0;
+static uint32_t   g_fstats_flush_total = 0;
 
 // 把遮罩落到一份 24bpp 的落盘副本上，**不动 LVGL 的缓冲**。
 // ★ 为什么是"落盘的那一份"而不是原地改 fb：fb 是渲染的真值，改了就再也
@@ -158,6 +166,10 @@ static void preview_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t*
   fb_pixel_t* fb = (fb_pixel_t*)lv_display_get_user_data(disp);
   const uint32_t w = (uint32_t)lv_display_get_horizontal_resolution(disp);
   const uint32_t aw = (uint32_t)(area->x2 - area->x1 + 1);
+  // ★ 每秒"脏了多少"（与真机驱动同一份口径/同一个头，见 flush_stats.h）。
+  //   预览的绘制缓冲是**整屏大小** ⇒ 这里拿到的是 LVGL 真正标脏的那些区域，
+  //   没有真机那条"16 行绘制缓冲"的上限 ⇒ **单次最大矩形能直接暴露整屏失效**。
+  flush_stats_add(g_fstats, area->x2 - area->x1 + 1, area->y2 - area->y1 + 1);
   // v9 PARTIAL 模式:px 指向绘制缓冲**首地址**,但区域内容按区域自己的行距
   // (aw)从缓冲起点紧排,即 (y - area->y1) * aw + (x - area->x1) ——
   // 不是"全屏行距 + 全屏偏移"(那会让窄区域读错行,屏上出现错位残影)。
@@ -254,6 +266,30 @@ static void print_panel_banner_once() {
 
 // 每 200ms 落一对 BMP(共 150 对 = 30 秒,够看开机动画 + 假数据走动)
 void dash_display_poll() {
+  // ★ 每秒那两行"脏了多少"（**在落帧的早退之前**：30 秒之后不再落帧，
+  //   但"脏了多少"这条诊断仍然要能一直打 —— 它是给"数字在跳"那种场景用的）。
+  const uint32_t now_ms = millis();
+  if (g_fstats_last_ms == 0) g_fstats_last_ms = now_ms;
+  if (now_ms - g_fstats_last_ms >= 1000) {
+    g_fstats_last_ms = now_ms;
+    // 累计值在**这一秒结算时**加一次（口径与真机那行的 `累计%u` 一致：
+    // 都含当前这一秒）。
+    g_fstats_flush_total += g_fstats.n;
+    const uint32_t scr_px = (uint32_t)THEME_DISPLAY_RES * (uint32_t)THEME_DISPLAY_RES;
+    const uint32_t inv_pct = flush_stats_pct_x10(g_fstats.area_sum, scr_px);
+    const uint32_t fmax_pct = flush_stats_pct_x10(g_fstats.max_area, scr_px);
+    printf("preview: 脏区/s(左右两屏合计) inv=%upx2(=单屏的 %u.%u%%) flush=%u/s(累计%u) "
+           "fmax=%dx%d(单屏的 %u.%u%%) 单屏=%upx2\n",
+           (unsigned)g_fstats.area_sum,
+           (unsigned)(inv_pct / 10u), (unsigned)(inv_pct % 10u),
+           (unsigned)g_fstats.n, (unsigned)g_fstats_flush_total,
+           (int)g_fstats.max_w, (int)g_fstats.max_h,
+           (unsigned)(fmax_pct / 10u), (unsigned)(fmax_pct % 10u),
+           (unsigned)scr_px);
+    fflush(stdout);
+    flush_stats_reset(g_fstats);
+  }
+
   if (frame_no >= 150) return;
   if (millis() - last_frame_ms < 200) return;
   last_frame_ms = millis();

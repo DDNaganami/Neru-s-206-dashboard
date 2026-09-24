@@ -124,6 +124,7 @@
 #include "dash_display.h"
 #include "ui_theme.h"
 #include "dash_log.h"     // 日志默认打 USB-CDC+UART0;带链路 PHY 的构建只打 USB-CDC(见文件头)
+#include "flush_stats.h"  // 每秒"脏了多少"(LVGL flush 面积之和/最大矩形;见该文件头)
 
 #if defined(DASH_DISPLAY_RGB)
 
@@ -355,6 +356,18 @@ static uint32_t g_swap_int_max_us = 0;
 static uint64_t g_swap_int_sum_us = 0;
 static uint32_t g_swap_int_n = 0;
 static uint32_t g_fullrb_n = 0;              // 本秒内"整屏刷新"的次数
+
+// ★★ 2026-09-24 新增：**每秒"脏了多少"**（口径见 lib/dashcore/flush_stats.h）。
+//   为什么加它：车主的判据是"数字一跳，整块表像被刷了一刀"，而原来那一行里
+//   `flush=` 是**累计值**、也没有"单次最大矩形" ⇒ "整屏重画"与"只重画读数带"
+//   在串口上**看不出区别**。这里只做**只读统计**，不动任何刷新行为：
+//     · `inv` = 本秒 LVGL 交给 flush 的区域**面积之和**(px²) ÷ 一屏面积；
+//     · `flush/s` = 本秒 flush 次数（与既有的累计 `flush=` 区分：那个是总数）；
+//     · `fmax` = 本秒**单次最大**矩形(w×h)与它占一屏的比例。
+//   ★ 注意：单次矩形受绘制缓冲行数限制（RGB_DRAW_BUF_LINES=16 行 ⇒ 最高 480×16），
+//     所以**这一格在真机上永远不会是 480×480**；真正的判据是 `inv` 与一屏的比值
+//     （接近或超过 100% ⇒ 这一秒把整屏刷了一遍以上）。
+static FlushStats g_fstats = {0u, 0u, 0, 0, 0u};
 
 // 换帧请求落在"帧内哪个相位"(相对上一个 VSYNC 过去了多少 µs)。稳态下换帧请求是
 // 异步来的(200ms 一次),所以这个数应当**散布在 0..一帧**之间;它本身不是判据,
@@ -708,6 +721,10 @@ static void rgb_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px)
   if (x2 > (int32_t)THEME_DISPLAY_RES - 1) x2 = (int32_t)THEME_DISPLAY_RES - 1;
   if (y2 > (int32_t)THEME_DISPLAY_RES - 1) y2 = (int32_t)THEME_DISPLAY_RES - 1;
   if (x2 < x1 || y2 < y1) { lv_display_flush_ready(disp); return; }
+
+  // ★ 每秒"脏了多少"只读统计（口径见 flush_stats.h；用**裁剪后**的矩形，
+  //   与真正搬进 fb 的那块一致）。放在计时之前：它不影响任何刷新行为。
+  flush_stats_add(g_fstats, x2 - x1 + 1, y2 - y1 + 1);
 
   // ② 动手之前:确认上一次换帧的那个边界已经过去(见 wait_swap_settled)
   wait_swap_settled();
@@ -1477,6 +1494,26 @@ void dash_display_poll() {
                 g_full_refresh ? "全屏重绘" : "局部刷新",
                 (unsigned)(ESP.getFreePsram() / 1024u),
                 (unsigned)(ESP.getFreeHeap() / 1024u));
+
+  // ★★ 每秒第二行：**"脏了多少"**（只读统计，口径见 lib/dashcore/flush_stats.h）。
+  //   与上面那一行同一个节奏、同一个前缀风格；分开打是为了不动上面那行的格式
+  //   （它已经被 ACCEPTANCE / docs 多处引用，逐字节保持原样）。
+  //   怎么读：`inv` ÷ 一屏(230400px²) = 这一秒相当于把屏幕刷了几遍；
+  //   `fmax` 是**单次**最大的那一块（它受 RGB_DRAW_BUF_LINES 限制，见那段说明）。
+  {
+    const uint32_t scr_px = (uint32_t)THEME_DISPLAY_RES * (uint32_t)THEME_DISPLAY_RES;
+    const uint32_t inv_pct = flush_stats_pct_x10(g_fstats.area_sum, scr_px);
+    const uint32_t fmax_pct = flush_stats_pct_x10(g_fstats.max_area, scr_px);
+    dash_logf("rgb: 脏区/s inv=%upx2(=一屏的 %u.%u%%) flush=%u/s(累计%u) "
+              "fmax=%dx%d(一屏的 %u.%u%%) 单屏=%upx2\n",
+                  (unsigned)g_fstats.area_sum,
+                  (unsigned)(inv_pct / 10u), (unsigned)(inv_pct % 10u),
+                  (unsigned)g_fstats.n, (unsigned)g_flush_count,
+                  (int)g_fstats.max_w, (int)g_fstats.max_h,
+                  (unsigned)(fmax_pct / 10u), (unsigned)(fmax_pct % 10u),
+                  (unsigned)scr_px);
+    flush_stats_reset(g_fstats);
+  }
   last_forced_kb = g_forced_kb;
   // 刷新节奏统计:每秒清零重来(min 用 0xFFFFFFFF 当"还没测到")
   g_swap_int_n = 0;
