@@ -164,12 +164,16 @@ clear=1         # 全部复位（见下面第 ① 条）
 预览档挂的是 `BuzzerHost`（`lib/dashcore/buzzer.h`）：
 
 * 默认**打印一行** —— `BEEP pattern=urgent ms=120`（纯 ASCII，格式固定，便于 grep）；
-* 想真出声：编译时加 `-DBUZZER_HOST_SOUND=1`（Windows 上会调 `MessageBeep`）：
+* 想真出声：把 `-DBUZZER_HOST_SOUND=1` 加进这次构建（`platformio` 没有
+  `--project-option` 这个开关，实测报 `No such option` ⇒ 用环境变量）：
 
   ```powershell
-  python -m platformio run -e pcpreview --project-option "build_flags=-DBUZZER_HOST_SOUND=1" -t exec
+  $env:PLATFORMIO_BUILD_FLAGS='-DBUZZER_HOST_SOUND=1'   # Windows 上会调 MessageBeep
+  python -m platformio run -e pcpreview -t exec
   ```
 
+  ★ 这是**临时**的：下次构建前清掉它（`Remove-Item Env:PLATFORMIO_BUILD_FLAGS`），
+  否则"带声音"会一直粘在那份构建缓存上（`platformio.ini` 里**没有**这一条）。
 * **什么时候该响**的判据完全不在这一层（在 `lib/dashcore/alerts.*`，与真机同一份）。
 
 ### 3.5 「告警那一拍」为什么在预览里也看得见（一个采样问题）

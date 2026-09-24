@@ -210,7 +210,9 @@ speed=140
   不会碰到它 —— 按 `V` 开关遮罩时灯位那几格的判读结果应当完全一样。
 
 > ★ 蜂鸣器这一层是**可替换实现**（`lib/dashcore/buzzer.h`）：预览上挂的是
-> `BuzzerHost`（打印上面那行 `BEEP ...`，加 `-DBUZZER_HOST_SOUND=1` 会出系统提示音）；
+> `BuzzerHost`（打印上面那行 `BEEP ...`，加 `-DBUZZER_HOST_SOUND=1` 会出系统提示音 ——
+> 用 `$env:PLATFORMIO_BUILD_FLAGS='-DBUZZER_HOST_SOUND=1'` 给这次构建，
+> `platformio` 本身**没有** `--project-option` 那个开关，实测会报 `No such option`）；
 > 真机那一档是另一个子类（**建议**走 2.8C 板上 TCA9554 的 `EXIO8`，零额外引脚 ——
 > 见 `ARCHITECTURE.md` §8 的 **L14**：**仍是建议、待 owner 点头**，所以本轮
 > 没有写任何 I2C 时序）。
