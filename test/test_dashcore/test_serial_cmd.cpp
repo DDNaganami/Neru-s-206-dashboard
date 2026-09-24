@@ -90,10 +90,33 @@ void test_serial_cmd_is_pure(void) {
   TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::Reinit, (uint8_t)serial_cmd_classify('r'));
 }
 
+// ============================================================
+// 六、`i` 的次数位（临时注入路径）：`i1` / `i4` / `i` 各是几次
+//    ★ 这一层是纯函数 ⇒ 宿主上可测；"数字本身不是命令"这条也要钉住
+//      （否则这个口上回放行里的一颗数字会被当成命令吃掉一个字节）。
+// ============================================================
+void test_serial_cmd_inject_count(void) {
+  // 不跟数字 ⇒ 用默认值（4 次：必然攒够"连续 3 次"）
+  TEST_ASSERT_EQUAL_UINT8(4u, serial_cmd_inject_count('\0', 4u));
+  TEST_ASSERT_EQUAL_UINT8(4u, serial_cmd_inject_count('\r', 4u));
+  TEST_ASSERT_EQUAL_UINT8(4u, serial_cmd_inject_count('x', 4u));
+  TEST_ASSERT_EQUAL_UINT8(4u, serial_cmd_inject_count('0', 4u));   // '0' 不在 1..9 里
+  // 跟着数字 ⇒ 就是那一位（`i1` 用来量"发现窗"、`i4` 用来造"连续 3 次"）
+  TEST_ASSERT_EQUAL_UINT8(1u, serial_cmd_inject_count('1', 4u));
+  TEST_ASSERT_EQUAL_UINT8(4u, serial_cmd_inject_count('4', 4u));
+  TEST_ASSERT_EQUAL_UINT8(9u, serial_cmd_inject_count('9', 4u));
+  // ★ 数字**本身不是命令**（`serial_cmd_classify('3') == None`）：
+  //   它只有在"刚认出 `i`"之后才被调用方吃掉一位。
+  for (char c = '0'; c <= '9'; c++) {
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::None, (uint8_t)serial_cmd_classify(c));
+  }
+}
+
 void register_serial_cmd_tests(void) {
   RUN_TEST(test_serial_cmd_table);
   RUN_TEST(test_serial_cmd_rejects_uppercase);
   RUN_TEST(test_serial_cmd_hex_chars_are_not_commands);
   RUN_TEST(test_serial_cmd_control_chars_are_not_commands);
   RUN_TEST(test_serial_cmd_is_pure);
+  RUN_TEST(test_serial_cmd_inject_count);
 }

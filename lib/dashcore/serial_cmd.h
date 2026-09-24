@@ -28,6 +28,7 @@
 //   · `i` ⇒ **临时故障注入**（只在 `-DPANEL_GUARD_FAULT_INJECT=1` 的测试构建里
 //            真的有动作；默认构建里调用方会把它当**普通字符**放回回放路径
 //            ⇒ 行为逐字节不变，见 `SerialCmd::Inject` 那段说明）
+//            ★ 可以跟一位数字表示"注入几次"（`i1` = 一次、`i4` = 四次）；不跟就是 4 次。
 // ============================================================
 
 enum class SerialCmd : uint8_t {
@@ -38,6 +39,15 @@ enum class SerialCmd : uint8_t {
   Reinit,
   Inject,
 };
+
+// `i` 后面那一位数字（"注入几次"）的解析：不是 '1'..'9' 就用 `dflt`。
+// ★ 单独一个函数是为了让"`i3` 是几次、`i` 又是几次"这件事在宿主机上可测、可读；
+//   数字**本身不是命令**（`serial_cmd_classify('3')` 仍是 `None`），
+//   由调用方在认出 `i` 之后自己吃掉下一位。
+inline uint8_t serial_cmd_inject_count(char digit, uint8_t dflt) {
+  if (digit < '1' || digit > '9') return dflt;
+  return (uint8_t)(digit - '0');
+}
 
 // 字符 → 命令。★ 认不出来一律 `None`（调用方据此把它交给回放路径）。
 inline SerialCmd serial_cmd_classify(char c) {

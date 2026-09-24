@@ -1268,8 +1268,10 @@ static void pan_guard_log(uint8_t which, uint32_t a, uint32_t b, void*) {
       dash_logf("panelguard: exio rd err (no ack) -> retry next\n");
       break;
     case kPanelGuardLogExio:
-      dash_logf("panelguard: exio rd=0x%02X shadow=0x%02X -> rewritten\n",
-                (unsigned)a, (unsigned)b);
+      // ★ 末尾带上**这一拍的时刻**（`millis()`）：判据里"发现耗时 ≤ 一个检查窗口"
+      //   这条就是要拿它跟注入那一行的时刻对账（注入行也是 `millis()` 同一时基）。
+      dash_logf("panelguard: exio rd=0x%02X shadow=0x%02X -> rewritten (t=%ums)\n",
+                (unsigned)a, (unsigned)b, (unsigned)millis());
       break;
     case kPanelGuardLogBl:
       dash_logf("panelguard: backlight rd=%u want=%u -> rewritten\n",
@@ -1640,6 +1642,9 @@ uint32_t dash_panel_guard_bl(void)     { return g_panel_guard.fixBl(); }
 uint32_t dash_panel_guard_anomalies(void) { return g_panel_guard.anomalies(); }
 // ★ 给临时注入路径用的：注入要正好落在"下一次检查之前"（见 main.cpp 里那段说明）。
 uint32_t dash_panel_guard_next_check_ms(void) { return g_panel_guard.nextCheckMs(); }
+// ★ 同上：检查**次数**（注入那一侧用它保证"一次注入只喂给一次检查"——
+//   否则注入器会跑在守护前面、把"连续异常"这个状态一直压着不放）。
+uint32_t dash_panel_guard_checks(void) { return g_panel_guard.checks(); }
 
 // ============================================================
 // ★★ 临时故障注入（**默认构建里一个字节都不存在**）
@@ -1667,9 +1672,10 @@ void dash_panel_guard_fault_inject(uint8_t bit) {
   // ★ 只写**那颗芯片的真实寄存器**，**故意不动** `g_exio_out`（影子）
   //   —— 于是"影子 vs 回读"立刻不一致，这正是要复现的故障。
   tca9554_write(TCA9554_REG_OUTPUT, next);
-  dash_logf("inject: exio out 0x%02X -> 0x%02X (bit%u, 影子保持 0x%02X)"
+  dash_logf("inject: exio out 0x%02X -> 0x%02X (bit%u, 影子保持 0x%02X, t=%ums)"
             " —— 等守护抓它\n",
-            (unsigned)before, (unsigned)next, (unsigned)bit, (unsigned)g_exio_out);
+            (unsigned)before, (unsigned)next, (unsigned)bit, (unsigned)g_exio_out,
+            (unsigned)millis());
 #else
   (void)bit;
 #endif

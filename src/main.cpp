@@ -891,25 +891,36 @@ static void reinit_from_serial() {
 //   ★ 安全：**只做一轮**、次数写死（不许循环折腾）；任何时刻屏都会在 ~1 个检查周期
 //     内被修回来（最坏 200ms），并且"久不恢复就烧回"的镜像一直在手边。
 #if defined(PANEL_GUARD_FAULT_INJECT) && (PANEL_GUARD_FAULT_INJECT == 1)
-static const uint8_t  kInjectTimes    = 4u;    // 一共注入几次（4 次 ⇒ 必然攒够 3 次连续异常）
+static const uint8_t  kInjectDefaultTimes = 4u; // `i` 不跟数字时注入几次（4 ⇒ 必然攒够 3 次）
+static const uint8_t  kInjectMaxTimes = 9u;     // 上限（一位数字最大就是 9）
 static const uint32_t kInjectGapMs    = 300u;  // 两次注入之间至少隔多久（车主看着屏时的观感）
 static const uint32_t kInjectLeadMs   = 40u;   // 提前多久写坏（必须 > 一次 I2C 写事务）
 static uint8_t  g_inject_left = 0;             // 还剩几次
+static uint8_t  g_inject_want = kInjectDefaultTimes;  // 这一串一共几次（日志用）
 static uint32_t g_inject_next_ms = 0;          // 下一次注入的时刻
+static uint32_t g_inject_checks_at_last = 0;   // 上一次注入时守护的检查次数
+static bool     g_inject_take_digit = false;   // 下一颗字节是不是"`i` 的次数位"
 #endif
 
-static bool fault_inject_from_serial() {
+static bool fault_inject_from_serial(uint8_t times) {
 #if defined(PANEL_GUARD_FAULT_INJECT) && (PANEL_GUARD_FAULT_INJECT == 1)
-  // ★ 一次**开启**一串：`i` 进来之后由 `fault_inject_poll()` 按守护的节拍打完
+  // ★ 一次**开启**一串：由 `fault_inject_poll()` 按守护的节拍打完
   //   （它**不阻塞**这里 —— 串口路径上不许等）。
   //   位固定取 bit0（EXIO1 = LCD_RST）：这一位被打错就是一次面板复位，
   //   正是要复现的那条路径。
-  g_inject_left = kInjectTimes;
+  //   ★ 次数：`i` 后面那一位（`i1` = 一次 ⇒ 量"发现窗"；`i`/`i4` = 四次 ⇒ 造"连续 3 次"）。
+  if (times == 0u) times = kInjectDefaultTimes;
+  if (times > kInjectMaxTimes) times = kInjectMaxTimes;
+  g_inject_left = times;
+  g_inject_want = times;
   g_inject_next_ms = millis();      // 第一次立刻（下一轮 poll 就写）
-  dash_logf("inject: armed x%u gap=%ums lead=%ums bit0(LCD_RST)\n",
-            (unsigned)kInjectTimes, (unsigned)kInjectGapMs, (unsigned)kInjectLeadMs);
+  g_inject_checks_at_last = dash_panel_guard_checks();   // 从"现在这一次"起算
+  dash_logf("inject: armed x%u gap=%ums lead=%ums bit0(LCD_RST) checks=%u\n",
+            (unsigned)times, (unsigned)kInjectGapMs, (unsigned)kInjectLeadMs,
+            (unsigned)g_inject_checks_at_last);
   return true;
 #else
+  (void)times;
   return false;
 #endif
 }
@@ -925,9 +936,21 @@ static void fault_inject_poll(uint32_t now) {
       (int32_t)(now - target) >= -(int32_t)kInjectLeadMs &&
       (int32_t)(now - target) < 0;
   if (!on_target) return;
-  if ((int32_t)(now - g_inject_next_ms) < 0) return;   // 两次之间至少隔 kInjectGapMs
+  // ★★ **一次检查只喂一个坏值**（`dash_panel_guard_checks()` 变了才允许下一次）。
+  //   ★ 这一条是本单踩出来的，写法也**故意没有时间间隔**（`kInjectGapMs` 只用于
+  //     日志/说明，不参与门限）：
+  //     · 不按"检查次数"锁：注入器会跑在守护前面连写坏值，守护读到的永远是坏值 ——
+  //       它**自己**"连续发现三次"这件事反而攒不出来；
+  //     · 按 300ms 间隔也不行（试过一版）：守护发现第一次之后进**快速复检**
+  //       （200ms 一眼）⇒ 300ms 的间隔里必然夹着**一到两次干净读数** ⇒ `streak_`
+  //       每次都被清零 ⇒ 三连异常永远攒不够。
+  //     ⇒ 正确做法是"**每一拍检查之前都写一次坏值**"：那一拍读到坏值 ⇒ `streak_`
+  //       才会 1→2→3。★ 安全性由"每次注入都在检查前 40ms、检查一读就修回来"
+  //       这条保证：坏值在总线上只存在 ~25ms，屏闪一下就被修好。
+  if (dash_panel_guard_checks() == g_inject_checks_at_last) return;
   --g_inject_left;
-  g_inject_next_ms = now + kInjectGapMs;
+  g_inject_checks_at_last = dash_panel_guard_checks();
+  g_inject_next_ms = now;           // 只用于日志（本路径不按时间门限）
   dash_panel_guard_fault_inject(0u);
 #else
   (void)now;
@@ -939,6 +962,16 @@ static bool serial_cmd_handle(char c, char* line, uint8_t& len) {
     if (line[0] == 'V' || line[0] == 'v') return false;   // 可能是回放行 ⇒ 交给它
     len = 0;                                             // 不可能是回放行 ⇒ 清掉
   }
+#if defined(PANEL_GUARD_FAULT_INJECT) && (PANEL_GUARD_FAULT_INJECT == 1)
+  // ★ 临时注入路径的"次数位"：`i1` / `i4` 里的那一位数字。
+  //   在**默认构建里这一段不存在**（`i` 后面跟什么都不会被多吃掉一个字节）。
+  if (g_inject_take_digit) {
+    g_inject_take_digit = false;
+    const uint8_t n = serial_cmd_inject_count(c, kInjectDefaultTimes);
+    fault_inject_from_serial(n);
+    return true;                   // 那一位数字也算"被这条命令吃掉了"
+  }
+#endif
   // ★ 判据是抽出去的纯函数（`lib/dashcore/serial_cmd.h`）：本文件这段与行缓冲/
   //   回放路径纠缠在一起，宿主机上编不到 ⇒ 把"哪几个字符算命令"单独放一处，
   //   由 native 用例逐字钉住（含"只认行首"这条）。
@@ -957,8 +990,15 @@ static bool serial_cmd_handle(char c, char* line, uint8_t& len) {
       return true;
     case SerialCmd::Inject:
       // ★★ 临时故障注入（**默认构建里恒为 false**，见下面那一段）。
-      if (fault_inject_from_serial()) return true;
-      return false;                  // 没开注入 ⇒ 这个字符照旧走回放路径（行为不变）
+      //   ★ 开了注入时，这里只**记下**"下一位是次数"，真正的动作在下一颗字节
+      //     （见函数开头那段）—— 这样 `i1` 与 `i` 都能用，而默认构建里
+      //     `i` 后面那个字符**一个字节都不会被多吃掉**。
+#if defined(PANEL_GUARD_FAULT_INJECT) && (PANEL_GUARD_FAULT_INJECT == 1)
+      g_inject_take_digit = true;
+      return true;
+#else
+      return false;                // 没开注入 ⇒ 这个字符照旧走回放路径（行为不变）
+#endif
     case SerialCmd::None:
     default:
       return false;
