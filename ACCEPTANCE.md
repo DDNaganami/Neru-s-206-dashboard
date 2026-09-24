@@ -3413,3 +3413,129 @@ rgb: vsync=1050(+53/s) wrap=1050(+53/s) swap=123(+5/s) flush=643 blit_max=1332us
 本轮**零改动**；`lib/dashcore/*` 只动了 `preview_input.h`（新增预览注入的纯函数与两个键，
 设备端不编这段调用点）；`src/main.cpp` 的改动全部落在 `#if defined(DASH_DISPLAY_PREVIEW)` 里。
 
+---
+
+## 系统状态：「数据不可信」提示 + 诊断页（2026-09-24，**本轮不烧板**）
+
+★ **本轮刻意不烧板** ✗：另一个子代理正拿 **COM6** 测蜂鸣器（车主在听声音）⇒
+**没有打开 COM6、没有烧写、没有上板**；全部验证走 `pcpreview` + native + JS。
+**上板验证清单见本文第 ⑦ 条。**
+
+### ① 做了哪两条（产品要求原文见 `ARCHITECTURE.md`「显示约定」）
+
+- **「数据不可信」提示**：四个触发条件（来源回退 Sim / VAN 断流 >3 s /
+  数据冻结 20 s / 双板链路 SimFallback），形态 = 表盘**右缘**一枚小角标
+  （`SIM` / `VAN?` / `STALE` / `LINK`）+ **一声轻提示**（120 ms、可静音）；
+  去抖 1500 ms 出现、800 ms 恢复；**数据恢复后自动消失**。
+- **诊断页**：两页（数据这一路 / 链路与告警），**平时不显示**，
+  `pcpreview` 用 `K` 唤出/翻页/关闭。内容**全部取本地现有信息**（零新数据源）。
+
+判据 / 去抖 / 限速 / 字段映射全在 **`lib/dashcore/system_status.h` + `.cpp`**
+（纯逻辑，不碰 LVGL/硬件）⇒ 预览与真机跑同一份；`dash_ui` 只负责把它画成像素。
+
+### ② pcpreview 实测（可复制的演示步骤见 `tools/theme-editor/README.md`
+###    「系统状态这两条」一节 + `docs/PREVIEW.md` 第 3 节）
+
+一次跑完的实测（ASCII 副本 `C:\206dash-scratch\Neru-sys`，无板、无键盘：
+用控制文件切状态，与按键走**同一条**判据）：
+
+| 时刻 | 输入 | 串口（原始行，节选） | 落盘帧的像素结论 |
+|---|---|---|---|
+| 上电 ~1.5 s | （默认：预览无 VAN ⇒ 来源恒 Sim） | `trust: sim-fallback  <-- 屏上出现数据不可信提示 beep (episodes=1)` | `firstBadgeOn=9`（角标出现） |
+| 写 `sim=1` 后 ~0.8 s | 数据层口径切成"实测" | `trust: none (episodes=1)` | `firstBadgeOffAfterOn=59`（角标消失） |
+| 写 `sim=0` 后 ~1.5 s | 回到假数据 | `trust: sim-fallback … beep (episodes=2)` | `f=87 badge=ON` |
+| 写 `diag=1` | 唤出诊断页 | `diag: open page=1/2` | `f=104 badge=off diag=OPEN`，`diag-open frames = 29 (104..132)`（整屏深色**且**有文字） |
+
+逐像素核对工具（本轮新增）：`tools/theme-editor/check-system-status.js`
+（`badge` / `diag` / `sweep` 三种用法）——
+`diag` 的判据是"**底色深 + 有文字**"，因为**开机动画那几帧整屏也是黑的**，
+只看亮度会把它们误判成"诊断页开着"（实测：`sweep` 因此跳掉前 8 帧）。
+
+★ 一次真实踩坑（写下来免得下次再花半小时）：诊断页第一版**没给标签设尺寸**，
+落到帧上**整屏全黑**（96% 采样点亮度 < 20），连表盘都没了 ——
+多行文本的高度由字体度量算，而这个精简版驱动上那条路没验过；
+标签自算出的尺寸把**整屏容器**撑出屏幕，而容器是 `LV_OPA_COVER` 的 ⇒
+一次整屏重绘把自己（黑）盖满。修法：诊断页的文本是**定行数**的 ⇒ 尺寸写死。
+（这条判据落在代码注释里，见 `dash_ui.cpp` 的 `build_diag`。）
+
+### ③ 测试与构建（全部真跑，数字如下）
+
+| 项 | 本轮起点 `f750b00` | 本轮 |
+|---|---|---|
+| native（`-e native`） | 234 例（2 skipped / 232 succeeded） | **253 例（2 skipped / 251 succeeded）**，全绿、0 失败 |
+| `test-gauge-geometry` | 71 | **71** |
+| `test-face-stages` | 429 | **429** |
+| `test-theme-json` | 259 | **259** |
+| `test-asset-spec` | 155 | **174**（+19，由并行那一轮的档位口径用例带入） |
+| `test-image-blob-build` | 369 | **369** |
+| `syntax-check-pages` | 12 | **14**（+2，同上） |
+| `platformio run -e pcpreview` | SUCCESS | **SUCCESS** |
+| `platformio run -e esp32s3-rgb` | SUCCESS | **SUCCESS**（RAM 38.3% / Flash 86.0%） |
+
+native 的 **+19 例** = 本轮新增 `test/test_dashcore/test_system_status.cpp` **15 例**
+（触发/恢复/去抖/限速/优先级/阈值/诊断页两页的字段映射/拿不到就是 `-`/页数边界/
+名字对账/**预览那两个新键 K 与 T 的语义**）+ 并行那一轮的 `test_ui_lamps.cpp` **+4 例**。
+
+★ 其中有一条**特意分两步断言**的用例（`test_sys_data_frozen`）：冻结窗口到点
+（21000）时判据成立，但**提示还要过去抖窗口**（22500）才上屏 ——
+第一版把这两件事当成一件事，用例当场红了，而**实现是对的**。
+现在这条用例把"判据"与"什么时候上屏"分开钉住。
+
+★ 构建在 ASCII 副本（`C:\206dash-scratch\Neru-sys`）里跑，`PATH` 挂了
+`C:\206dash-scratch\zigbin` 的 zig 转发桩；**没跑 `pio clean`、没删 `.pio`**。
+`tools/theme-editor/theme.json`（未跟踪）全程未碰。
+
+★ 构建环境上**踩到一个与代码无关的坑**（如实记）：`esp32s3-rgb` 那一轮先是
+`No module named 'esptool.__init__'` —— 全局 PlatformIO core 里的
+`packages/tool-esptoolpy` 只剩两个 `.py` 残件（`esptool/` 目录下没有
+`__init__.py`），是**工具链状态坏了**，不是仓库回归。修法 = 让 PlatformIO
+重新装它（`tool-esptoolpy@5.3.0`），随后 **SUCCESS**。
+
+### ④ 红线复核
+
+- `src/dash_display_rgb.cpp`（蜂鸣器那个子代理在改）：**本轮一个字节都没碰** ✓
+- `platformio.ini`：**一个字节都没碰** ✓
+- 抓帧盒 / `esp32dev` 的 `espressif32@7.1.3` 钉法、240(DualEye) 驱动、
+  CRC/SOF/`kSpeedScale=2.56`/VAN 脚极性：**全未动** ✓
+- **没新开 L 号**，也没改任何既有 L 裁决（L11/L13 一个字没动）✓
+- **没碰 `tools/theme-editor/theme.json`** ✓
+- **没打开 COM6、没烧板** ✓
+
+### ⑤ 与既有裁决的合规说明（**L11**）
+
+`ARCHITECTURE.md` §8 的 **L11** 定的是「主板『从板离线』**角标** v1 不做，
+从板在线状态只进 `STATUS` 日志、不上屏」。**诊断页不是常驻角标** ⇒ 不违反：
+它平时**完全不显示**、只由长按/组合键主动唤出、退出即消失；L11 禁的是
+"让从板在线状态**常驻**在表盘上"，而诊断页是**主动查询**式的
+（与"插上 USB-C 看串口"同一类行为，只是换了个出口 —— 串口那一行照旧）。
+诊断页第 2 页在**主板**上明文写着 `link - (master: log only)`：
+它读的是**从板自己的 `LinkTime`**，不是主板对"从板在不在线"的判断（L13 也未动）。
+
+### ⑥ 提示音（有源蜂鸣器）+ 静音
+
+- 2.8C 那颗蜂鸣器挂在 **TCA9554 的 `EXIO8`**（I2C 扩展脚）⇒ **没有 PWM 通路**
+  ⇒ 只有**开/关**两个自由度（**时长 + 次数**，不变调、音量也不可调）。
+- 本轮那个"一声轻提示" = `BeepPattern::Short` + `kTrustBeepMs = 120 ms`，
+  每次"变坏"只响一次、两次之间至少隔 5 s、**静音开关优先**；
+  `static_assert(kTrustBeepMs <= 300u)` 钉住"单次哔 ≤ 300 ms"这条硬上限。
+- **静音状态掉电保存**：`Preferences`（NVS，命名空间 `dash`、键 `mute`）
+  在 `setup()` 读回、开关时写入；**默认有声**，静音是车主的选择。
+  预览端**刻意不落盘**（免得"重新跑一次预览"继承上一次的静音）。
+- `BeepPattern::Long`（长哔）在真机上**暂时不许用**（机制 B 未排除）⇒
+  文档写明 **`long` ⇒ 真机降级为 3 短哔**，**待 B 排除后可恢复**；
+  本轮**只写文档**，`alerts` 的实现与映射一个字没改（见
+  `ARCHITECTURE.md`「提示音说明」第 3 条）。
+
+### ⑦ 待上板验证清单（本轮**没烧板**）
+1. **角标在真车上的触发/恢复**：拔 VAN 3 s 后角标是否出现；插回后 0.8 s 内是否消失；
+   数据在阈值上下来回抖时**不许滴滴叫**（5 s 限速）。
+2. **诊断页的真机入口**：长按/组合键**还没定** —— 这块板能当输入的只有 12PIN 的
+   `GPIO0`（= BOOT strap，不建议）与排针上剩下的 `GPIO7`（I2C 的 SCL）。
+   等最终板接线定案后写进 `ARCHITECTURE.md`（`main.cpp` 里已经是一个
+   `dash_ui_diag_toggle()` 调用，接哪根线都不改这一层）。
+3. **那一声轻提示的音量/时长在真机上是否正确**（有源蜂鸣器、不可变调）：
+   听一声 120 ms 的短哔，并确认**没有长鸣**（机制 B 未排除）。
+4. **`panel=` 那一格**：RGB 驱动还没有"面板帧率/flush/copy"的出口
+   ⇒ 现在显示 `panel=- (driver n/a)`；等驱动那个 getter 落地后接上（**本轮不碰那个文件**）。
+5. **静音掉电保存**：开机前设为静音 → 断电重上 → 是否仍是静音。
+

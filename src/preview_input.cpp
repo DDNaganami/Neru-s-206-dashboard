@@ -74,6 +74,15 @@ static PreviewKey win_read_key() {
     // ★ 与 `x`/Esc 分开：X 是"全清"（回到假数据），V 只翻遮罩这一位，
     //   按 V 不该把转向灯/门那些注入一起清掉。
     case 'v': case 'V': return PreviewKey::ToggleMask;
+    // ---- 2026-09-24（第二轮）：系统状态的两个入口 ----
+    // `k`：诊断页（**一个键**：关着→打开，开着→翻页，翻过最后一页→关闭）。
+    //      真机上的入口是"长按某键 / 组合键"（本轮不烧板 ⇒ 只写文档，
+    //      见 ARCHITECTURE.md 的显示约定一节）。
+    // `t`：把这一拍的数据层口径切成"实测"（T = treat as real）。
+    //      按一下角标消失、再按一下回来 —— 这正是验收要演示的那一条。
+    // ★ 两个字母都不是既有键（既有：←/→/空格/L/P/D/O/R/M/V/X/Esc）。
+    case 'k': case 'K': return PreviewKey::Diag;
+    case 't': case 'T': return PreviewKey::Sim;
     case 'x': case 'X': return PreviewKey::Clear;
     default:            return PreviewKey::None;
   }
@@ -97,19 +106,31 @@ void preview_input_begin(const char* ctl_path) {
   // 两行回执：告诉用户"键盘能用、控制文件在哪"。
   // ★ 纯 ASCII —— README 那条纪律：预览/测试输出里的中文会在 GBK 控制台上
   //   抛 UnicodeEncodeError，把统计打乱（这条只有踩过才知道）。
-  printf("preview input: keys <- -> [space] L P D O R M V X/Esc\n");
+  printf("preview input: keys <- -> [space] L P D O R M V K T X/Esc\n");
+  printf("preview input: K = diag page (open/next/close), T = treat data as real (badge off)\n");
   printf("preview input: control file = %s\n", g_ctl_path);
 }
 
 bool preview_input_poll(PreviewInput& in) {
   const PreviewInput before = in;
+  // ★ "上一拍的诊断页请求位"必须**跨调用**记住 —— 局部变量 `before` 不够：
+  //   上一拍可能在 `preview_apply` 那一侧被改过，而这里只拿得到进入本函数时的值。
+  static bool last_req = false;
   bool handled = false;
+  // 本拍**新产生**的翻页请求：键盘按下、或控制文件里第一次出现 `diag=1`。
+  bool new_req = false;
 
   // ① 键盘：一次把攒下的键全吃掉（同一帧连按多次 = 最后一次生效）
 #if defined(_WIN32)
   for (int i = 0; i < 16; ++i) {
     const PreviewKey k = win_read_key();
     if (k == PreviewKey::None) break;
+    if (k == PreviewKey::Diag) {
+      // ★ 诊断页那一位是**事件**（按了一下），不是注入 ⇒ 单独拿出来当"新请求"。
+      new_req = true;
+      handled = true;
+      continue;
+    }
     if (preview_apply_key(in, k)) handled = true;
   }
 #endif
@@ -149,7 +170,15 @@ bool preview_input_poll(PreviewInput& in) {
       if (file_in.door_set)     { in.door = file_in.door;           in.door_set = true; }
       if (file_in.speed_set)    { in.speed_kmh = file_in.speed_kmh; in.speed_set = true; }
       if (file_in.rpm_set)      { in.rpm = file_in.rpm;             in.rpm_set = true; }
-      in.mute = file_in.mute;
+      // 「数据层口径」注入（2026-09-24 第二轮）：与控制文件里其它键一样是
+      // **绝对值**语义 —— 写 `sim=1` 就一直按"实测数据"算，要回到预览的真实
+      // 情形（假数据）写 `sim=0` 或 `clear=1`。
+      if (file_in.sim_ok_set) {
+        in.sim_ok = file_in.sim_ok;
+        in.sim_ok_set = true;
+      }
+      // 诊断页翻页（事件位）：**只置位、不清**，由主循环按边沿处理。
+      if (file_in.diag_toggle_req) in.diag_toggle_req = true;      in.mute = file_in.mute;
       // 遮罩：**只有控制文件里真的写了 `mask=` 才覆盖**（判据是那个 `_set` 旗标，
       // 不是"值不等于默认"）。★ 少了这条判断，键盘按 V 关掉遮罩之后会被下一帧
       // 文件重读按默认值（开）盖回去 —— 看着就是"V 没用"，而那是这一层最典型的坑。
@@ -159,6 +188,17 @@ bool preview_input_poll(PreviewInput& in) {
   }
 
   if (!handled && memcmp(&before, &in, sizeof(PreviewInput)) != 0) handled = true;
+
+  // ---- 诊断页那个事件位：**这一拍内部**就把边沿算完，然后清掉 ----
+  // ★ 为什么清在这里而不是留给主循环：`PreviewInput` 是"这一拍的输入快照"，
+  //   "按了一下 K"这种事件的有效期就是这一拍。留到下一拍会**永远清不掉**
+  //   （键盘那份每拍重建、而清它的责任在读到的人手上）⇒ 边沿再也不出现，
+  //   表现就是"开得了第 1 页，之后按 K 毫无反应"（实测踩过一次）。
+  // ★ `last_req` 跨调用保留：控制文件里一直写着 `diag=1` 时，
+  //   "值与上一拍相同 ⇒ 不算新请求" —— 于是它只翻一页（这正是要的语义）。
+  if (new_req || (in.diag_toggle_req && !last_req)) new_req = true;
+  last_req = in.diag_toggle_req;
+  in.diag_toggle_req = new_req;
   return handled;
 }
 

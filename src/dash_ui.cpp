@@ -4,6 +4,7 @@
 #include "boot_anim.h"
 #include "image_load.h"     // 图片资源(背景图 / 表情图)
 #include "face_stages.h"    // 表情槽位 → 图片角色 / 缺图降级链
+#include "system_status.h"  // 数据不可信提示 + 诊断页（纯逻辑住在 lib/dashcore/）
 #include <lvgl.h>
 #include <Arduino.h>
 #include <math.h>
@@ -45,6 +46,22 @@ struct ScreenUi {
   uint8_t lamp_last_pulse[kLampSlotCount] = {}; // 上次的亮度:不变就一个字节都不碰
   bool lamp_last_alert[kLampSlotCount] = {};
   bool lamp_built = false;
+
+  // ---- 数据不可信角标（2026-09-24）----
+  // ★ 形态：**表盘右缘一枚小图标文字**（不是红屏、不是每秒闪）。
+  //   它只在"数据不可信"期间出现，数据恢复后自动消失（去抖在
+  //   lib/dashcore/system_status.h 里，屏这一层不做任何判断）。
+  lv_obj_t* trust_badge = nullptr;      // 容器（默认 HIDDEN）
+  lv_obj_t* trust_text = nullptr;       // 图标文字（"SIM" / "VAN?"）
+  uint8_t   trust_last = 0xFF;          // 上次画的那一条理由（0xFF = 还没画过）
+
+  // ---- 诊断页（2026-09-24）----
+  // ★ 平时**完全不显示**：整个容器一建好就 HIDDEN，只有按 K（真机是长按/组合键）
+  //   才显出来。本页读的是**本地现有信息**，零新数据源。
+  lv_obj_t* diag_box = nullptr;
+  lv_obj_t* diag_title = nullptr;
+  lv_obj_t* diag_body = nullptr;
+  bool      diag_built = false;
 };
 
 static ScreenUi g_ui[2];
@@ -53,6 +70,60 @@ static BootAnim g_boot;
 static bool g_boot_done_printed = false;
 static uint32_t last_ok_ms = 0;
 static uint32_t last_tick_ms = 0;
+
+// ============ 数据不可信角标 / 诊断页（2026-09-24）============
+//
+// ★ 几何（**480 基准**，与弧/读数/灯条同一套 ts() 缩放 ⇒ 240 档自动成立）。
+//   角标压**表盘右缘**那条留白：y = 205..241 那一带在 480 圆屏上
+//   x=340 处仍在可视圆里（该行圆的右边界 ≈ x=452），而这一块
+//   内容上与别的东西都不撞：
+//     · 表情方框 200×200 居中 ⇒ x=140..340、y=140..340（角标在它右侧）
+//     · 主弧带 181..205（按外沿半径 205、带宽 24 算）⇒ y=205 正好在带外
+//     · 单位文字 cy=107、读数 cy=72、副表 cy=384 ⇒ 都在别处
+//   ★ 为什么不放在"正中下方那块空地"：那里要留给副表数字（水温/进气），
+//     而且中枢位置一有东西就"刺眼"—— 产品要求是**明确但不刺眼**。
+static const int32_t kTrustBadgeX  = 340;
+static const int32_t kTrustBadgeCY = 223;
+static const int32_t kTrustBadgeW  = 116;
+static const int32_t kTrustBadgeH  = 36;
+
+// 角标**边框**颜色与底色按状态定：
+//   · "来源/链路回退到 Sim"  → 灰蓝（信息级，不是故障）
+//   · "VAN 断流 / 数据冻结"  → 琥珀（要人看一眼，但不刺眼）
+// ★ 刻意**不用红色**：红屏/红角标是"故障"的语气，而"数据不可信"是
+//   "这块表现在在演"，两者不是一回事（产品要求：明确但不刺眼）。
+static uint32_t trustBadgeColor(DataTrustReason r) {
+  switch (r) {
+    case DataTrustReason::kVanStale:
+    case DataTrustReason::kDataFrozen:   return 0xFFB020;   // 琥珀（与灯条同色系）
+    default:                             return 0x7FA8C8;   // 灰蓝
+  }
+}
+
+// 角标上的**短标记**。纯 ASCII（图标字面就三个字母，不画图形素材）：
+//   SIM   = 这一格现在跑的是假数据（来源回退 Sim）
+//   VAN?  = VAN 断了（"?"= 值不再有来源）
+//   STALE = 帧还在来但值冻住了
+//   LINK  = 双板链路退到 Sim（仅从板）
+static const char* trustBadgeText(DataTrustReason r) {
+  switch (r) {
+    case DataTrustReason::kDataFallback: return "SIM";
+    case DataTrustReason::kVanStale:     return "VAN?";
+    case DataTrustReason::kDataFrozen:   return "STALE";
+    case DataTrustReason::kLinkFallback: return "LINK";
+    default:                             return "";
+  }
+}
+
+// 诊断页的开/关与翻页状态。**只有这一个状态机**（不在别处再记一份）：
+//   `g_diag_open` = 显不显示；`g_diag_page` = 第几页。
+// ★ 设备端与 pcpreview 共用（main 只负责把按键翻译成这两个调用）。
+static bool    g_diag_open = false;
+static DiagPage g_diag_page = DiagPage::Sys;
+// 上一次画进标签的诊断页文本（**逐字节比对**：不变就一个字节都不碰 LVGL）。
+// 2048 是 16 行 × 最多 40 列 + 换行，够；它是一份静态缓冲，不进栈。
+static char    g_diag_text[2048] = {0};
+static char    g_diag_title[24] = {0};
 
 // ============ 图片资源 ============
 // lv_image_dsc_t 必须由我们持有 —— LVGL 会一直引用它(set_src 不复制)。
@@ -579,6 +650,156 @@ static void lamp_apply(ScreenUi& ui, const LampView& v) {
   }
 }
 
+// ============ 数据不可信角标 + 诊断页（2026-09-24）============
+//
+// 这一段**只负责画**：判据、去抖、限速、诊断页的字段映射全在
+// `lib/dashcore/system_status.h`（纯逻辑，native 用例逐条钉住）。
+// 于是"预览里看得见的提示"与"车上跳出来的提示"是同一段代码算的。
+//
+// ★ 建角标：一个容器 + 一个标签。
+//   为什么不用「一个标签 + 边框」：这个驱动上给对象设 border 会走一遍
+//   layout 重算（灯条那一段踩过），而角标是 5 Hz 一拍的显隐 ⇒ 容器自带
+//   描边、标签只落文字，改的只有 opa/颜色/文本，不动尺寸。
+static void build_trust_badge(lv_obj_t* parent, ScreenUi& ui) {
+  lv_obj_t* box = lv_obj_create(parent);
+  lv_obj_remove_style_all(box);
+  lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_size(box, ts(kTrustBadgeW), ts(kTrustBadgeH));
+  lv_obj_set_pos(box, ts(kTrustBadgeX), ts(kTrustBadgeCY - kTrustBadgeH / 2));
+  lv_obj_set_style_bg_color(box, lv_color_hex(0x101010), 0);
+  lv_obj_set_style_bg_opa(box, LV_OPA_70, 0);
+  lv_obj_set_style_border_width(box, ts(2), 0);
+  lv_obj_set_style_border_color(box, lv_color_hex(0x7FA8C8), 0);
+  lv_obj_set_style_border_opa(box, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(box, ts(6), 0);
+  lv_obj_add_flag(box, LV_OBJ_FLAG_HIDDEN);    // 默认不显示：第一帧由 trust_apply 决定
+
+  lv_obj_t* t = lv_label_create(box);
+  lv_obj_remove_style_all(t);
+  lv_obj_set_style_text_font(t, READOUT_UNIT_FONT, 0);
+  lv_obj_set_style_text_color(t, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_center(t);
+  lv_label_set_text(t, "");                    // ★ 必须显式清空（lv_label 默认是 "Text"）
+
+  ui.trust_badge = box;
+  ui.trust_text = t;
+  ui.trust_last = 0xFF;
+}
+
+// 把"这一拍该不该提示"落到像素上。**只在真的变了的时候碰 LVGL**：
+//   角标是常态隐藏的，一旦显示就 5 Hz 在那儿 ⇒ 无脑每帧 set_text/set_style
+//   会把 invalid 队列刷爆（灯条那一段的注释里踩过同一个坑）。
+static void trust_apply(ScreenUi& ui, DataTrustReason r) {
+  if (!ui.trust_badge) return;
+  const uint8_t id = (uint8_t)r;
+  if (id == ui.trust_last) return;
+  const bool was_hidden = (ui.trust_last == 0xFF) || (ui.trust_last == 0u);
+  ui.trust_last = id;
+  if (r == DataTrustReason::kNone) {
+    if (!was_hidden) lv_obj_add_flag(ui.trust_badge, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  lv_label_set_text(ui.trust_text, trustBadgeText(r));
+  lv_obj_set_style_border_color(ui.trust_badge, lv_color_hex(trustBadgeColor(r)), 0);
+  lv_obj_center(ui.trust_text);
+  lv_obj_remove_flag(ui.trust_badge, LV_OBJ_FLAG_HIDDEN);
+}
+
+// 建诊断页：**一块整屏容器**（底色不透明 + 标题 + 正文）。
+// ★ 为什么是一整块而不是"在表盘上盖几个数字"：诊断页要能**明确地**盖住表盘
+//   （否则"数字在动"与表盘上的弧混在一起，读数没法看），而且退出时必须是
+//   "整块消失"——留半张脸在外面会让人以为界面坏了。
+//   整屏 opa 不透明（LV_OPA_COVER）：**不给它设半透明**（这个驱动上 opa<255
+//   的整屏对象会开离屏层，层缓冲装不下整屏 ⇒ 下半屏回绕到顶部，踩过）。
+static void build_diag(lv_obj_t* parent, ScreenUi& ui) {
+  lv_obj_t* box = lv_obj_create(parent);
+  lv_obj_remove_style_all(box);
+  lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_size(box, LV_PCT(100), LV_PCT(100));
+  lv_obj_set_pos(box, 0, 0);
+  lv_obj_set_style_bg_color(box, lv_color_hex(0x0A0A0A), 0);
+  lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+  lv_obj_add_flag(box, LV_OBJ_FLAG_HIDDEN);    // ★ 平时**不显示**（产品要求）
+
+  // 标题：圆屏顶部（y 小的地方可视宽度窄，所以标题短）
+  lv_obj_t* title = lv_label_create(box);
+  lv_obj_remove_style_all(title);
+  lv_obj_set_style_text_font(title, READOUT_UNIT_FONT, 0);
+  lv_obj_set_style_text_color(title, lv_color_hex(0xFFB020), 0);
+  // ★ 显式给尺寸与位置（不让 LVGL 自算）：
+  //   自算尺寸的那条路在"多行文本 + 这个驱动"上出过问题（见下面 body 的说明），
+  //   而这里每个标签要多大是**已知**的（一屏固定行数）⇒ 写死最稳。
+  lv_obj_set_size(title, ts(432), ts(24));
+  lv_obj_set_pos(title, ts(24), ts(50));
+  lv_label_set_text(title, "DIAG");
+
+  // 正文：多行文本。
+  // ★★ 这里踩过一个坑（2026-09-24，写下来免得下次再花半小时）：
+  //   第一版**没给标签设尺寸**（只设了字体/颜色/行距/位置），落到帧上
+  //   **整屏全黑** —— 连表盘都没有了（预览的落盘帧里 96% 的采样点亮度 < 20）。
+  //   原因是多行文本的高度由字体度量算、而这个精简版驱动上那条路没验过：
+  //   标签自算出的尺寸把**整屏容器**撑出了屏幕，而容器是 LV_OPA_COVER 的
+  //   ⇒ 一次整屏重绘把它自己（黑）盖满了。诊断页的文本是**定行数**的，
+  //   所以尺寸本来就该写死：14 行 × 22 px 的行高放得下 480 档最长的两页。
+  lv_obj_t* body = lv_label_create(box);
+  lv_obj_remove_style_all(body);
+  lv_obj_set_style_text_font(body, READOUT_UNIT_FONT, 0);
+  lv_obj_set_style_text_color(body, lv_color_hex(0xE0E0E0), 0);
+  lv_obj_set_style_text_line_space(body, ts(6), 0);
+  lv_obj_set_size(body, ts(432), ts(320));
+  lv_obj_set_pos(body, ts(24), ts(80));
+  lv_label_set_text(body, "");
+
+  ui.diag_box = box;
+  ui.diag_title = title;
+  ui.diag_body = body;
+  ui.diag_built = true;
+}
+
+// 把一页诊断页落到两个标签上。**逐字节比对**：文本没变就一个字节都不碰
+//   （诊断页开着的时候是 5 Hz 重画，无脑 set_text 会把 invalid 队列刷爆）。
+static void diag_apply(ScreenUi& ui, const SysStatusInputs& in, bool open) {
+  if (!ui.diag_built) return;
+  if (!open) {
+    if (!lv_obj_has_flag(ui.diag_box, LV_OBJ_FLAG_HIDDEN)) {
+      lv_obj_add_flag(ui.diag_box, LV_OBJ_FLAG_HIDDEN);
+    }
+    return;
+  }
+  const DiagView v = diagBuild(g_diag_page, in);
+  char text[2048];
+  diagRenderText(v, text, sizeof(text));
+  if (strcmp(text, g_diag_text) != 0) {
+    strncpy(g_diag_text, text, sizeof(g_diag_text) - 1);
+    g_diag_text[sizeof(g_diag_text) - 1] = '\0';
+    lv_label_set_text(ui.diag_body, g_diag_text);
+  }
+  // 标题带页号（"DIAG 1/2"）—— 一眼知道还有没有下一页
+  char title[24];
+  snprintf(title, sizeof(title), "%s %u/%u", v.title,
+           (unsigned)((uint8_t)g_diag_page + 1u), (unsigned)kDiagPageCount);
+  if (strcmp(title, g_diag_title) != 0) {
+    strncpy(g_diag_title, title, sizeof(g_diag_title) - 1);
+    g_diag_title[sizeof(g_diag_title) - 1] = '\0';
+    lv_label_set_text(ui.diag_title, g_diag_title);
+  }
+  if (lv_obj_has_flag(ui.diag_box, LV_OBJ_FLAG_HIDDEN)) {
+    lv_obj_remove_flag(ui.diag_box, LV_OBJ_FLAG_HIDDEN);
+  }
+  // ★ 显式把它抬到最上层：诊断页要盖住表盘（对象顺序就是图层顺序，
+  //   而它是在读数**之后**建的 ⇒ 本来就在最上面；这一句是"万一有人
+  //   在它之后又建了东西"的保险，代价是一次指针比较）。
+  lv_obj_move_foreground(ui.diag_box);
+}
+
+// 诊断页的三个入口（main 把按键翻译成它们，见 dash_ui.h 的说明）
+void dash_ui_diag_toggle() { g_diag_open = !g_diag_open; }
+void dash_ui_diag_next() {
+  g_diag_page = (DiagPage)(((uint8_t)g_diag_page + 1u) % kDiagPageCount);
+}
+bool dash_ui_diag_open() { return g_diag_open; }
+uint8_t dash_ui_diag_page() { return (uint8_t)g_diag_page; }
+
 // ============ 开机动画应用(20ms 档推进,见 dash_ui_tick 的节流) ============
 static void boot_apply(uint32_t now) {
   for (uint8_t s = 0; s < 2; ++s) {
@@ -699,6 +920,17 @@ void dash_ui_init() {
     build_readout(g_screens[s], kScreens[s], g_ui[s]);
   }
 
+  // ★ 2026-09-24 新增的两个整屏/压边元素，**建在读数之后**（= 图层最上）：
+  //   ① 数据不可信角标（右缘小图标，默认隐藏）
+  //   ② 诊断页（整屏不透明容器，默认隐藏）
+  //   顺序的理由：诊断页要能盖住表盘上的一切（包括读数），而角标要压在
+  //   背景图与灯条之上。两条都靠"后建的在上面"这条 LVGL 规则，
+  //   不额外调 move_foreground（那一句只在渲染时作保险，见 dash_ui_render）。
+  for (uint8_t s = 0; s < 2; ++s) {
+    build_trust_badge(g_screens[s], g_ui[s]);
+    build_diag(g_screens[s], g_ui[s]);
+  }
+
   g_boot.start(millis());
   dash_logf("206 dash boot\n");
 }
@@ -738,7 +970,8 @@ void dash_ui_tick(uint32_t now_ms) {
   lv_timer_handler();
 }
 
-void dash_ui_render(const ArcDashView& v, const LampView& lamps, uint32_t now) {
+void dash_ui_render(const ArcDashView& v, const LampView& lamps, SystemStatus& sys,
+                    const SysStatusInputs& diag, uint32_t now) {
   if (now - last_ok_ms >= 1000) {
     last_ok_ms = now;
     // face= 打的是**左/右两个**:两屏表情各看各的表,只打一个就分不清
@@ -748,11 +981,30 @@ void dash_ui_render(const ArcDashView& v, const LampView& lamps, uint32_t now) {
                   face_name(v.face_left), face_name(v.face_right));
   }
 
+  // ---- ① 数据不可信状态机：**每拍都推进**（即使屏上什么都不显示）----
+  // ★ 顺序是硬的：必须在画之前推进，否则这一拍显示的是上一拍的结论。
+  // ★ 为什么在 dash_ui 里而不是 main 里：判据住在 lib/dashcore/（native 测掉），
+  //   而"每 200 ms 推一次"这个节奏只有渲染这一层知道 ⇒ 放这里最不容易漏。
+  //   主循环拿 `sys.beepDue()` 决定要不要响那一声（见 main.cpp）。
+  const DataTrustReason trust = sys.update(diag, now);
+
   // ★ 灯条**在开机动画之前**应用:开机扫表期间也要能看见灯
   //   (打灯/开门是随时发生的,而开机动画只在前 1.1 秒)。它不参与弧的缓动。
   for (uint8_t s = 0; s < 2; ++s) lamp_apply(g_ui[s], lamps);
 
+  // ---- ② 诊断页：开着的时候它**盖住一切**，所以先落它、再决定要不要画表盘 ----
+  //   （诊断页的容器是不透明的整屏对象，落到最上层 ⇒ 表盘那些对象被它盖住，
+  //     不必把表盘逐个隐藏 —— 那是"少改一处"的选择，也让退出是**整块消失**）
+  for (uint8_t s = 0; s < 2; ++s) diag_apply(g_ui[s], diag, g_diag_open);
+
   if (g_boot.active(now)) return;   // 开机期间由 boot_apply 接管
+
+  // ---- ③ 数据不可信角标（**只在不可信期间出现**，数据恢复自动消失）----
+  // ★ 放在开机动画**之后**：开机那 1.1 秒里没有"数据"可言，挂个角标像故障。
+  // ★ 诊断页开着时不画角标（诊断页第 1 页自己就有"数据可不可信"那一行）。
+  for (uint8_t s = 0; s < 2; ++s) {
+    trust_apply(g_ui[s], g_diag_open ? DataTrustReason::kNone : trust);
+  }
 
   // 弧缓动:指数趋近,按实际经过时间算,渲染频率变化不影响手感
   static uint32_t last_render_ms = 0;
@@ -781,5 +1033,16 @@ void dash_ui_render(const ArcDashView& v, const LampView& lamps, uint32_t now) {
       face_apply(ui, f);
     }
     readout_apply(ui, v);
+  }
+
+  // ---- ④ 诊断页开着时，把它重新抬到最上层 ----
+  // ★ 表盘那些 apply（弧/表情/读数）会碰对象，但**不会**改变创建顺序 ⇒ 严格说
+  //   这一句是多余的；留着的理由是它把"诊断页必须盖住一切"这条不变式写在
+  //   需要它的地方（将来谁在读数之后再建对象，这里就兜住了）。
+  //   `lv_obj_move_foreground` 是纯指针操作（不触发重绘），代价可以忽略。
+  if (g_diag_open) {
+    for (uint8_t s = 0; s < 2; ++s) {
+      if (g_ui[s].diag_box) lv_obj_move_foreground(g_ui[s].diag_box);
+    }
   }
 }

@@ -51,7 +51,7 @@ python tools/serial-capture/capture.py COM4         # 抓复位后的完整开�
 | 环境 | 用途 |
 |---|---|
 | `native` | 宿主机单元测试 |
-| `pcpreview` | 本机渲双屏 BMP（**能手动喂输入**：键盘 `← → 空格 L P D O R M X`，或 `preview/inject.txt` —— 见 `tools/theme-editor/README.md` 的「模拟页面上手动喂输入」） |
+| `pcpreview` | 本机渲双屏 BMP（**能手动喂输入**：键盘 `← → 空格 L P D O R M V K T X`，或 `preview/inject.txt` —— 见 `tools/theme-editor/README.md` 的「模拟页面上手动喂输入」与「系统状态这两条」） |
 | `esp32s3` | S3 桩显示，先把串口 / VAN 跑通 |
 | `esp32s3-spi` | 240 档验证用的真屏（GC9A01A 双 240×240）—— **该板 2026-09-22 已退货，现在手上没有这块硬件**（环境照旧保留、仍可编译） |
 | `esp32s3-rgb` | RGB 并口骨架（最终大屏备用） |

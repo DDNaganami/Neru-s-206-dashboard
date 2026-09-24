@@ -36,12 +36,15 @@
 //   O           超速（车速 = 130）        R      红区（转速 = 6000）
 //   M           静音开关（蜂鸣器）
 //   V           圆屏遮罩开关（2.8C 档的"可见区"那层标注；默认开）
-//   X  /  Esc   全部复位（回到假数据）
+//   K           诊断页（**一个键**：关着→打开，开着→翻下一页，翻过最后一页→关闭）
+//   T           把这一拍的数据层口径切成"实测"（角标消失）；再按回到假数据
+//   X  /  Esc   全部复位（回到假数据；诊断页也一起关掉）
 //
 // 控制文件同一套键名（数值版，便于精确摆位）:
 //   left=1 right=1 hazard=1 low_beam=1 position=1 door=1 mute=1
 //   speed=140 rpm=6000 clear=1
 //   mask=0      ← 关掉圆屏遮罩（等价于按 V；只影响落盘的那张图）
+//   sim=1       ← 把数据层口径切成"实测"（等价于按 T；演示提示消失那一半）
 //
 // ★ 语义三条（这是"注入"最容易搞混的地方，写清楚）:
 //   ① 注入**优先于**假数据与 VAN/OBD：只要 `speed` / `rpm` 被注入过，
@@ -59,7 +62,20 @@ enum class PreviewKey : uint8_t {
   // 遮罩开关（2026-09-24）：**不是**车辆状态，而是"预览这一层怎么画"。
   // ★ 它刻意与其它键放在同一个枚举里：注入的入口只有一个（键盘 + 控制文件），
   //   多开一个入口就等于多一处"只在某个页面生效"的坑。
-  ToggleMask
+  ToggleMask,
+  // ---- 2026-09-24（第二轮）：系统状态那两个入口 ----
+  // `Diag`：诊断页开/关 + 循环翻页（**一个键**：关着的时候打开，开着的时候翻页，
+  //         翻到最后一页再按就关掉）。退出也可以直接按 `Clear`（X / Esc）——
+  //         与"全部复位"共用同一个键，因为诊断页是只读的，"退出"与"复位"没有冲突。
+  //         ★ 真机的入口说明：长按某个键 / 组合键（本轮不烧板 ⇒ 只写文档，
+  //           见 ARCHITECTURE.md 的显示约定一节）。
+  // `Sim`：**把这一拍的数据层模拟成"实测"**（来源 Van + VAN 帧新鲜），
+  //         再按一次回到"预览的真实情形"（假数据）。用途见下面 PreviewInput
+  //         里 `sim_ok` 的说明 —— pcpreview 没有 VAN 硬件，所以角标默认挂着，
+  //         要演"恢复后消失"只能反过来注入"真值"。
+  //         ★ 它只影响 `SysStatusInputs` 的构造（见 main.cpp 的 sys_inputs_build），
+  //         **不碰** data_service 的优先级、不产生协议行为 —— 与其它注入同一条纪律。
+  Diag, Sim
 };
 
 // 一份"手动注入的快照"。
@@ -84,9 +100,39 @@ struct PreviewInput {
   //   （看着就是"V 没用"，而那是这一层最典型的坑）。
   bool panel_mask = true;
   bool panel_mask_set = false;
+  // ---- 2026-09-24（第二轮）：系统状态 ----
+  // ★ 这两位的语义与上面那些**刻意不同**，写清楚：
+  //   · `diag`（诊断页开/关）**不是注入**、也不是车辆状态：它由
+  //     `PreviewKey::Diag` 直接翻译成 `dash_ui_diag_toggle()/next()`（见 main.cpp），
+  //     所以这里**不需要**字段 —— 放在这里只会多一处"两份状态要同步"的坑。
+  //   · `sim_ok`（`PreviewKey::Sim`）：把这一拍喂给**系统状态判据**的输入改成
+  //     "数据是实测的"（来源 = VAN、VAN 帧新鲜）。用途是演示"提示消失"那一半。
+  //     ★ 为什么是"模拟好"而不是"模拟坏"：**pcpreview 上本来就没有 VAN 硬件** ——
+  //       弧与数字全部由 `sim_source` 的假数据驱动，四个字段的来源恒为 `Sim`
+  //       ⇒ 判据（正确地）认为"数据不可信"**一直成立**。所以预览里的默认态
+  //       就是"角标挂着"；要演"数据恢复 ⇒ 提示消失"，只能反过来注入"真值"。
+  //       （在真板上不需要任何注入：VAN 一来，角标自己就消失了。）
+  //     ★ 它**不进** `preview_apply_snapshot()`：那个函数写的是 `VehicleState`
+  //       （车状态的快照），而"数据可不可信"是**数据层之外**的信息
+  //       （来源档位 + VAN 帧年龄），不属于 `VehicleState` ⇒ 它由 main.cpp
+  //       在构造 `SysStatusInputs` 时施加（见那里的 sys_inputs_build）。
+  bool sim_ok = false;
+  bool sim_ok_set = false;
+  // ---- 诊断页那一位（2026-09-24 第二轮）----
+  // ★ 它**不是车辆状态**，所以设计上刻意**不进** `sim_ok`/`left` 那种"注入"体系：
+  //   注入是"我把某个值设成 X"（**绝对值**、每帧由控制文件重新施加），
+  //   而"按了 K"是一个**一次性事件**（把它当绝对值写进这个结构，会让"每帧重读
+  //   控制文件"变成"每帧翻一页"）。
+  //   ⇒ 键盘那一层直接把事件翻成 `diag_toggle_req`（一个"请求"），
+  //     `preview_input_poll()` 把它交给调用方、**当场清掉**（读到即清）。
+  bool diag_toggle_req = false;
+  // 当前显示第几页（0 起）。这个值由**主循环**维护（它知道翻到哪了），
+  // 键盘那一层只负责发"再翻一页"的请求 —— 于是"翻过最后一页就该关掉"
+  // 这条判断只有一处（main.cpp），不会两边各写一份。
+  uint8_t diag_page = 0;
   bool any() const {
     return left_set || right_set || hazard_set || low_beam_set ||
-           position_set || door_set || speed_set || rpm_set;
+           position_set || door_set || speed_set || rpm_set || sim_ok_set;
   }
 };
 
@@ -112,6 +158,19 @@ inline bool preview_apply_key(PreviewInput& in, PreviewKey k) {
     case PreviewKey::ToggleMask:
       in.panel_mask = !in.panel_mask;
       in.panel_mask_set = true;      // 显式选择过 ⇒ 控制文件不许把它盖回去
+      break;
+    case PreviewKey::Sim:
+      // 按一下"数据变成实测的"、再按一下回到"预览的真实情形（假数据）" ——
+      // 这正是验收要演示的那一条：提示**自动消失**（判据是真的，不是画上去的）。
+      in.sim_ok = !in.sim_ok;
+      in.sim_ok_set = true;
+      break;
+    case PreviewKey::Diag:
+      // ★ 这是一个**事件**（按了一下 K），不是注入 ⇒ 它不写 `sim_ok` 那类旗标，
+      //   只置一个"请求"位，由 `preview_input_poll()` 交给主循环、读到即清。
+      //   返回 true = 这个键被认了（`preview_input_poll` 不会为它打
+      //   "inject:" 那行回执 —— 那行是给车状态用的）。
+      in.diag_toggle_req = true;
       break;
     case PreviewKey::Clear:
       // 全部复位（含各 *_set 旗标）。
@@ -206,6 +265,17 @@ inline int preview_apply_control_text(PreviewInput& in, const char* text) {
     //   "从没写过"对**结果**的影响是可区分的（前者覆盖默认值）——
     //   和 mute 一样是"值即语义"的那一类。`clear=1` 会把它复位成"开"。
     else if (eqIgnoreCase(key, "mask"))     { in.panel_mask = truthy(val); in.panel_mask_set = true; n++; }
+    // 「系统状态判据」的注入（2026-09-24 第二轮）：`sim=1` / `sim=0`。
+    // ★ 语义是"**这一拍的数据层长什么样**"：1 = 来源 Van + VAN 帧新鲜
+    //   （= 真板上有 VAN 的样子）；0 = 预览的真实情形（假数据、没有 VAN 帧）。
+    //   ★ 键名沿用 `sim`（而不是 `ok`）：它在两种情形下都是"我用 Sim 的口径
+    //     替数据层说话"—— 与 speed/rpm 那几个注入是同一条纪律。
+    else if (eqIgnoreCase(key, "sim"))      { in.sim_ok = truthy(val); in.sim_ok_set = true; n++; }
+    // 诊断页翻页（2026-09-24 第二轮）：`diag=1` ⇒ 与按一下 K 等价。
+    // ★ 它进 `diag_toggle_req`（**事件**位），由主循环按**边沿**处理 ——
+    //   所以控制文件里一直写着 `diag=1` 也只会翻一页，不会每帧翻一页
+    //   （那正是"把事件当绝对值"最容易踩的坑）。
+    else if (eqIgnoreCase(key, "diag"))     { if (truthy(val)) { in.diag_toggle_req = true; n++; } }
     else if (eqIgnoreCase(key, "speed"))    { in.speed_kmh = strtof(val, nullptr); in.speed_set = true; n++; }
     else if (eqIgnoreCase(key, "rpm"))      { in.rpm = strtof(val, nullptr);       in.rpm_set = true; n++; }
     else if (eqIgnoreCase(key, "clear"))    { if (truthy(val)) { in = PreviewInput{}; n++; } }
@@ -261,3 +331,18 @@ void preview_input_begin(const char* ctl_path);
 // 每轮主循环调一次：把这一轮攒下的按键、以及控制文件的内容合并进 `in`。
 // 返回 true = 这一轮**有输入被处理**（主循环用它决定要不要打一行回执）。
 bool preview_input_poll(PreviewInput& in);
+
+// 诊断页那一位（`K`）：**不是注入**，它是一个**事件**（按了一下），
+// 所以它走 `PreviewInput::diag_toggle_req` 这条**读到即清**的路，而不是
+// `sim_ok` 那种"绝对值、每帧由控制文件重新施加"的路。
+// 主循环这样用它（**边沿触发**，与控制文件那条路共用同一套语义）：
+//     const bool now_req = g_preview.diag_toggle_req;
+//     if (now_req && !g_diag_last_req) {
+//       if (!dash_ui_diag_open()) dash_ui_diag_toggle();          // 关着 ⇒ 打开第 1 页
+//       else if (dash_ui_diag_page() + 1 >= kDiagPageCount) dash_ui_diag_toggle(); // 一圈 ⇒ 关
+//       else dash_ui_diag_next();                                 // 否则翻下一页
+//     }
+//     g_diag_last_req = now_req;
+//   ★ 控制文件的 `diag=1` 也走这同一位（于是"脚本里贴一段文本"也能翻页），
+//     而 `diag=0` 写不写都不影响 —— 事件型输入没有"复位"这回事。
+// 非 Windows 上键盘那一半本来就不存在 ⇒ 只剩控制文件那一条路。

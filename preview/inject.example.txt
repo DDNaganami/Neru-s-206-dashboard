@@ -5,8 +5,15 @@
 # ONE key per line. `left=1 speed=140` on a single line only parses the FIRST key
 # (measured) - put each key on its own line.
 #
-# Keys: left right hazard low_beam position door speed rpm mute mask clear
+# Keys: left right hazard low_beam position door speed rpm mute mask sim diag clear
 #   mask=0  -> hide the round-panel overlay on the written BMPs (2.8C tier)
+#   sim=1   -> pretend the data layer is REAL (sources = van, VAN frames fresh).
+#              Use it to make the "data untrusted" badge DISAPPEAR: pcpreview has
+#              no VAN hardware, so by default every field really is Sim data and
+#              the badge is (correctly) on. sim=0 goes back to that default.
+#   diag=1  -> same as pressing K: opens / advances / closes the diagnostic page.
+#              EDGE triggered - keeping diag=1 advances only once; write diag=0
+#              first, then diag=1 again to advance again.
 #   clear=1 -> reset EVERYTHING (values are absolute; deleting a line does NOT
 #              revert that channel - write clear=1 to go back to fake data)
 #

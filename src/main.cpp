@@ -30,6 +30,7 @@
 #include "link_time.h"
 #include "link_tx.h"
 #include "theme_store.h"
+#include "system_status.h"   // 数据不可信提示 + 诊断页（判据/映射都在 lib/dashcore/）
 #include "ui_model.h"
 #include "van_phy.h"
 #include "van_replay.h"
@@ -112,6 +113,60 @@ static Buzzer* g_buzzer = &g_buzzer_null;
 static uint8_t g_alert_last = 0xFF;   // 0xFF = 还没打过
 static uint32_t g_beep_seen = 0;
 
+// ============================================================================
+//  系统状态层（2026-09-24 新增）—— 「数据不可信」提示 + 诊断页
+// ============================================================================
+// ★ 产品要求（原文见 ARCHITECTURE.md 的显示约定一节）：
+//   **当仪表显示的不是实测数据时，必须在屏上让驾驶员看得出来。**
+//   判据/去抖/限速/诊断页的字段映射**全部**在 lib/dashcore/system_status.*
+//   （纯逻辑，native 用例逐条钉住），这里只做四件事：
+//     ① 每拍把 `SysStatusInputs` 拼出来（**全部来自既有信息，零新数据源**）；
+//     ② 把结论交给 dash_ui（角标 + 诊断页）；
+//     ③ 按 `beepDue()` 响一声轻提示（走既有 `Buzzer` 抽象 + 既有静音开关）；
+//     ④ 静音开关的**掉电保存**（见下面 load/save 的说明）。
+static SystemStatus g_sys;
+// VAN 帧的**本机计数**：`van.raw_frames` 那一行用。
+// ★ 为什么在 main 自己数而不是读物理层的 `VanPhyWire::Stats`：
+//   ① 物理层的统计只在 `VanPhyGpio` 上有（`VanPhyStub` 没有这个接口），而
+//      `g_van_phy` 的类型是编译期二选一 ⇒ 在 main 里读它会变成一串 #if；
+//   ② 这个数要的语义是"**我这一侧**解出了多少帧"，而 sink 是每条路径
+//      （物理层 / 串口回放）的唯一汇合点 ⇒ 在这里数最准，也最省。
+//   ③ 真正的线上统计（edges / fcs_ok / 队列溢出）仍然由物理层那一行
+//      `van: edges=… frames=…` 每秒打在串口上 —— 诊断页只是"换个出口"，
+//      不替代它。
+static uint32_t g_van_frames_seen = 0;
+static uint32_t g_van_frames_fcs_ok = 0;
+static uint32_t g_van_last_rx_ms = 0;
+// 渲染帧率的 EMA（×10 定点，0.1 fps 分辨率）。为什么在 main 里算：
+//   渲染是主循环按 200 ms 节流调的，帧率就是"这条节流有没有被卡住"的直接证据
+//   （RGB 那条路上第一次整屏刷新要 ≈1 秒 ⇒ 那一秒 fps 会掉下来）。
+//   用整数 EMA（alpha = 1/8）而不是浮点：只为了一个显示值不值当用浮点。
+static uint32_t g_ui_fps10 = 0;
+// 静音开关的掉电保存（设备端用 Preferences/NVS；预览端没有 NVS）。
+// ★ 口径：**默认有声**（= 不静音），静音是车主的**选择**，要能跨上电记住。
+static bool g_beep_muted = false;
+#if defined(ARDUINO)
+#include <Preferences.h>
+static Preferences g_prefs;
+static const char* kPrefsNamespace = "dash";
+static const char* kPrefsMuteKey   = "mute";
+static void mute_load() {
+  if (!g_prefs.begin(kPrefsNamespace, /*readOnly=*/true)) return;   // 没有 NVS ⇒ 保持默认
+  g_beep_muted = g_prefs.getBool(kPrefsMuteKey, false);
+  g_prefs.end();
+}
+static void mute_save(bool m) {
+  if (!g_prefs.begin(kPrefsNamespace, /*readOnly=*/false)) return;
+  g_prefs.putBool(kPrefsMuteKey, m);
+  g_prefs.end();
+}
+#else
+// 预览端：静音状态由 `preview/inject.txt` 的 `mute=` / 键 `M` 管（见 preview_input.h），
+// 不落盘 —— 落盘会让"重新跑一次预览"继承上一次的静音，演示时反而容易误会。
+static void mute_load() {}
+static void mute_save(bool) {}
+#endif  // ARDUINO
+
 #if defined(DASH_DISPLAY_PREVIEW)
 // pcpreview 的注入快照 + 它改过的字段。设备固件里没有这一段。
 static PreviewInput g_preview;
@@ -129,6 +184,15 @@ static bool g_lamp_pulse = false;
 //   这里只是"让那一拍活到被拍下来"。
 static uint32_t g_lamp_pulse_frame = 0;
 static bool g_lamp_pulse_armed = false;
+
+// ★ 2026-09-24（第二轮）：预览里演示"数据不可信提示"的那一位。
+//   `sim_ok` **不是车辆状态**（见 preview_input.h 的说明），所以它不进
+//   `preview_apply_snapshot()`，只在这里单独取出来给 sys_inputs_build 的调用点用。
+//   ★ 它的含义是"**把这一拍的数据层模拟成实测**"（来源 Van + VAN 帧新鲜）——
+//     因为 pcpreview 上本来就没有 VAN，判据（正确地）认为"数据不可信"一直成立。
+static bool g_sim_ok = false;
+// 诊断页"翻页请求"的上一拍取值（边沿检测用；见 loop 里那一段）。
+static bool g_diag_req_last = false;
 
 // 把注入施加到快照上。
 // ★ 施加的位置在 `g_data.update()` **之后**、`make_view()` **之前**：
@@ -304,6 +368,12 @@ class VanLogSink : public VanSink {
 public:
   // 只要 824(车速/转速)这一帧?先全打 —— 反查协议时缺的就是"别的帧长什么样"。
   void onPacket(const VanPacket& pkt) override {
+    // ★ 诊断页要的两个数（2026-09-24）：本机解出的帧数 + 最近一帧的时刻。
+    //   在这里数（而不是读物理层的 Stats）的理由见 `g_van_frames_seen` 的说明。
+    //   它两条路径都覆盖：GPIO 物理层收帧、以及串口离线回放。
+    ++g_van_frames_seen;
+    if (pkt.fcs_ok) ++g_van_frames_fcs_ok;
+    g_van_last_rx_ms = pkt.rx_ms;
 #if VAN_SNIFF
     van_sniff_note(pkt.iden);   // ★ 计数不依赖任何字符串格式化,绕开"帧行不打印"
 #endif
@@ -397,6 +467,107 @@ static dashlink::LinkTime  g_link_time;      // §4：TICK 偏移估计 + 三级
 
 static uint32_t last_ui_ms = 0;
 static uint32_t last_status_ms = 0;
+static uint32_t last_render_tick_ms = 0;   // 渲染帧率 EMA 用（见 g_ui_fps10）
+static bool     g_obd_enabled = false;     // 这一份固件里 OBD 到底启没启用（诊断页）
+// 这一拍的车状态快照（**供 `sys_inputs_build()` 读值**）。
+// ★ 为什么单独存一份而不是多传一个参数：`sys_inputs_build()` 在 `loop()` 里
+//   被调用时 `st_mut` 就在手边，但把它当参数传会让这个函数与"哪一份快照"
+//   耦合；而诊断/判据要的只是"这一拍上屏的那两个数" ⇒ 在这里存一份**只读用途**
+//   的副本最不容易读歪（写入点只有 loop 里那一处，就在算视图之前）。
+static VehicleState st_state_cache;
+
+// ============================================================================
+//  把"这一拍的全部系统状态"拼成一份 `SysStatusInputs`
+// ============================================================================
+// ★★ 三条纪律（这一段的全部意义就在这三条上，别扩）：
+//   ① **零新数据源**：下面每一个字段都能在 main.cpp 现有的那几行串口日志里
+//      找到对应项（SRC / SRC-Hz / SRC-VAN / van: edges= / link: / BEACON 的
+//      heap+psram）。这一层只是"把已有的数换个出口"（→ 屏上的诊断页）。
+//   ② **不新增采集、不做判断**：判据全在 lib/dashcore/system_status.*。
+//      这里连一次比较都不做（除了"有没有过帧"这种**存在性**事实）。
+//   ③ **不引入协议/调度行为**：不造帧、不改优先级、不动任何时间基。
+//
+// ★ 时间戳的口径（最容易写歪的一处）：`van_age_ms` 用的是 **VAN 帧自己的
+//   rx_ms**（与 data_service 的 3 秒回退判据**同一个时基**），不是"主循环
+//   什么时候轮到" —— 用后者会把渲染节流也算成"数据变旧了"。
+static SysStatusInputs sys_inputs_build(uint32_t now_ms) {
+  SysStatusInputs in{};
+  const DataSourceStatus& st = g_data.status();
+
+  // ---- ① 数据来源档位（四格上屏的标量）----
+  in.speed_src   = (uint8_t)st.speed;
+  in.rpm_src     = (uint8_t)st.rpm;
+  in.coolant_src = (uint8_t)st.coolant;
+  in.intake_src  = (uint8_t)st.intake;
+
+  // ---- ② VAN 断流 / 帧计数 ----
+  in.van_ever_framed = (g_van_frames_seen != 0u);
+  in.van_age_ms = in.van_ever_framed ? (uint32_t)(now_ms - g_van_last_rx_ms)
+                                     : UINT32_MAX;
+  in.van.frames = g_van_frames_seen;
+  in.van.fcs_ok = g_van_frames_fcs_ok;
+  // edges 只有物理层那一条路才有（串口回放的帧是"文本已经被信任"的 ⇒ 没有
+  // 边沿统计）。没有物理层时照实为 0 —— 诊断页上把 frames 与 edges 一起看
+  // 就能区分"这一档没有物理层"与"物理层收不到东西"（后者是 edges 涨、frames 为 0）。
+  in.van.edges  = 0;
+
+  // ---- ③ 数据冻结（既有快照的数值）----
+  in.speed_kmh = st_state_cache.speed_kmh;
+  in.rpm       = st_state_cache.rpm;
+  // ---- ④ 双板链路（**仅从板**；主板没有 LinkTime）----
+#if LINK_ROLE != 1
+  in.link_known       = true;
+  in.link_state       = (uint8_t)g_link_time.state();
+  in.link_tick_age_ms = g_link_time.tickAgeMs();
+  in.link_ticks_seen  = g_link_time.ticksSeen();
+  in.link_seq_gaps    = g_link_time.seqGaps();
+  in.link_seq_missing = g_link_time.seqMissing();
+  in.link_offset_ms   = g_link_time.offsetMs();
+#else
+  // 主板：这一格**不是"不知道"**，而是"这件事不归它判" —— 从板在线性照
+  // §8 的 L11/L13 只进日志（30 s 门限、只用于日志、不上屏）。
+  // 诊断页那一行会写清楚（见 system_status.cpp 的 diagBuild）。
+  in.link_known = false;
+#endif
+
+  // ---- ⑤ OBD ----
+  in.obd_enabled         = g_obd_enabled;
+  in.obd_support_known   = st.obd_support_known;
+  in.obd_speed_polled    = st.obd_speed_polled;
+  in.obd_speed_supported = (uint8_t)(int8_t)st.obd_speed_supported;
+  in.obd_rpm_hz     = st.obd_rpm_hz;
+  in.obd_coolant_hz = st.obd_coolant_hz;
+  in.obd_intake_hz  = st.obd_intake_hz;
+  in.obd_speed_hz   = st.obd_speed_hz;
+
+  // ---- ⑥ 内存 / 帧率 ----
+#if defined(DASH_DEVICE_SELFTEST)
+  in.heap_free_kb  = (uint32_t)(ESP.getFreeHeap() / 1024u);
+  in.psram_present = (ESP.getPsramSize() != 0u);
+  in.psram_free_kb = in.psram_present ? (uint32_t)(ESP.getFreePsram() / 1024u) : 0u;
+#else
+  // 宿主机（pcpreview）：没有堆统计可报 ⇒ `heap` 报 0、psram 报"没有"。
+  // ★ 这与"内存用光了"在数值上撞车，所以诊断页那一行**只在设备端**有意义 ——
+  //   文档里写明（预览里看这一格是没意义的，看"数字在动"要看别的格）。
+  in.heap_free_kb  = 0;
+  in.psram_present = false;
+#endif
+  in.ui_fps10 = g_ui_fps10;
+
+  // 面板统计：本轮 RGB 驱动**还没有**这个出口（它每秒把 frames/vsync/blit
+  //   打进串口，但没暴露 getter）⇒ 照实报"驱动没上报"，诊断页显示 n/a。
+  //   ★ 刻意不在这一轮去驱动里加 getter：那是别人的文件（蜂鸣器那一轮在改
+  //     `dash_display_rgb.cpp`），而这一格"有则显示、没有就 n/a"本来就是对的设计。
+  in.display_stats_known = false;
+
+  // ---- ⑦ 告警 / 静音 ----
+  in.beep_muted   = g_beep_muted;
+  // ★ 用"回执那一份"：`g_alert_last` 的 0xFF 是"还没报过"的哨兵（不是一条告警）
+  //   ⇒ 转成 0（= AlertKind::None）再给诊断页，免得屏上出现 alert=255。
+  in.alert_active = (g_alert_last == 0xFFu) ? 0u : g_alert_last;
+
+  return in;
+}
 
 // 串口离线回放 VAN 帧:一行 "VAN 824 18F82710000000" 喂一帧(见 van_replay.h),
 // 实车接收发器前先用抓到的帧联调,不用先焊板。
@@ -739,6 +910,14 @@ void setup() {
   // ★ OBD 串口要在 g_data.begin() **之前**接上:ObdSource::begin() 会立刻
   //   发第一条 AT,那时 UART1 必须已经 begin 过(见文件头 OBD 那一节)。
   g_data = attachObdSerial();
+#if OBD_SERIAL
+  // 诊断页那一格"OBD 连接与 PID 状态"要先知道**这一份固件有没有启用 OBD** ——
+  //   这是编译期事实（`-DOBD_SERIAL=0` 的构建里根本没有那一路），不是运行期探测。
+  g_obd_enabled = true;
+#endif
+  // 静音开关的掉电保存（默认有声；静音是车主的选择，要跨上电记住）。
+  mute_load();
+  g_alerts.setMuted(g_beep_muted);
   g_data.begin();
   BOOT_STAGE(2);
 
@@ -866,6 +1045,29 @@ void loop() {
   if (preview_input_poll(g_preview)) {
     preview_apply(g_preview, st_mut);
   }
+  // ★ 诊断页那一位（K）**不是注入**（见 preview_input.h 的说明）：它是一个
+  //   **事件**（"按了一下"），所以这里按**边沿**处理 —— 一直按着不放 / 控制文件
+  //   里一直写着 `diag=1`，都只翻一页，不会每帧翻一页。
+  //   一个键干三件事：关着 ⇒ 打开第 1 页；开着且还有下一页 ⇒ 翻页；
+  //   开着且在最后一页 ⇒ 关闭（回到表盘）。
+  {
+    const bool req = g_preview.diag_toggle_req;
+    if (req && !g_diag_req_last) {
+      if (!dash_ui_diag_open()) {
+        dash_ui_diag_toggle();
+      } else if ((uint8_t)(dash_ui_diag_page() + 1u) >= kDiagPageCount) {
+        dash_ui_diag_toggle();
+      } else {
+        dash_ui_diag_next();
+      }
+      dash_logf("diag: %s page=%u/%u\n", dash_ui_diag_open() ? "open" : "closed",
+                (unsigned)(dash_ui_diag_page() + 1u), (unsigned)kDiagPageCount);
+    }
+    g_diag_req_last = req;
+  }
+  // 「数据层长什么样」那一位（T / 控制文件的 `sim=`）：**只在预览里**取出来，
+  // 由下面 sys_inputs_build 的调用点施加到输入上（不进 VehicleState，见说明）。
+  g_sim_ok = g_preview.sim_ok;
 #endif
 
   // ---- 告警层（2026-09-24）----
@@ -916,7 +1118,83 @@ void loop() {
 
   if (now - last_ui_ms >= 200) {
     last_ui_ms = now;
-    dash_ui_render(make_view(st_mut, now), lamps, now);
+    // ---- 系统状态层（2026-09-24）：先备好这一拍的输入，再做两件事 ----
+    // ① 把这一拍的车状态存进 `st_state_cache`（`sys_inputs_build()` 读它取车速/转速）；
+    // ② 自己推一次 `g_sys`（**每拍只推一次**，判据住在 lib/dashcore/），
+    //    然后按 `beepDue()` 决定要不要响那一声轻提示。
+    // ★ 为什么在这里推而不是在 dash_ui 里推：那一声"轻提示"归主循环管
+    //   （它拿着 Buzzer 与静音开关），而"状态机推了几次"必须是**唯一**的一处 ——
+    //   两处各推一次会让去抖窗口按两倍速走（屏上提示早出来半秒，且很难查）。
+    // ★ `diag_in` 在 if 里初始化：它只在"真的按过键"时才需要，而声明放在这里
+    //   是因为下面 `dash_ui_render` 要用它（诊断页关着时 dash_ui 一个字节都不读）。
+    st_state_cache = st_mut;
+    SysStatusInputs diag_in = sys_inputs_build(now);
+#if defined(DASH_DISPLAY_PREVIEW)
+    // ★ 演示注入（**只在预览里**）：把这一拍的**数据层口径**换成"实测"。
+    //   为什么默认是"坏"、注入才是"好"：pcpreview **没有 VAN 硬件** —— 弧与
+    //   数字全部由 `sim_source` 的假数据驱动、四个字段的来源恒为 `Sim`
+    //   ⇒ 判据（正确地）认为"数据不可信"一直成立，角标一上电就挂着。
+    //   于是"数据恢复 ⇒ 提示自动消失"这半条只能反过来演：注入"来源 Van +
+    //   VAN 帧新鲜"，判据自己就会在 800 ms 的去抖窗口之后把角标撤掉。
+    //   注入只改这份局部输入（碰不到 data_service、碰不到协议），
+    //   而 `g_sys` 的去抖/限速/恢复判据**全是真的**。
+    if (g_sim_ok) {
+      diag_in.speed_src   = 3;          // FieldSource::Van
+      diag_in.rpm_src     = 3;
+      diag_in.coolant_src = 2;          // Obd（真板上水温/进气只有 OBD 这一个真源）
+      diag_in.intake_src  = 2;
+      diag_in.van_ever_framed = true;
+      diag_in.van_age_ms = 20u;         // 帧很新鲜（<< kTrustVanStaleMs）
+      // ★ 链路那一档也要一起切：预览的角色是**从板**（`LINK_ROLE` 默认 0），
+      //   而从板开机以来一帧 TICK 都没见过 ⇒ `LinkTime` 的结论是 **SimFallback**，
+      //   于是即使来源标成 Van，"链路回退 Sim"这一条仍然成立、角标照样挂着
+      //   （实测就是这样：只切来源，角标不消失 ✗）。
+      //   所以"实测"这一档要连链路一起演：把状态摆成 **Locked**、age 很小 ——
+      //   那正是"主板的 TICK 正常到达"时 `LinkTime` 的样子。
+      diag_in.link_state = 0;           // Locked
+      diag_in.link_tick_age_ms = 20u;
+      // ★ **不编造** ticks/seq_gap 那几个计数：它们是真实的累计量（预览里本来就是 0，
+      //   因为一帧 TICK 都没收到）。状态与 age 是"这一拍长什么样"，可以演；
+      //   计数是"发生过什么"，演它就成了假证据。
+    }
+#endif
+    const DataTrustReason trust = g_sys.update(diag_in, now);
+    // 一声轻提示（**走既有 Buzzer 抽象**）：只在"变坏"那一跳响一次、受 5 秒限速，
+    // 而且**静音开关优先**（车主的选择 > 这一声提示）。
+    // ★ 时长用 kTrustBeepMs（120 ms）：有源蜂鸣器只能开/关 ⇒ 就是"开这么久然后关"；
+    //   它必须 <= 300 ms（不许长时间连续高电平，理由见 ARCHITECTURE 的提示音说明）。
+    bool trust_beeped = false;
+    if (g_sys.beepDue()) {
+      if (!g_beep_muted && !g_alerts.muted()) {
+        g_buzzer->beep(BeepPattern::Short, kTrustBeepMs);
+        trust_beeped = true;
+      }
+    }
+    // 状态变化的一行回执（不是每拍都打：数据在阈值上下抖会变成刷屏）。
+    // ★ 把"有没有响那一声"并进这一行 —— 分成两行会让"该响没响"与"状态没变"
+    //   看起来一模一样（而静音与否正是要能一眼看出来的东西）。
+    static uint8_t trust_last = 0xFF;
+    if ((uint8_t)trust != trust_last) {
+      trust_last = (uint8_t)trust;
+      dash_logf("trust: %s%s%s (episodes=%lu)\n", dataTrustReasonName(trust),
+                trust == DataTrustReason::kNone ? "" : "  <-- 屏上出现数据不可信提示",
+                trust_beeped ? " beep" : (g_sys.untrusted() ? " muted" : ""),
+                (unsigned long)g_sys.episodes());
+    }
+    dash_ui_render(make_view(st_mut, now), lamps, g_sys, diag_in, now);
+    // 渲染帧率（EMA，alpha = 1/8，×10 定点）：它回答"这条 200 ms 节流有没有被卡住"
+    // （RGB 那条路上第一次整屏刷新要 ≈1 秒 ⇒ 那一秒 fps 会掉下来）。
+    // ★ 用 `dt` 的**实际值**（夹在 1..1000 ms）：主循环被长 flush 挡住时
+    //   dt 会变很大，不夹的话 10000/dt 会算出 0 或者被 32 位除法截没。
+    {
+      uint32_t dt = now - last_render_tick_ms;
+      if (dt < 1u) dt = 1u;
+      if (dt > 1000u) dt = 1000u;
+      const uint32_t inst10 = 10000u / dt;
+      g_ui_fps10 = (g_ui_fps10 == 0u) ? inst10
+                                      : (g_ui_fps10 - g_ui_fps10 / 8u + inst10 / 8u);
+    }
+    last_render_tick_ms = now;
     BOOT_STAGE(9);
   }
 

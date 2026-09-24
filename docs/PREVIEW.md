@@ -124,6 +124,8 @@ python -m platformio run -e pcpreview      # SUCCESS 即可
 | `R` | 红区 | 转速 = **6000**（> 阈值 5800）⇒ 触发红区告警 |
 | `M` | 静音 | 只掐蜂鸣器；**屏上的指示灯照旧报**（"静音"≠"假装没事"） |
 | `V` | 圆屏遮罩开关 | 只影响**落盘的那张图**（LVGL 缓冲不动） |
+| `K` | **诊断页** | **一个键三件事**：关着 → 打开第 1 页；开着且还有下一页 → 翻页；开着且在最后一页 → **关闭**。`X` / `Esc` 也能直接关。内容与合规说明见 `ARCHITECTURE.md`「显示约定」第 3 节 |
+| `T` | **把数据层口径切成"实测"** | 来源 = van、VAN 帧新鲜、链路 = Locked ⇒ 「数据不可信」角标在 0.8 s 恢复窗口后**消失**；再按一次回到预览的真实情形（假数据）。★ **预览里没有 VAN 硬件**，所以角标默认就是挂着的 —— 这一位的用途正是演"恢复后消失"那一半 |
 | `X` / `Esc` | 全部复位 | 回到假数据（并把遮罩复位成"开"） |
 
 ### 3.2 控制文件 `preview/inject.txt`（每帧重读 ⇒ 保存即生效）
@@ -140,6 +142,8 @@ speed=140       # 车速（km/h，浮点也行）
 rpm=6000        # 转速
 mute=1          # 静音
 mask=0          # 关掉圆屏遮罩（等价于按 V）
+sim=1           # 把数据层口径切成"实测"（等价于按 T）⇒ 角标消失
+diag=1          # 诊断页翻页（等价于按 K）—— 见下面第 4 条：它是**边沿触发**
 clear=1         # 全部复位（见下面第 ① 条）
 ```
 
@@ -152,12 +156,20 @@ clear=1         # 全部复位（见下面第 ① 条）
 3. 注入**只覆写 main 的快照**：不造 VAN 帧、不碰 `kSpeedScale`、
    不改 `data_service` 的优先级（纯函数在 `lib/dashcore/preview_input.h`，
    native 用例逐条钉住）。
+4. ★ **`diag=1` 是"按了一下"（事件），不是"诊断页开着"（状态）** ⇒
+   它**边沿触发**：文件里一直写着 `diag=1` 只翻**一页**；要再翻一页得先写
+   `diag=0`、再写 `diag=1`。这条不与上面第 1 条矛盾 —— 它没有"绝对值"这回事，
+   写 `diag=0` 也不会把页面关掉（要关就再给一次 `diag=1`，见键盘那个键的三件事）。
 
 ### 3.3 键盘与文件同时用时的优先关系
 
 文件里**写了**的那一项，每帧都会盖回文件里的值（文件是每帧重新施加的"绝对值"）；
 文件里**没写**的那一项，只受键盘控制。`mask=` 也照这条走（判据是那个 `_set` 旗标，
 不是"值等于默认值"）—— 少了它，键盘按 `V` 关掉遮罩后会被下一帧的文件重读按默认值盖回去。
+`sim=` 同一条（它也是"绝对值"那一类：写 `sim=1` 就一直按实测算）。
+
+★ **唯一的例外是 `diag=`**：它是**事件**（"按了一下 K"）⇒ 与键盘那个键走同一条
+边沿判据，"文件写了什么值"不构成持续状态（见 3.2 的第 4 条）。
 
 ### 3.4 蜂鸣器
 
@@ -259,12 +271,32 @@ clear=1         # 全部复位（见下面第 ① 条）
 node tools/theme-editor/check-preview-frame.js preview/frames/l_0030.bmp idle yes left yes `
      "lamps=L,Low" "alert=none"
 
+# 系统状态那两条：(1) 数据不可信角标 (2) 诊断页有没有真的画出来
+node tools/theme-editor/check-system-status.js badge preview/frames/l_0030.bmp
+node tools/theme-editor/check-system-status.js diag  preview/frames/l_0100.bmp
+node tools/theme-editor/check-system-status.js sweep preview/frames   # 每一处变化落在第几帧
+
 # 两个编辑器的内联脚本语法（改 HTML 之后必跑）
 node tools/theme-editor/syntax-check-pages.js
 ```
 
 `lamps=` 用 `L,R,Haz,Low,Pos,D` 逗号分隔；`alert=none` 时**没点名的格子必须灭**，
 有告警时那些格会闪、脚本就不断言它们。
+
+`check-system-status.js` 的三档：`badge` 判"表盘右缘那枚角标在不在"；
+`diag` 判"诊断页开没开"—— **判据是"底色深 + 有文字"**，因为**开机动画那几帧
+整屏也是黑的**，只看亮度会把它们误判成"诊断页开着"（`sweep` 因此跳掉前 8 帧）；
+`sweep` 打印每一处状态变化落在第几帧，例如本次实测：
+
+```
+  f=   5 badge=off diag=shut  (boot)
+  f=   9 badge=ON  diag=shut        <- 去抖 1.5 s 后出现
+  f=  59 badge=off diag=shut        <- sim=1 之后 0.8 s 消失
+  f=  87 badge=ON  diag=shut        <- sim=0 之后又回来
+  f= 104 badge=off diag=OPEN        <- diag=1：诊断页盖住整屏（角标被盖住，不是消失）
+sweep preview/frames: frames=133 (skip<8) firstBadgeOn=9 firstBadgeOffAfterOn=59
+sweep: diag-open frames = 29 (104..132)
+```
 
 ---
 
@@ -278,3 +310,13 @@ node tools/theme-editor/syntax-check-pages.js
   `tools/theme-editor/asset-spec.js` 的 `ROUND_PANEL.res240.activeAreaMm10`
   故意留空（不编一个数）。它的**像素**口径（内切正方形 168）仍然有效。
 * **预览不能替代真机回归** —— 见第 4 节。
+* **系统状态那两条只在 `pcpreview` 里演过，没有上板**（2026-09-24 本轮**刻意不烧板**：
+  另一个子代理正拿 COM6 测蜂鸣器）⇒ 待上板验证的三条：
+  ① 真板上 VAN 拔线 3 s 后角标是否出现、插回后 0.8 s 内是否消失；
+  ② **诊断页的真机入口**（长按/组合键）还没定 —— 这块板能当输入的只有 12PIN 的
+  `GPIO0`（BOOT strap，不建议）与排针上剩下的 `GPIO7`（I2C 的 SCL），
+  得等最终板接线定案；
+  ③ 那一声轻提示在**有源蜂鸣器**上到底什么动静（时长 120 ms、不可变调）。
+* **"数据冻结"那条判据在真车上会不会误报还没验** —— 车停着不动 20 秒
+  （怠速等红灯）也会命中"值 20 秒一个字节都没变"⇒ 会报"数据冻结"。
+  取舍是刻意的（宁可偶发误报也不在假数据上静默），但真车标定时要以车主观感为准再调。

@@ -157,7 +157,8 @@ python -m platformio run -e pcpreview -t exec
 | `空格` | 双闪 | `R` | 红区（转速 = 6000） |
 | `L` | 近光 | `M` | **静音开关**（掐蜂鸣器，屏上照报） |
 | `P` | 仪表盘灯 | `V` | **圆屏遮罩开关**（2.8C 档那层可视圈标注） |
-| `D` | 门（"动过"，**不是**"门开着"） | `X` / `Esc` | 全部复位（回到假数据） |
+| `D` | 门（"动过"，**不是**"门开着"） | `K` | **诊断页**：打开 → 翻页 → 关闭（同一个键） |
+| `T` | **把数据层口径切成"实测"**（角标消失；再按回到假数据） | `X` / `Esc` | 全部复位（回到假数据） |
 
 **② 控制文件 `preview/inject.txt`**（每帧重读 ⇒ **保存即生效，不用重启**）：
 拿 `preview/inject.example.txt` 复制一份改名即可。键名与键盘同一套（数值版）：
@@ -169,7 +170,7 @@ door=1
 speed=140
 ```
 
-完整的键表（含 `hazard` / `position` / `rpm` / `mute` / `mask` / `clear`）
+完整的键表（含 `hazard` / `position` / `rpm` / `mute` / `mask` / `sim` / `diag` / `clear`）
 与每一条的语义见 `docs/PREVIEW.md` 第 3 节 —— 那份是这条链的**唯一权威口径**。
 
 > ★ 四条口径（写成文档免得当成 bug 查）：
@@ -216,6 +217,69 @@ speed=140
 > 真机那一档是另一个子类（**建议**走 2.8C 板上 TCA9554 的 `EXIO8`，零额外引脚 ——
 > 见 `ARCHITECTURE.md` §8 的 **L14**：**仍是建议、待 owner 点头**，所以本轮
 > 没有写任何 I2C 时序）。
+
+### ★★ 系统状态这两条：可复制的演示步骤（2026-09-24 新增）
+
+产品要求与全部参数见 `ARCHITECTURE.md`「显示约定：**不是实测数据就必须看得出来**」。
+这一节只写**怎么在预览里把它演出来**（判据/去抖/限速都在
+`lib/dashcore/system_status.*`，native 用例逐条钉着；`pcpreview` 与真机跑同一份）。
+
+**① 「数据不可信」提示：出现 → 恢复后消失**
+
+```
+; 在 ASCII 副本的仓库根
+$env:PATH='C:\206dash-scratch\zigbin;' + $env:PATH
+python -m platformio run -e pcpreview -t exec
+```
+
+- **一上电就该看见角标**（表盘右缘那枚 `SIM`）—— ★ **这不是 bug**：预览里
+  **没有 VAN 硬件**，车速/转速/水温/进气四格的来源恒为 `Sim` ⇒ 判据
+  （正确地）认为"数据不可信"。约 1.5 s（去抖窗口）后出现，同时串口打一行：
+
+  ```
+  trust: sim-fallback  <-- 屏上出现数据不可信提示 beep (episodes=1)
+  ```
+
+  那一声轻提示在预览里是 `BEEP pattern=short ms=120`（`BuzzerHost` 打出来的）。
+- **让提示消失**：按 **`T`**（或往 `preview/inject.txt` 写 `sim=1`）。
+  约 0.8 s（恢复窗口）后角标消失，串口打 `trust: none (episodes=1)`。
+- **再让它回来**：再按一次 `T`（或写 `sim=0`）。
+- **键在哪**：`T` 是"把这一拍的数据层口径切成**实测**"（来源 = van、VAN 帧新鲜、
+  链路 = Locked）；`sim=0` 就是预览的真实情形（假数据）。**真板上不需要任何注入**：
+  VAN 一来角标自己就没了。
+
+**② 诊断页：进得去、翻得动、出得来**
+
+- 按 **`K`**：第 1 页出现（整屏，标题 `DIAG 1/2`），串口打 `diag: open page=1/2`。
+- 再按 **`K`**：翻到第 2 页（`DIAG-LINK 2/2`），串口打 `diag: open page=2/2`。
+- 再按 **`K`**：关闭（回到表盘），串口打 `diag: closed page=1/2`。
+- 任何一页按 **`X` / `Esc`** 也直接关闭（与"全部复位"同一个键）。
+- **数字在动**：进页后**别动键盘**，盯 `van frames=` / `ui=` fps 那两行 ——
+  前者随假数据帧数涨（预览里由 `van_replay` 的贴帧路喂），后者是渲染节流的实测帧率。
+  ★ `heap=` / `psram=` 在**宿主机上是 0 / `-`**（没有 ESP 的堆统计），
+  这一格只在设备端有意义；`panel=` 那一行显示 `- (driver n/a)` 是**如实**的
+  （RGB 驱动本轮还没有这个出口）。
+- **脚本里怎么做**（无键盘时）：往 `preview/inject.txt` 写 `diag=1` ⇒ 与按一下 `K`
+  等价（**边沿触发**：文件里一直写着也只翻一页；要再翻先写 `diag=0` 再写 `diag=1`）。
+
+**③ 逐像素核对（本仓库的工具，能指名道姓说"哪一块在不在"）**
+
+```
+node tools/theme-editor/check-system-status.js badge preview/frames/l_0030.bmp
+node tools/theme-editor/check-system-status.js diag  preview/frames/l_0100.bmp
+node tools/theme-editor/check-system-status.js sweep preview/frames
+```
+
+- `badge` 判"角标在不在"，`diag` 判"诊断页开没开"（= 底色是深色**且**有文字 ——
+  这一条把"整屏黑"与"诊断页真的画出来了"分开），`sweep` 扫一整个目录，
+  打印**每一处状态变化落在第几帧**（`firstBadgeOn=` / `firstBadgeOffAfterOn=` /
+  `diag-open frames = …`），并跳掉开机动画那几帧（那时背景本来就是黑的）。
+
+★ 实测（2026-09-24，ASCII 副本、无板，`sim=0` → `sim=1` → `sim=0` → `diag=1`）：
+`firstBadgeOn=9` → `sim=1` → `firstBadgeOffAfterOn=59` → `sim=0` → `badge=ON`（f=87）→
+`diag=1` → `diag-open frames = 29 (104..132)`；串口依次打出
+`trust: sim-fallback … beep (episodes=1)` / `trust: none (episodes=1)` /
+`trust: sim-fallback … beep (episodes=2)` / `diag: open page=1/2`。
 
 ## 字段与固件端必须一致
 
