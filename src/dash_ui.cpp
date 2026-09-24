@@ -124,6 +124,27 @@ static DiagPage g_diag_page = DiagPage::Sys;
 // 2048 是 16 行 × 最多 40 列 + 换行，够；它是一份静态缓冲，不进栈。
 static char    g_diag_text[2048] = {0};
 static char    g_diag_title[24] = {0};
+// 几何自证那一行只打一次（见 dash_ui_diag_toggle）。
+static bool    g_diag_geom_logged = false;
+
+// 给"几何自证"那一行取字体的可读标记。
+// ★★ 为什么**不能**打 `lv_font_t::name` / `::size`（本文件第一版就是这么写的，
+//   在 pcpreview 上当场编不过：`no member named 'name' in '_lv_font_t'`）：
+//   LVGL 9 把 `lv_font_t` 的实例字段留在了**私有头**里（include/ 那份公开头
+//   只有回调与 `dsc`）⇒ 公开 API 里**拿不到**字体名。能拿到的只有这两个：
+//     · `lv_font_get_line_height()` —— 公开函数，行高就是字号的可比数值；
+//     · 指针相等比较 —— 本项目用到的字体是**编译期已知的那几个**
+//       （`readout_font()` 只返回 Montserrat 10/18/24/48）。
+//   这一行是给"以后页面上什么都没有"查尺寸用的，**不是**给人看字号设计；
+//   所以"哪一档 + 行高"就够，不要去猜字体名。
+static const char* diagFontTag(const lv_font_t* f) {
+  if (!f) return "null";
+  if (f == &lv_font_montserrat_10) return "m10";
+  if (f == &lv_font_montserrat_18) return "m18";
+  if (f == &lv_font_montserrat_24) return "m24";
+  if (f == &lv_font_montserrat_48) return "m48";
+  return "?";
+}
 
 // ============ 图片资源 ============
 // lv_image_dsc_t 必须由我们持有 —— LVGL 会一直引用它(set_src 不复制)。
@@ -705,33 +726,66 @@ static void trust_apply(ScreenUi& ui, DataTrustReason r) {
   lv_obj_remove_flag(ui.trust_badge, LV_OBJ_FLAG_HIDDEN);
 }
 
-// 建诊断页：**一块整屏容器**（底色不透明 + 标题 + 正文）。
+// 建诊断页：**一块内缩的圆角面板**（不透明底 + 可见描边 + 标题 + 正文）。
 // ★ 为什么是一整块而不是"在表盘上盖几个数字"：诊断页要能**明确地**盖住表盘
 //   （否则"数字在动"与表盘上的弧混在一起，读数没法看），而且退出时必须是
 //   "整块消失"——留半张脸在外面会让人以为界面坏了。
-//   整屏 opa 不透明（LV_OPA_COVER）：**不给它设半透明**（这个驱动上 opa<255
+//   面板 opa 不透明（LV_OPA_COVER）：**不给它设半透明**（这个驱动上 opa<255
 //   的整屏对象会开离屏层，层缓冲装不下整屏 ⇒ 下半屏回绕到顶部，踩过）。
+//
+// ★★ 2026-09-24 晚（车主原话："屏幕为什么黑了"）—— 这一版为什么换了底色：
+//   上一版底是 **0x0A0A0A 铺满整屏**。哪怕字画对了，观感也就是"整屏黑了"
+//   （实测那版页区域 96% 的采样点亮度 < 20）。而**底色深本身不是可读性**：
+//   它必须在"这是一页界面"这件事上说话 ⇒ 现在做三件事：
+//     ① **内缩**（不再铺满圆屏）⇒ 四周露出表盘底色，一眼看出"这是盖在表盘上的
+//        一页"，而不是"屏坏了 / 板子死了"；
+//     ② **可见描边**（琥珀 2px + 圆角）⇒ 哪怕一个字都没画出来，人也看得出
+//        这里有"一页界面"，而不是一片黑。**这条是硬要求**（车主追加）；
+//     ③ 底色抬到 0x16212E（亮度 ≈ 32，明显不是近黑）且与表盘底色 0x141414
+//        区分得开 ⇒ 页区域平均亮度实测 ≈ 32（上一版 ≈ 10）。
+//   ★ 为什么不再铺满：铺满的整屏不透明对象一开就是"整屏换了个颜色"，
+//     圆屏上没有任何参照物 ⇒ 只能读成"黑了"。
+//
+// ★★ 字体纪律（这一页踩过两次，写在这里免得第三次）：
+//   · 本构建**只使能了 Montserrat 系列**（include/lv_conf.h 的 LV_FONT_MONTSERRAT_*）
+//     ⇒ **没有 CJK 字形**。诊断页的文本（含 `dataTrustReasonText()` 那条中文
+//     短文）**必须一律 ASCII** —— 中文在这里不是"看不清"，是**一个字形都画不出来**，
+//     结果是"一片黑、连一个字都没有"。
+//   · 所以标题/页码/字段名全用 ASCII（DIAG 1/2、heap/psram/van/link…）。
+//     真要用中文，先引入 CJK 字体（lvgl 自带 source_han_sans_sc_16_cjk，但要
+//     占 Flash）——那是独立一单，不在本次改动里。
 static void build_diag(lv_obj_t* parent, ScreenUi& ui) {
   lv_obj_t* box = lv_obj_create(parent);
   lv_obj_remove_style_all(box);
   lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_size(box, LV_PCT(100), LV_PCT(100));
-  lv_obj_set_pos(box, 0, 0);
-  lv_obj_set_style_bg_color(box, lv_color_hex(0x0A0A0A), 0);
+  // ★ 尺寸/位置**显式写死**（绝不让 LVGL 自算），见下面 body 那段血泪说明。
+  //   32 px 内缩：480 档四周各留 32，240 档按 ts() 自动减半。
+  //   ★ 尺寸按 **480 基准** 写（ts(416) ⇒ 240 档上 208），不读 LV_HOR_RES：
+  //     这个项目的几何只有"480 基准 + ts() 缩放"一套口径，随屏读分辨率会让
+  //     240 档的面板变成"半屏"而不是等比缩小的面板。
+  const int32_t kInset = ts(32);
+  lv_obj_set_size(box, ts(416), ts(416));
+  lv_obj_set_pos(box, kInset, kInset);
+  lv_obj_set_style_bg_color(box, lv_color_hex(0x16212E), 0);
   lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(box, ts(24), 0);
+  lv_obj_set_style_border_width(box, ts(2), 0);
+  lv_obj_set_style_border_color(box, lv_color_hex(0xFFB020), 0);   // 琥珀（与灯条/角标同色系）
+  lv_obj_set_style_border_opa(box, LV_OPA_COVER, 0);
   lv_obj_add_flag(box, LV_OBJ_FLAG_HIDDEN);    // ★ 平时**不显示**（产品要求）
 
-  // 标题：圆屏顶部（y 小的地方可视宽度窄，所以标题短）
+  // 标题 + 页码：用**大数字那一档**字体（车主追加："标题与页码尤其要显眼"）。
+  //   这一档在 480 上是 48 号（240 上是 24 号），是这块屏上最大的字。
   lv_obj_t* title = lv_label_create(box);
   lv_obj_remove_style_all(title);
-  lv_obj_set_style_text_font(title, READOUT_UNIT_FONT, 0);
+  lv_obj_set_style_text_font(title, READOUT_DIGIT_FONT, 0);
   lv_obj_set_style_text_color(title, lv_color_hex(0xFFB020), 0);
   // ★ 显式给尺寸与位置（不让 LVGL 自算）：
   //   自算尺寸的那条路在"多行文本 + 这个驱动"上出过问题（见下面 body 的说明），
   //   而这里每个标签要多大是**已知**的（一屏固定行数）⇒ 写死最稳。
-  lv_obj_set_size(title, ts(432), ts(24));
-  lv_obj_set_pos(title, ts(24), ts(50));
-  lv_label_set_text(title, "DIAG");
+  lv_obj_set_size(title, ts(384), ts(56));
+  lv_obj_set_pos(title, ts(24), ts(16));
+  lv_label_set_text(title, "DIAG 1/2");
 
   // 正文：多行文本。
   // ★★ 这里踩过一个坑（2026-09-24，写下来免得下次再花半小时）：
@@ -744,9 +798,11 @@ static void build_diag(lv_obj_t* parent, ScreenUi& ui) {
   lv_obj_t* body = lv_label_create(box);
   lv_obj_remove_style_all(body);
   lv_obj_set_style_text_font(body, READOUT_UNIT_FONT, 0);
-  lv_obj_set_style_text_color(body, lv_color_hex(0xE0E0E0), 0);
+  // 正文抬到 0xE8EDF2（亮度 ≈ 235）：上一版 0xE0E0E0 在**真屏**上偏灰
+  //   （面板不是显示器，暗部对比会再掉一档）⇒ 直接给到接近纯白。
+  lv_obj_set_style_text_color(body, lv_color_hex(0xE8EDF2), 0);
   lv_obj_set_style_text_line_space(body, ts(6), 0);
-  lv_obj_set_size(body, ts(432), ts(320));
+  lv_obj_set_size(body, ts(368), ts(320));
   lv_obj_set_pos(body, ts(24), ts(80));
   lv_label_set_text(body, "");
 
@@ -793,7 +849,59 @@ static void diag_apply(ScreenUi& ui, const SysStatusInputs& in, bool open) {
 }
 
 // 诊断页的三个入口（main 把按键翻译成它们，见 dash_ui.h 的说明）
-void dash_ui_diag_toggle() { g_diag_open = !g_diag_open; }
+//
+// ★★ 2026-09-24 晚：**每次打开都从第 1 页开始**（车主原话："关闭后重开停在第 2 页
+//   这个别扭一并改掉"）。上一版页号**不被关闭动作复位** ⇒ 关掉再打开还在第 2 页
+//   （预览的 `K` 与真机的 `d` 都是这么走的，两处语义**一致**，所以一起改）。
+//   ★ 复位写在**打开的那一次**（而不是写在关闭的那一次）：
+//     这样"关 → 开"与"开机后第一次开"走的是同一条路径，只有一处判据。
+void dash_ui_diag_toggle() {
+  g_diag_open = !g_diag_open;
+  if (!g_diag_open) return;            // 关闭：什么都不动（页号留着，下一次打开会复位）
+  g_diag_page = DiagPage::Sys;         // ★ 打开 ⇒ 一律第 1 页
+
+  // ---- 几何自证（2026-09-24 晚，车主追加的要求）----
+  // "诊断页一片黑、连一个字都没有"这件事**必须能从串口一眼判出来**，不必靠人眼猜：
+  //   尺寸退化成 0 / 字体拿到 null / 盒子没建出来 —— 这一行三个都覆盖。
+  // ★ 只打一次（不是每 5 Hz 一拍一行）：它与"页面上显示什么"无关，
+  //   只回答"这一页的对象到底有多大、字用的是哪个字体"。
+  //
+  // ★★ 必须在**本次打开之后**读、而且要先 `lv_obj_update_layout()` ——
+  //   这是 2026-09-24 上板实测踩到的：第一版把这一行写在"读到第一帧之前"，
+  //   打出来的是 **`box=0x0 at 0,0`**（对象明明建好了、字体也对）。
+  //   原因：LVGL 的 `lv_obj_get_width()/lv_obj_get_coords()` 读的是
+  //   **上一次布局的结果**（默认布局是 `LV_LAYOUT_NONE` ⇒ 子对象的位置要等
+  //   父对象第一次被**绘制**时才由 `lv_obj_refr_pos()` 落到 `coords` 上）。
+  //   而 `build_diag()` 建完就是 HIDDEN、**一帧都没画过** ⇒ `coords` 全是 0。
+  //   ⇒ 先让容器可见（这一步本来就在 diag_apply 里发生），再手动跑一次布局。
+  //   ★ 这一条正是"几何自证"要防的那类事：**它自己先踩了一次**，
+  //     而它在串口上把真相说出来了 —— 所以这一行必须留着。
+  if (!g_diag_geom_logged && g_ui[0].diag_built) {
+    g_diag_geom_logged = true;
+    lv_obj_remove_flag(g_ui[0].diag_box, LV_OBJ_FLAG_HIDDEN);   // 先可见
+    lv_obj_update_layout(g_ui[0].diag_box);                     // 再跑一次布局
+    lv_area_t bc, tc, pc;
+    lv_obj_get_coords(g_ui[0].diag_box, &bc);
+    lv_obj_get_coords(g_ui[0].diag_title, &tc);
+    lv_obj_get_coords(g_ui[0].diag_body, &pc);
+    const lv_font_t* tf = lv_obj_get_style_text_font(g_ui[0].diag_title, LV_PART_MAIN);
+    const lv_font_t* bf = lv_obj_get_style_text_font(g_ui[0].diag_body, LV_PART_MAIN);
+    dash_logf("diag: geom box=%ldx%ld at %ld,%ld title=%ldx%ld at %ld,%ld "
+              "body=%ldx%ld at %ld,%ld font title=%s/lh%ld body=%s/lh%ld page=1/%u\n",
+              (long)lv_obj_get_width(g_ui[0].diag_box),
+              (long)lv_obj_get_height(g_ui[0].diag_box),
+              (long)bc.x1, (long)bc.y1,
+              (long)lv_obj_get_width(g_ui[0].diag_title),
+              (long)lv_obj_get_height(g_ui[0].diag_title),
+              (long)tc.x1, (long)tc.y1,
+              (long)lv_obj_get_width(g_ui[0].diag_body),
+              (long)lv_obj_get_height(g_ui[0].diag_body),
+              (long)pc.x1, (long)pc.y1,
+              diagFontTag(tf), (long)(tf ? lv_font_get_line_height(tf) : 0),
+              diagFontTag(bf), (long)(bf ? lv_font_get_line_height(bf) : 0),
+              (unsigned)kDiagPageCount);
+  }
+}
 void dash_ui_diag_next() {
   g_diag_page = (DiagPage)(((uint8_t)g_diag_page + 1u) % kDiagPageCount);
 }
@@ -850,6 +958,27 @@ static float arc_progress(const ArcStyle& a, const ArcDashView& v) {
   return t;
 }
 
+// ============================================================
+// ★★★ 图层顺序（**由创建顺序决定**，改顺序前先读这一条）★★★
+//
+// LVGL 里"后建的画在上面"（子对象顺序就是绘制顺序），而这个函数的每一段
+//   都在建一层 ⇒ **本文件里段的先后 = 屏上谁压谁**。约定的最终层序
+//   （2026-09-24 车主定稿，从下到上）：
+//
+//     1. 背景图            （最底，`g_bg_img`）
+//     2. 表情              （程序化 `build_face` + 表情图片 `g_face_img`）
+//     3. 表盘弧            （`build_arcs`）
+//     4. 六格指示灯        （`build_lamps`）
+//     5. 读数              （大数字 / 单位 / 水温 / 进气 —— **最高层**）
+//
+//   · 表情在弧**之下**：车主要"表盘弧永远是最上层"（原话），
+//     代价是表情图的边缘会被弧裁掉一块 —— **这是设计如此**，不是 bug
+//     （见 tools/theme-editor/asset-spec.js 的同一条注明）。
+//   · 弧在表情**之上**、但在灯与读数**之下**：读数绝不许被弧压住
+//     （车主原话："读数应该是最高层的"）。★ 别顺手把 `build_arcs` 挪到最后 ✗。
+//   · 诊断页（最末尾建）**不在**这张表里：它平时 HIDDEN，一显示就要盖住
+//     上面**全部**五层（整块不透明面板），所以它刻意建在读数之后。
+// ============================================================
 void dash_ui_init() {
   // 先落默认主题:保证任何情况下主题都是可用的。
   // main 的 setup() 会在调本函数之前尝试 theme_load() 覆盖它(读 flash 主题
@@ -877,35 +1006,38 @@ void dash_ui_init() {
 
   for (uint8_t s = 0; s < 2; ++s) {
     g_ui[s].idx = s;                 // 图片按屏取,index 必须先设
-    // 图层顺序 = 创建顺序:背景图 → 弧线 → 表情。
-    // 背景图必须是**第一个**子对象,这样它衬在弧线下面。
     if (g_bg_ok[s]) {
       g_bg_img[s] = lv_image_create(g_screens[s]);
       lv_image_set_src(g_bg_img[s], &g_bg_dsc[s]);
       lv_obj_center(g_bg_img[s]);
     }
-    build_arcs(g_screens[s], kScreens[s], g_ui[s]);
+
+    // ---- 第 2 层：表情（程序化 + 图片）----
+    // ★★ 表情有**两个**对象，两个都必须在 `build_arcs()` **之前**建，
+    //   否则弧会被它们压住（2026-09-24 实测踩到：只把 `build_face()` 挪到前面
+    //   还不够 —— `g_face_img` 那一步原先是**后面另一个循环**里建的，
+    //   于是"图片表情"仍然盖在弧上；落帧上表现为弧被切掉四个缺口，
+    //   而那个现象在"改成从下面建"之后**一个像素都没变**，正是这条没做全）。
     if (kScreens[s].show_face) build_face(g_screens[s], g_ui[s]);
-  }
 
-  // 用图片表情替换(或隐藏)程序化表情。
-  // ★ 降级:没有表情图时**保留程序化形状表情** —— 这条路径是刻意留的,
-  //   与"没有主题就用默认主题"是同一个原则:资源缺失不能让界面空掉。
-  for (uint8_t s = 0; s < 2; ++s) {
-    bool any = false;
-    for (uint8_t i = 0; i < kFaceSlotCount; ++i) any = any || g_face_ok[s][i];
-    if (!any) continue;
-
-    if (g_face_img[s] == nullptr) {
+    // 用图片表情替换(或隐藏)程序化表情。
+    // ★ 降级:没有表情图时**保留程序化形状表情** —— 这条路径是刻意留的,
+    //   与"没有主题就用默认主题"是同一个原则:资源缺失不能让界面空掉。
+    bool any_face_img = false;
+    for (uint8_t i = 0; i < kFaceSlotCount; ++i) any_face_img = any_face_img || g_face_ok[s][i];
+    if (any_face_img) {
       g_face_img[s] = lv_image_create(g_screens[s]);
       lv_obj_center(g_face_img[s]);
+      // 有图就把程序化表情藏起来(不能删 —— face_apply 还会去访问那几个对象)
+      if (g_ui[s].face_bg) lv_obj_add_flag(g_ui[s].face_bg, LV_OBJ_FLAG_HIDDEN);
+      // 先摆"常态该用的那张"(可能降级到别的槽),后续 face_apply 按状态切换
+      const int slot = faceResolve(s, Face::Idle);
+      g_face_slot[s] = (int8_t)slot;
+      lv_image_set_src(g_face_img[s], &g_face_dsc[s][slot]);
     }
-    // 有图就把程序化表情藏起来(不能删 —— face_apply 还会去访问那几个对象)
-    if (g_ui[s].face_bg) lv_obj_add_flag(g_ui[s].face_bg, LV_OBJ_FLAG_HIDDEN);
-    // 先摆"常态该用的那张"(可能降级到别的槽),后续 face_apply 按状态切换
-    const int slot = faceResolve(s, Face::Idle);
-    g_face_slot[s] = (int8_t)slot;
-    lv_image_set_src(g_face_img[s], &g_face_dsc[s][slot]);
+
+    // ---- 第 3 层：表盘弧（**永远在表情之上**，车主定稿）----
+    build_arcs(g_screens[s], kScreens[s], g_ui[s]);
   }
 
   // 指示灯槽位(占位图形):建在**读数之前** —— 于是副表数字(水温/进气)
@@ -915,7 +1047,9 @@ void dash_ui_init() {
     build_lamps(g_screens[s], g_ui[s]);
   }
 
-  // 数字读数最后建:创建顺序就是图层顺序,读数要压在弧和表情之上。
+  // 数字读数最后建:创建顺序就是图层顺序,读数要压在**弧、表情、灯**之上
+  //   （车主 2026-09-24 定稿："读数应该是最高层的" ⇒ 弧被挪到表情之前之后，
+  //     读数仍然是最后一个建的 —— 这一段的**位置**是层序约定的一部分，别动）。
   for (uint8_t s = 0; s < 2; ++s) {
     build_readout(g_screens[s], kScreens[s], g_ui[s]);
   }

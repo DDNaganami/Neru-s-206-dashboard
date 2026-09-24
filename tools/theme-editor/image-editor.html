@@ -439,7 +439,7 @@ function pickDefaultSize(naturalW, role) {
 }
 
 // 哪些角色要保留透明通道
-//   表情 = 叠在弧线上面,必须能透出底下的东西 → RGB565A8
+//   表情 = 在背景之上、弧之下,必须能透出**底下的背景** → RGB565A8
 //   背景 = 铺在最底层,透不透明没意义 → RGB565(省 1/3 空间)
 // ★ "哪些算表情"不再手写一串比较 —— 直接问 face-stages.js(与固件同源),
 //   以后加状态不需要回来改这里(改了也容易漏,漏了不会报错,只会黑边)。
@@ -465,7 +465,8 @@ function cfForRole(role) {
 //   · 不透明图(背景):**先铺底色再画图**,让 canvas 自己做 alpha 合成 ——
 //     PNG 的透明区域就是底色,不会出现黑边
 //   · 透明图(表情):**不铺底色**,保留 alpha 通道,导出成 RGB565A8,
-//     由 LVGL 在绘制时混合。这样表情能叠在弧线上面而不挡掉它。
+//     由 LVGL 在绘制时混合。这样表情能压在背景上而不把它整块挡掉
+//     （★ 弧画在表情**之后** ⇒ 弧仍然压在表情上面，见上面的「图层顺序」）。
 //
 // transparent=true 时画布保持透明(canvas 默认就是全透明),直接 readback
 // 拿到的就是原始 alpha。
@@ -1627,7 +1628,8 @@ function applyPreviewSize() {
     //   它们会原样画在页面上）。
     noteMain.textContent =
       "下面按目标板的屏合成：" + side + "×" + side + "（" + panel.tier +
-      "，1 像素 = 屏上 1 像素）。背景图铺在弧线下面，表情图盖在最上层。";
+      "，1 像素 = 屏上 1 像素）。背景图铺在最底层，表情在它上面，" +
+      "而表盘弧压在表情之上（表情的四角会被弧裁掉 —— 设计如此），读数在最上面。";
   }
   if (roundNote) {
     // ★ 这块屏是**圆的** —— 这句必须每次跟着目标板重算，而且数字只从
@@ -1929,7 +1931,7 @@ function addFiles(files) {
             capFx + "、背景不超过 " + bgSide + "）。\n" +
             "表情建议 " + recFx + "×" + recFx + "（半径 " + (recFx / 2) +
             " < 内圈副弧内沿 " + ImageBlob.arcInnerMostRadiusFor(curTarget) +
-            "，不会盖住弧）；" +
+            "，不会被弧裁到）；" +
             "背景要 " + bgSide + " 才够到弧带（一张 " +
             Math.round(bgSide * bgSide * 2 / 1024) + "KB）。" +
             (curTarget === "s3_240"

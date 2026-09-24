@@ -408,7 +408,7 @@ section("五、转换：裁掉透明边");
   const opaque = boxRgba(64, 64, null, [10, 20, 30, 255], 0);
   const r4 = AS.prepareAsset(opaque, 64, 64, { roleId: "face_idle", targetId: "s3" });
   eq(r4.errors.length, 0, "全不透明的表情图**不拒绝**（技术合法）");
-  ok(r4.warnings.some(x => /alpha/.test(x)), "但要警告：会盖住底下的弧线");
+  ok(r4.warnings.some(x => /alpha/.test(x)), "但要警告：会盖住底下的背景图（弧压在表情上面）");
 }
 
 // ============================================================

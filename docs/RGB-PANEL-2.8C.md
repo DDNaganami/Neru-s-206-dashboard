@@ -1281,6 +1281,41 @@ python -m platformio run -e esp32s3-rgb
    （`robocopy` 的 1/3 同理：1 和 3 都是成功 ✓）。
 2. 忘了 `PYTHONPATH` 会报 `No module named platformio` —— **不是**仓库问题 ✗。
 
+### 14.1 另外两条环境坑（2026-09-24 实测补记）
+
+**① 本机是 Windows PowerShell 5.1，`pwsh` 不存在** ⇒ 脚本/命令有两处后果：
+
+* `pwsh -Command` 那条路走不通；**所有命令都得能在 5.1 上跑**
+  （`$PSVersionTable.PSVersion` 实测 = `5.1.26100.9444`，`Get-Command pwsh` 无结果）。
+* ★★ **无 BOM 的 `.ps1` 会被按 GBK 解码** ⇒ 只要脚本里出现**中文**（注释、
+  字符串、日志），解析就会乱码甚至报语法错。规矩：**仓库里的 `.ps1` 一律纯 ASCII**，
+  或者存成**带 BOM 的 UTF-8**。
+  ★ 同一条坑在**别处**也咬过：`partitions*.csv` 被 PlatformIO 用系统代码页（GBK）
+  解码（见那两张表的文件头）—— 所以**给工具吃的文本文件，先问一句"它按什么编码读"**。
+* 顺带：**`Get-Content` 读 UTF-8 文档会显示成乱码**（它按 GBK 解）⇒
+  要读 `README.md`/`ACCEPTANCE.md` 这类中文文档，用能指定编码的方式
+  （`Get-Content -Encoding UTF8`），**不要**用它来核对文字内容。
+
+**② `.pio/libdeps` 里没有 `pcpreview` ⇒ 直接编会去联网装 lvgl 然后卡死**：
+
+* 症状：`platformio run -e pcpreview` 停在依赖解析那一步**很久不动**
+  （本机对 `github.com` / PlatformIO registry 的网络是坏的，见 §14 开头两条症状）。
+* 为什么：`lib_deps = lvgl/lvgl@^9.3.0` 是**按 env 分别装**到
+  `.pio/libdeps/<env>/` 的；**新开的 ASCII 副本**（或刚 `pio clean` 过的）
+  那一格是空的 ⇒ PlatformIO 必须联网把它装下来。
+* **修法 = 先"播种"**：从一个**已经编过 pcpreview 的副本**把 `.pio` 拷过来
+  （`.pio` 里有 `libdeps/pcpreview/lvgl` 与 `build/pcpreview/` 的中间产物）：
+
+  ```powershell
+  robocopy C:\206dash-scratch\Neru-pcp2\.pio C:\206dash-scratch\<新副本>\.pio /MIR /NFL /NDL /NJH /NJS /NP
+  # robocopy 的 1 / 3 都是成功
+  ```
+
+  （2026-09-24 实测：播种后 `pcpreview` 增量构建 **6~7 秒**；
+  不播种则卡在联网那一步。）
+* ★ 这只对 **native 平台**的 env（`pcpreview` / `native`）有效；
+  `esp32s3-rgb` 的框架包在 `pio-core-mix` 的 `packages` 里（§14 的 junction 组合 core）。
+
 ## 15. 2026-09-24 诊断页 / 静音的真机入口 = **串口命令 `d` / `m`**（不接按键）
 
 **为什么是串口，不是按键**：**这块板上没有可用的按键** —— 能当输入用的只剩 12PIN 的
@@ -1318,3 +1353,77 @@ python -m platformio run -e esp32s3-rgb
 
 ★ 当天的**上板实测原始串口行**见 `ACCEPTANCE.md` 2026-09-24 那一条（角标 / 诊断页 `/`
 静音持久化 / `rgb:` 四行 / `206 dash ok`）。
+
+★ **诊断页的可读性**（2026-09-24 晚，起因是车主报"屏幕为什么黑了"）：底色、描边、
+标题字号、ASCII-only、几何自证日志、以及"打开即第 1 页"这几条**都写在
+`ARCHITECTURE.md`「显示约定」§3 的「诊断页的可读性约定」**里（那是显示约定的家）。
+这里只留一句结论：诊断页的文本**必须 ASCII**（本构建只使能 Montserrat，
+没有 CJK 字形 ⇒ 中文是"一个字形都画不出来"，不是"看不清"）。
+
+---
+
+## 16. 2026-09-24 把**主题 / 图片**刷进数据分区（不重编固件就能换外观）
+
+**为什么需要这一节**：换一套配色或一套表情**不需要动 app** —— 它们住在两个
+**数据分区**里（`theme` 与 `image`），刷这两块比重编重刷固件快得多，而且
+**不会碰**正在跑的固件。
+
+### 16.1 偏移与大小**只能从 `partitions-s3.csv` 读**（不许猜、不许用 4 MB 那张表）
+
+```powershell
+# 本机（S3 N16R8 = 16MB）真正生效的是 partitions-s3.csv ——
+#   [env:esp32s3-rgb] extends [env:esp32s3]，而那里写着 board_build.partitions = partitions-s3.csv
+Select-String -Path partitions-s3.csv -Pattern '^theme|^image'
+```
+
+| 分区 | Offset | Size | 谁读它 |
+|---|---|---|---|
+| **`theme`** | **`0x210000`** | `0x4000` = 16 KB | `esp_partition_find_first(DATA, 0x40, "theme")`（`src/theme_load.cpp`） |
+| **`image`** | **`0x254000`** | **`0x800000`** = 8 MB | `esp_partition_find_first(DATA, 0x41, "image")` + `esp_partition_mmap`（`lib/themetool/image_blob.cpp`） |
+
+★★ **绝对不要用 `partitions.csv`（4 MB 那张）的数字**：它的 `image` 只有
+**1 MB**（`0x254000` / `0x100000`）⇒ 一份 1.8 MB 的镜像在那里"装不下"，
+照着它算会得出错误的结论。两张表的 `theme`/`image` **偏移故意保持一致**
+（0x210000 / 0x254000），差的只有 `image` 的**大小**。
+（这条写在 `partitions-s3.csv` 的文件头注释里。）
+
+### 16.2 步骤（**先备份，再刷**）
+
+```powershell
+# ① ★ 先 dump 板上现有的两份 —— 车主手写的主题/表情**没有别的副本**
+python -m esptool --chip esp32s3 --port COM6 --baud 921600 read_flash 0x210000 0x4000   C:\206dash-scratch\backup-theme.bin
+python -m esptool --chip esp32s3 --port COM6 --baud 921600 read_flash 0x254000 0x800000 C:\206dash-scratch\backup-image.bin
+Get-FileHash C:\206dash-scratch\backup-theme.bin, C:\206dash-scratch\backup-image.bin -Algorithm SHA256
+
+# ② 核对大小（文件必须小于等于分区大小；大了 esptool 会写出去、压掉隔壁分区）
+Get-Item .\theme.json, .\image.bin | Select-Object Name, Length
+
+# ③ 写（两个分区一次写完最省事），结尾 hard_reset 让固件重新读分区
+python -m esptool --chip esp32s3 --port COM6 --baud 921600 --after hard_reset write_flash `
+    0x210000 .\theme.json `
+    0x254000 .\image.bin
+```
+
+★ `esptool` 用 `C:\206dash-scratch\pio-core-mix\penv` 那一套（5.3.0）；
+本机 `PATH` 上的 python 里没有它，用 `python -m esptool` 之前先按 §14 设好
+`PLATFORMIO_CORE_DIR` / `PYTHONPATH`。
+
+### 16.3 怎么确认真的生效了（看**开机那几行**，不用问人）
+
+固件在 `setup()` 里加载这两块，各打一行（`grep` 这两句就能确认）：
+
+| 日志行 | 出处 | 说明 |
+|---|---|---|
+| `theme: 已加载 <N> 字节` 或 `theme: 用默认主题` | `src/theme_load.cpp` | 主题分区读到了/没读到 |
+| `image ok: <N> 张,数据 <B> 字节,镜像 <S> 字节` | `lib/themetool/image_blob.cpp` | 图片分区解析成功；`<S>` 是**分区大小**（8 MB），不是文件大小 |
+| `image: 镜像无效或未刷入,不用图片资源` | 同上 | 分区是空的（全 `0xFF`）⇒ **正常情况，不是错误**，界面走降级路径（程序化表情） |
+
+★ 这几行都在 `dash_ui_init()` 之后、`206 dash ok … face=…` 那行之前 —— 它们是
+"这块分区到底被认成什么"的**唯一**权威出口，而 `face=` 那一格证明
+**表情状态机开始按新资源走**。
+
+### 16.4 出错时怎么回退
+
+* **只有数据分区坏了** ⇒ 把 16.2 ① 的备份写回去（同一条 `write_flash` 命令）。
+* **固件也一起坏了/黑屏花屏** ⇒ 先把 app 分区写回上一份已知可用的镜像
+  （`write_flash 0x10000 <那个 .bin>`），**保留现场日志**再排查。
