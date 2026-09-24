@@ -1414,24 +1414,26 @@ void dash_display_init() {
   const uint32_t stride_bytes = (uint32_t)THEME_DISPLAY_RES * px_bytes;  // 一行多少字节(= LVGL 的 stride)
   const uint32_t el_rows = draw_buf_bytes / (el_bytes * (uint32_t)THEME_DISPLAY_RES);
   const uint32_t flush_rows = stride_bytes ? (draw_buf_bytes / stride_bytes) : 0u;
-  // ★ 一行"编译期事实"：把"到底几字节"交给**编译器**回答，不靠读文件推理 ——
-  //   机型/配置换一代（比如哪天把绘制缓冲改成 uint16_t），这行自己就变了。
-  dash_logf("rgb: 编译期事实 LV_COLOR_DEPTH=%d sizeof(lv_color_t)=%u sizeof(draw_buf)=%u"
-            " 元素行=%u flush行上限=%u(每行%uB)\n",
+  const uint32_t bounce_kb =
+      (uint32_t)((size_t)RGB_BOUNCE_LINES * THEME_DISPLAY_RES * 2u * 2u / 1024u);
+  // ★★ 这一行把**六项编译期事实**一次打完（把"到底几字节"交给**编译器**回答，
+  //    不靠读文件推理；机型/配置换一代，它自己就变）：
+  //      LV_COLOR_DEPTH / sizeof(lv_color_t) / sizeof(draw_buf) /
+  //      元素行(数组声明) / flush 单笔上限(按显示格式算) / 每行字节(= LVGL 的 stride)
+  //    ★ 为什么"元素行"与"flush 行"会不一样：元素 3B、显示格式 2B/px（见上面那段说明）。
+  //    ★ 后半句按 §12 收口后的**真值口径**写：单笔 23040B **大于** bounce 两块合计 18KB
+  //      ⇒ 旧判据（"这一笔能被吸收"）**已被实测推翻**，成立的只有实测
+  //      （`blit_max≈1.3ms`、`refresh` ±1ms）。
+  //    ★ 折成一行是刻意的：两条 dash_logf 的格式串 + 调用点要 ~160B flash，一行省下来。
+  dash_logf("rgb: 编译期事实 LV_COLOR_DEPTH=%d lv_color_t=%uB draw_buf=%uB 元素行=%u"
+            " flush≤%u行(每行%uB);单笔>bounce %uKB 旧口径不成立\n",
             (int)LV_COLOR_DEPTH,
-            (unsigned)sizeof(lv_color_t),
-            (unsigned)sizeof(draw_buf),
+            (unsigned)el_bytes,
+            (unsigned)draw_buf_bytes,
             (unsigned)el_rows,
             (unsigned)flush_rows,
-            (unsigned)stride_bytes);
-  // ★ 这一行是"那一笔有多大"的结论行；后半句按 §12 收口后的**真值口径**写：
-  //   bounce 两块合计 18KB 的老判据（"单笔能被吸收"）**已被实测推翻** ——
-  //   单笔 23040B **大于**它 ⇒ 成立的只有实测（`blit_max≈1.3ms`、`refresh` ±1ms）。
-  dash_logf("rgb: 脏区单笔上限=%u行(%uB) —— bounce 两块共%uKB(单笔比它大,旧口径不成立)"
-            " 以实测 blit_max 为准\n",
-            (unsigned)flush_rows,
-            (unsigned)draw_buf_bytes,
-            (unsigned)((size_t)RGB_BOUNCE_LINES * THEME_DISPLAY_RES * 2u * 2u / 1024u));
+            (unsigned)stride_bytes,
+            (unsigned)bounce_kb);
   dash_logf("rgb: 板=微雪 ESP32-S3-LCD-2.8C(非触控) ST7701 RST=EXIO1 CS=EXIO3 "
             "BL=GPIO%d/PWM%d @%u%%\n",
                 (int)RGB_PIN_BL, (int)RGB_BL_LEDC_HZ,
