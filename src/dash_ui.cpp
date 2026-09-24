@@ -718,7 +718,21 @@ void dash_ui_tick(uint32_t now_ms) {
     }
   } else if (!g_boot_done_printed) {
     g_boot_done_printed = true;
-    dash_logf("boot anim done\n");
+    // ★★ 收尾必须再补一次 boot_apply（2026-09-24 实机踩到）：
+    //   表情的"显形"不是靠 HIDDEN 标志，而是 boot_apply 里那一次
+    //   opa TRANSP → COVER 的转移（`g_boot.faceStage()` 在 t≥FACE_START 才给 1）。
+    //   而 boot_apply 只在 `g_boot.active(now)` 期间被调用 —— 于是只要**整个动画窗口
+    //   里一次都没轮到**（主循环被"长 flush"挡住就会这样：RGB 那条路上，开机第一次
+    //   整屏刷新要按块写、每块等一个消隐期，实测 ≈1 秒），那次转移就永远不会发生，
+    //   表情**永久停在透明**上：弧、数字、灯都在，只有脸不见了 ✗
+    //   （2026-09-24 就是这么丢了表情；预览那边 flush 是即时的，所以一直看不出来。）
+    //   ⇒ 窗口结束后补调一次：此时 faceStage(t≥end) 已经是 1，状态被落到最终值。
+    //     这条**与驱动无关**，是"动画状态机不能被主循环的卡顿跳过"该有的兜底。
+    boot_apply(now_ms);
+    // 把这次的档位一起打出来：faceStage=1 就是"这一次真的把表情的 opa 推到了 COVER"
+    // ——它是"表情回来了"在串口上唯一能自证的证据（屏上什么样只有人眼能判）。
+    dash_logf("boot anim done (收尾补一次 boot_apply: faceStage=%u → 表情 opa=COVER)\n",
+              (unsigned)g_boot.faceStage(now_ms));
   }
 
   lv_timer_handler();
