@@ -48,3 +48,35 @@ bool dash_display_preview_panel_mask(void);
 #if defined(DASH_DISPLAY_RGB)
 void dash_buzzer_set(bool on, void* ctx);
 #endif
+
+// ---- 只给 `[env:esp32s3-rgb]`（真屏那一份构建）用的**面板健康守护**出口
+//
+// ★ 起因 = 产品要求（业主原话）："**上实车的时候可不能这样，这毕竟是仪表盘，要常亮的**"。
+//   2026-09-24 当晚真发生过"**屏黑了、固件一直活着**"（串口上 `vsync` 照涨、
+//   `timeout=0`、每秒一行 `206 dash ok`），复位一次就恢复。
+//   ⇒ 三层防线的第 ② 层（可检测故障自愈）+ 第 ③ 层（现场恢复路径）落在这里：
+//
+//   · `dash_panel_guard_*`：守护的**读数**（诊断页那行 `guard rd_ok=… fix=… bl=…`）。
+//     判据/周期/计数全在 `lib/dashcore/panel_guard.*`（宿主机逐条钉着），
+//     这里只把四个注入回调接上真硬件。
+//   · `dash_display_panel_reinit()`：**重跑 ST7701 的初始化序列 + 重发当前 framebuffer**
+//     —— 串口命令 `r` 与守护的自动恢复都走这一条。
+//     ★ 它**不碰** PCLK / bounce / num_fbs / 引脚（那些是"不要做"清单上的东西）。
+//
+// ★ 与蜂鸣器那一节同一条理由：门用**既有的** `DASH_DISPLAY_RGB`（`platformio.ini` 里
+//   早就有、且只有 `[env:esp32s3-rgb]` 定义它）⇒ 抓帧盒那几个 env 的编译单元里
+//   **这些声明一个都不存在**，行为逐字节不变 ✓。**没有新增任何 `-D`** ✓。
+#if defined(DASH_DISPLAY_RGB)
+// 面板重初始化（幂等；未初始化过时返回 false，一个字节都不动）。
+// 返回 true = 真的重跑了初始化 + 重发了当前画面。
+bool dash_display_panel_reinit(const char* why);
+// 守护的四个读数（诊断页/日志用；没上线时全 0）。
+uint32_t dash_panel_guard_rd_ok(void);
+uint32_t dash_panel_guard_fix(void);
+uint32_t dash_panel_guard_bl(void);
+uint32_t dash_panel_guard_anomalies(void);
+// ★ 临时故障注入（**默认构建里永远是 0**，见 .cpp 里那一段）：
+//   把扩展器输出寄存器的某一位**故意写错**，用来在真机上验守护能不能发现并修回来。
+//   0 = 不注入。测完这条路径整个删掉（它只在 `-DPANEL_GUARD_FAULT_INJECT=1` 里存在）。
+void dash_panel_guard_fault_inject(uint8_t bit);
+#endif

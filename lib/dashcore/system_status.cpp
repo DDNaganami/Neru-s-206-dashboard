@@ -311,6 +311,16 @@ DiagView diagBuild(DiagPage page, const SysStatusInputs& in) {
       diagLine(v, "panel=- (driver n/a)");
     }
     diagLine(v, "mute=%ld  K:next", (long)(in.beep_muted ? 1 : 0));
+    // ★ 面板健康守护那行（2026-09-24，"仪表盘必须常亮"的**可见化**）：
+    //   `rd` = 守护跑了多久/回读过几次（**在涨就说明守护活着**）；
+    //   `fix` = 按影子把扩展器重写回来的次数（LCD_RST/LCD_CS 被改写那条路径）；
+    //   `bl` = 背光被重设的次数；`anom` = 发现过几次不一致（含已修的）。
+    //   ★ 这一行**恒显示**（不写 n/a）：设备上它是真的，预览/抓帧盒上它恒 0
+    //     —— 而"0"在那里本来就是正确的读数（那些构建里没有面板可守）。
+    diagLine(v, "guard %lus rd=%lu fix=%lu bl=%lu anom=%lu",
+             (unsigned long)(in.guard_uptime_ms / 1000u),
+             (unsigned long)in.guard_rd_ok, (unsigned long)in.guard_fix,
+             (unsigned long)in.guard_bl, (unsigned long)in.guard_anomaly);
   } else {
     // ---- 第 2 页：**链路与告警**（"两台板之间那条线好不好"）----
     if (in.link_known) {

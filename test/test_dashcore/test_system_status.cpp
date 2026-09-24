@@ -304,7 +304,30 @@ void test_diag_page_sys_fields(void) {
   TEST_ASSERT_NOT_NULL(strstr(buf, "panel=5.5fps f=777"));
   TEST_ASSERT_NOT_NULL(strstr(buf, "flush=1300us copy=640us"));
   TEST_ASSERT_NOT_NULL(strstr(buf, "mute=0"));
+  // ★ 2026-09-24 新增：面板健康守护那一行（"仪表盘必须常亮"的**可见化**）。
+  //   在 `healthy()` 的默认输入里它全是 0（那些构建里没有面板可守）——
+  //   而"0"就是正确的读数；真机上的非零值由下面那一组专门钉。
+  TEST_ASSERT_NOT_NULL(strstr(buf, "guard 0s rd=0 fix=0 bl=0 anom=0"));
   TEST_ASSERT_EQUAL_STRING("DIAG", v.title);
+}
+
+// ============================================================
+// ★ 2026-09-24 新增：诊断页上的"面板健康守护"那一格
+//   量纲与可读性都要对（这一格是给**车主**看的：黑屏风险从"看不到"变成"看得到"）
+// ============================================================
+void test_diag_panel_guard_line(void) {
+  SysStatusInputs in = healthy();
+  in.guard_rd_ok = 42;        // 守护跑了 84 秒（每 2 秒一次 ⇒ 42 次回读）
+  in.guard_fix = 1;           // ★ 真发生过一次"扩展器位被改写 ⇒ 按影子修回来"
+  in.guard_bl = 0;
+  in.guard_anomaly = 1;
+  in.guard_uptime_ms = 84000;
+  const DiagView v = diagBuild(DiagPage::Sys, in);
+  char buf[1024];
+  diagRenderText(v, buf, sizeof(buf));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "guard 84s rd=42 fix=1 bl=0 anom=1"));
+  // ★ 这一格**不许**写成 n/a：真机上它是真的；预览/抓帧盒上恒 0 也正是正确的读数
+  TEST_ASSERT_NULL(strstr(buf, "guard -"));
 }
 
 // ============================================================
@@ -572,6 +595,7 @@ void register_system_status_tests(void) {
   RUN_TEST(test_sys_beep_rate_limit);
   RUN_TEST(test_sys_thresholds);
   RUN_TEST(test_diag_page_sys_fields);
+  RUN_TEST(test_diag_panel_guard_line);
   RUN_TEST(test_diag_missing_is_dash);
   RUN_TEST(test_diag_page_link_fields);
   RUN_TEST(test_diag_obd_not_connected_and_master_link);

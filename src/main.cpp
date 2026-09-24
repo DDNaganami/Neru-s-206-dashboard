@@ -14,6 +14,7 @@
 //   pcpreview 的宿主机桩不定义 —— 于是同一份 main.cpp 两端都能编。
 #if defined(ARDUINO)
 #include <esp_partition.h>
+#include <esp_system.h>  // esp_reset_reason()/ESP_RST_* —— 开机那行 `boot: reason=…`
 #include <esp_timer.h>   // 上电示位标(见 g_boot_stage / beacon_cb)
 #define DASH_DEVICE_SELFTEST 1
 #endif
@@ -35,6 +36,7 @@
 #include "link_tx.h"
 #include "theme_store.h"
 #include "system_status.h"   // 数据不可信提示 + 诊断页（判据/映射都在 lib/dashcore/）
+#include "serial_cmd.h"      // 串口单字符命令的**判据层**（d/m/b/r；宿主机可测）
 #include "ui_model.h"
 #include "van_phy.h"
 #include "van_replay.h"
@@ -183,6 +185,85 @@ static void mute_save(bool m) {
   g_prefs.putBool(kPrefsMuteKey, m);
   g_prefs.end();
 }
+
+// ============================================================================
+// ★★ 复位原因 + 复位次数（2026-09-24 新增）—— 第 ③ 层防线的**取证手段**
+// ============================================================================
+// ★ 起因（业主原话）："屏幕回来了，**上实车的时候可不能这样，这毕竟是仪表盘，
+//   要常亮的**。" 而 2026-09-24 当晚的现场是"**屏黑了、固件一直活着**"：
+//   复位前抓到的原文是 `rgb: vsync=68942(+54/s) … timeout=0 … fullrb=0/s`
+//   + 每秒一行 `206 dash ok`；我按了一次 RTS 脉冲（复位）之后立刻恢复。
+//
+// ★ 这一次事故的**两条候选机制**（`docs/RGB-PANEL-2.8C.md` §13.8.2）里：
+//     A = 运行期改 I2C 时钟 ⇒ 打错字节 ⇒ 面板复位 —— **已删除**（那条路径没了）；
+//     B = **电流/供电把 3.3V 轨拉低** ⇒ 面板（ST7701 内部寄存器/电荷泵）掉状态，
+//         而 ESP32 活着 —— **一直没排除**。
+//   ⇒ 机制 B 如果成立，"**电压掉到 brownout 门限以下**"这件事在芯片上**有记录**：
+//     `esp_reset_reason()` 会给出 `ESP_RST_BROWNEOUT`（枚举名见 esp_system.h，
+//     本项目这一版 IDF 里写作 **`ESP_RST_BROWNOUT`**）。
+//   ⇒ 所以开机打这一行，是**最便宜、也最直接**的一次取证：
+//        `boot: reason=BROWNOUT n=3 (raw=9)`
+//     如果屏哪天又黑了，而**之后**的某次复位原因是 BROWNOUT ⇒ 机制 B 基本坐实
+//     （那种"自己重启过"的复位与"我手动按 RST"的 POWERON 在枚举上是可分的）。
+//
+// ★ 次数的口径（说清楚，免得读歪）：
+//   `n` 是**上电/复位累计次数**，存在 NVS 里（命名空间 `dash`、键 `bootn`），
+//   掉电不丢。它回答的是"这块板到底自己重启过多少次" —— 车上没有 USB 主机、
+//   也没人盯着串口，所以"重启过"这件事只能靠**自己记着**。
+//   ★ 它**不是**"黑屏次数"（软件感知不到玻璃，见下面那条边界）。
+//
+// ★★ **边界（必须写清楚）**：`esp_reset_reason()` 说的是**芯片**为什么复位，
+//   它**不能**证明"面板黑过"。反之亦然：机制 B 若只是"电压瞬间跌到面板掉状态、
+//   而没跌到 ESP32 的 brownout 门限"，那这一行**什么都不会报** ——
+//   这种情况下本行给不出结论，只能靠守护的读数（诊断页那一行）+ 现场 `r` 命令。
+static const char* kPrefsBootKey = "bootn";
+
+static const char* resetReasonName(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON:  return "POWERON";    // 上电（插线/上电）
+    case ESP_RST_EXT:      return "EXT";        // 外部复位脚（板上那颗 RST 按钮）
+    case ESP_RST_SW:       return "SW";         // 软件复位（esp_restart）
+    case ESP_RST_PANIC:    return "PANIC";      // 异常/看门狗 panic（崩溃）
+    case ESP_RST_INT_WDT:  return "INT_WDT";    // 中断看门狗
+    case ESP_RST_TASK_WDT: return "TASK_WDT";   // 任务看门狗
+    case ESP_RST_WDT:      return "WDT";        // 其它看门狗
+    case ESP_RST_DEEPSLEEP:return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT: return "BROWNOUT";   // ★ 电压跌落 —— 机制 B 的判据
+    case ESP_RST_SDIO:     return "SDIO";
+    default:               return "UNKNOWN";
+  }
+}
+
+// 打这一行 + 把次数 +1 存回 NVS。
+// ★ 顺序是**有意的**：先读旧值 → 打日志 → 再写回（写失败也不影响这一行已经出来了）。
+static void boot_note() {
+  const esp_reset_reason_t r = esp_reset_reason();
+  uint32_t n = 0;
+  bool have = false;
+  if (g_prefs.begin(kPrefsNamespace, /*readOnly=*/false)) {
+    n = g_prefs.getUInt(kPrefsBootKey, 0u);
+    have = true;
+    n += 1u;
+    g_prefs.putUInt(kPrefsBootKey, n);
+    g_prefs.end();
+  }
+  // ★ 芯片温度一起报（**车上特有的风险**里那一条"温度"）：它就是片上温度传感器
+  //   那个读数，±10°C 级别的粗值，只够看"热不热"。车上仪表台夏天暴晒 + 屏背光
+  //   自发热，而温度是面板掉状态/液晶变慢的一条常见诱因 ⇒ 有一个随手的读数，
+  //   比事后争论"当时到底多热"强。★ 它**没有**精度承诺（要准确的舱温得另加传感器）。
+  const float tc = temperatureRead();
+  // ★ 一行打完（`dash_logf` 一行上限 320 字节，中文一个字 3 字节 —— 这行是 ASCII）。
+  //   `raw=` 是枚举的数值：万一这一版 IDF 的名字与这里对不上，原始值还能查表。
+  //   `nvs=` 说明次数到底有没有存下来（NVS 坏了就报 `-`，而不是假装 0 次）。
+  dash_logf("boot: reason=%s n=%lu%s (raw=%d) up=%ums tc=%.1fC\n",
+            resetReasonName(r),
+            (unsigned long)(have ? n : 0u),
+            have ? "" : "(nvs-)",
+            (int)r,
+            (unsigned)millis(),
+            (double)tc);
+}
+
 #else
 // 预览端：静音状态由 `preview/inject.txt` 的 `mute=` / 键 `M` 管（见 preview_input.h），
 // 不落盘 —— 落盘会让"重新跑一次预览"继承上一次的静音，演示时反而容易误会。
@@ -583,6 +664,23 @@ static SysStatusInputs sys_inputs_build(uint32_t now_ms) {
   //     `dash_display_rgb.cpp`），而这一格"有则显示、没有就 n/a"本来就是对的设计。
   in.display_stats_known = false;
 
+  // ---- ⑥.5 面板健康守护（第 ② 层防线；**只有真屏那一份构建**有这四个数）----
+  // ★ 见 `lib/dashcore/panel_guard.h`：它每 2 秒回读一次那颗 TCA9554 的输出寄存器
+  //   并与影子对账（`LCD_RST`/`LCD_CS` 就在那个寄存器里），另外核验背光占空。
+  //   `fix` 不为 0 = 真的发生过"位被改写并且已经按影子修回来"。
+  // ★ 其余构建（预览/抓帧盒）里这四个数恒 0 —— 那些构建里没有面板可守，
+  //   "0"本来就是正确的读数（诊断页那一行不写 n/a，理由见 system_status.cpp）。
+#if defined(DASH_DISPLAY_RGB)
+  in.guard_rd_ok   = dash_panel_guard_rd_ok();
+  in.guard_fix     = dash_panel_guard_fix();
+  in.guard_bl      = dash_panel_guard_bl();
+  in.guard_anomaly = dash_panel_guard_anomalies();
+  // "守护上线多久"用 `millis()` 直接算：守护是在 `dash_display_init()` 里 begin 的，
+  // 而那一步在 setup 里、离这里只有几百毫秒 ⇒ 用系统 uptime 当近似足够了
+  // （这一格要回答的只是"守护还在跑吗"，不是精确的相位）。
+  in.guard_uptime_ms = now_ms;
+#endif
+
   // ---- ⑦ 告警 / 静音 ----
   in.beep_muted   = g_beep_muted;
   // ★ 用"回执那一份"：`g_alert_last` 的 0xFF 是"还没报过"的哨兵（不是一条告警）
@@ -723,6 +821,91 @@ static void beep_test_from_serial() {
             (unsigned)kTrustBeepMs, (unsigned)kGapMs, g_beep_muted ? 1 : 0);
 }
 
+// `r`：**面板重初始化 + 重发当前画面**（2026-09-24 新增，第 ③ 层防线）。
+//
+// ★★ 为什么需要这条命令（业主原话就是它的需求文档）：
+//     "屏幕回来了，**上实车的时候可不能这样，这毕竟是仪表盘，要常亮的**。"
+//   而 2026-09-24 当晚真的出现过"**屏黑了、固件一直活着**"（串口上 `vsync` 照涨、
+//   `timeout=0`、每秒一行 `206 dash ok`）。那次是靠**复位**（RTS 脉冲）救回来的 ——
+//   可复位会把 ESP32 一起重启，车上没有 USB 主机、也没人按得到板上的 RST。
+//   ⇒ 把这个动作做成一条**串口命令**：现场不用按物理 RST 也能救回来。
+//
+// ★ 命令**只做一件事**：调 `dash_display_panel_reinit()`（它自己打
+//   `panel: reinit by cmd r (#n, Xms; …)` 那一行）。这一行与守护自动恢复那一路
+//   共用同一个函数 ⇒ 两条路径的行为**逐字相同**（不存在"只有命令那条能修好"的分叉）。
+//
+// ★★ 为什么命令与自动恢复共用同一个入口（而不是各写一份）：
+//   重初始化要动 LCD_RST/LCD_CS 那两位、要重跑 41 步、要重发一帧 —— 这套动作
+//   只能有**一份**实现（与"那颗扩展器的影子寄存器只能有一份"是同一条纪律）。
+static void reinit_from_serial() {
+#if defined(DASH_DISPLAY_RGB)
+  const bool ok = dash_display_panel_reinit("cmd r");
+  if (!ok) {
+    // 失败时把"为什么没做"也打出来（面板压根没初始化过 —— 那是另一种病：
+    // 该查引脚/时序/PSRAM，而不是"黑屏恢复"）。
+    dash_logf("panel: reinit by cmd r 未执行(见上一行)\n");
+  }
+#else
+  dash_logf("panel: reinit 不适用(这份构建没有 RGB 面板驱动)\n");
+#endif
+}
+
+// ★★ 临时故障注入的串口入口（`i`）—— **默认构建里恒为 false**。
+//
+//   用途（本单最有价值的一步）：在**真机**上验"守护能不能在约 2 秒内发现
+//   扩展器输出寄存器被改错一位、按影子修回来、计数 +1、屏自己回来"。
+//   ★ 打开方式：在 `[env:esp32s3-rgb]` 的 build_flags 里**临时**加
+//     `-DPANEL_GUARD_FAULT_INJECT=1`（就是驱动里那个同一个宏），测完删掉。
+//   ★ 默认构建（没有那个 `-D`）：本函数**恒返回 false**
+//     ⇒ `serial_cmd_handle` 把 `i` 当成普通字符交回回放路径
+//     ⇒ 与"命令表里没有 `i`"**逐字节相同**（这一条是刻意的：抓帧盒与正式固件
+//        的串口行为一个字节都不许变）。
+//   ★ 注入什么：把 `g_exio_out` 的**对位写反**（只写那一位到真寄存器，
+//     影子故意不动）⇒ "影子 vs 回读"立刻不一致，正是黑屏那条最可能的路径。
+//     位的含义：bit0=LCD_RST(EXIO1) / bit2=LCD_CS(EXIO3) / bit7=蜂鸣器(EXIO8)。
+static bool fault_inject_from_serial() {
+#if defined(PANEL_GUARD_FAULT_INJECT) && (PANEL_GUARD_FAULT_INJECT == 1)
+  // ★ 一次只注入**一位**：RST 那一位（EXIO1 = bit0）—— 这一位被打错就是一次
+  //   面板复位（而面板复位不会自己回来），正是要复现的那条路径。
+  dash_panel_guard_fault_inject(0u);
+  return true;
+#else
+  return false;
+#endif
+}
+
+static bool serial_cmd_handle(char c, char* line, uint8_t& len) {
+  if (len != 0u) {
+    if (line[0] == 'V' || line[0] == 'v') return false;   // 可能是回放行 ⇒ 交给它
+    len = 0;                                             // 不可能是回放行 ⇒ 清掉
+  }
+  // ★ 判据是抽出去的纯函数（`lib/dashcore/serial_cmd.h`）：本文件这段与行缓冲/
+  //   回放路径纠缠在一起，宿主机上编不到 ⇒ 把"哪几个字符算命令"单独放一处，
+  //   由 native 用例逐字钉住（含"只认行首"这条）。
+  switch (serial_cmd_classify(c)) {
+    case SerialCmd::Diag:
+      diag_key_press();
+      return true;
+    case SerialCmd::Mute:
+      mute_toggle_from_serial();
+      return true;
+    case SerialCmd::Beep:
+      beep_test_from_serial();
+      return true;
+    case SerialCmd::Reinit:
+      reinit_from_serial();
+      return true;
+    case SerialCmd::Inject:
+      // ★★ 临时故障注入（**默认构建里恒为 false**，见下面那一段）。
+      if (fault_inject_from_serial()) return true;
+      return false;                  // 没开注入 ⇒ 这个字符照旧走回放路径（行为不变）
+    case SerialCmd::None:
+    default:
+      return false;
+  }
+}
+#endif  // DASH_DISPLAY_RGB
+
 // ★★ 什么时候才认这一颗字节是命令（`line`/`len` = **这个口**的回放行缓冲）：
 //   ① 缓冲是空的（最常见：命令就是单独一个字符）；**或者**
 //   ② 缓冲里攒下的那几个字节**不可能**是回放行 —— 回放行的头三个字符必须是
@@ -742,26 +925,11 @@ static void beep_test_from_serial() {
 //     命令字符（`d`/`m`）在 hex 里本来就可能出现（例 `VAN 824 18F8271D000000`）。
 //   ★ 回放路径（`van_replay_feed`）**一个字都没动** —— 上面这套判据只决定
 //     "这一颗字节要不要当命令吃掉"。
-static bool serial_cmd_handle(char c, char* line, uint8_t& len) {
-  if (len != 0u) {
-    if (line[0] == 'V' || line[0] == 'v') return false;   // 可能是回放行 ⇒ 交给它
-    len = 0;                                             // 不可能是回放行 ⇒ 清掉
-  }
-  if (c == 'd') {
-    diag_key_press();
-    return true;
-  }
-  if (c == 'm') {
-    mute_toggle_from_serial();
-    return true;
-  }
-  if (c == 'b') {
-    beep_test_from_serial();
-    return true;
-  }
-  return false;
-}
-#endif  // DASH_DISPLAY_RGB
+//   ★★ 2026-09-24 补：命令表本身（`d`/`m`/`b`/**`r`**）抽成了纯函数
+//      `lib/dashcore/serial_cmd.h` 的 `serial_cmd_classify()` —— 上面这套"行首"
+//      判据只决定**要不要问它**，而"哪几个字符算命令"那一层现在宿主机上可测
+//      （见 `test/test_dashcore/test_serial_cmd.cpp` 里那一组）。
+//      ★ 上面 `serial_cmd_handle()` 的实现整个在这道门里 ⇒ 这里的说明也留在门内。
 
 static void van_replay_feed(const char c, char* line, uint8_t& len, uint32_t now) {
   if (c == '\r' || c == '\n') {
@@ -1073,6 +1241,17 @@ void setup() {
   // 开机握手行:刷机后靠它确认固件真的跑起来了(见 ACCEPTANCE.md)。
   // 放在最前面 —— 即使后面的初始化有问题,至少能看到这一行。
   dash_logf("206 dash ok\n");
+
+  // ★★ 复位原因 + 复位次数（2026-09-24，第 ③ 层防线的取证手段，见 boot_note 那段说明）。
+  //   ★ 为什么紧跟在握手行之后：它是"这一板**为什么**从这一行开始"的唯一记录，
+  //     而黑屏那件事的候选机制 B（供电把 3.3V 轨拉低）**只有这一行能作证**。
+  //   ★ 它要读/写一次 NVS（`bootn`）+ 读一次片上温度 —— 只在 setup 里跑一次，
+  //     不影响时间线。
+  //   ★ 门是 `ARDUINO`：`esp_reset_reason()` / `temperatureRead()` / NVS 都只有
+  //     设备端才有（pcpreview 编这一段会直接编不过，与自检那一段同一条纪律）。
+#if defined(ARDUINO)
+  boot_note();
+#endif
 
   // ★ 设备端的 USB-CDC 是**没有主机的缓冲**的:监视器如果没在开机前打开,
   //   这几行就永远看不到了(实测踩过:刷完立刻开监视器,一片空白)。

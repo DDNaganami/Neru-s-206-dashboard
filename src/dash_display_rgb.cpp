@@ -137,6 +137,9 @@
 #include <driver/spi_common.h>   // SPI2_HOST(初始化命令那条 3 线 SPI 用)
 #include <driver/spi_master.h>   // 裸 spi_device_transmit(见下面第 4 块的说明)
 #include <esp_heap_caps.h>
+// ★ 面板健康守护的**判据层**（纯逻辑，宿主机逐条钉着）：周期/计数/对账规则都在里面，
+//   本文件只把四个注入回调接到真硬件（I2C 扩展器 + LEDC + 面板重初始化）。
+#include "panel_guard.h"
 
 // ------------------------------------------------------------
 // ★ 屏到手后**只改这个文件顶部的数字**,别处的代码不用动。
@@ -1182,6 +1185,111 @@ static void panel_init_sequence() {
   }
 }
 
+// ============================================================
+// ★★ 面板健康守护（2026-09-24）—— 「仪表盘必须常亮」的第 ② 层
+//
+//   为什么要有它（业主原话）："**上实车的时候可不能这样，这毕竟是仪表盘，要常亮的**"。
+//   当晚真发生过"**屏黑了、固件一直活着**"（复位前抓到的原文：
+//   `rgb: vsync=68942(+54/s) … timeout=0 … fullrb=0/s` + 每秒一行 `206 dash ok`），
+//   复位（RTS 脉冲）后立刻恢复 —— 与 `docs/RGB-PANEL-2.8C.md` §13.8 那次同一类。
+//
+//   ★★★ 这一层能修的**最可能**那条黑屏路径（也是本单最有价值的一条）：
+//     那颗 TCA9554 的输出寄存器里**同时挂着 `LCD_RST`(EXIO1) 与 `LCD_CS`(EXIO3)**
+//     —— 任何一次被打错的事务（共享 I2C 时钟、别的位被顺手改写…）都可能把那两位
+//     改掉，而 ST7701 一旦被复位就**不会自己回来**（要重跑 41 步）。
+//     守护每 2 秒回读一次那个寄存器，与影子 `g_exio_out` 对账；
+//     **不一致 ⇒ 按影子重写**（不是读-改-写、更不是接受读回来的值）。
+//
+//   ★★ **边界（必须写清楚，别过度承诺）**：ST7701 没有状态回读脚 ⇒
+//     "**玻璃到底黑了没有**"软件**无法直接感知**。守护查的是**因**（那个复位位被改写）
+//     与**另一条独立路径**（背光占空被改），不是**果**（玻璃）。
+//     面板因为供电跌落（3.3V 轨被拉低 ⇒ 内部寄存器/电荷泵掉状态）而丢初始化、
+//     而扩展器寄存器一个位都没变的那种黑屏，本层**看不见** ——
+//     那只能靠第 ③ 层（串口命令 `r` 现场重初始化）+ 开机那行复位原因（BROWNOUT）定位。
+//
+//   ★ 频率 **2 秒一次**（`kPanelGuardPeriodMs`，判据/计数在 lib/dashcore/panel_guard.*）：
+//     一次回读实测 ~400µs（100kHz I2C，见 §13.8.4），摊到 2 秒里可以忽略。
+//   ★ 它**不占显示的时间线**：`dash_display_poll()` 每轮调 `tick(now)`，
+//     没到点就是几次整数比较；到点那一次就是一次 I2C 读 + 至多两次写。
+// ============================================================
+
+// ★ 前置声明：守护的四个回调在下面（它们要用到 `dash_display_panel_reinit`，
+//   而那个函数在文件更靠后的位置 —— 与 `dash_buzzer_set()` 挂在 `BuzzerExio` 上
+//   是同一种"先声明后实现"的排法）。
+bool dash_display_panel_reinit(const char* why);
+static bool pan_guard_read_exio(uint8_t* out, void* ctx);
+static void pan_guard_write_exio(uint8_t shadow, void* ctx);
+static uint32_t pan_guard_read_duty(void* ctx);
+static void pan_guard_write_duty(uint32_t duty, void* ctx);
+static void pan_guard_reinit(void* ctx);
+static void pan_guard_log(uint8_t which, uint32_t a, uint32_t b, void* ctx);
+
+// 守护本体 + "面板当前有没有被初始化过"（没初始化过的话重初始化是无意义的：
+// 那说明开机就没点亮，该查的是引脚/时序，不是黑屏恢复）。
+static PanelGuard g_panel_guard(pan_guard_read_exio, pan_guard_write_exio,
+                                pan_guard_read_duty, pan_guard_write_duty,
+                                pan_guard_reinit, pan_guard_log, nullptr);
+static bool g_panel_ready = false;
+static uint32_t g_panel_reinit_n = 0;   // 重初始化过几次（命令 + 自动，只用于日志）
+
+// 读 TCA9554 的输出寄存器（与蜂鸣器那条"回读自证"逐字同一套时序）。
+// ★ 一次事务：写指针 → restart → 读 1 字节。
+//   失败（无应答 / 字节数不对）⇒ 返回 false —— 守护会把"读失败"与"真被改了"分开算
+//   （见 panel_guard.h 的 panel_guard_exio_matches）。
+static bool pan_guard_read_exio(uint8_t* out, void*) {
+  Wire.beginTransmission(TCA9554_ADDR);
+  Wire.write(TCA9554_REG_OUTPUT);
+  if (Wire.endTransmission(false) != 0) return false;
+  // ★ IDF 5.5 的 `requestFrom` 返回 `size_t`（旧核心返回 uint8_t）——
+  //   两个版本下 `== 1` 的写法都对，别去改成 `== (uint8_t)1`。
+  if (Wire.requestFrom((uint8_t)TCA9554_ADDR, (uint8_t)1) != 1) return false;
+  *out = (uint8_t)Wire.read();
+  return true;
+}
+
+// 按影子重写（**修复动作**：我们要的是影子那个值）。
+static void pan_guard_write_exio(uint8_t shadow, void*) {
+  g_exio_out = shadow;                 // 影子就是真值（守护不改它，见 panel_guard.cpp）
+  tca9554_write(TCA9554_REG_OUTPUT, shadow);
+}
+
+static uint32_t pan_guard_read_duty(void*) {
+  return (uint32_t)ledcRead((uint8_t)RGB_PIN_BL);
+}
+
+static void pan_guard_write_duty(uint32_t duty, void*) {
+  ledcWrite((uint8_t)RGB_PIN_BL, duty);
+}
+
+// 日志：把库里的四个事件落成**固定字样**（文档/判据逐字引用，别改格式）。
+static void pan_guard_log(uint8_t which, uint32_t a, uint32_t b, void*) {
+  switch (which) {
+    case kPanelGuardLogRdErr:
+      dash_logf("panelguard: exio rd err (no ack) -> retry next\n");
+      break;
+    case kPanelGuardLogExio:
+      dash_logf("panelguard: exio rd=0x%02X shadow=0x%02X -> rewritten\n",
+                (unsigned)a, (unsigned)b);
+      break;
+    case kPanelGuardLogBl:
+      dash_logf("panelguard: backlight rd=%u want=%u -> rewritten\n",
+                (unsigned)a, (unsigned)b);
+      break;
+    case kPanelGuardLogAuto:
+      dash_logf("panelguard: anomaly x%u -> auto reinit\n", (unsigned)a);
+      break;
+    default:
+      break;
+  }
+}
+
+// 守护请求的自动重初始化（连续 N 次异常才来一次，见 panel_guard.h）。
+static void pan_guard_reinit(void*) {
+  // 只在"面板确实被初始化过"的前提下重跑 —— 否则开机就没点亮时会被误当成黑屏恢复。
+  if (!g_panel_ready) return;
+  dash_display_panel_reinit("guard");
+}
+
 void dash_display_init() {
   // ---- ① 先把 RST/CS 那两颗扩展口的片子叫醒(TCA9554)----
   tca9554_begin();
@@ -1358,6 +1466,16 @@ void dash_display_init() {
   ledcAttach((uint8_t)RGB_PIN_BL, (uint32_t)RGB_BL_LEDC_HZ, (uint8_t)RGB_BL_LEDC_BITS);
   ledcWrite((uint8_t)RGB_PIN_BL, (uint32_t)RGB_BL_DUTY);
 
+  // ---- ④ 上线**面板健康守护**（第 ② 层防线，见本文件上面那一大段）----
+  //   ★ 顺序是硬的：必须在背光起来之后 —— 守护第一次对账要拿到的正是
+  //     "背光 = RGB_BL_DUTY"这个设定值；先上线会在初始化途中读到 0 而误报一次。
+  //   ★ 影子寄存器喂的是**当前值**（不是常量）：RST/CS 那两位在初始化过程中动过，
+  //     而"我们现在要求的是什么"只有 `g_exio_out` 知道。
+  g_panel_ready = true;
+  g_panel_guard.setShadow(g_exio_out);
+  g_panel_guard.setBacklightDuty((uint32_t)RGB_BL_DUTY);
+  g_panel_guard.begin(millis());
+
   dash_logf("rgb: RGB565 %dx%d pclk=%uHz 数据位=%d 已就绪(第二块屏待接)\n",
                 (int)THEME_DISPLAY_RES, (int)THEME_DISPLAY_RES,
                 (unsigned)RGB_PIXEL_CLOCK_HZ, 16);
@@ -1449,6 +1567,112 @@ void dash_display_init() {
 lv_display_t* dash_display_left() { return g_left; }
 lv_display_t* dash_display_right() { return g_right; }
 
+// ============================================================
+// ★★ 面板重初始化（第 ③ 层防线的**现场恢复路径**）
+//
+//   谁调它：
+//     · 串口命令 `r`（车主在屏前发现黑了、又不想按板上 RST 时的入口）；
+//     · 面板健康守护连续 N 次发现异常时的**自动**恢复（见 panel_guard.h）。
+//
+//   ★★ 它做什么：**重跑 ST7701 的 41 步初始化 + 重发当前画面**。
+//     也就是把"按一次板上 RST"能做的事，做成一条命令（复位会把 ESP32 一起重启，
+//     而重启那几秒表盘是空的；这条命令不重启 MCU）。
+//
+//   ★★ 它**不做什么**（这是"不要做"清单上的东西，一个字节都不动）：
+//     · 不改 PCLK / HSYNC / VSYNC 时序、不改 `num_fbs`、不改 bounce 行数；
+//     · 不重写驱动、不动 LVGL 的显示对象与绘制缓冲；
+//     · **不重做** 3 线 SPI 总线的初始化、不重新申请 framebuffer、不重建面板对象
+//       —— 那三样在 `dash_display_init()` 里已经做过，重做会漏内存/重复注册回调；
+//     · 不碰 I2C 总线时钟（候选机制 A 的教训，见 §13.8）。
+//
+//   ★ 为什么"重发当前 framebuffer"这一步不能省：
+//     ST7701 被复位之后，面板自己的 GRAM/扫描是从一张白纸开始的，而 ESP32 这一侧
+//     的 `g_fb[]` 里还是黑屏前那一帧。而我们的换帧是"在 VSYNC 边界把 DMA 指向另一块 fb"
+//     —— 如果不再碰一次 `draw_bitmap()`，驱动不会重新锁存 `bb_fb_index`，
+//     屏上会停在**复位后驱动默认那一块**（可能是空白的那一块）。
+//     `esp_lcd_panel_draw_bitmap(panel, 0, 0, W, 1, g_fb[g_front])` 就是那次"重新锁存"：
+//     它把当前**正在显示**的那块 fb 重新交给驱动（与 `request_swap()` 是同一个 API，
+//     只是这里指定的是 front 那一块）。450KB 的搬运由驱动做（bounce），
+//     这一行本身只是登记一次换帧请求 ⇒ 不阻塞、也不闪。
+// ============================================================
+bool dash_display_panel_reinit(const char* why) {
+  const char* const tag = (why != nullptr) ? why : "?";
+  if (!g_panel_ready || g_panel == nullptr || g_spi == nullptr) {
+    dash_logf("panel: reinit skipped (面板没初始化过,g_panel/g_spi 为空)\n");
+    return false;
+  }
+  const uint32_t t0 = millis();
+
+  // ---- ① 复位脉冲（与初始化逐字同一套时序：低 10ms → 高 → 等 50ms）----
+  tca9554_set(LCD_RST_EXIO_BIT, false); delay(10);
+  tca9554_set(LCD_RST_EXIO_BIT, true);  delay(50);
+
+  // ---- ② 重跑 41 步初始化（CS 由 EXIO3 手动拉；不重做 SPI 总线初始化）----
+  tca9554_set(LCD_CS_EXIO_BIT, false);
+  delay(10);
+  panel_init_sequence();
+  tca9554_set(LCD_CS_EXIO_BIT, true);
+  delay(10);
+
+  // ---- ③ 重发当前 framebuffer（见上面那段"为什么不能省"）----
+  if (g_fb[g_front] != nullptr) {
+    esp_lcd_panel_draw_bitmap(g_panel, 0, 0, (int)THEME_DISPLAY_RES, 1, g_fb[g_front]);
+  }
+
+  ++g_panel_reinit_n;
+  // ★ 告诉守护一声：清掉连续异常计数、重新起算周期与冷却期（否则下一次失败检查
+  //   会立刻又请求一次重初始化 ⇒ 变成"周期性重跑 41 步" ⇒ 屏定期闪）。
+  //   ★ 它**不**增加守护的 `reinit` 计数：那个数是"守护自己触发的自动恢复"；
+  //     命令触发的这一条由下面这行日志记着。
+  g_panel_guard.noteReinit(millis());
+  g_panel_guard.setShadow(g_exio_out);      // 影子没变，但同步一次（幂等）
+
+  dash_logf("panel: reinit by %s (#%u, %ums; 41 步 + 重发 fb%u; vsync 计数不回零)\n",
+            tag, (unsigned)g_panel_reinit_n, (unsigned)(millis() - t0),
+            (unsigned)g_front);
+  return true;
+}
+
+// ---- 守护的读数（诊断页那行 `guard rd_ok=… fix=… bl=…` 用）----
+uint32_t dash_panel_guard_rd_ok(void)  { return g_panel_guard.rdOk(); }
+uint32_t dash_panel_guard_fix(void)    { return g_panel_guard.fixExio(); }
+uint32_t dash_panel_guard_bl(void)     { return g_panel_guard.fixBl(); }
+uint32_t dash_panel_guard_anomalies(void) { return g_panel_guard.anomalies(); }
+
+// ============================================================
+// ★★ 临时故障注入（**默认构建里一个字节都不存在**）
+//
+//   用途（本单最有价值的一步）：在**真机**上把扩展器输出寄存器的某一位**故意写错**，
+//   验"守护能不能在约 2 秒内发现、按影子重写回来、计数 +1、屏自己回来"。
+//   ★ 安全前提写在 docs/RGB-PANEL-2.8C.md 的那一节里：注入必须发生在**守护已生效**
+//     的固件上、一次只注入一次、回滚镜像随手可用。
+//
+//   打开方式（**只在测试构建里**，测完这一整段会被删掉）：
+//     在 `[env:esp32s3-rgb]` 的 build_flags 里临时加 `-DPANEL_GUARD_FAULT_INJECT=1`，
+//     然后串口发 `i` —— 它把 `g_exio_out` 的对位**写反**（只写那一位、不经守护）。
+//     默认构建（没有那个 -D）里 `dash_panel_guard_fault_inject()` 是**空函数**，
+//     连 `Wire` 都不碰 ⇒ 正式固件的行为逐字节不变 ✓。
+// ============================================================
+#ifndef PANEL_GUARD_FAULT_INJECT
+#define PANEL_GUARD_FAULT_INJECT 0
+#endif
+
+void dash_panel_guard_fault_inject(uint8_t bit) {
+#if PANEL_GUARD_FAULT_INJECT
+  if (bit > 7u) return;
+  const uint8_t before = g_exio_out;
+  const uint8_t next = (uint8_t)(before ^ (uint8_t)(1u << bit));
+  // ★ 只写**那颗芯片的真实寄存器**，**故意不动** `g_exio_out`（影子）
+  //   —— 于是"影子 vs 回读"立刻不一致，这正是要复现的故障。
+  tca9554_write(TCA9554_REG_OUTPUT, next);
+  dash_logf("inject: exio out 0x%02X -> 0x%02X (bit%u, 影子保持 0x%02X)"
+            " —— 等守护抓它\n",
+            (unsigned)before, (unsigned)next, (unsigned)bit, (unsigned)g_exio_out);
+#else
+  (void)bit;
+#endif
+}
+
 // 每秒报一次帧率 —— 实屏调试时这是判断"面板到底在不在收帧"的第一手信息
 // (和 VAN 那条 edges/frames 的诊断是同一个思路),同时也是**换帧健不健康**的判据:
 //   · `vsync` 每秒 +N:N≈65 ⇒ PCLK 真跑在 18MHz(N≈108 ⇒ 30MHz);
@@ -1488,6 +1712,18 @@ void dash_display_poll() {
   // ---- ② 空闲时间里的"小碎步补拷"(第五轮:把大突发摊平,见 pend_step)----
   //   也必须在早退之前 —— 它每圈只搬 8 行,靠"跑很多圈"把 ~90KB 摊开搬完。
   pend_step();
+
+  // ---- ②.5 面板健康守护（第 ② 层防线，见本文件上面那一大段）----
+  //   ★ 放在这里（早退之前）的理由与上面两条一样：它**每轮都要被调**，靠"跑很多圈"
+  //     等那 2 秒到期；放进每秒一次的那段里会让周期变成 1 秒的整数倍。
+  //   ★ `tick()` 没到点就是几次整数比较；到点那一次是一读（+ 必要时两次写）。
+  g_panel_guard.tick(now);
+  //   ★ 守护攒够"连续异常"时会请求一次重初始化。**在这里执行**（本函数是主循环里
+  //     那个"可以慢一拍"的安全时刻）：重跑 41 步 + 重发一帧要 ~70ms，
+  //     放在 I2C 对账那一刻做会把那一拍拉长；而这里本来就在做 pend_step/fb 搬运。
+  if (g_panel_guard.takeReinitRequest()) {
+    dash_display_panel_reinit("guard");
+  }
 #if RGB_FULL_REFRESH_ALTERNATE_MS > 0
   if (g_mode_switch_ms == 0) g_mode_switch_ms = now + RGB_FULL_REFRESH_ALTERNATE_MS;
   if ((int32_t)(now - g_mode_switch_ms) >= 0) {
