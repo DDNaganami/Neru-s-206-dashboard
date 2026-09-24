@@ -3047,3 +3047,105 @@ rgb: vsync=357(+65/s) swap=56(+5/s) flush=194 copy_max=3012us copy_avg=897us swa
   `pio` 下载都 `CERTIFICATE_VERIFY_FAILED`）。本轮把 Windows 根证书导成 PEM 合进
   `C:\.platformio\penv\...\certifi\cacert.pem`（原文件备份为 `cacert.pem.orig`）才拉得下来。
   ★ 这是**本机工具链**的一处改动，不在仓库里，但下一个人在同一台机器上跑 `pio` 会受益。
+
+---
+
+## 2.8C **"残留 + 横纹/抖动"三轮收口**：bounce + 两块 fb 收敛 + 补拷小碎步（2026-09-24 实机，第三轮）
+
+上一轮（本文件上一节）把撕裂的**结构性**根因查清了并换到 IDF 5.5 + 双 framebuffer。**实机结果是
+"撕裂还在 + 新出现残留"** ⇒ 本轮从源头重查，一共收口了**三个不同的机制**（每一轮换的都是机制，
+不是参数）。
+
+### ① 车主的四次反馈 → 三个根因（每一次都由车主的观察定方向）
+
+| # | 车主看到的现象（要点） | 真根因 | 证据（可复核） | 治法 | 结果 |
+|---|---|---|---|---|---|
+| 1 | 撕裂仍在 **+ 新出现"图像残留"** | **换帧根本没生效** | IDF 5.5.4 的 `esp_lcd_panel_rgb.c`：S3 上 `RGB_LCD_NEEDS_SEPARATE_RESTART_LINK=1`，restart link **固定挂在 `fbs[0]`** 且 `cur_fb_index` 变了也不重挂；而本栈 sdkconfig 里 `CONFIG_LCD_RGB_RESTART_IN_VSYNC=1` ⇒ **每个 VSYNC 都把 DMA 重置回 `fbs[0]`** ⇒ 屏上永远只有 `fbs[0]`（写进另一块的那些刷新**根本没上屏** = 残留；写进 `fbs[0]` 的那些轮 = 写在正在扫的显存上 = 撕裂） | **开 bounce buffer**（`-DRGB_BOUNCE_LINES=10`，**微雪官方 2.8C IDF/Arduino 两份例程的默认取值** `10 * H_RES`）：DMA 只读内部 SRAM，而"装哪块 fb"由驱动在**帧边界**锁进 `bb_fb_index` | 撕裂基本没了 ✓ |
+| 2 | **残留**："表情已经切到下一段了，但每秒刷新时又回到上一段的那个表情；进度条也有残留" | **两块 fb 内容不一致** | 局部刷新只喂了"当次的后台"那一块 ⇒ 两块 fb 分叉，换帧就是在两块之间来回翻 | **每次刷新把上一次的脏区补拷进另一块 fb**（两块逐帧收敛） | **残留修好 ✓✓（车主确认）** |
+| 3 | **抖动 + 横纹（随刷新移动）**；补一条决定性观察：**扫表阶段正常、稳态才出现** | **补拷的"大突发"把 bounce 填充挤掉** | 稳态每次刷新是一笔 ~90KB 的 PSRAM 拷贝；实测一笔 450KB 要 **33739µs（13MB/s）**；那一笔持续几毫秒，期间 bounce 来不及填 ⇒ 那一帧吐旧行 ⇒ 横带；扫表时画面持续变化把横带盖掉 ⇒ "扫表正常、稳态才暴露" | **补拷改成"空闲时间小碎步"（每步 8 行 ≈7.68KB）** + 关掉"全屏重绘"对照档（它自己就是 ~11 张整屏/秒的大突发） + PCLK 18 → 15MHz | **`copy_max` 33739µs → 3059µs（降 11 倍）；`refresh` 192~211ms → 199~201ms**；横纹/抖动**待车主再看** |
+
+★ **第 3 条的两个"不是"**（都逐条查过，写下来免得下次走回头路）：
+* **不是"拷贝没完成就换帧"**：`blit_area()` 的 `memcpy` + `esp_cache_msync(C2M)` 都是**同步**完成的，
+  `request_swap()` 只在**本次刷新的最后一块** flush 里调用 ⇒ 没有那条路径 ✗；
+* **不是"换帧等错了对象"**：`wait_swap_settled()` 等的是**"换帧已生效"**（驱动在帧边界锁存
+  `bb_fb_index` = 我们的 `wrap` 计数），拷贝在它之前早就同步做完了 ✓ 两者没有混用 ✓。
+* 也不是背光 PWM 那条（横纹**随刷新移动** ⇒ 不是固定干扰 ✓）、不是告警闪（实测 `fullrb=0/s`
+  ⇒ 稳态下**没有**整屏失效 ✓）。
+
+### ② 客观数字（COM6 原始串口行；四个版本对照）
+
+| 指标 | 18MHz + 自动交替(10s) | 18MHz + 交替关 | 15MHz + **整笔**补拷 | **15MHz + 小碎步补拷（交付档）** |
+|---|---|---|---|---|
+| `pclk` / `vsync` | 18MHz / +64~66/s | 18MHz / +64~66/s | 15MHz / +53~54/s | **15MHz / +53~54/s**（15e6/548/508 = 53.9 ✓） |
+| **`copy_max`**（单笔最大 PSRAM 搬运） | 36.7ms | 33.7ms ✗ | **33.7ms** ✗ | **3.06ms** ✓✓ |
+| `refresh=avg/min/max`（刷新间隔） | — | — | 199/192/211ms | **200/199/201ms** ✓ |
+| `fullrb`（整屏刷新频次） | **~11/s** ✗ | 0/s ✓ | 0/s ✓ | **0/s** ✓ |
+| `catchup` | — | — | +5/s、~450KB/s | **+5/s、429~466KB/s**（总字节一样，只是摊开） |
+| `bounce`（填充负载） | 28~31MB/s | 28~29MB/s | 23MB/s | **23MB/s** ✓ |
+| `wrap` vs `vsync` | 1:1 | 1:1 | 1:1 | **1:1** ✓ |
+| `timeout` / heap（内部）/ PSRAM | 0 / 183KB / 7285KB | 同 | 同 | **0 / 183KB / 7285KB** ✓ |
+| 应用层 | `206 dash ok …` / `BEACON` / `SRC*` / `link:` 每秒照旧，`heap=183KB` 稳定 | 同 | 同 | **同** ✓（bounce 的 23MB/s 没把主循环/VAN 挤坏） |
+
+### ③ 车主主观（**唯一收口判据**）
+
+* **残留：已修好 ✓✓**（车主明确确认）；
+* **撕裂：基本没了 ✓**；
+* **抖动 + 横纹：本轮改动后待车主再看**（客观数字上：大突发降 11 倍、刷新间隔从 ±16ms 收到 ±1ms）。
+
+### ④ 车主三次"看"的结论与本轮**仍然欠**的一项
+
+* **官方 Demo 对照（同一块板/同一根线/同一电源）没烧** —— 这是排除供电与线材的**唯一干净做法**，
+  **欠着**。没烧的两条理由：① 我这边只能读串口、**看不到屏**，烧完照样要占车主一次"看屏"，
+  而那一次更该花在**修好的固件**上；② 它是 16MB 整片镜像（写 `0x0`，覆盖整片 flash）。
+  ★ 已查：本机 `theme` / `image` 分区**本来就是空的**（开机日志 `theme: 分区为空,用默认主题` /
+  `image: 镜像无效或未刷入`）⇒ 烧它**不会丢车上的数据** ✓。备份/烧写/回烧三条命令抄在
+  `docs/RGB-PANEL-2.8C.md` 的 11.7。
+
+### ⑤ 改动清单（**只动 2.8C 那条 env 与一个源文件**）
+
+* `platformio.ini`：`[env:esp32s3-rgb]` 段**纯插入** 18 行（`git diff` 里 **0 删除**）——
+  `-DRGB_BOUNCE_LINES=10`、`-DRGB_FULL_REFRESH_DEFAULT=0`、`-DRGB_FULL_REFRESH_ALTERNATE_MS=0`；
+* `src/dash_display_rgb.cpp`：
+  * **PCLK 18 → 15MHz**（只改 `RGB_PIXEL_CLOCK_HZ` 一个数，`clk_src` 不动）；
+  * `cfg.bounce_buffer_size_px = 10 * THEME_DISPLAY_RES`（官方例程取值）；
+  * 注册 `on_frame_buf_complete`（`wrap` 计数 = "换帧在帧边界锁存"的唯一判据）；
+  * `wait_swap_settled()` 的屏障改成 `wrap`（等"换帧已生效"，不是"大概过了个 vsync"）；
+  * 新增**待补拷清单 + 小碎步补拷**（`pend_step()` / `pend_finish()`，每步 8 行）；
+  * 新增**只读诊断**：`wrap` / `catchup` / `bounce` / `refresh` / `fullrb` / `phase_max`；
+  * 全屏重绘对照档（`lv_obj_invalidate(lv_screen_active())`）保留但**默认关**（`ALTERNATE=0`）。
+
+### ⑥ 计数与红线复核
+
+* **只动 2.8C 那条 env** ✓（`git diff platformio.ini` = 纯插入）；`[env:esp32s3]`（抓帧盒）与
+  `[env:esp32dev]` 的**平台钉法（`espressif32@7.1.3`）一字未动** ✓；
+* **没有新开 L 号** ✓；240(DualEye) SPI 驱动、`tools/theme-editor/theme.json`、
+  CRC / SOF / `kSpeedScale=2.56` / VAN 脚极性 **一个都没碰** ✓；
+* **只烧 COM6** ✓（COM7 一次没碰）；**没跑 `pio clean`、没删 `.pio`** ✓；构建与烧写全部在
+  `C:\206dash-scratch\Neru`（ASCII 副本）✓；
+* **native / JS 五套**：本轮**没有改 `lib/`、没有改 `test/`**，也没有改 native / pcpreview 的编译口径
+  （`src/dash_display_rgb.cpp` 只在 `-DDASH_DISPLAY_RGB` 下参与编译）⇒ 与上一节 ⑤ 的记录**逐位相同**
+  （native 234 / 2 skipped / 232 succeeded / 0 失败；JS 71 / 429 / 259 / 155 / 369 + syntax-check 12）；
+  ★ **本轮复跑的结果：native 在这台机器上跑不起来** ——
+  `pio test -e native` 在编译阶段就报 `'gcc' is not recognized as an internal or external command`
+  （这台台式机上**没有系统 gcc / MinGW**，`where gcc` 为空；native 那套用的是宿主机 gcc，不是 PlatformIO
+  的工具链）。⇒ 这一条**不是本轮改动引起的回归**：本轮只动了 `src/dash_display_rgb.cpp`（只在
+  `-DDASH_DISPLAY_RGB` 下编译）与 `[env:esp32s3-rgb]` 的 build_flags，**native 构建两者都够不到** ✓。
+  要复跑得在装了 gcc 的机器上（或给这台装 MinGW 再把它加进 PATH）—— 命令：`pio test -e native`。
+  JS 五套同理：本轮没碰 `tools/theme-editor/`，**没有下降的可达路径** ✓（未复跑，如实记）。
+* **五个 env**：本轮只重建了 `esp32s3-rgb`（**RAM 48.1% / 157,616B，Flash 84.8% / 888,927B**）；
+  另四条 env（`esp32dev` / `esp32s3` / `esp32s3-linkloop` / `pcpreview`）本轮**没有重建** ——
+  改动只在 2.8C 那条 env 的 build_flags 与一个只在 RGB 构建里编译的源文件里，
+  对它们**没有可达路径** ✓。
+
+### ⑦ 本轮没做 / 拿不准的（如实列）
+
+* **横纹/抖动的最终结论**：客观数字已经大幅改善（大突发 33.7ms → 3.06ms、刷新间隔 ±16ms → ±1ms），
+  但**"消没消"只能由车主看一眼** ⇒ 留给车主；
+* **官方 Demo 对照**：欠着（见 ④）；
+* **PCLK 15MHz 是不是"够"**：15MHz 把消耗速率从 36MB/s 压到 30MB/s（−17%），若横纹只是好转就把
+  `RGB_PIXEL_CLOCK_HZ` 再改成 **12MHz**（24MB/s、43.2Hz；仍只改一个数）；再不够就
+  `-DRGB_BOUNCE_LINES=40`（绝对余量 ×4，代价 76.8KB 内部 SRAM）；
+* **catch-up 的两条备选路**（本轮选了"小碎步"）：① 用 `lv_obj_invalidate_area()` 让 LVGL 把脏区
+  **重画一遍**顶掉拷贝（PSRAM 流量更小，但每次刷新都会再触发一次重画 ⇒ 会变成 30Hz 常亮刷新，
+  代价反而大 ✗）；② 干脆单 fb + bounce + 写像素锁在帧边界之间（**微雪官方默认档**，但我们的
+  UI 单次脏区 ~90KB，写它要 ~6ms > 一帧的消隐期 ⇒ 会撕 ✗）。两条都记在 docs 11.6。

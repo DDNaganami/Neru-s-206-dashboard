@@ -376,7 +376,7 @@ rgb: vsync=422(+65/s) swap=61(+5/s) flush=214 copy_max=3012us copy_avg=887us swa
 | 面板扫描帧率 | **+64~+65 /s** | 18e6/(548×508) = **64.7Hz** ⇒ PCLK 真是 18MHz（这行同时是"PCLK 跑成多少"的判据：30MHz 时它是 +108/s） |
 | 换帧次数 | 稳态 **+5 /s** | 与 UI 每 200ms 重画一次对得上；**每一次刷新都换了一次 fb** |
 | **`timeout`** | **0**（全程） | 等"换帧边界过去"从来没有靠超时放行 ⇒ 换帧的同步是**真的**在起作用 |
-| `msync` | **1**（不再涨） | 整块补拷只发生在开机后第一次换帧之后 —— 正是设计里那一处 |
+| `msync` | **1**（不再涨） | 整块补拷只发生在开机后第一次换帧之后 —— 正是设计里那一处（★ 第四轮起这一列改名 `catchup=`，见 11.4） |
 | 写 fb 的耗时 | `copy_max = 3012µs`、`copy_avg ≈ 0.9ms` | 单次 flush 的脏区拷贝（含 cache 回写）；`copy_max` 那 3ms 是开机那次整块补拷 |
 | 换帧等待 | `swap_wait_max = 8875µs` | < 一帧（15.5ms）⇒ 与设计一致 |
 | **开机整屏刷新** | **56.6ms**（块=8，拷贝 20.0ms） | 旧的"8KB 分块 + 每块等消隐期"是 **≈0.85~1.0 秒** ⇒ 快 **~15 倍**，而且**不再需要**那套节流 |
@@ -402,6 +402,22 @@ rgb: vsync=422(+65/s) swap=61(+5/s) flush=214 copy_max=3012us copy_avg=887us swa
    旧注释里"30MHz 必须换 PLL240M"那句是**旧驱动**的口径，已作废）。
 
 ### 9.5 为什么不干脆开 bounce buffer（把 30MHz 也吃下来）
+
+> ★★ **2026-09-24 第三轮更正：这一节当时的结论是错的，别照它做**（原文留在下面当记录）：
+> ① `bounce_buffer_size_px` 与"双 fb"**不互斥**。`num_fbs > 0` 时搬数据的是**驱动自己** ——
+>    `esp_lcd_panel_rgb.c` 的 `lcd_rgb_panel_fill_bounce_buffer()` 里那句
+>    `memcpy(buffer, &panel->fbs[panel->bb_fb_index][panel->bounce_pos_px * bytes_per_pixel], panel->bb_size)`；
+>    需要用户 `on_bounce_empty` 的只有 `no_fb`（Bounce Buffer Only）那条路。
+>    微雪官方例程的 `panel_config` 里 `.num_fbs` 与 `.bounce_buffer_size_px = 10 * EXAMPLE_LCD_H_RES`
+>    就是**同时**写着的（见 10.9）。
+> ② **恰恰相反：不带 bounce 的"双 fb"在这个栈里换帧根本不生效**（逐行原因见 10.2）——
+>    bounce 不是"另一条路"，而是**这条路能走通的前提**。
+> ③ 代价那一半当年算对了：CPU 每帧要搬 450KB（实测 `bounce=28~31MB/s`，见 10.5）。
+>    这笔代价**已经付了**，换来的是"换帧真的落在帧边界"。
+> ④ 当年把 30MHz 的账也算在这里 —— 现在 DMA 不再抢 PSRAM，30MHz 反而更可试了；
+>    但本轮**没动 PCLK**（先跟官方 Demo 走：18MHz）。
+
+（以下是 2026-09-24 第二轮的原文，仅作记录）
 
 `bounce_buffer_size_px` 确实能让 DMA 从**内部 SRAM** 取像素、彻底不争 PSRAM —— 但它与
 "双 fb + 局部刷新"是**互相排斥**的两条路：开了 bounce buffer，驱动要在每帧的有效像素期间
@@ -444,3 +460,378 @@ powershell -ExecutionPolicy Bypass -File tools\serial-capture\capture-boot-nopy.
 * **两屏共用一条总线**那件事**仍未做**：本文件现在还是单屏版本（`g_left = g_right = d0`），
   第二块屏的两条出路见文件头。★ 但换栈之后**那条硬阻塞没了**：`num_fbs` / `get_frame_buffer` /
   帧切换回调三样现在都有了 ⇒ 将来做双屏"轮流发帧"时，本文件这套 back/换帧结构可以直接复用。
+
+---
+
+## 10. 2026-09-24 第三轮：**"图像残留 + 撕裂"的真根因 = 少了 bounce buffer**（已修 + 已上板实测）
+
+### 10.1 车主反馈与第一假设（记录在案：它解释得通，但不是根因）
+
+上一轮（第 9 节）上了"双 framebuffer + `on_vsync` 换帧"之后，实机是：
+
+* **撕裂还在** ✗；
+* **新出现"图像残留"** ✗✗（旧画面留在屏上，区域边界看着像撕裂）。
+
+当时的第一假设是"双缓冲 + LVGL 局部刷新 ⇒ 后台缓冲半新半旧"（`msync=1` + `swap +5/s` 像是它的签名）。
+**这条假设对现象的描述是对的，但根因不是它** —— 见下一条。
+
+### 10.2 真根因：这个栈里"换帧"**根本没生效**（IDF 5.5.4 逐行证据）
+
+三处代码，缺一不可（都在 `components/esp_lcd/rgb/esp_lcd_panel_rgb.c`；
+本栈的 IDF 版本由 `framework-arduinoespressif32-libs/esp32s3/versions.txt` 钉死为 **v5.5.4**，
+我按 `v5.5` 与 `release/v5.5` 两个 tag 都核过，这一段两版相同）：
+
+1. **ESP32-S3 上 `RGB_LCD_NEEDS_SEPARATE_RESTART_LINK = 1`**（文件开头的硬件规避），驱动因此建一条
+   **专用 restart link**，它的第 0 个节点**固定挂在 `fbs[0]`** 上：
+
+   ```c
+   // lcd_rgb_panel_init_trans_link()（只在 init 里挂这一次）
+   gdma_buffer_mount_config_t restart_buffer_mount_cfg = {
+       .buffer = rgb_panel->fbs[0] + restart_skip_bytes,   // ★ 固定 fbs[0]
+       ...
+   };
+   gdma_link_concat(rgb_panel->dma_restart_link, 0, rgb_panel->dma_fb_links[0], 1);
+   ```
+
+   ★ 而 `cur_fb_index` 变了之后，**没有任何代码去重挂它**（`rgb_panel_draw_bitmap()` 里只对
+   `dma_fb_links[]` 做 `gdma_link_concat`，碰不到 restart link）。
+
+2. **这版 arduino-esp32 给 esp32s3 的 sdkconfig 里 `CONFIG_LCD_RGB_RESTART_IN_VSYNC=1`**
+   （可直接读 `framework-arduinoespressif32-libs/esp32s3/qio_opi/include/sdkconfig.h` ——
+   我读到的就是 `#define CONFIG_LCD_RGB_RESTART_IN_VSYNC 1`），于是**每个 VSYNC 中断**都走这一支：
+
+   ```c
+   // lcd_rgb_panel_try_restart_transmission()
+   #if CONFIG_LCD_RGB_RESTART_IN_VSYNC
+       do_restart = true;                       // ← 每帧无条件重启
+   #else
+       ...（need_restart / bb_eof_count 那套）
+   #endif
+       ...
+       lcd_ll_fifo_reset(rgb_panel->hal.dev);
+       gdma_reset(rgb_panel->dma_chan);
+   #if RGB_LCD_NEEDS_SEPARATE_RESTART_LINK
+       gdma_start(rgb_panel->dma_chan, gdma_link_get_head_addr(rgb_panel->dma_restart_link));  // ★ 又回 fbs[0]
+   #else
+       gdma_start(..., gdma_link_get_head_addr(rgb_panel->dma_fb_links[rgb_panel->cur_fb_index]));
+   #endif
+   ```
+
+3. ⇒ **没有 bounce buffer 时，每一帧的 DMA 都从 `fbs[0]` 开始吐数据 ⇒ 屏上永远是 `fbs[0]`。**
+   我们那次"换帧"（`esp_lcd_panel_draw_bitmap(panel, 0,0,W,1, g_fb[g_back])`）只改了
+   `cur_fb_index` 这个变量，**对显示内容毫无影响**。两个症状就是这么来的：
+
+   | 症状 | 机制 |
+   |---|---|
+   | **图像残留** ✗✗ | 我们"往 back 画"的那些刷新全画进了**不上屏的那块 fb**；LVGL 不会重画同一块区域 ⇒ 那块内容在屏上**永远是旧的** |
+   | **撕裂** ✗ | `back` 恰好等于 `fbs[0]` 的那些轮，**写在了正在被扫描的显存上**（就是老的单 fb 行为） |
+
+   ★ 这也解释了"为什么引入双缓冲之后**才**出现残留"：上一版单 fb 时所有写入都落在唯一那块（= 上屏那块），
+   所以没有残留、只有撕裂。
+
+### 10.3 修法：照官方例程抄一行，再挂一个"当真了"的判据
+
+**核心那一行**（`[env:esp32s3-rgb]` 里 `-DRGB_BOUNCE_LINES=10`）：
+
+```c
+cfg.bounce_buffer_size_px = (size_t)RGB_BOUNCE_LINES * (size_t)THEME_DISPLAY_RES;   // 10 × 480 px = 9600B/块
+```
+
+它为什么治本（同一个文件里的 `lcd_rgb_panel_fill_bounce_buffer()`）：
+
+```c
+memcpy(buffer, &panel->fbs[panel->bb_fb_index][panel->bounce_pos_px * bytes_per_pixel], panel->bb_size);
+...
+panel->bounce_pos_px += panel->bb_size / bytes_per_pixel;
+if (panel->bounce_pos_px >= panel->fb_size / bytes_per_pixel) {   // 一整帧走完
+    panel->bounce_pos_px = 0;
+    panel->bb_fb_index = panel->cur_fb_index;                     // ★★ 换帧在这一刻生效（= 帧边界）
+    if (cb) cb(...);                                              // on_frame_buf_complete
+}
+```
+
+① restart link 挂的是 **`bounce_buffer[0]`**，而它**装哪块 fb 的数据**由 `bb_fb_index` 决定
+⇒ "永远 `fbs[0]`"这条死路没了（`cur_fb_index` 每帧被锁存一次）；
+② 换帧只在**整帧走完那一刻**生效 ⇒ 不会半新半旧；
+③ **LCD 的 DMA 从此完全不碰 PSRAM**（只读内部 SRAM 的 bounce buffer）⇒ 也不再和 CPU 抢带宽。
+
+**另外两处配套改动**（都在 `src/dash_display_rgb.cpp`）：
+
+* ★★ **两块 fb 的"内容收敛"：每次刷新开头，把上一次刷新的脏区从 front 补拷进 back**
+  （`catch_up_back()`）。**不做这一步，局部刷新会让两块 fb 的内容分叉** ⇒ 屏上表现就是
+  "表情切到下一段了、每秒刷新又回到上一段；进度条也有残留" ✗✗（车主实测）。
+  ⇒ 完整的机制、数字与分诊见 **11.1 / 10.3 的两类失效模式**。
+* **`on_frame_buf_complete` 计数器 `wrap=`**：上面 `bb_fb_index = cur_fb_index` 的同一刻会回调我们，
+  所以 `wrap` 是"换帧真的落在帧边界"的**唯一判据**（`vsync` 在涨而 `wrap` 不涨 ⇒ bounce 没成立）。
+* **换帧那道门改用 `wrap` 做屏障**（`wait_swap_settled()`）：等的是"驱动已经把新 fb 锁进
+  `bb_fb_index`"，而不是"大概过了一个 vsync"—— 这是"往刚换下去那块写"会不会撕裂的分界。
+
+**两个可测开关**（任务书要的那条；都在日志里明确打出来）：
+
+| 开关 | 位置 | 日志判据 |
+|---|---|---|
+| **全屏重绘 / 局部刷新** | 编译期默认 `-DRGB_FULL_REFRESH_DEFAULT`（0=局部）+ 运行期自动交替 `-DRGB_FULL_REFRESH_ALTERNATE_MS`（默认 10000ms） | 开机一行 `rgb: 刷新档=…`；每秒行里 `模式=全屏重绘\|局部刷新`；每次自动切换再打一条 `===== 对比档自动切换 ⇒ … =====` |
+| **bounce 开关** | `-DRGB_BOUNCE_LINES=10`（0 = 退回旧行为，用于复现/对照） | 开机一行 `rgb: bounce=10行/块(…) on_frame_buf_complete=已注册 ⇒ 换帧在**帧边界**由驱动锁存…` |
+
+### 10.4 上板实测（`[env:esp32s3-rgb]` + COM6；下面都是**原始串口行**）
+
+开机（`rgb:` 那几行就是"现在是什么档"的判据）：
+
+```
+rgb: RGB565 480x480 pclk=18000000Hz 数据位=16 已就绪(第二块屏待接)
+rgb: 双framebuffer num_fbs=2 fb0=0x3c0d1b20 fb1=0x3c142340(各 450KB PSRAM) on_vsync=已注册
+rgb: bounce=10行/块(2块共18KB内部SRAM) on_frame_buf_complete=已注册 ⇒ 换帧在**帧边界**由驱动锁存(bb_fb_index=cur_fb_index);DMA 不读 PSRAM
+rgb: 刷新档=局部刷新(每30ms整屏失效一次;自动交替=10000ms)——本行是"当前是全屏重绘还是局部刷新"的判据
+rgb: 双fb 之后 空闲 PSRAM=7285KB heap=183KB(内部)
+rgb: 整屏刷新 66.2ms(块=8 拷贝25.9ms 数据450KB) 换帧在下一个帧边界由驱动锁存(bb_fb_index)
+```
+
+稳态两种模式各来一行（原样，没改一个数字）：
+
+```
+rgb: vsync=294(+66/s) wrap=294(+66/s) swap=51(+5/s) flush=170 copy_max=3478us copy_avg=1090us swap_wait_max=7374us phase_max=15292us timeout=0 fb=1/0 msync=1 bounce=29MB/s 模式=局部刷新 psram=7285KB heap=183KB
+rgb: vsync=3535(+71/s) wrap=3535(+71/s) swap=429(+11/s) flush=2651 copy_max=3947us copy_avg=3254us swap_wait_max=9570us phase_max=15456us timeout=0 fb=1/0 msync=1 bounce=31MB/s 模式=全屏重绘 psram=7285KB heap=183KB
+```
+
+| 指标 | **局部刷新（正式档）** | **全屏重绘（对照档）** | 说明 |
+|---|---|---|---|
+| `wrap` | **= `vsync`（1:1）** | **= `vsync`（1:1）** | ★ 每扫一帧驱动就走完一整帧并锁存一次 `bb_fb_index` ⇒ **bounce 真的在跑**、换帧真的在帧边界 |
+| `vsync` | +64~+66/s | +65~+71/s | 理论值 18e6/(548×508)=64.7Hz。★ 忙时偏高 5~9%（见 10.6 的边界说明） |
+| `swap` | +5/s（UI 200ms 档） | **+10~11 整屏/秒** | 全屏重绘档的 `swap/s` 就是"整屏能画多少张/秒" |
+| `flush` | ≈20/s | ≈88/s（12 块 × 7.3 整屏） | 整屏 = 12 个 40 行块 |
+| `copy_avg` | 1.0~1.5ms | 3.2ms | 一次脏区拷贝 + cache 回写 |
+| 整屏刷新 | —（用不到） | **79~87ms/整屏** | 开机那次是 66.2ms |
+| `swap_wait_max` | ≤7.4ms | ≤9.6ms | **都 < 一帧 15.5ms** ⇒ 那道门从没等到超出一帧 |
+| **`timeout`** | **0** | **0** | 换帧屏障从没靠超时放行 |
+| `msync` | **1**（不涨） | **1**（不涨） | "整块补拷"仍然只发生**一次**（第 9 节那套一致性逻辑不动） |
+| `bounce` | 28~29MB/s | 28~31MB/s | = 450KB × 64.7Hz，**bounce 的 CPU 代价**（见 10.6） |
+| PSRAM / heap | 7285KB / 183KB | 7285KB / 183KB | 不随模式变；PSRAM 与上一轮**逐 KB 相同**（bounce 在内部 SRAM） |
+| 应用层 | `206 dash ok spd=… face=…` 照常 1Hz、`BEACON` / `SRC` / `link` 行照常 | 同左 | bounce 那 30MB/s 没有把主循环/VAN 挤坏 |
+
+★ **heap 的差**：上一轮稳态 200KB → 本轮 **183KB**，差的 17KB ≈ bounce 那 18KB（10 行×480×2B×2 块）
+—— 与设计账对得上（PSRAM 一分没动）。
+
+### 10.5 换帧时序证据（任务书第 3 条："`vsync` 在涨 ≠ 换帧发生在 vsync 边界"）
+
+这一条上一轮的判断**不成立**，本轮给了能收口的证据，分三层：
+
+1. **源码层（最强）**：换帧生效的唯一时刻就是 `lcd_rgb_panel_fill_bounce_buffer()` 里
+   `bb_fb_index = cur_fb_index` 那一行 —— 它在一个 `if (bounce_pos_px >= fb_size/2)` 里，
+   也就是**一整帧的数据都送出去之后**（= 帧边界）。这不是"我们的推断"，是驱动的那一行。
+2. **计数层**：那一刻驱动回调 `on_frame_buf_complete`，我们记成 `wrap`。
+   实测 `wrap == vsync`（逐秒 1:1，见 10.4 两行原文）⇒ **每帧恰好锁存一次**。
+   （旧版没有这个回调，所以旧版的 `fb=` 翻转**只是我们自己的变量在翻**，跟屏上无关。）
+3. **相位层**：`phase_max = 15292~15456µs` ≈ **一整帧**。也就是说，换帧**请求**是异步来的
+   （LVGL 任务在帧内任意相位调用，最晚的那次几乎贴着下一个 VSYNC）。
+   ⇒ **安全性不来自"请求时机"，而来自"驱动在帧边界锁存" + 我们那道等 `wrap` 的门**
+   （`swap_wait_max ≤ 9.6ms < 15.5ms`、`timeout=0`）。
+
+**结论**：旧版不是"换帧没对齐帧边界"，而是**换帧根本没发生**（屏上只有 `fbs[0]`）；
+新版换帧**确实发生在帧边界**，有源码 + 计数 + 相位三层证据。
+
+### 10.6 取舍：三条路（任务书 a / b / c）的账
+
+| 方案 | 实测/推算代价 | 结论 |
+|---|---|---|
+| **(a) 保持全屏重绘** | 实测 **+10~11 整屏/秒**、`copy_avg` 从 1.1ms 涨到 3.2ms、整屏 79~87ms；即同样的 UI，CPU 花在重画整屏上 | **不采用**（只做对照档）。它能让"残留"看不见（每次都整屏覆盖），但**治不了撕裂**（写的那块照样可能是正在扫的那块），而且贵 7 倍 |
+| **(b) 换帧后把 front 拷进 back（450KB/次）** | 450KB memcpy+msync 实测 **≈3.5ms**（`copy_max=3478µs` 那次就是它）；若每次换帧都做 ⇒ 3.5ms×64.7 ≈ **226ms/s（23% CPU）** | **不需要**：`g_fb_complete[]` + 局部 blit 让两块 fb **一直保持一致**，整块补拷只在开机后发生 **1 次**（`msync=1`）⇒ 比"每帧拷"省 **~63 倍** |
+| **(c) LVGL DIRECT mode / 双 draw buffer 对齐 RGB 双 fb** | 要把 450KB 的 PSRAM fb 直接当 LVGL 绘制缓冲（渲染写 PSRAM，比我们现在的 38KB **内部 SRAM** 40 行缓冲慢）；而且它**同样绕不开 10.2 的 restart link**（2 fb 不带 bounce = 我们上一轮踩的那个坑） | **不采用**（可行但更慢；真要走的配方在 10.7 的官方 DOUBLE_FB 档里）。★ 官方材料点名的那条 `lv_display_set_flush_wait_cb` 属于 **DIRECT/FULL 模式**才需要：**我们是 PARTIAL（小块内部缓冲）+ 驱动帧边界锁存 + 自己的 `wrap` 门**，缓冲"正在被显示"这件事由那道门解决，所以**不需要**它 |
+
+**最终定案**：**局部刷新（PARTIAL）+ 双 fb（PSRAM）+ bounce 10 行/块 + 驱动帧边界锁存 + 我们那道
+`wrap` 门**。全屏重绘档作为运行期对照/兜底保留。
+
+### 10.7 官方 2.8C 例程逐项对照（本机已下载并解开：69MB 资料包）
+
+来源：`https://files.waveshare.com/wiki/ESP32-S3-LCD-2.8C/ESP32-S3-LCD-2.8C-Demo.zip`
+（本机可直连；`github.com` 被污染，所以 IDF 源码是从 Gitee 镜像取的）。包内两份官方工程：
+
+* `ESP-IDF/ESP32-S3-LCD-2.8C-Test/`（IDF + LVGL v8）
+* `Arduino/examples/LVGL_Arduino/`（Arduino + LVGL v8）
+
+| 项 | 我们 | **官方 IDF 例程** | **官方 Arduino 例程** | 结论 |
+|---|---|---|---|---|
+| PCLK | **18MHz** | `EXAMPLE_LCD_PIXEL_CLOCK_HZ = 18MHz` | `ESP_PANEL_LCD_RGB_TIMING_FREQ_HZ` | ✓ **我们的 18MHz 就是官方值**（不是折中） |
+| porch | hbp=10 / hfp=50 / hpw=8；vbp=18 / vfp=8 / vpw=2 | 逐项相同 | 走 `ESP_PANEL_LCD_RGB_TIMING_*` | ✓ 逐项相同 |
+| 极性 | `pclk_active_neg=false`（另两个 idle 也都 0） | 相同 | 同 | ✓ |
+| 引脚 | PCLK41/DE40/VSYNC39/HSYNC38 + DATA0..15 = 5,45,48,47,21,14,13,12,11,10,9,46,3,8,18,17 | **逐脚相同** | 同 | ✓ |
+| 帧缓冲 | `num_fbs=2` + `fb_in_psram=1` | `num_fbs=EXAMPLE_LCD_NUM_FB`（`DOUBLE_FB` 时 2，**默认 1**）+ `fb_in_psram=true` | `FRAME_BUF_NUM (1)` + `fb_in_psram=true` | 我们**多一块 fb**（换来"写的那块永不被读"） |
+| **bounce** | **10 行 × 480 = 9600B/块（本轮加）** | `.bounce_buffer_size_px = 10 * EXAMPLE_LCD_H_RES`（`USE_BOUNCE_BUFFER` **默认 y**） | `BOUNCE_BUF_SIZE (10 * HEIGHT)`，原注释：*"used to avoid screen drift"* | ✓✓ **两边官方例程都开 bounce —— 这就是本轮抄的那一条** |
+| 换帧同步 | 双 fb + **驱动帧边界锁存** + `wrap` 门 | 默认档：**单 fb** + bounce + **一对信号量（flush 等 VSYNC 再写）**；`DOUBLE_FB` 档：双 fb 当 LVGL 绘制缓冲 + `full_refresh=true` | 单 fb + bounce，flush 直接写 | 路线不同、目标同一个；我们的方案对**整屏刷新**（开机动画）也安全 |
+| LVGL 绘制缓冲 | **PARTIAL**，内部 SRAM 480×40 | 两块整屏 **PSRAM**（或直接用驱动 fb） | 两块整屏 PSRAM（`LVGL_BUF_LEN`） | 我们更省 PSRAM 带宽（渲染写内部 SRAM） |
+
+**关于"要不要先烧官方 Demo 做对照"**：我**没有**先烧它，理由三条（都摆在这儿，随时可跑）：
+
+1. 官方资料包的**源码**已经把答案给全了（上表：porch/PCLK 我们逐项相同；差别只有 buffer 策略），
+   而**差别的那一条正是 10.2 的根因**；
+2. 车主"看屏"的机会有限，我宁愿花在**修好的固件**上，而不是花在官方 Demo 上；
+3. 它是 **16MB 整片镜像**（`Firmware/ESP32-S3-LCD-2.8C.bin`，要写 `0x0`）——
+   会覆盖整片 flash（含 `theme` / `image` / NVS 分区）。★ 本机板子上这两个分区**本来就是空的**
+   （开机日志原话：`theme: 分区为空,用默认主题` / `image: 镜像无效或未刷入,不用图片资源`），
+   所以烧它不会丢车上的主题数据；但烧完**必须再烧回我们的固件**。
+
+真要跑这个对照（一刀切开"硬件 vs 软件"），命令是：
+
+```powershell
+# ① 备份整片 flash（万一要原样恢复）：
+& 'C:\.platformio\penv\Scripts\python.exe' -m esptool --chip esp32s3 --port COM6 read_flash 0 0x1000000 C:\206dash-scratch\flash-backup.bin
+
+# ② 烧官方 Demo（16MB 整片，约 4~6 分钟；★ 只烧 COM6）：
+& 'C:\.platformio\penv\Scripts\python.exe' -m esptool --chip esp32s3 --port COM6 --baud 460800 write_flash 0x0 C:\206dash-scratch\ws-demo\Firmware\ESP32-S3-LCD-2.8C.bin
+
+# ③ 烧回我们自己的固件（app 分区，不动 theme/image）：
+cd C:\206dash-scratch\Neru
+& 'C:\.platformio\penv\Scripts\platformio.exe' run -e esp32s3-rgb -t upload --upload-port COM6
+```
+
+判据：**官方不撕、我们撕 ⇒ 缓冲/时序层**（那就继续按 10.7 抄参数）；**两边都撕 ⇒ 供电/排线/PCLK 层面**。
+
+### 10.8 复核清单（下次动这个驱动时照这条走）
+
+```powershell
+# ① 构建（ASCII 副本里；★ 首次会重装 pioarduino 的框架包，见 platformio.ini 那段）
+cd C:\206dash-scratch\Neru
+& 'C:\.platformio\penv\Scripts\platformio.exe' run -e esp32s3-rgb
+
+# ② 烧写与抓串口：★ 必须先切 UTF-8 代码页，否则 PlatformIO 的日志线程会在进度条那个
+#    '░' 字符上抛 UnicodeEncodeError('gbk' codec can't encode …) ——
+#    然后 esptool 写满管道**直接卡死**（本轮实测踩了两次，各卡 10 分钟）。
+#    症状：终端里刷到 "Writing at 0x00000000 [░░░…]" 就不动了。
+chcp 65001 | Out-Null
+$env:PYTHONIOENCODING = 'utf-8'; $env:PYTHONUTF8 = '1'
+& 'C:\.platformio\penv\Scripts\platformio.exe' run -e esp32s3-rgb -t upload --upload-port COM6
+
+# ③ 抓 60 秒串口（含 5 次"对比档"自动切换）
+powershell -ExecutionPolicy Bypass -File tools\serial-capture\capture-boot-nopy.ps1 -Port COM6 -Seconds 60 -Out C:\206dash-scratch\rgb-bounce-boot.txt
+```
+
+看这 5 个数就够判"这一版对不对"：
+
+| 看什么 | 期望 | 不对时说明什么 |
+|---|---|---|
+| `rgb: bounce=… on_frame_buf_complete=已注册` | **有这一行**且写着 10 行/块 | 没有 ⇒ `-DRGB_BOUNCE_LINES` 没生效 ⇒ 换帧必然不生效（10.2） |
+| `wrap=` 与 `vsync=` | **两者同步（1:1）** | `vsync` 涨 `wrap` 不涨 ⇒ bounce 没跑起来（`bb_fb_index` 不更新） |
+| `timeout=` | **恒为 0** | 涨 ⇒ 换帧屏障没等到（面板被停 / 中断没来） |
+| `msync=` | 停在 **1** | 一直涨 ⇒ 每帧都在整块补拷（一致性逻辑被打破） |
+| `模式=` | 在 `局部刷新`↔`全屏重绘` 之间按 10s 交替 | 一直同一档 ⇒ 自动交替没生效（`-DRGB_FULL_REFRESH_ALTERNATE_MS`） |
+
+**这一版的边界（写清楚，别指望它包打天下）**：
+
+* **bounce 的 CPU 代价是硬的**：每帧 450KB 从 PSRAM 搬进内部 SRAM = 实测 **28~31MB/s**，
+  在 DMA EOF 中断里分 48 次做（每次 9600B）。本机实测没把主循环/VAN/UI 挤坏
+  （heap 183KB、`BEACON`/`SRC`/`link` 行都正常），但**它确实占了可观的一块 CPU**；
+  要降这块开销只有两条路：降 PCLK/刷新率，或改回"直读 PSRAM"——而后者就是 10.2 的死路。
+* **`vsync` 计数在 CPU 忙时会偏高 5~9%**（实测 +71/s vs 理论 64.7/s），怀疑是 VSYNC 脉冲宽度内
+  ISR 被 bounce 的 EOF 中断延迟、同一脉冲被重复计入。它**不影响换帧**（重复的重启仍落在消隐期，
+  而且 `wrap` 与它同步），但**别拿这个数当 PCLK 的精确判据** —— 空闲时它仍然是 +64~65/s。
+* **`35 秒` 附近那几行 `swap_wait_max` 涨到 9.6ms** 是正常的：稳态 UI 200ms 一次刷新，
+  但开机动画/告警闪烁那几拍会连着换算，等的就是"下一个帧边界"，上限一帧（15.5ms）。
+* **两屏共用一条总线**仍未做（单屏版本），见 9.7。
+
+---
+
+## 11. 2026-09-24 第四轮：**残留修好之后剩的"抖动 + 横纹"**（分诊表 + 两个改动 + 数字）
+
+### 11.1 两轮症状的机制收口表（每一轮到底修的是哪一类）
+
+| 轮次 | 车主看到的现象 | 归到哪一类 | 机制（可复核的位置） | 治法 | 结果 |
+|---|---|---|---|---|---|
+| 第二版 | 撕裂 + **残留** | **换帧根本没生效** | 每个 VSYNC 都把 DMA 重置回**固定挂在 `fbs[0]`** 的 restart link ⇒ 屏上只有 fbs[0]（10.2） | 开 bounce（官方例程的 10 行）⇒ `bb_fb_index` 在帧边界锁存 | 撕裂基本没了 ✓ |
+| 第三版 | **残留**（"表情切到下一段了，每秒刷新又回到上一段"） | **两块 fb 内容不一致** | 局部刷新只喂了"当次的后台"那一块 ⇒ 两块 fb 分叉，换帧就是在两块之间来回翻（10.3） | **每次刷新把上一次的脏区补拷进另一块**（`catch_up_back()`） | **残留修好 ✓✓** |
+| 第四版 | **抖动 + 横纹（随刷新移动）** | **欠载 / 带宽** | 补拷/全屏刷新把 PSRAM 占满的那几毫秒里，bounce 的填充来不及 ⇒ 那一帧吐旧行 | 见 11.3（去掉对照档 + 降 PCLK） | 横纹仍在 ✗ |
+| 第五版 | 同上，但车主补了一条**决定性观察**：**扫表阶段正常、稳态才出现** | **补拷的"大突发"**（不是"拷贝没完成"） | 稳态每次刷新是一笔 **~90KB 的 PSRAM 拷贝**；实测一笔 450KB 要 **34ms（13MB/s）** ⇒ 那一笔持续几毫秒，期间 bounce 填充被挤掉 ⇒ 一条随刷新移动的横带 | **把补拷改成"空闲时间小碎步"（每步 8 行 ≈7.7KB）** | 见 11.4/11.5 |
+
+### 11.2 抖动 / 横纹的分诊表（现象 → 判据 → 方子）
+
+| 现象 | 判据（怎么分辨） | 归到哪一类 | 方子 |
+|---|---|---|---|
+| **撕裂**（一条横缝，缝两侧是**两幅完整画面**） | 缝随每次刷新换位置；`wrap == vsync`、`timeout=0` | 换帧与扫描赛跑 | 帧边界换帧（bounce 的 `bb_fb_index` 锁存）+ 只写不显示的那块 fb（10.2/10.3） |
+| **残留**（旧内容**留在**某个区域，可能来回跳） | 同一区域在两块 fb 之间来回翻；`catchup` 不涨或很小 | 两块 fb 内容不一致 | 让两块逐帧收敛：**补拷脏区**（10.3）或每帧全量重绘 |
+| **横纹（固定不动）** | 位置不随刷新变；关掉背光 PWM（改恒亮）后消失 ⇒ 拍频/干扰 | 背光 PWM / 干扰 | 改 PWM 频率或恒亮 + 外调光 |
+| **横纹（随刷新移动）** | 位置随刷新变；`bounce=MB/s` 越大越明显；有整屏刷新/大批拷贝时更明显 | **欠载 / 带宽** ★ | 见 11.5：先减突发（关掉全屏重绘档），再降 PCLK，必要时加大 bounce |
+| **横纹（扫表正常、稳态才出现）** ★★ | 画面**持续变化**时看不出来、**稀疏刷新**时才暴露；同一行日志里 `copy_max` 是几毫秒~几十毫秒的大值 | **"大突发"与 bounce 填充抢 PSRAM** | **把拷贝摊成小碎步**（本轮的做法，见 11.3）；或降 PCLK；或加大 bounce |
+| **整幅平移 / 游走** | 整幅画面偏几个像素，慢慢漂 | PCLK 过高 / 关 cache / 写 Flash 抢带宽 | `CONFIG_LCD_RGB_RESTART_IN_VSYNC`（**本栈本来就是 y**，见 10.2 ②）/ `esp_lcd_rgb_panel_restart()` |
+| **抖动（局部/周期性）** | 一时一时的卡顿；`refresh=avg/min/max` 的 max 远大于 avg | 主循环被 PSRAM 搬运拖住 | 同上：先减突发 |
+
+★ 本轮的现象归到 **"横纹（随刷新移动）"** 这一行（车主原话：横纹是随刷新移动的）。
+
+### 11.3 逐条回答"拷贝 → msync → 交换"那几个问题（**顺序本来就是对的**，问题在"拷贝的代价"）
+
+1. **顺序**：`blit_area()` 里 `memcpy` 与 `esp_cache_msync(C2M|UNALIGNED)` 都是**同步**完成的；
+   `request_swap()` **只在本次刷新的最后一块 flush**（`lv_display_flush_is_last()`）里被调用
+   ⇒ **不存在"最后一块还没拷完/没 msync 就换帧"的路径** ✗（代码顺序可复核）。
+2. **`wait_swap_settled()` 等的是谁**：等的是**"换帧已生效"** —— 判据是驱动的
+   `bb_fb_index = cur_fb_index` 在**帧边界**锁存的那一刻（我们用 `on_frame_buf_complete` 记成
+   `wrap`）；**不是**等拷贝（拷贝在它之前早就同步做完了）。两者没有被混用 ✓。
+3. ⇒ 所以"**半写的 back fb 被换上去**"这条**不成立** ✗；真正成立的是"**拷贝本身把 PSRAM 占满**"
+   ⇒ 见 11.5 的带宽账 ✓（这一条由车主"扫表正常/稳态异常"那条观察直接指出来 ✓）。
+4. 时间戳：`phase_max`（换帧请求落在帧内哪个相位）与 `refresh=avg/min/max`（刷新间隔）
+   已经打在**同一行**日志里 ✓；改动前后的对照见 11.4 ✓。
+5. 周期性大写入：1Hz 日志那点 UART 输出（约 1KB/s）不是问题；**真正的周期性大写入就是补拷** ——
+   本轮把它摊平了 ✓（`copy_max` 33.7ms → 3.06ms）。
+
+### 11.4 数字（同一块板 COM6；四个版本的原始串口行）
+
+| 指标 | 18MHz + 自动交替(10s) | 18MHz + 交替关 | 15MHz + 交替关 + **整笔**补拷 | **15MHz + 交替关 + 小碎步补拷（交付档）** |
+|---|---|---|---|---|
+| `pclk` / `vsync` | 18MHz / +64~66/s | 18MHz / +64~66/s | 15MHz / +53~54/s | **15MHz / +53~54/s** |
+| **`copy_max`**（单笔最大 PSRAM 搬运） | 36.7ms | 33.7ms ✗ | **33.7ms** ✗ | **3.06ms** ✓✓（**降 11 倍**） |
+| `refresh=avg/min/max`（刷新间隔） | — | — | 199/192/211ms | **200/199/201ms** ✓✓（抖动消失） |
+| `fullrb`（整屏刷新频次） | **~11/s** ✗ | 0/s ✓ | 0/s ✓ | **0/s** ✓ |
+| `catchup` | — | — | +5/s、~450KB/s | **+5/s、429~466KB/s**（总字节一样 ✓，只是摊开了） |
+| `bounce`（填充负载） | 28~31MB/s | 28~29MB/s | 23MB/s | **23MB/s** ✓ |
+| `wrap` vs `vsync` | 1:1 | 1:1 | 1:1 | **1:1** ✓ |
+| `timeout` / heap / PSRAM | 0 / 183KB / 7285KB | 同 | 同 | **0 / 183KB / 7285KB** ✓ |
+
+### 11.5 为什么"扫表正常、稳态异常"，以及账怎么算
+
+* **面板消耗速率** = `pclk × 2B`：18MHz ⇒ 36MB/s、**15MHz ⇒ 30MB/s**、12MHz ⇒ 24MB/s。
+* **CPU 填充速率**：稳态实测 23MB/s（够用 ✓），但**一笔大拷贝时掉到 13MB/s**：
+  实测 `copy_max = 33739µs`（450KB ⇒ 13MB/s）✗。
+* ⇒ bounce 档真正的判据不是"平均够不够"，而是**"那几毫秒里填充有没有掉到消耗速率以下"**：
+  掉下去的那几毫秒，LCD 就把**bounce buffer 里的旧内容**当这一帧发出去 ⇒ **若干行是旧的** ⇒
+  一条**横带**；下一次刷新又发生在别的位置 ⇒ "**随刷新移动**" ✓✓。
+* **为什么扫表阶段看不出来**：扫表时整屏在**持续变化**，旧的横带立刻被下一帧的新内容盖掉（而且
+  那时每帧都在重绘，横带位置一直在动，眼睛把它当成运动的一部分）✓；稳态下画面**几百毫秒才动一次**，
+  横带就停在那儿，一眼就看见 ✓✓ —— 车主的这条观察与机制**完全吻合** ✓。
+* ⇒ 结论：**别在 bounce 填充旁边放"几毫秒级的 PSRAM 大突发"** ✓。治法就是本轮做的：
+  把补拷拆成**每步 8 行（7.68KB）**的小碎步，放在两次刷新之间的空闲时间里 ✓。
+  （对比：一笔 90KB 至少要 7ms ✗；一步 7.7KB ≈ 0.6ms ✓，而两块 bounce buffer 合计能吸收
+   ~19KB 的赤字 ⇒ **这一小步完全被吸收** ✓✓。）
+* 顺带：这一改动同时把**主循环的卡顿**也去掉了 —— `refresh` 从 `192~211ms`（±16ms）变成
+  `199~201ms`（±1ms）✓✓，车主说的"抖动"应当就是同一件事。
+
+### 11.6 如果 15MHz 只是"好转、没消失"，下一步（一次只动一个）
+
+1. `RGB_PIXEL_CLOCK_HZ` → **12MHz**（24MB/s、43.2Hz）：只改一个数；
+2. 干掉**补拷的 450KB 突发**：`g_prev_full` 那一条改成"让 LVGL 重画整屏"（少 2/3 的 PSRAM 流量）；
+3. `-DRGB_BOUNCE_LINES=40`；
+4. （治本、但要单独一轮）把 UI 里"整屏失效"的告警闪改成只失效真正变的那几块 —— 但**本轮实测
+   `fullrb=0/s`：告警闪并没有整屏失效**，所以这条**不是**当前横纹的原因 ✓（别再往这边查）。
+
+### 11.7 官方 Demo 对照（**尚未烧**，命令与判据在这儿）
+
+已经做到的一步（**源码级对照**，见 10.7 的表）：两份官方例程**都开 bounce**（`10 * H_RES`），
+**默认都是单 fb**（单 fb 不可能出现"两块 fb 内容不一致"，也不会把 CPU 拖进 450KB 突发），
+IDF 那份还额外用"flush 等 VSYNC"的信号量把手写像素锁在帧边界 ✓。
+
+**还没做的那一步**：把官方整片镜像烧上去、让车主在**同一块板/同一根线/同一电源**下看它撕不撕/抖不抖
+（这是排除供电与线材的唯一干净做法）。我没烧的原因有两条，摆在这儿：
+
+1. 我这边只能读串口、**看不到屏** —— 烧完还是得车主看，等于要占掉一次"看屏"的机会，
+   而当前更值钱的一次看屏是**这一版修好的固件**（残留 ✓ 已确认、横纹待确认）；
+2. 它是 **16MB 整片镜像**（`Firmware/ESP32-S3-LCD-2.8C.bin`，写到 `0x0`），会覆盖整片 flash。
+   ★ 本机实测 `theme` / `image` 分区**本来就是空的**（`theme: 分区为空,用默认主题`），
+   所以烧它**不会丢车上的数据** ✓，但烧完必须再烧回我们的固件。
+
+要跑就照这三条（**只烧 COM6**）：
+
+```powershell
+# ① 备份整片 flash：
+& 'C:\.platformio\penv\Scripts\python.exe' -m esptool --chip esp32s3 --port COM6 read_flash 0 0x1000000 C:\206dash-scratch\flash-backup.bin
+# ② 烧官方 Demo（16MB 整片，4~6 分钟）：
+& 'C:\.platformio\penv\Scripts\python.exe' -m esptool --chip esp32s3 --port COM6 --baud 460800 write_flash 0x0 C:\206dash-scratch\ws-demo\Firmware\ESP32-S3-LCD-2.8C.bin
+# ③ 烧回我们的固件：
+cd C:\206dash-scratch\Neru; & 'C:\.platformio\penv\Scripts\platformio.exe' run -e esp32s3-rgb -t upload --upload-port COM6
+```
+
+判据：**官方也撕/也横纹 ⇒ 供电/线材层面**（同一块板同一根线）；**官方干净、我们还有 ⇒ 继续在驱动侧收**。
