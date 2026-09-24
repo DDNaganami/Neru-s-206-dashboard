@@ -588,6 +588,7 @@ python -m esptool --chip esp32s3 --port COM5 --baud 921600 write_flash 0x254000 
 > 页面「3 · 刷写」那栏印的就是这条命令（`--chip` 按目标板给），端口和 `PYTHONPATH` 要自己补。
 > ★ 偏移以分区表那一行为准（`0x254000`）：写错地方 esptool **照样打 `Hash of data verified.`**
 > —— 症状是"屏上什么都没变"，而且写偏了还会顺手把 `theme` 区（`0x210000`，只有 16KB）压掉。
+> ★ 想**一条命令同时刷配色与图片**（一个文件、不用记两个偏移）：见 [`ASSET-PACKAGE.md`](ASSET-PACKAGE.md)（本节的"两条 `write_flash`"照旧有效，两种办法并存）。
 
 ### 5. 刷完重启，按这个顺序验收
 
