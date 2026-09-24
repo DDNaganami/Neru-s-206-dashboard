@@ -21,6 +21,7 @@ void register_van_fields_tests(void);   // 已解字段接进数据层:灯位/�
 void register_alerts_tests(void);       // 告警层:去抖/最短重复间隔/静音 + 蜂鸣器抽象(2026-09-24)
 void register_ui_lamp_tests(void);      // 指示灯槽位几何 + 预览注入语义(2026-09-24)
 void register_system_status_tests(void); // 系统状态层:数据不可信提示 + 诊断页(2026-09-24)
+void register_buzzer_exio_tests(void);   // 真机蜂鸣器驱动:EXIO8 掩码/降级/夹时长/不阻塞(2026-09-24)
 void register_face_stage_tests(void);
 void register_link_crc_coverage_tests(void);   // 双板链路 v1:CRC-15 检错覆盖枚举(§8 L4)
 void register_link_frame_tests(void);          // 双板链路 v1:帧层(§2)—— 布局/帧长/CRC 覆盖/拒绝路径
@@ -62,6 +63,10 @@ int main(void) {
   // ★ 2026-09-24 新增：系统状态层（"数据不可信"提示 + 诊断页字段映射）。
   //   同样排在 face_stages 之前（顺序纪律见上）。
   register_system_status_tests();
+  // ★ 2026-09-24 新增：真机蜂鸣器驱动（TCA9554 的 EXIO8）—— 掩码只动目标位 /
+  //   `Long` 降级 3 短哔 / 单次 ≤ 300ms / 静音不写寄存器 / 到点自动关。
+  //   排在 face_stages 之前（顺序纪律见上）。
+  register_buzzer_exio_tests();
   register_face_stage_tests();
   return UNITY_END();
 }

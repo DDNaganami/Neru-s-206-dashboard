@@ -782,6 +782,61 @@ static void tca9554_set(uint8_t bit, bool high) {
 }
 
 // ============================================================
+// ★★ 蜂鸣器的**唯一写者**：把 EXIO8 写成 on，其余位**一个都不动**。
+//
+//   为什么非要在**这个**文件里做（`docs/RGB-PANEL-2.8C.md` §13.7 第 1 条）：
+//   那颗 TCA9554 的输出寄存器里**同时挂着 `LCD_RST`(EXIO1) 与 `LCD_CS`(EXIO3)**
+//   —— 一个被打错的字节就是一次**面板复位**，而面板复位**不会自己回来**
+//   （ST7701 要重跑 41 步初始化）。所以"影子寄存器 + 读-改-写"只能有**一份**：
+//   就是上面 `tca9554_set()`/`g_exio_out` 这一套，别的文件**一律不许**另写一遍
+//   I2C 时序（两处各持一份影子会互相覆盖丢位）。
+//   ⇒ 本函数是给 `lib/dashcore/buzzer_exio.cpp` 的 `BuzzerExioSetFn` 用的调用点，
+//     位号取的是**既有常量** `BUZZER_EXIO_BIT`（= EXIO8 = bit7，见上面第 4 块）。
+//
+//   ★ 自证日志（硬规则，别删）：每一次**真正落到总线上**的写，都把
+//     `寄存器字节 -> 新字节` 与掩码一起打进串口 ⇒ "有没有打到别的位"从串口
+//     一眼就能看出来（期望恒为 `0x05 -> 0x05|0x85`，即只有 bit7 在动）。
+//     位没变时**不写总线**（幂等：省事务，也免得每轮打一行），但照样落一行
+//     `skip`，好让"这一轮确实没有事务"这件事同样有据可查。
+//   ★ 这条路径**不碰** `Wire.begin()` / `Wire.setClock()`：总线对象是显示初始化
+//     那一套（`tca9554_begin()` 建的），改时钟正是那次黑屏事故的候选机制之一。
+// ============================================================
+void dash_buzzer_set(bool on, void* ctx) {
+  (void)ctx;   // 单实例；留这个参数是为了让回调签名与 `BuzzerExioSetFn` 对齐
+  const uint8_t mask = (uint8_t)(1u << BUZZER_EXIO_BIT);
+  const uint8_t before = g_exio_out;
+  uint8_t next = before;
+  if (on) next |= mask;
+  else    next &= (uint8_t)~mask;
+
+  // ★ 只有**出了变化**才写总线：同一个电平重复写一遍没有任何意义，
+  //   而"写扩展器"这件事本身是有代价的（总线 + 那颗芯片的输出锁存）。
+  if (next == before) {
+    dash_logf("buzz: exio 0x%02X -> 0x%02X (mask 0x%02X) skip(on=%d)\n",
+              (unsigned)before, (unsigned)next, (unsigned)mask, on ? 1 : 0);
+    return;
+  }
+  g_exio_out = next;
+  tca9554_write(TCA9554_REG_OUTPUT, g_exio_out);
+  dash_logf("buzz: exio 0x%02X -> 0x%02X (mask 0x%02X)\n",
+            (unsigned)before, (unsigned)next, (unsigned)mask);
+  // ★ 回读自证只在**开**的那一下做（写对了才敢响）：读回来必须等于影子
+  //   —— 不等就说明总线上有别的东西在动那颗芯片（那时蜂鸣器可能压根没响，
+  //     而日志里"应该有声音"却听不到，这一行就是那个岔路口的判据）。
+  if (on) {
+    Wire.beginTransmission(TCA9554_ADDR);
+    Wire.write(TCA9554_REG_OUTPUT);
+    if (Wire.endTransmission(false) == 0) {
+      if (Wire.requestFrom((uint8_t)TCA9554_ADDR, (uint8_t)1) == 1) {
+        const uint8_t rb = (uint8_t)Wire.read();
+        dash_logf("buzz: 回读=0x%02X(影子=0x%02X)%s\n", (unsigned)rb, (unsigned)g_exio_out,
+                  (rb == g_exio_out) ? "" : "  <-- 不一致,检查 I2C");
+      }
+    }
+  }
+}
+
+// ============================================================
 // ★★ 临时自检路径:板载蜂鸣器「**有源 / 无源**」判定(`-DBUZZER_SELFTEST=1`)
 //
 //   要问的问题(ARCHITECTURE §8 的 L14 那一半,一直没定):微雪 2.8C 的器件清单

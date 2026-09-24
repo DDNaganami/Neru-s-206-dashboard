@@ -4021,3 +4021,205 @@ rgb: vsync=462(+53/s) wrap=462(+53/s) swap=65(+5/s) flush=338 blit_max=1325us st
    量（也不该为了量而临时刷测试素材上板）。
 5. **`mute` 在 NVS 里被本轮反复切过**：最终值是 **0**（有声），与开工前一致；
    但 NVS 的写次数是**真实消耗**（本轮 4 次），如实记。
+
+---
+
+## 真机蜂鸣器：TCA9554 的 EXIO8 真正发声（2026-09-24，**上板 COM6**）
+
+★ 起点 `438bef0`（开工 `git log -1` 实测 ✓）。本单**只碰** `src/`、`lib/dashcore/`、
+`test/`，以及 `ARCHITECTURE.md` / `ACCEPTANCE.md` / `docs/RGB-PANEL-2.8C.md` 三份文档。
+★ **`tools/theme-editor/*` 与 `tools/web/*` 一个字节都没动**（另有子代理在改那两处，
+本单开工时它们已经是 dirty 的）；**`platformio.ini` 一个字节都没动**（门用的是既有的
+`DASH_DISPLAY_RGB`）。
+★ 只烧 **COM6**（微雪 2.8C）；**COM7（抓帧盒）一次都没打开**。
+
+### ① 做了什么（这一单把 L14 落地）
+
+出发点是那份结论（`docs/RGB-PANEL-2.8C.md` §13.6）：板载蜂鸣器是**有源**的、挂在
+**TCA9554 的 EXIO8**；而在此之前 `src/main.cpp` 设备侧挂的是 **`BuzzerNull`**
+（空实现）⇒ **真机根本不会响** ✗。
+
+| 件 | 改动 |
+|---|---|
+| `lib/dashcore/buzzer_exio.h` / `.cpp` | **新增**：`BuzzerExio` —— 非阻塞多相序列、单次哔**夹到 ≤300ms**、`Long` ⇒ **3 短哔**；时钟与"写一位"都是**注入**的（主机可测） |
+| `lib/dashcore/buzzer.h` | 加一个**默认空实现**的 `virtual void tick()`（唯一的接口改动） |
+| `src/dash_display_rgb.cpp` | **新增 `dash_buzzer_set(bool, void*)`** —— 全仓**唯一**写那颗扩展器的地方，走**既有**的 `tca9554_set()` + 影子寄存器 `g_exio_out` |
+| `src/dash_display.h` | 那句声明（`#if defined(DASH_DISPLAY_RGB)`） |
+| `src/main.cpp` | 实例 + **绑定**（`setup()` 里 `#elif defined(DASH_DISPLAY_RGB)` ⇒ `g_buzzer = &g_buzzer_exio;`）+ `loop()` 每轮 `g_buzzer->tick()` + **串口命令 `b`** |
+| `test/test_dashcore/test_buzzer_exio.cpp` | **新增 9 条**用例；`test_main.cpp` 注册（排在 `face_stages` 之前，顺序纪律照旧） |
+
+**三条硬规则（源自"屏幕突然全黑"那次事故）逐条落在哪：**
+
+1. **复用既有 I2C 总线对象** ✓ —— `dash_buzzer_set()` 只调 `tca9554_write()`；本单
+   **没有**出现过 `Wire.begin()` / `Wire.setClock()`（全仓 grep 可核）。
+2. **读-改-写只动喇叭那一位** ✓ —— 位号取自**既有常量** `BUZZER_EXIO_BIT`（就是
+   `src/dash_display_rgb.cpp` 里 `#define BUZZER_EXIO_BIT 7 // EXIO8` 那一行）；
+   影子寄存器仍只有 `g_exio_out` 一份。
+3. **自证日志** ✓ —— 每次写都落 `buzz: exio 0xXX -> 0xXX (mask 0x80)`，且**开**的那一下
+   追加一行回读（见下面 ⑤ 的原始行）。
+4. **绝不做长时间连续高电平** ✓ —— `kMaxPulseMs = 300` 在 `pulsesFor()`/`clampPulse()`
+   里**每一相**都夹；`Long` 在真机上落成 3 短哔（不是长鸣）；`beep_ms=0` 夹到 **1ms**
+   （方向是"极短"，不是"长鸣"）。
+5. **整屏近黑** ✓ —— 见 ⑤ 的显示健康四行 + 收尾 `diag: closed`。
+
+### ② 掩码 / 位号来自哪几行既有代码
+
+| 用的东西 | 出处（既有代码，**没有新写一套位号**） |
+|---|---|
+| `BUZZER_EXIO_BIT` = `7`（EXIO8） | `src/dash_display_rgb.cpp` 第 4 块：`#define BUZZER_EXIO_BIT 7 // EXIO8` |
+| `TCA9554_ADDR 0x20` / `REG_OUTPUT 0x01` / `REG_CONFIG 0x03` | 同一块：`#define` 三行（例程口径） |
+| 影子寄存器 + 读-改-写 | 同一块：`static uint8_t g_exio_out` + `tca9554_set(bit, high)` |
+| `LCD_RST_EXIO_BIT 0` / `LCD_CS_EXIO_BIT 2` | 同一块（本单**没碰**，只用来解释"为什么不能写错位"） |
+| `kTrustBeepMs = 120` + `static_assert(kTrustBeepMs <= 300u)` | `lib/dashcore/system_status.h`（既有） |
+
+### ③ 回归数字（前 → 后，全部真跑）
+
+| 套件 | 前（基线） | 后 | 判据 |
+|---|---|---|---|
+| native（`-e native`，挂 zig 桩） | **257 例（2 skipped / 255 succeeded）** | **266 例（2 skipped / 264 succeeded），0 失败** | 净增 **+9**（= 本单新增的那 9 条） |
+| `tools/theme-editor/test-gauge-geometry.js` | 71 | **71** | 不动 |
+| `tools/theme-editor/test-face-stages.js` | 429 | **429** | 不动 |
+| `tools/theme-editor/test-theme-json.js` | 259 | **259** | 不动 |
+| `tools/theme-editor/test-asset-spec.js` | 261 | **261** | 不动 |
+| `tools/theme-editor/test-image-blob-build.js` | 372 | **372** | 不动 |
+| `tools/theme-editor/syntax-check-pages.js` | 41 | **42** | ★ **不是本单带来的**：另有子代理在 `tools/web/index.html` 加了一个页面（本单**没碰** `tools/`）；数字差一是那个页 |
+| `tools/theme-editor/test-asset-package.js` | —— | 105 | 同上，子代理那边正在改 `asset-package.js`（本单没碰） |
+
+**新增的 9 条**（`test/test_dashcore/test_buzzer_exio.cpp`）：
+
+1. `mask_only_target_bit` —— 每一次写回之后低 5 位（含 `LCD_RST`/`LCD_CS`）必须还是 `0b00101`；
+2. `long_degrades_to_three_short` —— `Long` ⇒ **3 相**，电平序列是 开/关/开/关/开/关；
+3. `pulse_counts` —— `Silent`/`Short`/`Triple`/`Urgent`/`Long` = 0/1/3/4/**3**；
+4. `clamps_ms_to_300` —— 标称 5000ms 与**每一相**都夹到 300；`0ms` ⇒ ≥1ms；
+5. `silent_writes_nothing` —— 静音期间（只 tick / 调到 `Silent` / 收到 `off()`）**一次总线都不动**；
+6. `auto_off_at_deadline` —— **假时钟**逐格推进：到点前不关、到点自动关、之后不再响；
+7. `repeat_beep_is_idempotent` —— 主循环每轮重调 `beep()` 仍是 3 声；走完后再来一次仍能响；
+8. `off_cancels_immediately` —— `off()` 立刻掐断，且掐断后**同模式还能再响**；
+9. `begin_is_idempotent` —— `begin()` 反复调用不动总线；正在响时 `begin()` 回到静音。
+
+### ④ 编译（`SUCCESS` 行；本机成功也返回非 0，看 `SUCCESS`）
+
+环境：ASCII 副本 `C:\206dash-scratch\Neru-bz`（robocopy 同步，**没跑 `pio clean`**）、
+`PLATFORMIO_CORE_DIR=C:\206dash-scratch\pio-core-mix`、
+`PYTHONPATH=C:\Users\张九思\206Dash\.pio-pylibs`、`PATH` 前挂 `C:\206dash-scratch\zigbin`。
+
+| env | 结果 | RAM | Flash |
+|---|---|---|---|
+| `pcpreview` | **SUCCESS**（7.2 s） | n/a（native） | n/a（native） |
+| `esp32s3-rgb` | **SUCCESS**（31.3 s） | **38.3% / 125,496 B** | **86.3% / 904,783 B** |
+
+★ Flash 对比基线（`903,375 B` / 86.2%）：**+1,408 B（+0.1 个百分点）** ⇒ 86.3%，
+**剩余 13.7%** 照旧够用。RAM 与基线**逐位相同**（125,496 B）——
+新增的静态量（`BuzzerExio` 那几十个字节）落在 `.bss` 的既有对齐余量里。
+★ 查 ⑥ 那个坑时另外量过一次 **904,683 B**（少 100 B）—— 那是**带一句临时诊断文字**的
+中间版本，**最终烧回板子的就是上面这一版**（`904,783 B` / 与提交后的工作区逐字节一致）。
+
+### ⑤ 上板原始日志（COM6，115200 8N2→8N1 按既有口径；`chcp 65001` + `PYTHONUTF8=1`）
+
+**(a) 串口命令 `b`**（车主按需验听感的那个入口）—— 1 行回执 + **3 个完整开/关对**：
+
+```
+buzz: test beep cmd=b(Long>3short) ms=120 x3 gap=80ms muted=0
+buzz: exio 0x05 -> 0x85 (mask 0x80)
+buzz: 回读=0x85(影子=0x85)
+buzz: exio 0x85 -> 0x05 (mask 0x80)
+buzz: exio 0x05 -> 0x85 (mask 0x80)
+buzz: 回读=0x85(影子=0x85)
+buzz: exio 0x85 -> 0x05 (mask 0x80)
+buzz: exio 0x05 -> 0x85 (mask 0x80)
+buzz: 回读=0x85(影子=0x85)
+buzz: exio 0x85 -> 0x05 (mask 0x80)
+```
+
+★ **只有 bit7 在动**：`0x05 -> 0x85` 与 `0x85 -> 0x05`，低 5 位（`LCD_RST`/`LCD_CS`）
+**一次都没被碰** ✓。回读与影子**一致** ✓。3 个开/关对 = **3 声**（`Long` 的降级）✓。
+
+**(b) 真实路径：`trust` 角标出现那一刻**（开机 ~2.44 s，没接 VAN）：
+
+```
+alert: overspeed
+buzz: exio 0x05 -> 0x85 (mask 0x80)
+buzz: exio 0x85 -> 0x05 (mask 0x80)
+trust: sim-fallback  <-- 屏上出现数据不可信提示 beep (episodes=1)
+buzz: exio 0x05 -> 0x85 (mask 0x80)
+buzz: exio 0x85 -> 0x05 (mask 0x80)
+```
+
+★ `trust: … beep` 那一行**紧跟**着它自己的那一对 `buzz:` —— 判据层说"该响"、
+驱动层真的把那一位打开了，**两件事在同一拍上对上了** ✓（就是本单要修的那条：
+以前这一行有、声音没有）。
+★ 上面第一对属于 `alert: overspeed`（Sim 假数据扫过 120），同样走通。
+
+**(c) 开机自检（摘）**：`mute: 0 (loaded from NVS)`、
+`alerts: 已就绪(超速 120 / 红区 5800 / 门 / 转向灯忘关 20s)` ✓（这两行既有的没变）。
+
+**(d) 显示健康四行**（改完 + 响过之后，同一块板）：
+
+```
+rgb: vsync=2020(+54/s) wrap=2020(+54/s) swap=210(+5/s) flush=1172 blit_max=1327us
+     step_max=947us copy_max=1327us copy_avg=715us swap_wait_max=10379us
+     phase_max=18534us timeout=0 fb=0/1 catchup=210(+5/s 429KB/s forced0KB)
+     refresh=188438/143066/200543us fullrb=0/s bounce=23MB/s 模式=局部刷新
+     psram=7285KB heap=214K
+206 dash ok  spd= 23% rpm= 15% coolant=93C face=idle/city
+```
+
+* `vsync +54/s` ✓（与改动前逐位同量级）
+* `copy_max=1327us ≈ 1.3ms` ✓（`blit_max` 同一量级）
+* `timeout=0` ✓
+* `fullrb=0/s` ✓（局部刷新档，正式档）
+* ⇒ **没有"整屏近黑"** ✓（另见 ⑤-补：`vsync` 在涨 = 面板真在收帧）
+
+**(e) 收尾状态**（诊断页**开过、已关掉**；板子留在**表盘**上）：
+
+```
+diag: geom box=416x416 at 32,32 title=384x56 at 58,50 body=368x320 at 58,114
+      font title=m48/lh52 body=m18/lh21 page=1/2
+diag: open page=1/2
+diag: open page=2/2
+diag: closed page=2/2
+```
+
+★ `d` 的三步循环（开 → 翻页 → 关）**行为一字未变** ✓。
+
+### ⑥ 一次中途踩到的坑（**写下来，因为它差点蒙混过关**）
+
+第一版把 `BuzzerExio` 的实例声明出来了，但 **`setup()` 里漏了 `g_buzzer = &g_buzzer_exio;`
+那一行绑定** ⇒ 真机仍然指着 `BuzzerNull`。
+症状极具误导性：**串口上 `buzz: test beep cmd=b…` 照打、编译/回归全绿、`beep()` 也真的被调了**
+—— 但一声不响、而且**一行 `buzz: exio` 都没有**（`BuzzerNull::beep()` 是空的，所以没有写）。
+★ 判据：**"`beep()` 被调了"不等于"那一位被写了"** —— 前者只有调用点能证明，
+后者只有 `buzz: exio …` 那一行能证明。所以本条日志是**必需**的，不是好看。
+★ 这条与本仓库既有的那条教训同源（"日志里一切正常、硬件没动"）。
+
+### ⑦ ★ 红线复核
+
+* **没动** 240 / DualEye SPI 驱动（`src/dash_display_spi.cpp` 一字未改）✓
+* **没动** CRC / SOF / `kSpeedScale=2.56` / VAN 脚极性 ✓（`lib/link/*`、`van_*` 一字未改）
+* **没动** `[env:esp32s3]` / `[env:esp32dev]` 的抓帧行为与 `espressif32@7.1.3` 钉法 ✓
+  —— `platformio.ini` **整份未改**（`git status` 里没有它）
+* **没有新开 L 号** ✓ —— 本单是 **L14 的收口**（§8 那一行改成结论，编号保留）
+* **抓帧盒那三个 env 里"这段代码一行都不存在"** ✓ —— 判据是编译期那道门：
+  `DASH_DISPLAY_RGB` 只有 `[env:esp32s3-rgb]` 定义（`platformio.ini` 既有），
+  本单新增的 `buzzer_exio.*` 里的类型只被该 env 的编译单元引用；
+  `src/main.cpp` 里的实例/绑定/`tick()`/命令 `b` **全在那道门里**。
+  ⇒ `esp32s3` / `esp32dev` / `-vaninv` / `-vansniff` / `-spi` / `-linkloop` 的编译单元
+  **逐字节不变**。
+* **只烧 COM6** ✓；**COM7 一次都没打开** ✓；`tools/theme-editor/theme.json`（车主资产）**没碰** ✓
+
+### ⑧ 还没做 / 拿不准的（如实列）
+
+1. ★ **"听感"只有车主能判**（机上没有麦克风）：本单给的是"串口证明那一位真的动了 +
+   3 声的时序"，**"是不是真的听到 3 声短哔、而不是一声长鸣"必须由车主确认**。
+2. **另一块板（左/从板）有没有同一颗蜂鸣器：未实测** —— 第二块 2.8C 还没到货。
+   两块同型号 ⇒ 理论上同构，但那是**推测**；到货后按 §13 那套自检
+   （`-DBUZZER_SELFTEST=1`）重跑一遍才算数。这一条**不占新 L 号**（等硬件，不等裁决）。
+3. **`2 短哔` 这一档还没有调用方**：词表先留着（`ARCHITECTURE.md` §4.1）。
+   要加时**只改 `alerts` 的模式映射**，驱动不用动。
+4. **`Urgent`（4 声）与 `Triple`/`Long`（3 声）在这块板上听起来一样** ——
+   有源蜂鸣器的自由度决定，**已知代价**，不是 bug。
+5. **`m`（静音）不拦 `b`**：`b` 是车主**主动**按的测试动作，而 `m` 关的是**自动告警**。
+   这一条是**有意的**，写在命令表里；静音对 `alerts` 与那一声轻提示的拦截**没动**
+   （`mute: 1` 那一路上板行为照旧）。
+6. **回读自证只在"开"的那一下做**（每次响一小段最多 1 次 I2C 读）——
+   如果哪天要更严，可以把"关"那一下也加上；本轮按"开才是要自证的那一刻"取舍。

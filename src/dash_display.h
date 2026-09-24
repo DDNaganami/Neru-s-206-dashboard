@@ -26,3 +26,25 @@ uint32_t dash_display_preview_frames(void);
 void dash_display_preview_set_panel_mask(bool on);
 bool dash_display_preview_panel_mask(void);
 #endif
+
+// ---- 只给 `[env:esp32s3-rgb]`（真屏那一份构建）用的蜂鸣器出口
+//
+// ★ 为什么声明放在**这个**头里、实现放在 `src/dash_display_rgb.cpp`：
+//   2.8C 板载蜂鸣器挂在 **TCA9554（I2C 扩展器）的 EXIO8** 上，而那颗芯片的
+//   输出寄存器里**同时挂着 `LCD_RST`(EXIO1) 与 `LCD_CS`(EXIO3)**
+//   ⇒ "影子寄存器 + 读-改-写"只能有**一份**，就是显示驱动里那一份。
+//   在这里另写一遍 I2C 时序 ⇒ 两份影子互相覆盖丢位 ⇒ 丢到 RST/CS 上就是
+//   一次**面板复位**（而面板复位**不会自己回来**）。详见
+//   `docs/RGB-PANEL-2.8C.md` §13.7 与 `src/dash_display_rgb.cpp` 里那个函数的注释。
+//
+// ★ 门用的是**既有的** `DASH_DISPLAY_RGB` 宏（`platformio.ini` 里早就有、
+//   且**只有** `[env:esp32s3-rgb]` 定义它）⇒ 其余 env（抓帧盒 `esp32s3` /
+//   `esp32dev` / `-vaninv` / `-vansniff` / `esp32s3-spi` / `esp32s3-linkloop`）
+//   的编译单元里**这个声明不存在、调用点也不存在**，行为逐字节不变 ✓。
+//   ★ **没有新增任何 `-D`**（能不新增就不新增）。
+//
+// ★ 返回 void：调用方（`BuzzerExio` 的序列）不需要知道成没成 ——
+//   "写没写对"由驱动自己那行 `buzz: exio 0xXX -> 0xXX (mask 0x01…)` 自证。
+#if defined(DASH_DISPLAY_RGB)
+void dash_buzzer_set(bool on, void* ctx);
+#endif

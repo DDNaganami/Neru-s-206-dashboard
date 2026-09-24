@@ -1056,22 +1056,26 @@ buzzer: 期望 0x05 = LCD_RST(EXIO1)高 + LCD_CS(EXIO3)高 + 蜂鸣器(EXIO8)低
 
 ★ 这条结论**同时回答了任务书里"若有源/若无源"的两条分支**：走"有源"那一支（13.7）。
 
-### 13.7 接真机那一档：**只写方案，不实现**（等车主点头）
+### 13.7 接真机那一档：★ **2026-09-24 已实现并上板**（原"只写方案"已作废）
 
 **结论是有源（13.6）⇒ 需要的代码量极小，且 `alerts` 一行都不用改。**
 
+★ 下面 1~3 条**已经落地**（不是方案了），实际实现与本方案的两处**有意偏离**写在
+"实际实现"那一段里；4 条（L14 本身）**已经关闭**，结论见下。
+
 1. 给 `TCA9554` 的 EXIO8 暴露一个**最小接口**：在 `src/dash_display_rgb.cpp` 里加
-   `bool dash_buzzer_set(bool on)`（内部就是现成的 `tca9554_set(BUZZER_EXIO_BIT, on)`），
-   声明放进 `src/dash_display.h`（非 RGB 构建返回 `false`）。
+   `dash_buzzer_set(bool on, void* ctx)`（内部就是现成的 `tca9554_set(BUZZER_EXIO_BIT, on)`），
+   声明放进 `src/dash_display.h`（`#if defined(DASH_DISPLAY_RGB)`）。
    ★ **不要**在第二个文件里另写一遍 I2C 时序：影子寄存器 `g_exio_out` 是"读-改-写"的，
    两处各持一份会**互相覆盖丢位**（丢到 `LCD_RST`/`LCD_CS` 上就是黑屏）。
 2. 加一个 `Buzzer` 子类（实现"开/关"就够）：
 
    ```cpp
-   class BuzzerExio8 : public Buzzer {
-     void begin() override { dash_buzzer_set(false); }              // 上电静音
-     void beep(BeepPattern, uint32_t) override { dash_buzzer_set(true); }
-     void off() override { dash_buzzer_set(false); }
+   class BuzzerExio : public Buzzer {
+     void begin() override;                            // 上电静音
+     void beep(BeepPattern p, uint32_t ms) override;   // 起一拍（非阻塞）
+     void tick() override;                             // ★ 主循环每轮推进时序
+     void off() override;                              // 取消 + 立刻静默
      const char* name() const override { return "exio8"; }
    };
    ```
@@ -1079,40 +1083,66 @@ buzzer: 期望 0x05 = LCD_RST(EXIO1)高 + LCD_CS(EXIO3)高 + 蜂鸣器(EXIO8)低
    ★ `beep()` **不需要**频率/占空比参数 —— 有源蜂鸣器只有"响/不响"，节拍全由
    `Alerts::beeping()` + `beep_ms` + 调用方 `off()` 给（这正是 `buzzer.h` 当初把
    "谁发声"与"什么时候该响"分开的原因）。
-3. `main.cpp` 里挂上：加编译开关 `-DBUZZER_EXIO8=1`（**默认关**，与今天的 `BuzzerNull` 一致），
-   `setup()` 里那一行 `g_buzzer = &g_buzzer_exio8;`。
-4. **仍未决的是 L14 本身**：这次自检只证明"**这块板上的这颗蜂鸣器会响**"，
-   **没有**回答"该由哪块板发声"。L14 判给"从板本地发声" ⇒ 上面这套直接挂上；
-   判给"主板发声" ⇒ 一行都不用写。
+3. `main.cpp` 里挂上（**新增 `-D` = 0**：门用的是既有的 `DASH_DISPLAY_RGB`），
+   在 `#if defined(DASH_DISPLAY_RGB)` 里那一行 `g_buzzer = &g_buzzer_exio;`。
+4. ★ **L14 已关闭（2026-09-24）**：发声的是 **2.8C 这一块 = 右板（主机板）**。
+   自检（13.6）只证明"这块板上的蜂鸣器会响"，而"**由哪块板发**"这一问在**本单**里由
+   "手上只有这一块 2.8C + 它板载就能发声（零额外引脚）"定下来：
+   走 2.8C 本地发声就**用不上** `EVENT 0x01` 那条还没定的上行。
+   完整答复（含"另一块板有没有蜂鸣器 = 未实测"那一条）见
+   `ARCHITECTURE.md`「显示约定」§4.2 与 §8 的 L14 行。
 
-#### 13.7.1 设计影响（有源 ⇒ 提示音只能靠**节奏与次数**；**音量不可调**）—— 只写文档，不改实现
+#### 13.7.1 实际实现（和上面那份方案的两处**有意偏离**，都写清理由）
+
+| 方案里写的 | 实际做的 | 为什么改 |
+|---|---|---|
+| `bool dash_buzzer_set(bool on)` | `void dash_buzzer_set(bool on, void* ctx)` | 驱动与显示侧靠**函数指针**解耦（`BuzzerExioSetFn`），签名要能当回调用；`lib/dashcore` **不 include `src/` 的头**（口径与 `buzzer_host_printf()` 那条一致）。返回值没人用 ⇒ 去掉（"写没写对"由那行 `buzz: exio` 自证 + 开关那一刻的回读兜着） |
+| `beep()` 里直接 `set(true)` | `beep()` 只**起序列**，真正的高低电平由 `tick()` 推进 | ① `Alerts::beeping()` 只在**一拍**上为真，而 `Triple`/`Urgent`/`Long⇒3 短哔` 要跨好几拍 ⇒ 必须有人在这些拍之间推进，否则**本该 3 声只响 1 声**（这一条是**上板前就被 native 用例逼出来的**）；② `off()` 必须是"取消"（静音那一跳靠它立刻掐断）⇒ 序列不能靠调用方的时序收尾。`Buzzer::tick()` 是**默认空实现**的新虚函数 ⇒ `BuzzerNull`/`BuzzerHost` 与既有调用点**零影响** |
+
+文件清单（**只有这些**）：
+
+| 文件 | 改动 |
+|---|---|
+| `lib/dashcore/buzzer_exio.h` / `.cpp` | **新增**：真机驱动（非阻塞多相序列 + 注入的时钟/输出回调） |
+| `lib/dashcore/buzzer.h` | 加一个**默认空实现**的 `virtual void tick()`（唯一的接口改动） |
+| `src/dash_display_rgb.cpp` | 新增 `dash_buzzer_set()`（**唯一**写 TCA9554 的地方，走既有 `tca9554_set()`） |
+| `src/dash_display.h` | 那句声明（`#if defined(DASH_DISPLAY_RGB)`） |
+| `src/main.cpp` | 实例/绑定/`g_buzzer->tick()`/串口命令 `b`（全部在 `DASH_DISPLAY_RGB` 里） |
+| `test/test_dashcore/test_buzzer_exio.cpp` + `test_main.cpp` | **新增 9 条** native 用例（掩码/降级/夹时长/静音/到点关/幂等/取消/begin） |
+| `platformio.ini` | ★ **一个字节都没改**（门用的是既有的 `DASH_DISPLAY_RGB`） |
+
+#### 13.7.2 设计影响（有源 ⇒ 提示音只能靠**节奏与次数**；**音量不可调**）
+
+#### 13.7.3 本单的上板实测（COM6，原始串口行）
+
+**判据与命令**（详见 `ARCHITECTURE.md`「显示约定」§4.3）：
+
+* 人耳那条**只能由车主给**（机上没有麦克风）；
+* 串口命令 **`b`** ⇒ 响一声短的（走 `Long` ⇒ **3 短哔**那条降级）+ 一行回执；
+* 每一次写到扩展器都落一行 `buzz: exio 0xXX -> 0xXX (mask 0x01…)`
+  ⇒ "有没有打到 `LCD_RST`/`LCD_CS`"从串口一眼可见；
+* **显示健康四行**（`vsync +54/s` / `copy_max≈1.3ms` / `timeout=0` / `fullrb=0/s`）
+  证明这一轮**没有把屏搞坏**。
+
+原始日志见 `ACCEPTANCE.md` 2026-09-24 那一条（本单追加的那一节）。
 
 * **可用的自由度只剩三个**：**响多久**（`beep_ms`）、**响几次**（`BeepPattern`）、
   **隔多久**（告警的最短重复间隔）。**没有频率、没有音色、没有音量**（13.6 的电路事实）。
-  ⇒ 提示音语言必须设计成**节奏区分**：**1 短哔** / **2 短哔** / **长鸣**（例如
-  超速=2 短哔、红区=长鸣、门=1 短哔；具体映射等车主点头再定）。
+  ⇒ 提示音语言只能设计成**节奏区分**。★ **词表已经定稿**（2026-09-24）：
+  **1 短哔** / **2 短哔** / **3 短哔**（**"长鸣"在这块板上被禁止**，
+  `Long` 降级成 3 短哔 —— 理由见 `ARCHITECTURE.md`「显示约定」§4.1 那张表与第 2 条）。
+  本节原先写的"红区=长鸣"那条**已被否掉**，别照它实现。
 * ★★ **静音开关是必须功能**（不是"最好有"）：有源蜂鸣器**较响、偏尖**（车主主观），
   而**音量不可调** ⇒ 唯一的"调轻"手段就是**少响 + 能一键关**。
-  仓库里已经有这一层：`Alerts::setMuted()` + `AlertsConfig`（npcpreview 的注入里
-  已经能按 `mute` 开关，见 `buzzer.h` 的文件头）⇒ 真机接线时**必须**把这条路接到
-  一个车主够得着的入口（按键/菜单/主题配置之一），否则夜里没法忍。
+  仓库里已经有这一层：`Alerts::setMuted()` + `AlertsConfig`（预览的注入里
+  已经能按 `mute` 开关，见 `buzzer.h` 的文件头）⇒ 真机上的入口是**串口命令 `m`**
+  （取反 + 写 NVS 掉电保存；见 §15 与 `ARCHITECTURE.md`「显示约定」§4 第 4/5 条）。
 * **不要**为了"音调"再去动 EXIO8 之外的硬件（本轮没有飞线、没有改板）：除非将来**看原理图**
   确认蜂鸣器的驱动级还有别的控制脚，且那个脚是**普通 GPIO**（能走 LEDC 硬件 PWM）——
   那才有"音调"这条路，而它属于**换硬件方案**，不在本轮范围。
 * `alerts` 的现有形状**够用、不要动**：`Alerts` 决定"什么时候响、什么模式"，
-  `Buzzer` 决定"怎么落" —— 有源蜂鸣器只用到 `beep()/off()` 两个动作（13.7 那个子类）。
-
-**（备查，已被结论否掉）若无源** —— 经 EXIO8 **只能很粗糙地驱动**，取舍写清楚：
-
-* 只有"软件方波"一条路（TCA9554 没有 PWM）：**每个边沿一次 I2C 事务**，实测 **141~178µs/次**
-  （400kHz 档）⇒ 音高上限 ~2.8~3.5kHz，且要把主循环的 **71~84%** 拿去忙等/发事务
-  （13.4 的"自检占用"）。**做不成音调/旋律，只能做"响一声/短促报警"。**
-* 代价不止 CPU：它会和 PSRAM 搬运（bounce 填充、脏区补拷）抢时间 —— 而横纹那条线刚收口，
-  这块板对"额外的主循环占用"很敏感（第 11/12 节）。⇒ 若真要音调，得**另找硬件出路**
-  （例如 EXIO8 之外找一个空闲 GPIO 走 **LEDC 硬件 PWM**），但那取决于板上蜂鸣器的驱动级是不是
-  **只能由 EXIO8 控制** —— 本轮**没有**为此改硬件、**没有**飞线，也不在没看原理图之前猜。
-* 现实的用法：只当"报警开关"，1~2kHz、100~300ms 的短促鸣叫（`alerts` 的 `beep` 形状已经够用），
-  **不做**"音调语言"。
+  `Buzzer` 决定"怎么落" —— 有源蜂鸣器只用到 `beep()/off()`/`tick()` 三个动作
+  （13.7.2 那张表里说明了两处与初版方案的有意偏离）。
 
 ---
 
@@ -1315,6 +1345,25 @@ python -m platformio run -e esp32s3-rgb
   不播种则卡在联网那一步。）
 * ★ 这只对 **native 平台**的 env（`pcpreview` / `native`）有效；
   `esp32s3-rgb` 的框架包在 `pio-core-mix` 的 `packages` 里（§14 的 junction 组合 core）。
+
+**③ `core.autocrlf = true` ⇒ 新文件在检出/复制时是 CRLF，"数行数"要用字节**（2026-09-24 补）：
+
+* 本仓库 `git config core.autocrlf` 实测 = **`true`**，而工作区里既有的文件
+  大多是 LF（历史遗留）⇒ **同一棵树里两种行尾并存**，`wc -l` / `Measure-Object -Line`
+  给出的"行数"会随文件不同而差一截。
+* ⇒ 报告/文档里凡是要给"**这个文件多少行**"这类数字，一律用
+  **`(Get-Item <f>).Length` 的字节数**（或 `git show :<f> | wc -c` 那种按索引取的字节数），
+  不要数行 —— 数行会把 CRLF 与 LF 的差别算进去。
+* 顺带一条同源的经验：**判断"这个文件被改过没有"用 `git status` / `git diff --stat`**，
+  别用"行数变了我没变"去推（行尾归一化会让没改的文件看起来在 diff 里）。
+
+**④ 跑 native 用例时 `PATH` 上必须挂 zig 转发桩**（这一条踩过两次）：
+
+* 症状：`'gcc' is not recognized as an internal or external command` ⇒ 构建直接
+  `[ERRORED]`，而**不是**仓库的问题。
+* 修法：`$env:PATH='C:\206dash-scratch\zigbin;' + $env:PATH`
+  （那一组 `gcc.cmd`/`g++.cmd`/`cc.cmd`/`c++.cmd` → `zig cc`；zig 本体在 `C:\ziglang\zig.exe`，
+  全局缓存在 `C:\206dash-scratch\zigcache`）。
 
 ## 15. 2026-09-24 诊断页 / 静音的真机入口 = **串口命令 `d` / `m`**（不接按键）
 

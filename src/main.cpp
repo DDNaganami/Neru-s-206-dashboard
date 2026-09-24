@@ -21,7 +21,11 @@
 #include "dash_display.h"
 #include "dash_ui.h"
 #include "alerts.h"       // 告警层:只用已解字段(超速/红区/门/转向灯忘关)
-#include "buzzer.h"       // 蜂鸣器抽象(L14 建议 = 从板本地发声;真机实现待 L14 点头)
+#include "buzzer.h"       // 蜂鸣器抽象（"什么时候该响"与"谁发声"分开）
+// ★ 2026-09-24:真机那一档的实现（2.8C 板载**有源**蜂鸣器，走 TCA9554 的 EXIO8）。
+//   只在 `DASH_DISPLAY_RGB`（= `[env:esp32s3-rgb]`）里编进固件 —— 抓帧盒那三个 env
+//   的编译单元里**一行都不存在**（门就是那个既有宏，没新增任何 -D）✓
+#include "buzzer_exio.h"  // L14 的落地：发声的是**这块 2.8C（右/主机板）**
 #include "expression.h"   // Face（STATUS.left_face 要报"左屏当前档位"，§3）
 #include "image_load.h"
 #include "link_app.h"     // 双板链路 v1 的应用层接线（§1.2 ③ / §3 / §4 / §5）
@@ -93,19 +97,38 @@ static VehicleDataService g_data(nullptr);
 //   ② 按它的结论驱动蜂鸣器（Buzzer 抽象后面的实现）；
 //   ③ 把结论交给 UI（灯位闪烁 + 告警描边）。
 //
-// ★ 蜂鸣器挂哪个实现（**这是 §8 L14 的落点**）：
-//   · 现在挂的是 `BuzzerNull`（不发声）—— 因为 2.8C 还没到货、
-//     而且 L14「由哪块板发声」**还没裁决**（本轮按"从板本地发声"**建议**实现，
-//     见 buzzer.h 的文件头）。
-//   · pcpreview 上换成 `BuzzerHost`（打印 `BEEP pattern=… ms=…` 一行，
+// ★ 蜂鸣器挂哪个实现（**这是 §8 L14 的落点，2026-09-24 已落地**）：
+//   · **真机（`[env:esp32s3-rgb]`，= 车主手上这块 2.8C）= `BuzzerExio`** ——
+//     经 `dash_buzzer_set()` 写 TCA9554 的 **EXIO8**（那颗芯片本来就在驱动这块屏，
+//     所以**零额外引脚**）。硬件结论（**有源**：只会响/不响，没有音调、音量不可调）
+//     的实测在 `docs/RGB-PANEL-2.8C.md` §13.6，落地形态见 §13.7。
+//     ★★ **L14 的答复：发声的是 2.8C 这一块（右板 = 主机板）** —— 当下手上只有
+//        这一块 2.8C（第二块还没到货），"另一块板上有没有蜂鸣器"**未实测**，
+//        所以按"这一块能响、就用这一块"接线，不假设另一块也有（文档里写明）。
+//     ★ 三条硬约束（单次哔 ≤300ms / `Long` 降级 3 短哔 / 绝不做长鸣）落在
+//        `lib/dashcore/buzzer_exio.*` 里，理由与那次黑屏事故的关系见那里的文件头。
+//   · pcpreview 上仍是 `BuzzerHost`（打印 `BEEP pattern=… ms=…` 一行，
 //     可选 -DBUZZER_HOST_SOUND=1 出系统提示音）⇒ 模拟页上能看见"什么时候会响"。
-//   · 真机实现是**另一个 Buzzer 子类**（TCA9554 的 EXIO8，零额外引脚）——
-//     L14 一旦点头，只改下面这几行的构造，alerts 与 UI 一行都不用动。
-//     在那之前**不写一个没验过的 I2C 写时序**（没硬件，验不了）。
+//   · 未接显示的构建（抓帧盒 `esp32s3`/`esp32dev`）仍是 `BuzzerNull`（不发声）：
+//     那边连屏都没有，更不需要发声。
 static Alerts g_alerts;
 static BuzzerNull g_buzzer_null;
 #if defined(DASH_DISPLAY_PREVIEW)
 static BuzzerHost g_buzzer_host;
+#endif
+#if defined(DASH_DISPLAY_RGB)
+// ★★ 这一整段（实例 + 绑定点 + 串口命令 `b`）只在真屏那一份构建里存在。
+//   门用的是**既有的** `DASH_DISPLAY_RGB` 宏（platformio.ini 里早就有、且**只有**
+//   `[env:esp32s3-rgb]` 定义它）⇒ `[env:esp32dev]` / `[env:esp32s3]`（**VAN 抓帧盒**）
+//   以及 extends 它们的 `-vaninv` / `-vansniff` / `-spi` / `-linkloop` 的编译单元里
+//   **一行都不存在**，行为逐字节不变 ✓。**没有新增任何 -D** ✓。
+//
+// ★ 为什么要一个 `setExio` 转发：`BuzzerExio` 与显示驱动之间靠一个**函数指针**
+//   解耦（`BuzzerExioSetFn`），而不是让 `lib/dashcore` 反过来 include `src/` 的头
+//   —— 口径与 `buzzer_host_printf()` 那条一致（见 buzzer.cpp 的说明）。
+//   真机写总线那一侧**只有一处**：`src/dash_display_rgb.cpp` 的 `dash_buzzer_set()`
+//   （它拿着影子寄存器做读-改-写；另写第二份 = 丢位 = 面板复位）。
+static BuzzerExio g_buzzer_exio(&dash_buzzer_set, nullptr, &millis);
 #endif
 static Buzzer* g_buzzer = &g_buzzer_null;
 
@@ -607,6 +630,22 @@ static SysStatusInputs sys_inputs_build(uint32_t now_ms) {
 //           （`diag: open page=1/2` / `diag: closed page=2/2`）。
 //   · `m` ⇒ **静音开关取反**，并**写 NVS**（掉电保存；与 `setup()` 里读回的
 //           是同一对 load/save）⇒ 车主**不用按键**就能静音。回执 `mute: 1 (saved)`。
+//   · `b` ⇒ **蜂鸣器测试：响一声**（2026-09-24 新增）。★ 这是**人耳判据**的入口：
+//           有源/无源那半问在 §13.6 已经由车主听出来了，但"**接上以后到底响不响**"
+//           只能靠耳朵 —— 机上没有麦克风，所以留一个**按需**触发的按键：
+//           不用等告警、不用等开机那 2.44 秒的 `trust: sim-fallback`。
+//           ★ 用的是 `BeepPattern::Long` **故意如此**：验收要看的正是驱动里那条
+//             "**长鸣 ⇒ 3 短哔**"的降级（`ARCHITECTURE.md` §4 第 2/3 条 +
+//             `lib/dashcore/buzzer_exio.h` 文件头 ②）。
+//             时长给 `kTrustBeepMs`（120ms，就是"数据不可信"那一声轻提示的量）
+//             ⇒ 听到的是 **3 声、每声 120ms、中间隔 80ms**，绝不会是长鸣。
+//           ★ 它走的是**与告警同一个 `g_buzzer`**（挂的是真机那一档 `BuzzerExio`）
+//             ⇒ 这一声与"真告警响的那一声"是同一条路径，不是另开一条测试旁路。
+//           ★ **静音（`m`）不拦它**：`m` 的语义是"关掉**自动告警**"（`alerts` +
+//             那一声轻提示），而 `b` 是车主**主动按下去**的测试动作 ——
+//             前提是"静音开关不绕开既有 Alerts/NVS 那条路"，这一条没动（见
+//             `mute_toggle_from_serial()` 与 loop() 里那两处 `muted()` 判据）。
+//             回执那一行会把当前静音态一起打出来，免得混起来。
 //
 // ★★ 命令**只认"行首"**（这个口上当前没有未完成的一行）—— 判据在下面
 //   `serial_cmd_handle` 里：回放行里的十六进制**本来就可能含 `d`**（例
@@ -644,6 +683,46 @@ static void mute_toggle_from_serial() {
   dash_logf("mute: %d (saved)\n", g_beep_muted ? 1 : 0);
 }
 
+// `b`：**响一声**（人耳判据的入口，见上面命令表里那段说明）。
+// ★ 这里只做两件事：起一拍 + 打一行回执 —— **绝不阻塞**（真正的高低电平由
+//   `loop()` 每轮推进，显示那一秒的帧照样照常画）。
+// ★★ 为什么要那个"窗口"（`g_beep_cmd_until_ms`）：`loop()` 里驱动蜂鸣器那一支是
+//   `if (g_alerts.beeping()) beep() else off()` —— 串口 `b` 起的那一拍里
+//   `Alerts::beeping()` 恒为假，于是主循环**每轮都会调 `off()`**，而
+//   `BuzzerExio::off()` 的语义是"**取消**"（静音那一跳靠它立刻掐断）
+//   ⇒ 不处理的话 `b` 只会响第一声（**实测就是这么发现的**：3 短哔变成 1 声）。
+//   修法：命令侧记一个"这一拍到什么时候为止"的窗口，`loop()` 那一支在窗口内
+//   走"**只推进、不取消**"（序列由 `g_buzzer->tick()` 推进，见 loop() 里那一段）。
+//   ★ 判据只有这一处（`beep_cmd_window()`），别在别处再写一遍。
+//   ★ 窗口内**不调 `beep()`**（只 tick）：序列已经在跑了，重复起表只会把相位归零。
+// ★ 静音（`m`）**不拦**这一声：`m` 关的是**自动告警**，而 `b` 是车主**主动**
+//   按下去的测试动作。回执那一行会把当前静音态打出来，免得两者混起来。
+static uint32_t g_beep_cmd_until_ms = 0;   // 串口 `b` 那一拍的到期时刻（0 = 没有）
+
+// 串口 `b` 的那一拍还在窗口里吗？
+// ★ 这里用 `millis() < 到期` 的**绝对值**比较（不是 `now - start` 那种差值形式）：
+//   本窗口最长 560ms，`millis()` 那道 49.7 天的回绕**不可能**落进这么短的窗口里，
+//   所以绝对值比较是安全的、也更好读。窗口一过就自动失效（`g_beep_cmd_until_ms`
+//   跟着被清成 0）⇒ 下一次告警照旧走正常的 `beep()/off()` 那一支。
+static bool beep_cmd_window(uint32_t now) {
+  if (g_beep_cmd_until_ms == 0u) return false;
+  if ((int32_t)(now - g_beep_cmd_until_ms) >= 0) {
+    g_beep_cmd_until_ms = 0u;
+    return false;
+  }
+  return true;
+}
+
+static void beep_test_from_serial() {
+  // ★ `Long` 是**有意**的：这一声要验的正是驱动里"**长鸣 ⇒ 3 短哔**"那条降级
+  //   （`ARCHITECTURE.md` §4 第 2/3 条 + `lib/dashcore/buzzer_exio.h` 文件头 ②）。
+  g_buzzer->beep(BeepPattern::Long, kTrustBeepMs);
+  const uint32_t total = 3u * kTrustBeepMs + 2u * kGapMs;   // 3 声 + 2 个间隙 = 520ms
+  g_beep_cmd_until_ms = millis() + total + 40u;             // 留一点余量
+  dash_logf("buzz: test beep cmd=b(Long>3short) ms=%u x3 gap=%ums muted=%d\n",
+            (unsigned)kTrustBeepMs, (unsigned)kGapMs, g_beep_muted ? 1 : 0);
+}
+
 // ★★ 什么时候才认这一颗字节是命令（`line`/`len` = **这个口**的回放行缓冲）：
 //   ① 缓冲是空的（最常见：命令就是单独一个字符）；**或者**
 //   ② 缓冲里攒下的那几个字节**不可能**是回放行 —— 回放行的头三个字符必须是
@@ -674,6 +753,10 @@ static bool serial_cmd_handle(char c, char* line, uint8_t& len) {
   }
   if (c == 'm') {
     mute_toggle_from_serial();
+    return true;
+  }
+  if (c == 'b') {
+    beep_test_from_serial();
     return true;
   }
   return false;
@@ -1038,9 +1121,16 @@ void setup() {
   g_data.begin();
   BOOT_STAGE(2);
 
-  // 告警层 + 蜂鸣器：把实现**挂上**（挂哪个见上面那一段注释 —— L14 还没裁决）。
+  // 告警层 + 蜂鸣器：把实现**挂上**（挂哪个见上面那一段注释 —— L14 的落点）。
 #if defined(DASH_DISPLAY_PREVIEW)
   g_buzzer = &g_buzzer_host;      // 预览：打印 BEEP 行（可选系统提示音）
+#elif defined(DASH_DISPLAY_RGB)
+  // ★★ 真机（2.8C，右/主机板）：挂上写 TCA9554 的 EXIO8 那一档。
+  //   这是本单的**核心那一行** —— 少了它，`g_buzzer` 还指着 `BuzzerNull`
+  //   （空实现），于是"日志里一切正常、板子一声不响"，而且**看不出来**：
+  //   `beep()` 被照常调用、返回 void、没有人报错。
+  //   ★ 只是"把 g_buzzer_exio 声明出来"是不够的 —— 必须在**这里**绑。
+  g_buzzer = &g_buzzer_exio;
 #endif
   g_buzzer->begin();
   dash_logf("alerts: 已就绪(超速 %.0f / 红区 %.0f / 门 / 转向灯忘关 %us)\n",
@@ -1195,11 +1285,33 @@ void loop() {
   // ★ 喂的是**这一轮最终的快照**（注入之后），所以 pcpreview 上按 O/R
   //   能立刻看到告警与蜂鸣器的反应 —— 而判据本身与真车跑的是同一份代码。
   const AlertKind alert = g_alerts.update(st_mut, now);
+  // ★ 先推进时序，再决定"这一拍该不该响"（顺序是硬的）：
+  //   · `tick()` 负责"到点关 + 多相序列的下一相"（真机那一档才有实际动作；
+  //     `BuzzerNull`/`BuzzerHost` 是默认空实现 ⇒ 这两档一个字节都没变）；
+  //   · 没有它，`Triple`/`Urgent`/`Long⇒3 短哔` 这些**跨好几拍**的序列
+  //     会永远停在第一相 —— 听起来就是"本该 3 声、只响 1 声"。
+  //   ★ 它**不阻塞**（`BuzzerExio::tick()` 只是几次整数比较 + 至多一次写位）。
+  g_buzzer->tick();
+#if defined(DASH_DISPLAY_RGB)
+  // ★★ 串口 `b` 那一拍的窗口内：**只推进、不取消**（理由见 `beep_cmd_window()`）。
+  //   这一段**只进真屏那一份构建**（`DASH_DISPLAY_RGB`，与命令 `b` 同一道门）
+  //   ⇒ 抓帧盒三个 env 里一行都不存在 ✓。
+  const bool beep_window = beep_cmd_window(now);
+#endif
   if (g_alerts.beeping()) {
     g_buzzer->beep(g_alerts.pattern(), g_alerts.config().beep_ms);
+#if defined(DASH_DISPLAY_RGB)
+  } else if (beep_window) {
+    // 串口 `b` 的窗口内、且没有告警在响 ⇒ **不调 off()**（它是"取消"，
+    // 会把这一拍掐成一声）。这一拍已经由上面的 `tick()` 在推进了。
   } else {
     g_buzzer->off();
   }
+#else
+  } else {
+    g_buzzer->off();
+  }
+#endif
   // 状态变化时打一行（不是每轮都打：红区一直守着会变成每秒一行噪音）。
   const uint8_t alert_id = (uint8_t)alert;
   if (alert_id != g_alert_last) {
