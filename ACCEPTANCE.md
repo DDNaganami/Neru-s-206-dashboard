@@ -3259,3 +3259,54 @@ buzzer: 期望 0x05 = LCD_RST(EXIO1)高 + LCD_CS(EXIO3)高 + 蜂鸣器(EXIO8)低
 `espressif32@7.1.3` 钉法 ✓；**没碰** 240(DualEye) 驱动 ✓；**没碰** CRC/SOF/`kSpeedScale=2.56`/VAN 极性 ✓；
 **没新开 L 号** ✓；**没碰** `tools/theme-editor/theme.json`（仍未跟踪）✓；**只烧 COM6**（COM7 一次没碰）✓；
 构建与烧写全在 `C:\206dash-scratch\Neru`（ASCII 副本）✓；**没跑** `pio clean`、**没删** `.pio` ✓。
+
+### ⑦ 【结论】蜂鸣器 = **有源**（自带振荡，只会响/不响，无音调、无 PWM 通路、音量不可调）—— 2026-09-24 车主实测
+
+**车主的三问回答**：① 直流 5 轮 ⇒ **"哔"5 声**；② 方波 200/1k/2k/4k ⇒
+**换驱动频率音调不变**（判别性的一条）；③ 持续拉高 2 秒 ⇒ **持续长鸣**（不是两声咔哒）⇒ **有源**；
+④ 持续拉低（对照）⇒ 静音；主观**较响、偏尖**。
+
+**与电路事实吻合**：蜂鸣器挂在 **TCA9554 的 EXIO8**（I2C 扩展器的输出脚）⇒ 那条路上
+**根本没有 LEDC/PWM 通路** ⇒ 原理上就**不可能**有不同音调，只能**开/关** —— "音调不变"是**设计使然**。
+
+**设计影响**（只写方案，**本轮不改 `alerts` 实现**）：提示音只能靠**节奏与次数**区分
+（1 短哔 / 2 短哔 / 长鸣）；**音量不可调** ⇒ **静音开关是必须功能**（`Alerts::setMuted()` 已有，
+真机接线时要把它接到车主够得着的入口）。方案与接线形状见 `docs/RGB-PANEL-2.8C.md` **13.6 / 13.7**。
+
+### ⑧ 当晚插曲：车主报"屏幕突然黑掉" ⇒ 自检**改版**（并把教训固化）
+
+**先排除的一条**：**"主循环被自检阻塞"解释不了黑屏** —— 主循环被卡住时面板还在扫 framebuffer
+⇒ 屏上是**定格**；**变黑 = 面板丢了初始化（或背光没了）**，而当时串口上**所有驱动计数都正常**
+（`vsync=5900(+54/s)`、`swap=573`、`copy_max=1340us`、`timeout=0`、`206 dash ok`）。当时的原始行贴在
+docs 13.8.1。**但那一版确实在主循环里自旋**（占段时长 71~84%），这不该做 ⇒ 照改。
+
+**改版两条（已上板验证）**：
+1. **自检整个搬进 core 0 的独立任务**（`xTaskCreatePinnedToCore`, 优先级 1, 8KB 栈）——
+   `loopTask`/LVGL/flush/bounce 填充都在 core 1 ⇒ 自检**一个微秒都不占显示主循环**；
+2. **运行期不再改 I2C 时钟**（删掉方波段的 `Wire.setClock(400kHz)`）—— 那颗 TCA9554 的输出寄存器里
+   同时挂着 **LCD_RST/LCD_CS**，一个被打错的字节就是一次**面板复位**（而面板复位不会自己回来）。
+
+**改版后的实测**（COM6 原始行）：自检期间 `vsync +54/s`、`wrap +54/s`、`swap +5/s`、`timeout=0`、
+`blit_max 1.52ms`（与自检前同量级）、`206 dash ok` 每秒不断、`BEACON 1~40` 全在；
+heap **自检中 208KB（任务 8KB 栈）→ 跑完回到 217KB**（任务确实自己 `vTaskDelete`）。
+
+**仍未定论的一条**（如实记）：黑屏的两条候选机制（A：400kHz 打错字节复位面板 —— 已由改版去掉；
+B：③ 持续通电 2 秒把 3.3V 轨拉低一下 —— 保留）**没有仪表能分辨**；能把它们分开的那条信息是
+"**黑屏发生在哪一段**"，当时没记。下次复跑**先记这一条**。
+
+### ⑨ 板上跑的是哪一版 + 回烧后的取证（**最重要**）
+
+**当前 COM6 = 默认档固件**（`-DBUZZER_SELFTEST` 已删、重建、回烧；RAM 37.6%/123,080B、
+Flash 84.8%/889,247B = 改动前基线逐位相同）。复位后 COM6 原始诊断行（自检固件**一行都没有**：
+
+`buzzer:` 行数 = **0**）：
+
+```
+rgb: vsync=943(+54/s) wrap=943(+54/s) swap=113(+5/s) flush=577 blit_max=1332us step_max=968us copy_max=1332us copy_avg=685us swap_wait_max=10669us phase_max=18394us timeout=0 fb=1/0 catchup=113(+5/s 434KB/s forced0KB) refresh=200141/195371/204148us fullrb=0/s bounce=23MB/s 模式=局部刷新 psram=7285KB heap=217KB
+206 dash ok  spd= 71% rpm= 15% coolant=91C face=idle/overspeed
+BEACON 18  step=6(loop: 刚开始一轮)  uptime=18s heap=217KB psram=8192KB flash=16MB
+rgb: vsync=997(+54/s) wrap=997(+54/s) swap=118(+5/s) flush=607 blit_max=1332us step_max=968us copy_max=1332us copy_avg=714us swap_wait_max=10669us phase_max=18394us timeout=0 fb=0/1 catchup=118(+5/s 434KB/s forced0KB) refresh=200320/199893/200721us fullrb=0/s bounce=23MB/s 模式=局部刷新 psram=7285KB heap=217KB
+rgb: vsync=1050(+53/s) wrap=1050(+53/s) swap=123(+5/s) flush=643 blit_max=1332us step_max=968us copy_max=1332us copy_avg=739us swap_wait_max=10669us phase_max=18394us timeout=0 fb=1/0 catchup=123(+5/s 565KB/s forced0KB) refresh=199046/163989/226203us fullrb=0/s bounce=23MB/s 模式=局部刷新 psram=7285KB heap=217KB
+```
+
+⇒ `vsync` 有增量（+53~54/s）✓、`copy_max` 回到 **1332µs** ✓、`timeout=0` ✓、`fullrb=0/s` ✓。
