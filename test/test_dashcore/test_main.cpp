@@ -22,6 +22,8 @@ void register_alerts_tests(void);       // 告警层:去抖/最短重复间隔/�
 void register_ui_lamp_tests(void);      // 指示灯槽位几何 + 预览注入语义(2026-09-24)
 void register_system_status_tests(void); // 系统状态层:数据不可信提示 + 诊断页(2026-09-24)
 void register_buzzer_exio_tests(void);   // 真机蜂鸣器驱动:EXIO8 掩码/降级/夹时长/不阻塞(2026-09-24)
+void register_panel_guard_tests(void);   // 面板健康守护:回读对账/按影子重写/背光/2秒周期/自愈(2026-09-24)
+void register_serial_cmd_tests(void);    // 串口单字符命令的判据层:d/m/b/r + 别多吃回放字符(2026-09-24)
 void register_face_stage_tests(void);
 void register_link_crc_coverage_tests(void);   // 双板链路 v1:CRC-15 检错覆盖枚举(§8 L4)
 void register_link_frame_tests(void);          // 双板链路 v1:帧层(§2)—— 布局/帧长/CRC 覆盖/拒绝路径
@@ -67,6 +69,16 @@ int main(void) {
   //   `Long` 降级 3 短哔 / 单次 ≤ 300ms / 静音不写寄存器 / 到点自动关。
   //   排在 face_stages 之前（顺序纪律见上）。
   register_buzzer_exio_tests();
+  // ★ 2026-09-24 新增：面板健康守护（PanelGuard）—— 仪表盘必须常亮。
+  //   它守的是"那颗 TCA9554 的输出寄存器（LCD_RST/LCD_CS 就在里面）与影子寄存器
+  //   一不一致"以及"背光占空还对不对"；判据/时钟/输出全是注入的 ⇒ 宿主机可测。
+  //   同样排在 face_stages 之前（顺序纪律见上）。
+  register_panel_guard_tests();
+  // ★ 2026-09-24 新增：串口单字符命令的判据层（`d`/`m`/`b`/`r`）。
+  //   抽出来的理由是"这一层原来是 `src/main.cpp` 里的代码，而 native 只编 lib/"
+  //   （见 `serial_cmd.h` 的文件头）；这一个口上同时跑日志与回放帧 ⇒
+  //   "多认一个字符"会吃掉回放、"少认一个"会变成"按了没反应"，两个方向都要钉。
+  register_serial_cmd_tests();
   register_face_stage_tests();
   return UNITY_END();
 }
