@@ -1,44 +1,63 @@
 // ============================================================
-// 真实 RGB 并口屏驱动骨架(480×480,ST7701S 那类)
+// 真实 RGB 并口屏驱动(480×480,ST7701)—— **双 framebuffer + vsync 边界换帧**
 //
 // 编译开关:`-DDASH_DISPLAY_RGB=1`(见 platformio.ini 的 [env:esp32s3-rgb])。
 // 与桩驱动/预览驱动共用同一个接口(dash_display.h 的三个函数),所以
 // dash_ui.cpp 一行都不用改 —— 这正是当初把它抽成接口的目的。
 //
 // ------------------------------------------------------------
-// ★★ 先读这一段:这一版框架的 esp_lcd **是旧的**,双屏方案被它卡住
+// ★★ 2026-09-24:这一版是**换栈之后**的驱动(撕裂的根治)
 //
-// 本项目用的 Espressif32 平台自带的 esp_lcd_panel_rgb.h(全部 4 个芯片目录
-// 都是同一份,120 行)只有:
-//     esp_lcd_new_rgb_panel(cfg, &panel)
-//     cfg.on_frame_trans_done      ← 每帧转移完成回调(单个,不是回调表)
-//     cfg.flags.fb_in_psram        ← 帧缓冲放 PSRAM
-//     esp_lcd_panel_draw_bitmap()  ← 把内容 **memcpy 进面板自己的那块 fb**
-// **没有** num_fbs / esp_lcd_rgb_panel_get_frame_buffer() /
-// esp_lcd_rgb_panel_register_event_callbacks() / bounce buffer ——
-// 这些是 ESP-IDF 5.x 才有的。
+// 上一轮把撕裂的**结构性根因**查清了(记录在 docs/RGB-PANEL-2.8C.md 第 5/9 节):
+//   旧栈(官方 espressif32 7.1.3 = arduino-esp32 **2.0.17** / IDF 4.4 系)自带的
+//   `esp_lcd_panel_rgb.h` 是**旧的精简版**(129 行),只有
+//     · 单个 `cfg.on_frame_trans_done` 回调
+//     · 一块由驱动分配的 framebuffer(`esp_lcd_panel_draw_bitmap` 往它里面 memcpy)
+//   **没有** `num_fbs` / `esp_lcd_rgb_panel_get_frame_buffer()` /
+//   `esp_lcd_rgb_panel_register_event_callbacks()` / bounce buffer
+//   ⇒ 只能"一边扫描一边往同一块 fb 里写",**撕裂是结构性的**,再怎么调时机都是
+//     "把缝挪到别处"(上一轮实测:8KB 定额 + 每块等消隐期 ⇒ 从花屏变成
+//     "一条横扫的缝",整屏刷新还要 0.85 秒)。
 //
-// 为什么这条决定了双屏能不能做:
-//   两块 480×480 屏要共用一条 16 位数据总线(S3 没有 40 根脚给两条独立总线),
-//   只能**轮流发帧**:这一帧给左屏、下一帧给右屏,选通脚跟着翻。
-//   而"轮流"要求 DMA 能在**两块帧缓冲之间自动切换** —— 也就是 num_fbs=2 +
-//   拿到两块 fb 的地址 + 帧切换回调。这一版框架**三样都没有** ✗
-//   面板自己那块 fb 同一时刻只装得下一块屏的画面,硬做就会出现
-//   "两块屏轮流显示对方的画面"(每帧 16ms 的鬼影)。
+// 现在这份平台是 **pioarduino espressif32 55.03.39 = arduino-esp32 3.3.9 +
+// ESP-IDF 5.5.4**(只换 [env:esp32s3-rgb] 这一条 env,见 platformio.ini 那段),
+// IDF 5.5 的 `esp_lcd_panel_rgb.h` 有那三样 ⇒ 换成**双缓冲 + vsync 换帧**:
 //
-// ⇒ 所以本文件现在实现的是 **单屏**版本(下面),它能直接跑通一块 480×480;
-//   双屏有两条出路,二选一(都不需要推翻现有代码):
-//     ① **换构建**:用带 ESP-IDF 5.x esp_lcd 的构建(pioarduino 新版平台 /
-//        直接用 ESP-IDF 工程)→ 拿到 num_fbs/get_frame_buffer →
-//        一块 RGB 总线 + 硬件 1→2 选通(16 位缓冲 + /OE 选通脚)就能成立,
-//        每块屏 30Hz。**推荐**:C 侧逻辑(本文件的时序、初始化、LVGL 绑定)都能留。
-//     ② **不共用总线**:两块屏各占一组数据线 → 需要 ~40 根 ✗ S3 没有。
+//   · `num_fbs = 2`,`flags.fb_in_psram = 1` ⇒ 驱动在 PSRAM 里分配**两块**
+//     480×480×2B = 450KB 的整屏 fb(`esp_lcd_rgb_panel_get_frame_buffer()` 取地址);
+//   · 驱动只把 **cur_fb_index 那一块**交给 LCD_CAM 的 DMA 连续扫描;
+//   · 我们的 flush 永远往**不在扫的那一块**(back)里画;
+//   · 一次 LVGL 刷新画完之后,用 `esp_lcd_panel_draw_bitmap(panel, 0,0,W,1, back)`
+//     把驱动的 cur_fb_index 指到 back —— 传的指针落在 fb 范围内时,驱动走的是
+//     "draw buffer 就是帧缓冲"那一支(`esp_lcd_panel_rgb.c`:`draw_buf_copy_to_fb
+//     = false`):**它不拷贝**,只改 cur_fb_index,并在 stream_mode 下把 DMA 的
+//     帧缓冲链表重新串到新 fb 上 ⇒ **在下一个帧边界(消隐期)整块换过去**,
+//     换帧那一刻屏幕上只有"上一幅"或"下一幅",不存在半新半旧 ⇒ **无撕裂**。
 //
-// ------------------------------------------------------------
-// 单屏版本怎么工作(与本项目其余部分一致)
-//   · LVGL 用**小 PARTIAL 缓冲**(SRAM 里,不占 PSRAM)渲染;
-//   · flush_cb 里按区域调 esp_lcd_panel_draw_bitmap() —— 只搬变化的区域;
-//   · 第二块屏先用桩(或同一块屏映射成两个 lv_display,见文件末尾的说明)。
+// ★ 为什么坐标给 (0, 0, W, 1) 而不是整屏:那一支里驱动还会对"这次窗口"做一次
+//   cache 回写(`esp_cache_msync`),给整屏就是每次换帧都回写 450KB;我们自己
+//   已经对**真正写过的区域**做过回写(见 blit_area),所以这里只要一行,
+//   把驱动那次回写压到最小 —— 换帧因此是**纯指针操作**,几十微秒。
+//
+// ★★ "写 back 之前"的那道门(wait_swap_settled,看 `swap_wait`/`timeout` 两个计数):
+//   换帧请求是**立刻**改 cur_fb_index 的,但 DMA 要到**下一个帧边界**才真的换过去
+//   —— 也就是说,换帧后的一小段(≤1 帧 = 18MHz 下 15.5ms)里,旧的那块**还在被扫**。
+//   所以下一次 flush 动手之前必须确认那一个边界已经过去,否则那一笔就会落在
+//   正在扫描的块上(又是撕裂)。做法是等 on_vsync 计数越过换帧时的计数:
+//   稳态下 UI 每 200ms 才画一次,这个门**从来不阻塞**(一次比较就过);
+//   开机动画 50Hz 档最坏等一帧。等不到(60ms)就放行并 ++timeout —— 绝不死等。
+//
+// ★ 两块 fb 的"内容一致"是怎么保证的(否则换过去会看到上一轮的残影):
+//   `g_fb_complete[i]` 记"这块 fb 里是不是一整幅完整画面"。往一块**还没完整**的
+//   fb 上画之前,先把另一块(完整的那块)整块拷过来(450KB 一次,只在开机后第一次
+//   换帧之后发生一次)⇒ 之后每块 fb 都等于"上一幅完整画面",局部刷新叠上去
+//   自然就是新的完整画面(见 flush 里那段)。稳态下**不做任何整块拷贝**。
+//
+// 代价与边界(写清楚,别指望它包打天下):
+//   · 换帧延迟 = 最坏 1 帧(18MHz 15.5ms、30MHz 9.3ms),肉眼不可见;
+//   · 整屏刷新 = 450KB 的 CPU→PSRAM 拷贝(实测几十毫秒量级,见 ACCEPTANCE),
+//     而且**不再需要**"按 8KB 分块 + 每块等消隐期"那套节流;
+//   · 双 fb 各 450KB ⇒ 900KB PSRAM 常驻(板上有 8189KB,见自检那行)。
 // ============================================================
 
 #include "dash_display.h"
@@ -48,9 +67,11 @@
 #if defined(DASH_DISPLAY_RGB)
 
 #include <Arduino.h>
+#include <string.h>              // memcpy(往 back fb 里搬像素)
 #include <esp_lcd_panel_io.h>
-#include <esp_lcd_panel_rgb.h>
+#include <esp_lcd_panel_rgb.h>   // ★ IDF 5.5 的版本:num_fbs / register_event_callbacks
 #include <esp_lcd_panel_ops.h>
+#include <esp_cache.h>           // esp_cache_msync():CPU 写过的 PSRAM 要回写给 DMA 看
 #include <driver/spi_common.h>   // SPI2_HOST(初始化命令那条 3 线 SPI 用)
 #include <driver/spi_master.h>   // 裸 spi_device_transmit(见下面第 4 块的说明)
 #include <esp_heap_caps.h>
@@ -152,18 +173,21 @@ static const RgbInitCmd kPanelInit[] = {
 };
 static const size_t kPanelInitCount = sizeof(kPanelInit) / sizeof(kPanelInit[0]);
 
-// ---- 3) 时序:porch **照抄 2.8C 官方例程**;PCLK 取官方 **ESP-IDF** 例程的 18MHz ----
+// ---- 3) 时序:porch **照抄 2.8C 官方例程**;PCLK 见下 ----
 //   像素时钟 = (h_res + 前后沿/脉宽) × (v_res + 前后沿/脉宽) × 刷新率。
-//     · 30MHz:官方 **Arduino** 例程的值(它的 porch 与这里逐项相同),
-//       但那份额例程**开着 bounce buffer**(`bounce_buffer_size_px = 10*480`)。
-//     · 18MHz:官方 **ESP-IDF** 例程的值(`EXAMPLE_LCD_PIXEL_CLOCK_HZ`),
-//       那份例程的 bounce buffer 是**可选项** —— 我们这份旧 esp_lcd **根本没有**
-//       bounce buffer(头文件里没有这个字段,反汇编也确认没有),
-//       ⇒ 取 18MHz 这一档才是"不依赖 bounce buffer"的那个数。
-//   ⇒ 本机:18MHz / ((480+8+10+50) × (480+2+18+8)) = 18e6/548/508 ≈ **64.7 Hz**。
-//   ★ 2026-09-24 实机:30MHz 时**每次画面更新整屏花**(DMA 与 CPU 抢 PSRAM,
-//     FIFO 欠载)—— 详见第 5 块那一段;降到 18MHz 并把写 fb 挪到消隐期之后才干净。
-#define RGB_PIXEL_CLOCK_HZ  (18 * 1000 * 1000)
+//     · 30MHz:官方 **Arduino** 例程的值(porch 与这里逐项相同);
+//     · 18MHz:官方 **ESP-IDF** 例程的值(`EXAMPLE_LCD_PIXEL_CLOCK_HZ`)。
+//   ★ 2026-09-24(旧栈、单 fb):30MHz 下**每次画面更新整屏花** —— 那时候没有
+//     bounce buffer、CPU 和 DMA 抢同一块 PSRAM,写一下就 FIFO 欠载;降到 18MHz
+//     并把写 fb 挪到消隐期之后才干净。
+//   ★ 2026-09-24(本栈、双 fb):**先按 18MHz 实测,再单独试 30MHz**,以实测为准,
+//     不稳就退回 18MHz —— 见 docs/RGB-PANEL-2.8C.md 第 9 节的实测表。
+//   ⇒ 本机当前:**18MHz** / ((480+8+10+50) × (480+2+18+8)) = 18e6/548/508 ≈ **64.7 Hz**。
+//     (串口上 `rgb: vsync=…(+N/s)` 的 N 就是这个量级 —— 它同时是"PCLK 到底跑成
+//      多少"的**第一手判据**:18MHz→约 65、30MHz→约 108。)
+#define RGB_PIXEL_CLOCK_HZ  (18 * 1000 * 1000)   // ← 定案：30MHz 也实测过(帧率 107.8Hz
+                                                   //   对得上)，但同一帧里往 fb 里搬像素的耗时从 19.9ms 涨到 27.2ms
+                                                   //   —— 那正是 PSRAM 争用的信号；本栈没开 bounce buffer，所以定 18MHz（见 docs 第 9 节）
 #define RGB_HSYNC_PULSE     8                    // HPW
 #define RGB_HSYNC_BACK      10                   // HBP
 #define RGB_HSYNC_FRONT     50                   // HFP
@@ -176,153 +200,231 @@ static const size_t kPanelInitCount = sizeof(kPanelInit) / sizeof(kPanelInit[0])
 #define RGB_HSYNC_IDLE_LOW  0
 #define RGB_VSYNC_IDLE_LOW  0
 
+// 一屏的字节数(480×480×RGB565)。两块 fb 各这么大,都在 PSRAM。
+#define RGB_FB_BYTES  ((uint32_t)THEME_DISPLAY_RES * (uint32_t)THEME_DISPLAY_RES * 2u)
+
 // ------------------------------------------------------------
-// 单屏实例
+// 双缓冲状态
 // ------------------------------------------------------------
 static esp_lcd_panel_handle_t g_panel = nullptr;
 static lv_display_t* g_left = nullptr;
 static lv_display_t* g_right = nullptr;
-static volatile uint32_t g_frames = 0;      // 每帧回调里 +1(诊断用)
-static volatile uint32_t g_flush_count = 0;
+static uint8_t* g_fb[2] = {nullptr, nullptr};   // 驱动分配的**两块**整屏 fb(PSRAM)
 
-// LVGL 的绘制缓冲:**放 SRAM**(不是 PSRAM)—— 480×480 全屏缓冲要 450KB,
-// 两块就 900KB;而"部分刷新 + 区域搬进面板 fb"这条路上,LVGL 只需要一条窄缓冲。
-// 一屏 480 像素宽 × 40 行 = 38KB,够 LVGL 分批渲染。
+// 哪一块正在被 DMA 扫描(g_front)、我们往哪一块画(g_back)。
+//   ★ 只在 flush 里改(LVGL 的刷新跑在主循环),ISR 只读不写。
+static uint8_t g_front = 0;
+static uint8_t g_back = 1;
+// 这块 fb 里是不是"一整幅完整画面"。往一块不完整的 fb 上画之前要先从完整的
+// 那块整块拷过来(见 flush 里那段),否则换过去会看到上一轮的残影/花屏。
+static bool g_fb_complete[2] = {false, false};
+
+static volatile uint32_t g_vsync = 0;        // on_vsync 回调计数(= 面板扫描帧数)
+static uint32_t g_swap = 0;                  // 换帧次数(一次 LVGL 刷新 = 一次)
+static uint32_t g_swap_vsync = 0;            // 最近一次换帧时的 vsync 计数
+static uint32_t g_flush_count = 0;           // flush 回调次数
+
+// 诊断:等"换帧那个边界过去"的统计(判据是 timeout 恒为 0)
+static uint32_t g_swap_wait_max_us = 0;
+static uint32_t g_swap_timeout = 0;
+static uint32_t g_skip_count = 0;            // 面板没建起来时直接放行的次数
+
+// 诊断:往 fb 里搬像素(含 cache 回写)的耗时
+static uint32_t g_copy_us_max = 0;
+static uint32_t g_copy_us_sum = 0;
+static uint32_t g_copy_n = 0;
+static uint32_t g_msync_n = 0;               // 顺带:整块补拷(把完整画面同步到另一块)的次数
+
+// 本次刷新覆盖了哪些**整行**(只统计"整行都写了"的,用位图记 —— 480 行 = 15 个 u32)。
+//   它的唯一用途:判断这一次刷新是不是"整屏"(是的话,目标 fb 从此算完整)。
+//   ★ THEME_DISPLAY_RES=480 是 32 的整数倍,所以"全 1"就是"所有行都覆盖"。
+#define RGB_ROW_WORDS  (((int)THEME_DISPLAY_RES + 31) / 32)
+static uint32_t g_rows_full[RGB_ROW_WORDS];
+
+static void rows_reset() {
+  for (int i = 0; i < RGB_ROW_WORDS; ++i) g_rows_full[i] = 0u;
+}
+static void rows_mark(int32_t y1, int32_t y2) {
+  for (int32_t y = y1; y <= y2; ++y) {
+    const int w = (int)(y >> 5);
+    if (w >= 0 && w < RGB_ROW_WORDS) g_rows_full[w] |= (1u << (uint32_t)(y & 31));
+  }
+}
+static bool rows_all() {
+  const uint32_t last_mask = (((uint32_t)THEME_DISPLAY_RES % 32u) != 0u)
+      ? ((1u << ((uint32_t)THEME_DISPLAY_RES % 32u)) - 1u) : 0xFFFFFFFFu;
+  for (int i = 0; i < RGB_ROW_WORDS; ++i) {
+    const uint32_t want = (i == RGB_ROW_WORDS - 1) ? last_mask : 0xFFFFFFFFu;
+    if (g_rows_full[i] != want) return false;
+  }
+  return true;
+}
+
+// 一次刷新的计时(给"开机整屏刷新耗时"那条日志用)
+static uint32_t g_refr_t0_us = 0;
+static uint32_t g_refr_copy_us = 0;
+static uint32_t g_refr_flush_n = 0;
+
+// ------------------------------------------------------------
+// on_vsync:**每帧一次的中断**(IDF 5.5 的 RGB 面板回调表里的一项)
 //
-// ★★ `aligned(LV_DRAW_BUF_ALIGN)` **一个字都不能少**(2026-09-24 实机踩的坑):
-//   LVGL 9.3 的 `lv_display_set_buffers()` 会先校验
-//       buf1 == lv_draw_buf_align(buf1)      // 即 buf1 必须按 LV_DRAW_BUF_ALIGN(=4) 对齐
-//   不满足就**静默 return**(LV_USE_LOG=0 时连一行警告都没有)⇒ 这条缓冲**根本没装上**。
-//   症状极具误导性,四个"看起来都对"的现象同时成立:
-//     · 面板在正常扫描(`rgb: frames` 每秒 +58.5,和理论值分毫不差);
-//     · UI 树齐全(屏幕 12 个子对象、两条弧都在)、LVGL 堆还剩 26KB;
-//     · 主循环、tick、`lv_timer_handler()` 全都照跑;
-//     · 但 **`rgb: flush=0` 永远不涨**、屏全黑。
-//   而 `lv_color_t` 是 uint16_t ⇒ 这个数组**只保证 2 字节对齐**,实测 `misalign=1`。
-//   (同一类坑在桩驱动 `src/dash_display.cpp` 的 `buf_left/buf_right` 上也成立 ——
-//    那份**本轮没动**:它是 esp32dev / 抓帧盒在用的构建,见回报里的"没做的项"。)
-static lv_color_t g_draw_buf[THEME_DISPLAY_RES * 40]
-    __attribute__((aligned(LV_DRAW_BUF_ALIGN)));
-
-// 每帧转移完成:★ 这个回调在**中断上下文**里,只允许"记个数 / 翻个脚"这种动作,
-// 绝不能在这里 memcpy(那正是 draw_bitmap 干的事,必须留给主循环)。
-//
-// ★ 除了计数,它现在还是**唯一的扫描同步信号**(见下面 rgb_flush_cb 里那一大段):
-//   这份精简 esp_lcd **没有** vsync 回调、**没有** bounce buffer、**没有** num_fbs
-//   (头文件里只有 disp_active_low / relax_on_idle / fb_in_psram 三个 flag),
-//   所以"帧结束"这一个中断就是我们把像素写进 fb 之前能等的**唯一**时机。
-static volatile bool g_frame_done = false;   // 帧结束中断置位,主循环消费
-
-static bool IRAM_ATTR on_frame_trans_done(esp_lcd_panel_handle_t panel,
-                                         esp_lcd_rgb_panel_event_data_t* edata,
-                                         void* user_ctx) {
+//   ★ 它是这一版**唯一的**扫描同步信号,只做一件事:计数。
+//   · 计数 g_vsync 就是"面板确实在收帧"的判据(和旧栈的 `frames=` 同一个用途),
+//     同时也是"上一次换帧那个边界过去了没有"的判据(见 wait_swap_settled);
+//   · **绝不在中断里碰显存**(那是 flush 的事),也不能在这里调任何阻塞函数。
+//   ★ 这个回调在**中断上下文**里跑,所以标 IRAM_ATTR(IDF 在
+//     CONFIG_LCD_RGB_ISR_IRAM_SAFE 下会直接拒收不在 IRAM 里的回调)。
+// ------------------------------------------------------------
+static bool IRAM_ATTR on_vsync(esp_lcd_panel_handle_t panel,
+                               const esp_lcd_rgb_panel_event_data_t* edata,
+                               void* user_ctx) {
   (void)panel; (void)edata; (void)user_ctx;
-  ++g_frames;
-  g_frame_done = true;
+  // 不用 `++g_vsync`：C++20 起对 volatile 的自增/复合赋值已弃用（GCC 报 -Wvolatile），
+  // 写开是同一件事，而且只有一个写者（这个 ISR）。
+  g_vsync = g_vsync + 1u;
   return false;   // 没唤醒高优先级任务
 }
 
 // ------------------------------------------------------------
-// 5) **扫描同步**:把"写面板 fb"这一动作推迟到帧结束(≈ 消隐期)之后
+// 换帧的那道门:等"上一次换帧的那个帧边界"过去
 //
-//   ★ 为什么非要有这一段(2026-09-24 实机症状:静态画面正常,**每次画面更新整屏都花**):
-//     这一版驱动**只有一块 framebuffer**,而且它在 **PSRAM**(`fb_in_psram=1`,
-//     480×480×2B=450KB 塞不进内部 SRAM)。旧 API **没有** bounce buffer
-//     —— 而 bounce buffer 恰恰就是为这件事存在的:让 DMA 从**内部 SRAM** 取像素,
-//     把"CPU 写 PSRAM"和"扫描读 PSRAM"彻底解耦。
-//     没有它 ⇒ LCD_CAM 的 DMA 在**整帧有效像素期间**直接从 PSRAM 读(30MHz×2B
-//     = 60MB/s 持续),而 LVGL 一 flush 就由 CPU 往**同一块 PSRAM**里 memcpy
-//     几十 KB(`rgb_panel_draw_bitmap` 里那次 memcpy,**还会触发 cache 回写**,
-//     见反汇编:`rgb_panel_draw_bitmap` 里有一处 `Cache_WriteBack_Addr`)
-//     ⇒ 两边抢同一个 PSRAM 带宽,DMA FIFO 欠载(underrun)⇒ **那一帧整屏花**,
-//       一帧之后自己恢复。症状与"porch/极性配错"的区别就在这里:
-//       配错是**从头花到尾**,欠载是**只在写的那一下花**。
+//   为什么要等:换帧请求(draw_bitmap 指到 back)**立刻**改了驱动的 cur_fb_index,
+//   但 DMA 要到**下一个帧边界**才真的从新 fb 取像素 —— 在那之前旧的那块还在被扫。
+//   这时候如果往"新的 back(= 刚被换下去的那块)"里写,那一笔就落在正在扫描的
+//   显存上 ⇒ 又是一条缝。所以动手前先确认 on_vsync 已经越过换帧时的计数。
 //
-//   ★ 修法(在没有 bounce buffer 的前提下能做到的两件事,都做了):
-//     ① **不欠载**:把写 fb 的时机挪到"帧结束中断之后"——那一刻正好是消隐期,
-//        DMA 不读像素,CPU 独占 PSRAM;写完整帧才轮到有效像素。
-//     ② **留足余量**:PCLK 从 Arduino 例程的 30MHz 降到 **18MHz**
-//        —— 见第 3 块里的说明(18MHz 是官方 **ESP-IDF** 例程的值,那份例程的
-//        bounce buffer 是**可选项**;Arduino 那份 30MHz 是**依赖** bounce buffer 的)。
-//
-//   ★ 代价(写清楚):每次 flush 会多等**一帧**(18MHz 下 15.5ms)。
-//     我们的 UI 每 200ms 才重画一次 ⇒ 完全够用;开机动画那种整屏刷新会慢一点,
-//     但那是"花屏"和"慢一帧"之间很划算的交换。
-//   ★ 兜底:万一帧结束中断没来(面板没起来/被停),20ms 超时后照样写 ——
-//     **绝不能在这里死等**(那会整屏再也不更新)。
-//
-//   ★★ 为什么"等"必须发生在**本函数里**(而不是先返回、过一帧再写):
-//     LVGL 的刷新流程会在 `lv_timer_handler()` 里把这一帧画完并**等 `flush_ready`
-//     清掉 `flushing`**才返回。所以"先 return、稍后再 flush_ready"会把
-//     `lv_timer_handler()` 连同整个主循环**卡死**(实测:BEACON 停在
-//     `step=7(loop: 数据已更新)` 再也不动,`rgb:` 那行一行都不打)。
-//     在回调里同步等一帧是**标准做法**(LVGL 自己的 Linux fbdev 驱动就是
-//     `ioctl(FBIOWAITVSYNC)` 阻塞等垂直同步),这里沿用同一条口径。
-static uint32_t      g_sync_count = 0;       // 诊断:等到了帧结束才写的次数
-static uint32_t      g_timeout_count = 0;    // 诊断:等超时(没等到中断)的次数
-static uint32_t      g_skip_count = 0;       // 诊断:面板没建起来时直接放行的次数
-static uint32_t      g_wait_us_max = 0;      // 诊断:最长等了多少 µs
-static uint32_t      g_copy_us_max = 0;      // 诊断:单次 draw_bitmap 最长多少 µs
-static uint32_t      g_copy_us_sum = 0;      // 诊断:累计写 fb 的 µs
-static uint32_t      g_copy_n = 0;           // 诊断:写 fb 的次数
-static uint32_t      g_chunk_count = 0;      // 诊断:被拆成几块写
-
-// ★ 一次往 fb 里写多少**字节**。这个数是**实测倒推**的,不是拍的:
-//   18MHz 下一帧 15.46ms,消隐期 = (508-480) 行 × 548 / 18e6 ≈ **0.85ms**;
-//   而 `rgb_panel_draw_bitmap` 一边写 PSRAM、LCD_CAM 一边在读(36MB/s),
-//   实测 19200 字节要 **1309µs**(≈14.7MB/s,一行 960B 的 memcpy 一笔一笔来),
-//   已经超过消隐期 ⇒ 会溢进有效像素里,那一块就出现"上下半新旧两帧"的横缝。
-//   8KB 按同一条实测速率约 **560µs**(占窗口 66%),留了三分之一余量。
-//   ⇒ 每次只写一块,**每一块都落在自己的消隐期里**;块与块之间最多差一帧(15ms)。
-#define RGB_FLUSH_MAX_BYTES 8192u
-
-// 等到下一次"帧结束"(= 消隐期开始)。
-//   ★ 必须是**微秒级**的等:消隐期只有 0.85ms,而 `delay(1)` 这种毫秒级轮询
-//     最坏会晚 1ms 才醒 —— 那已经越过消隐期、扎进有效像素里了,撕裂就是这么来的
-//     (2026-09-24:第一版用 delay(1) 自旋,花屏没了但**撕裂**还在,换成自旋后消掉)。
-//   兜底:20ms 还没等到(面板没起来/被停)就照写,绝不死等。
-static void wait_frame_boundary() {
+//   ★ 稳态(UI 每 200ms 画一次)下这个门**一次都不阻塞**:一次比较就过。
+//   ★ 兜底:60ms 还没等到(面板被停/中断没来)就放行并 ++timeout,**绝不死等**
+//     —— 死在这里的后果是整屏再也不更新(上一轮踩过)。
+// ------------------------------------------------------------
+static void wait_swap_settled() {
+  if (g_vsync != g_swap_vsync) return;      // 边界已经过去(绝大多数情况走这一行)
   const uint32_t t0 = micros();
-  while (!g_frame_done) {
-    if ((uint32_t)(micros() - t0) >= 20000u) { ++g_timeout_count; return; }
+  while (g_vsync == g_swap_vsync) {
+    if ((uint32_t)(micros() - t0) >= 60000u) { ++g_swap_timeout; return; }
   }
-  g_frame_done = false;
   const uint32_t waited = (uint32_t)(micros() - t0);
-  if (waited > g_wait_us_max) g_wait_us_max = waited;
-  ++g_sync_count;
+  if (waited > g_swap_wait_max_us) g_swap_wait_max_us = waited;
 }
 
-// LVGL → 面板:**等到帧结束(消隐期)再按块写进面板 fb**。
+// 把一块区域从 LVGL 的绘制缓冲搬进某块 fb,并把这一段回写进 PSRAM。
+//   · LVGL v9 的 px 指向绘制缓冲,区域内容按**区域自己的行距**紧排,而 fb 的行距
+//     是整屏宽(960B)⇒ 区域不是整宽时按行拷;
+//   · ★ cache 回写**不能省**:fb 在 PSRAM、在 cache 后面(驱动自己也这么干:
+//     `esp_lcd_panel_rgb.c` 里拷完就 `esp_cache_msync`),不回写的话 DMA
+//     读到的还是旧内容(症状是"画面里混着上一帧的碎片")。
+static void blit_area(uint8_t* dst_fb, const uint8_t* src,
+                      int32_t x1, int32_t y1, int32_t x2, int32_t y2) {
+  const uint32_t row_bytes = (uint32_t)(x2 - x1 + 1) * 2u;      // 区域一行多少字节
+  const uint32_t fb_stride = (uint32_t)THEME_DISPLAY_RES * 2u;  // fb 一行多少字节
+  const uint32_t off = (uint32_t)y1 * fb_stride + (uint32_t)x1 * 2u;
+  const uint32_t nbytes = (uint32_t)(y2 - y1 + 1) * row_bytes;
+  if (nbytes == 0u) return;
+  uint8_t* dst = dst_fb + off;
+  if (row_bytes == fb_stride) {
+    memcpy(dst, src, nbytes);                 // 整宽区域:一次拷完
+  } else {
+    for (int32_t y = y1; y <= y2; ++y) {      // 窄区域:按行拷
+      memcpy(dst, src, row_bytes);
+      dst += fb_stride;
+      src += row_bytes;
+    }
+  }
+  esp_cache_msync((void*)(dst_fb + off), nbytes,
+                  ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+}
+
+// 整块补拷:把"完整的那块 fb"整幅搬到目标 fb(开机后第一次换帧之后发生一次)。
+static void sync_full_fb(uint8_t dst_idx, uint8_t src_idx) {
+  const uint32_t t0 = micros();
+  memcpy(g_fb[dst_idx], g_fb[src_idx], RGB_FB_BYTES);
+  esp_cache_msync((void*)g_fb[dst_idx], RGB_FB_BYTES,
+                  ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+  g_copy_us_sum += (uint32_t)(micros() - t0);
+  ++g_copy_n;
+  ++g_msync_n;
+}
+
+// 换帧:把驱动的 cur_fb_index 指到 back —— DMA 会在**下一个帧边界**整块换过去。
+//
+//   ★ 传的指针落在 fb 范围内 ⇒ 驱动走 `draw_buf_copy_to_fb = false` 那一支:
+//     **不拷贝**,只改 cur_fb_index + 在 stream_mode 下重串 DMA 的帧缓冲链表。
+//   ★ 窗口给 (0,0,W,1):那一支里驱动会对"这次窗口"做一次 cache 回写,给整屏
+//     就是每次换帧回写 450KB —— 我们自己已经回写过真正写过的区域了,所以这里
+//     只要一行,让驱动那次回写退化成 960B。换帧本身因此是**几十微秒**的事。
+static void request_swap() {
+  if (g_panel == nullptr || g_fb[0] == nullptr) return;
+
+  // 这一幅画完之后,目标 fb 算不算"完整的一幅画面"?
+  const bool full = rows_all();
+  if (full) g_fb_complete[g_back] = true;
+
+  const uint32_t t0 = micros();
+  esp_lcd_panel_draw_bitmap(g_panel, 0, 0, (int)THEME_DISPLAY_RES, 1, g_fb[g_back]);
+  const uint32_t dt = (uint32_t)(micros() - t0);
+
+  g_front = g_back;
+  g_back = (uint8_t)(1u - g_front);
+  g_swap_vsync = g_vsync;      // 从现在起,"下一个 vsync"就是换帧生效的那个边界
+  ++g_swap;
+  if (dt > g_copy_us_max) g_copy_us_max = dt;   // 换帧本身也记进最大值(它极小)
+
+  if (full) {
+    // 整屏刷新:把"从第一块 flush 到换帧"这段耗时打出来 —— 这就是
+    // "开机整屏刷新耗时"那个数(见 ACCEPTANCE / docs 第 9 节)。
+    dash_logf("rgb: 整屏刷新 %.1fms(块=%u 拷贝%.1fms 数据%.0fKB) 换帧在下一个vsync\n",
+                  (double)(micros() - g_refr_t0_us) / 1000.0,
+                  (unsigned)g_refr_flush_n, (double)g_refr_copy_us / 1000.0,
+                  (double)RGB_FB_BYTES / 1024.0);
+  }
+  rows_reset();
+  g_refr_copy_us = 0;
+  g_refr_flush_n = 0;
+}
+
+// LVGL → 面板:把这一块搬进 **back** fb;一次刷新的最后一块再请求换帧。
 static void rgb_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px) {
   ++g_flush_count;
-  if (g_panel == nullptr) {          // 没面板:直接放行,别把 LVGL 卡死
+  if (g_panel == nullptr || g_fb[0] == nullptr) {   // 没面板:直接放行,别把 LVGL 卡死
     ++g_skip_count;
     lv_display_flush_ready(disp);
     return;
   }
+  if (g_refr_flush_n == 0) g_refr_t0_us = micros();   // 本次刷新的第一块:起表
+  ++g_refr_flush_n;
 
-  // LVGL v9 的 px 指向绘制缓冲,区域内容按**区域自己的行距**紧排
-  // (见 dash_display.cpp 预览驱动里那三条踩坑记录 —— 同一个坑),
-  // 而 `rgb_panel_draw_bitmap` 要的正是"区域起点 + 区域行距"的指针 ⇒ 直接给;
-  // 分块时按行数把源指针往后推。
-  const uint32_t row_bytes = (uint32_t)(area->x2 - area->x1 + 1) * 2u;
-  // 按**字节**定额算每次写几行(窄区域可以多写几行,宽区域少写几行)
-  uint32_t rows_per_chunk = RGB_FLUSH_MAX_BYTES / (row_bytes ? row_bytes : 1u);
-  if (rows_per_chunk == 0) rows_per_chunk = 1;
+  // ① 裁剪(LVGL 不该给越界的区域,这里只是不信任输入)
+  int32_t x1 = area->x1, y1 = area->y1, x2 = area->x2, y2 = area->y2;
+  if (x1 < 0) x1 = 0;
+  if (y1 < 0) y1 = 0;
+  if (x2 > (int32_t)THEME_DISPLAY_RES - 1) x2 = (int32_t)THEME_DISPLAY_RES - 1;
+  if (y2 > (int32_t)THEME_DISPLAY_RES - 1) y2 = (int32_t)THEME_DISPLAY_RES - 1;
+  if (x2 < x1 || y2 < y1) { lv_display_flush_ready(disp); return; }
 
-  for (int32_t y = area->y1; y <= area->y2; y += (int32_t)rows_per_chunk) {
-    int32_t y2 = y + (int32_t)rows_per_chunk - 1;
-    if (y2 > area->y2) y2 = area->y2;
-    wait_frame_boundary();                       // ← 消隐期从这里开始
-    const uint32_t c0 = micros();
-    esp_lcd_panel_draw_bitmap(g_panel, area->x1, y, area->x2 + 1, y2 + 1,
-                              px + (uint32_t)(y - area->y1) * row_bytes);
-    const uint32_t dt = (uint32_t)(micros() - c0);
-    g_copy_us_sum += dt;
-    ++g_copy_n;
-    ++g_chunk_count;
-    if (dt > g_copy_us_max) g_copy_us_max = dt;
+  // ② 动手之前:确认上一次换帧的那个边界已经过去(见 wait_swap_settled)
+  wait_swap_settled();
+
+  // ③ 目标 fb 还不完整 ⇒ 先把完整的那块整幅搬过来(开机后只发生一次)
+  if (!g_fb_complete[g_back] && g_fb_complete[g_front]) {
+    sync_full_fb(g_back, g_front);
+    g_fb_complete[g_back] = true;
   }
+
+  // ④ 搬像素(只往 back 写 ⇒ 不碰正在扫描的那块 ⇒ 无撕裂)
+  const uint32_t c0 = micros();
+  blit_area(g_fb[g_back], px, x1, y1, x2, y2);
+  const uint32_t dt = (uint32_t)(micros() - c0);
+  g_copy_us_sum += dt;
+  g_refr_copy_us += dt;
+  ++g_copy_n;
+  if (dt > g_copy_us_max) g_copy_us_max = dt;
+
+  // ⑤ 记"这一行是整行写的"(整屏判据用)
+  if (x1 == 0 && x2 == (int32_t)THEME_DISPLAY_RES - 1) rows_mark(y1, y2);
+
+  // ⑥ 一次刷新的最后一块:请求换帧(vsync 边界整块换过去)
+  if (lv_display_flush_is_last(disp)) request_swap();
+
   lv_display_flush_ready(disp);
 }
 
@@ -369,10 +471,11 @@ static void tca9554_set(uint8_t bit, bool high) {
   tca9554_write(TCA9554_REG_OUTPUT, g_exio_out);
 }
 
-// 背光:PWM 走 LEDC。★ 这块框架是 arduino-esp32 **2.0.17**,没有 3.x 的
-// `ledcAttach(pin,freq,bits)` —— 2.x 是 ledcSetup(通道) + ledcAttachPin(脚) 两步。
-// 例程用 20kHz / 10 位 / 50% 占空比,这里照抄(频率落在人耳外,不会听见啸叫)。
-#define RGB_BL_LEDC_CH   1
+// 背光:PWM 走 LEDC。★ 这块框架是 arduino-esp32 **3.3.9**,LEDC 的 API 在 3.x
+// 换过一次:2.x 是 `ledcSetup(通道,频率,位数)` + `ledcAttachPin(脚,通道)` 两步,
+// 3.x 合成一步 **`ledcAttach(脚, 频率, 位数)`**,之后 `ledcWrite(脚, 占空比)`
+// (按**脚**寻址,不再是我们自己挑通道)。★ 频率/位数/占空比一个字没变:
+// 例程用 20kHz / 10 位 / 50%,这里照抄(频率落在人耳外,不会听见啸叫)。
 #define RGB_BL_LEDC_HZ   20000
 #define RGB_BL_LEDC_BITS 10
 #define RGB_BL_DUTY      512    // 10 位的一半 ≈ 50%
@@ -448,8 +551,8 @@ void dash_display_init() {
 
   // ---- RGB 并口 ----
   esp_lcd_rgb_panel_config_t cfg = {};
-  // ★ 18MHz 走 PLL160M(160/18≈8.89,分频器带小数部分,能凑准);
-  //   30MHz 那一档才需要 PLL240M(240/8=30)。换了 pclk 记得一起换这一行。
+  // ★ 18MHz 走 PLL160M(160/18≈8.89,分频器带小数部分,能凑准)。
+  //   换了 pclk 记得一起看这一行:30MHz 也在这个源上试过(见文件头第 3 块)。
   cfg.clk_src = LCD_CLK_SRC_PLL160M;
   cfg.timings.pclk_hz = RGB_PIXEL_CLOCK_HZ;
   cfg.timings.h_res = THEME_DISPLAY_RES;
@@ -464,8 +567,12 @@ void dash_display_init() {
   cfg.timings.flags.hsync_idle_low = RGB_HSYNC_IDLE_LOW;
   cfg.timings.flags.vsync_idle_low = RGB_VSYNC_IDLE_LOW;
   cfg.data_width = 16;                    // RGB565
-  cfg.psram_trans_align = 64;
-  cfg.sram_trans_align = 4;
+  cfg.bits_per_pixel = 16;
+  // ★★ 就是这两行把撕裂根治掉的(旧栈里这两个字段**根本不存在**,见文件头):
+  cfg.num_fbs = 2;                        // 两块整屏 fb(各 450KB,在 PSRAM)
+  cfg.flags.fb_in_psram = 1;
+  // ★ IDF 5.5 里 `psram_trans_align`/`sram_trans_align` 已经 deprecated(同一个
+  //   union 的 `dma_burst_size`);不写就是驱动默认值,别再去写那两个旧名字。
   cfg.hsync_gpio_num = RGB_PIN_HSYNC;
   cfg.vsync_gpio_num = RGB_PIN_VSYNC;
   cfg.de_gpio_num = RGB_PIN_DE;
@@ -473,8 +580,6 @@ void dash_display_init() {
   cfg.disp_gpio_num = -1;                 // 背光/显示使能另接 MOSFET(见 PINOUT)
   const int data_pins[16] = RGB_DATA_GPIOS;
   for (int i = 0; i < 16; ++i) cfg.data_gpio_nums[i] = data_pins[i];
-  cfg.on_frame_trans_done = on_frame_trans_done;
-  cfg.flags.fb_in_psram = 1;              // ★ 480×480×2B = 450KB,只能放 PSRAM
 
   esp_err_t err = esp_lcd_new_rgb_panel(&cfg, &g_panel);
   if (err != ESP_OK || g_panel == nullptr) {
@@ -484,26 +589,62 @@ void dash_display_init() {
     return;
   }
 
+  // ★ on_vsync 必须在 `esp_lcd_panel_init()` **之前**注册:`init` 里就开 DMA/开扫描,
+  //   注册晚了几帧也无所谓,但"先注册、后起扫"顺序更干净。
+  esp_lcd_rgb_panel_event_callbacks_t cbs = {};
+  cbs.on_vsync = on_vsync;                // 每帧一次(诊断 + 换帧边界的判据)
+  err = esp_lcd_rgb_panel_register_event_callbacks(g_panel, &cbs, nullptr);
+  if (err != ESP_OK) {
+    dash_logf("rgb: on_vsync 回调注册失败 err=%d(换帧的边界判据就没有了)\n", (int)err);
+  }
+
   // ★★★ 这两行**不能省**:`esp_lcd_new_rgb_panel()` 只是把面板对象建起来,
   //   真正**开 DMA / 启动 LCD_CAM 连续扫描**的是 `esp_lcd_panel_init()`。
   //   少了它,面板一个像素都不发 —— 而症状极具误导性:
   //     · 串口一切正常、"rgb: 已就绪"照打、`draw_bitmap()` 也照抄进 fb;
   //     · 屏是**纯黑**;
-  //     · 唯一能看出来的数字是每秒那行 `rgb: frames=0(+0/s)`
-  //       (frames 由 EOF 中断里的回调累加,没扫描就永远是 0)。
+  //     · 唯一能看出来的数字是每秒那行 `rgb: vsync=0(+0/s)`
+  //       (vsync 由 VSYNC 中断里的回调累加,没扫描就永远是 0)。
   //   2026-09-24 第一次烧上 2.1 板时踩的正是这一条(骨架原稿漏了这两行,
   //   它是照 IDF 5.x 的习惯写的;官方例程 Display_ST7701.cpp 结尾有这两句)。
   //   `esp_lcd_panel_reset()` 对 RGB 面板是空操作(没有独立复位脚,
-  //   复位走的是 EXIO1,前面已经拉过了),留着是为了与例程/iDF 文档一致。
+  //   复位走的是 EXIO1,前面已经拉过了),留着是为了与例程/IDF 文档一致。
   esp_lcd_panel_reset(g_panel);
   esp_lcd_panel_init(g_panel);
 
+  // ---- 拿到**两块** framebuffer 的地址(旧栈没有这个 API,见文件头)----
+  uint32_t fb_count = 0;
+  err = esp_lcd_rgb_panel_get_frame_buffer(g_panel, 2, (void**)&g_fb[0], (void**)&g_fb[1]);
+  if (err != ESP_OK || g_fb[0] == nullptr || g_fb[1] == nullptr) {
+    dash_logf("rgb: 取 framebuffer 失败 err=%d(拿不到双缓冲就没法无撕裂)\n", (int)err);
+    g_fb[0] = g_fb[1] = nullptr;
+  } else {
+    fb_count = 2;
+    // 驱动用 `heap_caps_aligned_calloc` 分配 ⇒ 两块都是**全 0(黑)**;
+    // "完整画面"这个标记因此从 false 起(第一次整屏刷新才会把它置 true)。
+    g_front = 0;
+    g_back = 1;
+    g_fb_complete[0] = g_fb_complete[1] = false;
+    rows_reset();
+  }
+
   // ---- 两个 lv_display:单屏版本先都画到同一块屏上 ----
-  //   ★ 第二块屏到货后,把 g_right 换成它自己的 flush(见上面"双屏出路");
+  //   ★ 第二块屏到货后,把 g_right 换成它自己的 flush(见文件头"双屏出路");
   //     现在这样至少能把"两块屏各自要显示什么"的 UI 逻辑先跑通。
   lv_display_t* d0 = lv_display_create(THEME_DISPLAY_RES, THEME_DISPLAY_RES);
   lv_display_set_flush_cb(d0, rgb_flush_cb);
-  lv_display_set_buffers(d0, g_draw_buf, nullptr, sizeof(g_draw_buf),
+  // LVGL 的绘制缓冲:**内部 SRAM 的小 PARTIAL 缓冲**(480 行里的一小段),
+  // 不是整屏缓冲 —— 渲染完一段就由 flush 搬进 back fb。整屏缓冲没必要:
+  // 450KB×2 已经在 PSRAM 里当 framebuffer 了(见 cfg.num_fbs)。
+  // ★★ `aligned(LV_DRAW_BUF_ALIGN)` **一个字都不能少**(2026-09-24 实机踩的坑):
+  //   LVGL 9.3 的 `lv_display_set_buffers()` 会先校验
+  //       buf1 == lv_draw_buf_align(buf1)      // 即 buf1 必须按 LV_DRAW_BUF_ALIGN(=4) 对齐
+  //   不满足就**静默 return**(LV_USE_LOG=0 时连一行警告都没有)⇒ 这条缓冲**根本没装上**。
+  //   症状:面板在扫(`vsync` 每秒 +64.7,分毫不差)、UI 树齐全,但 `flush=0`、屏全黑。
+  //   而 `lv_color_t` 是 24 位(3 字节)⇒ 这个数组只保证 2 字节对齐,实测 misalign=1。
+  static lv_color_t draw_buf[THEME_DISPLAY_RES * 40]
+      __attribute__((aligned(LV_DRAW_BUF_ALIGN)));
+  lv_display_set_buffers(d0, draw_buf, nullptr, sizeof(draw_buf),
                          LV_DISPLAY_RENDER_MODE_PARTIAL);
   g_left = d0;
   g_right = d0;
@@ -511,46 +652,62 @@ void dash_display_init() {
   // ---- ③ 背光最后开 ----
   //   放在这里而不是开头,是为了"先有画面、再点亮":反过来的话,初始化那 600ms
   //   里屏是亮的但没内容(白/雪花),看起来像花屏,容易误判。
-  ledcSetup(RGB_BL_LEDC_CH, RGB_BL_LEDC_HZ, RGB_BL_LEDC_BITS);
-  ledcAttachPin(RGB_PIN_BL, RGB_BL_LEDC_CH);
-  ledcWrite(RGB_BL_LEDC_CH, RGB_BL_DUTY);
+  ledcAttach((uint8_t)RGB_PIN_BL, (uint32_t)RGB_BL_LEDC_HZ, (uint8_t)RGB_BL_LEDC_BITS);
+  ledcWrite((uint8_t)RGB_PIN_BL, (uint32_t)RGB_BL_DUTY);
 
   dash_logf("rgb: RGB565 %dx%d pclk=%uHz 数据位=%d 已就绪(第二块屏待接)\n",
                 (int)THEME_DISPLAY_RES, (int)THEME_DISPLAY_RES,
                 (unsigned)RGB_PIXEL_CLOCK_HZ, 16);
+  dash_logf("rgb: 双framebuffer num_fbs=%u fb0=%p fb1=%p(各 %uKB PSRAM) "
+            "on_vsync=已注册 ⇒ vsync 边界换帧(无撕裂)\n",
+                (unsigned)fb_count, (void*)g_fb[0], (void*)g_fb[1],
+                (unsigned)(RGB_FB_BYTES / 1024u));
   dash_logf("rgb: 板=微雪 ESP32-S3-LCD-2.8C(非触控) ST7701 RST=EXIO1 CS=EXIO3 "
             "BL=GPIO%d/PWM%d @%u%%\n",
                 (int)RGB_PIN_BL, (int)RGB_BL_LEDC_HZ,
                 (unsigned)(RGB_BL_DUTY * 100u / (1u << RGB_BL_LEDC_BITS)));
+
+  // 诊断：双 fb 拿到手之后再报一次空闲内存 —— framebuffer 是 2×450KB，
+  // 这一步才看得出“双缓冲到底吃掉多少 PSRAM”（自检那行跑在显示初始化之前）。
+  dash_logf("rgb: 双fb 之后 空闲 PSRAM=%uKB heap=%uKB(内部)\n",
+                (unsigned)(ESP.getFreePsram() / 1024u),
+                (unsigned)(ESP.getFreeHeap() / 1024u));
 }
 
 lv_display_t* dash_display_left() { return g_left; }
 lv_display_t* dash_display_right() { return g_right; }
 
 // 每秒报一次帧率 —— 实屏调试时这是判断"面板到底在不在收帧"的第一手信息
-// (和 VAN 那条 edges/frames 的诊断是同一个思路)。
-//   sync/timeout 是"写 fb 有没有真的等到消隐期"的判据:
-//   `sync` 跟着 flush 一起涨、`timeout` 一直是 0 ⇒ 同步在起作用。
+// (和 VAN 那条 edges/frames 的诊断是同一个思路),同时也是**换帧健不健康**的判据:
+//   · `vsync` 每秒 +N:N≈65 ⇒ PCLK 真跑在 18MHz(N≈108 ⇒ 30MHz);
+//   · `swap` 跟着 flush 涨:每次 LVGL 刷新都在帧边界换了一次;
+//   · **`timeout=0`**:等"换帧那个边界过去"从来没有靠超时放行;
+//   · `copy_max/copy_avg`:一次往 back fb 搬像素(含 cache 回写)要多久;
+//   · `fb=front/back`:当前哪块在扫、往哪块画。
 void dash_display_poll() {
   static uint32_t last_ms = 0;
-  static uint32_t last_frames = 0;
-  static uint32_t last_sync = 0;
+  static uint32_t last_vsync = 0;
+  static uint32_t last_swap = 0;
   static uint32_t last_copy_sum = 0;
   static uint32_t last_copy_n = 0;
   const uint32_t now = millis();
   if (now - last_ms < 1000) return;
-  const uint32_t f = g_frames;
+  const uint32_t v = g_vsync;
+  const uint32_t sw = g_swap;
   const uint32_t dn = g_copy_n - last_copy_n;
   const uint32_t dsum = g_copy_us_sum - last_copy_sum;
-  dash_logf("rgb: frames=%u(+%u/s) flush=%u sync=%u(+%u/s) timeout=%u "
-            "chunk=%u copy_max=%uus copy_avg=%uus wait_max=%uus\n",
-                (unsigned)f, (unsigned)(f - last_frames), (unsigned)g_flush_count,
-                (unsigned)g_sync_count, (unsigned)(g_sync_count - last_sync),
-                (unsigned)g_timeout_count, (unsigned)g_chunk_count,
+  dash_logf("rgb: vsync=%u(+%u/s) swap=%u(+%u/s) flush=%u copy_max=%uus "
+            "copy_avg=%uus swap_wait_max=%uus timeout=%u fb=%u/%u msync=%u\n",
+                (unsigned)v, (unsigned)(v - last_vsync),
+                (unsigned)sw, (unsigned)(sw - last_swap),
+                (unsigned)g_flush_count,
                 (unsigned)g_copy_us_max, (unsigned)(dn ? (dsum / dn) : 0u),
-                (unsigned)g_wait_us_max);
-  last_frames = f;
-  last_sync = g_sync_count;
+                (unsigned)g_swap_wait_max_us,
+                (unsigned)g_swap_timeout,
+                (unsigned)g_front, (unsigned)g_back,
+                (unsigned)g_msync_n);
+  last_vsync = v;
+  last_swap = sw;
   last_copy_sum = g_copy_us_sum;
   last_copy_n = g_copy_n;
   last_ms = now;

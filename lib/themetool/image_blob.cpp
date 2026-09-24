@@ -141,6 +141,7 @@ uint8_t imageBlobFindRole(const uint8_t* blob, uint32_t len,
 
 #include <Arduino.h>
 #include "esp_partition.h"
+#include "esp_idf_version.h"   // ESP_IDF_VERSION:只为下面那处 memory 枚举的类型适配
 
 const uint8_t* imageBlobLoad(uint32_t* blob_len) {
   if (blob_len) *blob_len = 0;
@@ -156,13 +157,27 @@ const uint8_t* imageBlobLoad(uint32_t* blob_len) {
   // 只读映射:像素直接从 flash 取,不占 DRAM。
   // LVGL 在 LV_IMAGE_SRC_VARIABLE 路径不会复制像素(见 image_blob.h),
   // 所以这里指过去的指针在整个运行期都有效。
-  // ★ 常量名是 SPI_FLASH_MMAP_DATA(esp_spi_flash.h),不是 ESP_PARTITION_MMAP_*。
   // ★ handle 存成 static:映射在我们这里活到重启为止,绝不能让它被回收 ——
   //   否则那块虚拟地址会被别的 mmap 复用,LVGL 读到的就是别人的数据。
-  static spi_flash_mmap_handle_t s_handle = 0;
   const void* mapped = nullptr;
+  // ★★ 2026-09-24(换栈到 ESP-IDF 5.5 时唯一的**类型**适配,值与语义都没变):
+  //   IDF 5.x 把这一对类型/常量从 `spi_flash_*` 挪到了 `esp_partition_*` 名下:
+  //     · 句柄:`spi_flash_mmap_handle_t` → `esp_partition_mmap_handle_t`(都是 uint32_t)
+  //     · memory 参数:`spi_flash_mmap_memory_t`/`SPI_FLASH_MMAP_DATA`
+  //       → `esp_partition_mmap_memory_t`/`ESP_PARTITION_MMAP_DATA`(都是 0 = data 区)
+  //   5.x 里 `spi_flash_mmap_handle_t` **已经不存在**(`esp_partition.h` 不再带它)
+  //   ⇒ 直接用旧名字会 `does not name a type`。两个枚举还是**不同类型**,
+  //   C++ 不允许互相隐式转换 ⇒ 名字也要跟着换。
+  //   映射的还是同一块只读 data 区,行为一个字没变。
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+  static esp_partition_mmap_handle_t s_handle = 0;
+  const esp_partition_mmap_memory_t kMmapMemory = ESP_PARTITION_MMAP_DATA;
+#else
+  static spi_flash_mmap_handle_t s_handle = 0;
+  const spi_flash_mmap_memory_t kMmapMemory = SPI_FLASH_MMAP_DATA;
+#endif
   const esp_err_t err = esp_partition_mmap(
-      part, 0, part->size, SPI_FLASH_MMAP_DATA, &mapped, &s_handle);
+      part, 0, part->size, kMmapMemory, &mapped, &s_handle);
   if (err != ESP_OK) {
     dash_logf("image: mmap 失败 (%d)\n", (int)err);
     return nullptr;

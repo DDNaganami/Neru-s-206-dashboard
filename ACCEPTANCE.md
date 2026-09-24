@@ -2884,3 +2884,166 @@ boot anim done (收尾补一次 boot_apply: faceStage=1 → 表情 opa=COVER)
 另记一条容易踩的：LVGL v9 的 `lv_color_t` 是 **24 位**类型（3 字节），
 所以 `lv_color_t buf[480*40]` 实际是 **57,600 字节**，LVGL 据此算出 **60 行**一条带
 （不是 40）—— 填缓冲尺寸时别按 `sizeof(uint16_t)` 想当然。
+
+## 2.8C **撕裂根治**：换到 IDF 5.5（pioarduino）+ 双 framebuffer + vsync 换帧（2026-09-24 实机）
+
+**一句话**：上一轮查明"撕裂是**结构性**的"（单 framebuffer、没有 vsync 翻转、一块 57,600B 的
+flush 区域要跨 8 帧才写完）——本轮**已根治**：`[env:esp32s3-rgb]` 换到带 `num_fbs` / `on_vsync`
+的 esp_lcd（**pioarduino 55.03.39 = arduino-esp32 3.3.9 + ESP-IDF 5.5.4**），LVGL **只往 back fb 画**，
+一次刷新的**最后一块**在 **vsync 边界整块换帧**。开机整屏刷新从 **≈1 秒** 回到 **56.6ms**，
+"8KB 定额 + 每块等消隐期"那套节流**整套删掉**。完整口径（含复核命令）记在
+`docs/RGB-PANEL-2.8C.md` **第 9 节**。
+
+### ① 选的路与理由（平台 / 版本）
+
+* 选 **pioarduino 的 espressif32 分支 `55.03.39`**（= arduino-esp32 **3.3.9** + **ESP-IDF 5.5.4**，
+  `framework-arduinoespressif32@3.3.9` / `framework-arduinoespressif32-libs@5.5.4+sha.735507283d` /
+  `toolchain-xtensa-esp-elf@14.2.0`）。**保留 Arduino 框架** ⇒ 应用层（`main.cpp`、`dash_ui.cpp`、
+  `lib/*`）**一行都没改**，只做 API 适配（见 ⑥）。
+  **纯 ESP-IDF 方案被否**：要把整个 Arduino 应用层（LVGL 绑定、Serial/Timer/Wire 用法、
+  编译开关体系）重写一遍，与本轮目标无关，风险也不成比例。
+* **只动 `[env:esp32s3-rgb]` 一条 env**：
+  `platform = https://github.com/pioarduino/platform-espressif32/releases/download/55.03.39/platform-espressif32.zip`
+  （写 **URL** 而不是 `espressif32@55.03.39`：pioarduino 不在官方 registry 里，用 URL 才能靠
+  `spec.uri` **精确认出**它，而不是靠"版本最高的那个 espressif32"这条会误伤别的 env 的规则。）
+* ★★ **`[env:esp32s3]`（抓帧盒）的平台与行为一个字没变**：它仍是官方 **`espressif32@7.1.3`**
+  （arduino-esp32 2.0.17），只把版本**显式钉住**。为什么必须钉：PlatformIO 对**不带版本**的
+  `espressif32` 取"已安装里**版本号最高**的那个"（`platformio/package/manager/base.py` 的
+  `get_package`：`pkg.metadata.version > best.metadata.version`）⇒ 两套平台共存时**不钉就会被
+  静默升到 arduino-esp32 3.x**，那正是红线。钉住之后行为不变的**证据**：`esp32s3` 与 `esp32dev`
+  的 RAM/Flash 与上一轮**逐位相同**（见 ⑤）。
+* `[env:esp32s3-spi]`（240 DualEye 那条 SPI 驱动，`esp_lcd_panel_io_spi`）extends `esp32s3`
+  ⇒ 仍在旧平台；**这个驱动一个字节都没动** ✓。
+* ★ **代价（实测，写清楚）**：两套平台的 `framework-arduinoespressif32` **共用同一个
+  packages 目录名**（pioarduino 的 spec 是自定义名 `framework-arduinoespressif32=<url>`，
+  `_install_tmp_pkg` 对自定义名一律 `overwrite` 到不带版本的那个目录），所以**交替构建**
+  `esp32s3-rgb` 与 `esp32s3/esp32dev` 时，后者的框架包会被重装一次（从 PlatformIO 的本地
+  下载缓存解包，**不走网络**）：实测 `esp32dev` 那次构建 **168s**、`esp32s3` **198s**
+  （含工具链）。要两边都频繁构建，就让其中一边用独立的 `PLATFORMIO_CORE_DIR`。
+  同一条也写在 `platformio.ini` 那段注释里。
+
+### ② 撕裂的客观证据（COM6 原始串口行，18MHz 定案固件）
+
+```
+psram : 8187 KB 可用 / 8192 KB 总
+heap  : 205 KB
+rgb: RGB565 480x480 pclk=18000000Hz 数据位=16 已就绪(第二块屏待接)
+rgb: 双framebuffer num_fbs=2 fb0=0x3c0d1b20 fb1=0x3c142340(各 450KB PSRAM) on_vsync=已注册 ⇒ vsync 边界换帧(无撕裂)
+rgb: 双fb 之后 空闲 PSRAM=7285KB heap=200KB(内部)
+rgb: 整屏刷新 56.6ms(块=8 拷贝20.0ms 数据450KB) 换帧在下一个vsync
+boot anim done (收尾补一次 boot_apply: faceStage=1 → 表情 opa=COVER)
+rgb: vsync=292(+65/s) swap=51(+5/s) flush=172 copy_max=3012us copy_avg=881us swap_wait_max=8875us timeout=0 fb=1/0 msync=1
+rgb: vsync=357(+65/s) swap=56(+5/s) flush=194 copy_max=3012us copy_avg=897us swap_wait_max=8875us timeout=0 fb=0/1 msync=1
+```
+
+| 判据 | 实测 | 说明 |
+|---|---|---|
+| **`vsync` 回调计数** | **+64~+65/s** | 18e6/(548×508) = 64.7Hz ⇒ 面板在收帧，PCLK 也确实是 18MHz（30MHz 档实测是 +108/s） |
+| **`swap` 换帧计数** | 稳态 **+5/s**（= UI 200ms 一次） | 每一次 LVGL 刷新都**换了一次 fb** |
+| **`fb=`** | 在 `1/0` ↔ `0/1` **来回翻** | 两块 fb 真的在轮换（一直同一个值就说明换帧没生效） |
+| **`timeout`** | **全程 0** | 等"换帧那个帧边界过去"**从来没有**靠超时放行 ⇒ 同步是真在起作用 |
+| `msync` | **1**（不再涨） | 整块补拷只在开机后第一次换帧之后发生一次（设计如此） |
+| `swap_wait_max` | 8875µs | < 一帧 15.5ms ⇒ 与"最坏等一帧"的设计一致 |
+| **开机整屏刷新** | **56.6ms**（旧：≈0.85~1.0 秒 ⇒ 快 ~15 倍） | `块=8`、其中拷贝 20.0ms |
+| 双 fb 的代价 | 空闲 PSRAM 8187KB → **7285KB**（正好 2×450KB） | heap（内部）205KB → 200KB，旧栈是 223/219KB |
+
+### ③ 车主肉眼（**这一条只能人眼判，本轮结束时仍是"待确认"**）
+
+上面的数字能证明"换帧发生在帧边界、且从不靠超时" —— 但**玻璃上有没有缝只有人眼能判**
+（上一轮就是这么说的，这一轮同样不许用数字替代）。请车主看一眼：
+**开机动画的扫表 + 表情显形那 1.1 秒**、以及**稳态下数值跳动的那一瞬**，是否还有横缝。
+
+### ④ 功能回归四项
+
+| 项 | 结果 | 证据（原始串口行 / 外观） |
+|---|---|---|
+| UI 正常 | ✓ | 每秒 `206 dash ok spd=… rpm=… coolant=… face=…`、`BEACON … step=6/7/8`、`SRC-VAN …`、`link: …` 全部照旧 |
+| **表情在**（左右各 5 档） | ✓ | 开机 `boot anim done (收尾补一次 boot_apply: faceStage=1 → 表情 opa=COVER)`；每秒行里 **5 档都在转**：`face=idle/cruise/sport/high/redline`（那个兜底**照旧保留** ✓） |
+| **中继仍通** | ✓ | `tools/serial-capture/relay.ps1 -From sample-log.txt -To COM6 -ReplayLinesOnly -Loop -LineDelayMs 1500 -Seconds 45` ⇒ 设备回 **`SRC speed=van rpm=van coolant=sim intake=sim \| v=105.0km/h 799rpm 80.4C 27.8C`**；中继汇总 `转发 30 行 / 762 字节 ← 11966 字节 / 144 行`；中继期间显示那行**没断**（`vsync=+65/s swap=+5/s timeout=0`） |
+| 外设按现状 | ✓ | TCA9554（RST=EXIO1 / CS=EXIO3）—— 屏点亮本身就是它通的证据；背光 `BL=GPIO6/PWM20000 @50%`（`ledcAttach` 新版 API，频率/位数/占空比未变）；PSRAM **8187KB 可用 / 8192KB 总**；`frames/vsync` 稳定 +64~65/s |
+
+### ⑤ 测试与构建（全部真跑，数字如下）
+
+* **native**：`pio test -e native` ⇒ **234 test cases: 2 skipped, 232 succeeded**（基线不变，0 失败）✓
+* **JS 五套**（`node tools/theme-editor/<file>`）：**71**（gauge-geometry）/ **429**（face-stages）/
+  **259**（theme-json）/ **155**（asset-spec）/ **369**（image-blob-build）全绿 ✓
+  （外加 `syntax-check-pages.js` **12** ✓）
+* **五个固件 env 全部 SUCCESS**：
+
+| env | 平台 | RAM | Flash |
+|---|---|---|---|
+| `esp32dev` | 旧（`espressif32@7.1.3`） | 33.0%（108,084 / 327,680） | 69.5%（728,689 / 1,048,576） |
+| `esp32s3`（抓帧盒） | 旧（`espressif32@7.1.3`，**钉版本**） | 37.6%（123,200 / 327,680） | 71.2%（746,693 / 1,048,576） |
+| `esp32s3-linkloop` | 旧（继承 esp32s3） | 6.4%（21,084 / 327,680） | 28.2%（295,333 / 1,048,576） |
+| `pcpreview` | native | —（宿主机可执行） | — |
+| **`esp32s3-rgb`（本 env）** | **新（pioarduino 55.03.39）** | **48.0%**（157,360 / 327,680） | **84.6%**（887,067 / 1,048,576） |
+
+  ★ `esp32dev` 与 `esp32s3` 的 RAM/Flash 与上一轮记录**逐位相同** ⇒ "抓帧盒那条 env 行为没变"
+  不只是嘴上说的。
+
+### ⑥ 适配中改到的**每一个** `lib/` 或 `src/` 行为点（并说明为什么"逻辑没变、只适配 API"）
+
+**改到的（共 2 个源文件）：**
+
+1. **`src/dash_display_rgb.cpp`（重写，本轮的主角）** —— 换的是**缓冲与提交方式**，不是时序/初始化/引脚：
+   * `cfg.on_frame_trans_done = …`（旧 API 的单回调）→ **删掉**；改用
+     `esp_lcd_rgb_panel_register_event_callbacks(&cbs)` 注册 **`on_vsync`**（IDF 5.x 才有）。
+   * 新增 `cfg.num_fbs = 2` + `cfg.flags.fb_in_psram = 1` + `cfg.bits_per_pixel = 16`；
+     删掉 `cfg.psram_trans_align/sram_trans_align`（IDF 5.5 里这两个字段已 `deprecated`，
+     同一个 union 的 `dma_burst_size` 不写即取驱动默认值）。
+   * `rgb_flush_cb()`：旧版"等帧结束 → 按 8KB 分块 → memcpy 进唯一那块 fb"**整套删除**，
+     改成"memcpy + `esp_cache_msync(C2M)` 进 **back fb**，最后一次 flush 调 `request_swap()`"。
+     **cache 回写的语义一个字没变**（旧版是驱动内部做的，现在由我们显式做，因为写的是自己拿到的 fb）。
+   * LEDC：`ledcSetup(通道,f,bits)` + `ledcAttachPin(脚,通道)` + `ledcWrite(通道,duty)`
+     → **`ledcAttach(脚,f,bits)` + `ledcWrite(脚,duty)`**（arduino-esp32 3.x 的 API 变更，
+     按**脚**寻址、不再自己挑通道）。**频率 20kHz / 10 位 / 占空比 512（50%）一个数都没改。**
+   * `++g_vsync` → `g_vsync = g_vsync + 1u`（C++20 起对 volatile 的自增已弃用，GCC 会报
+     `-Wvolatile`；语义完全相同，写者仍然只有那个 ISR）。
+   * 新增**只读诊断**：初始化末尾多打一行"双 fb 之后的空闲 PSRAM/heap"，整屏刷新时多打一行
+     耗时。**不参与任何逻辑**。
+   * **没有变的东西**（逐项核对过）：41 步 ST7701 初始化表、引脚表、7 个时序宏、
+     3 线 SPI 的 9 位帧写法（`command_bits=1` + `address_bits=8` + `spics_io_num=-1`）、
+     TCA9554 的 RST/CS/蜂鸣器顺序与延时、LVGL 的 PARTIAL 绘制缓冲尺寸与对齐要求、
+     `dash_display.h` 的三个接口、`g_left = g_right` 的单屏口径。
+2. **`lib/themetool/image_blob.cpp`（一处**类型**适配，值与语义未变）** ——
+   `esp_partition_mmap()` 在 IDF 5.x 把句柄与 memory 枚举都挪到了 `esp_partition_*` 名下：
+   `spi_flash_mmap_handle_t` → `esp_partition_mmap_handle_t`（都是 `uint32_t`），
+   `SPI_FLASH_MMAP_DATA` → `ESP_PARTITION_MMAP_DATA`（都是 **0 = data 映射区**；
+   两个枚举在 C++ 里**不能隐式互转**，所以名字必须跟着换）。用
+   `#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5,0,0)` 分流 ⇒ **旧平台的 env 走原来的名字**，
+   两边都编得过、映射的还是同一块只读 data 区。
+
+**没改、而且**编译验证过**不需要改的**（上一轮列的"预期漂移"里有三条其实不成立，如实记）：
+
+* `lib/link/link_phy_uart.cpp`（UART PHY）—— **一个字没改**：`[env:esp32s3-rgb]` 带
+  `-ULINK_PHY_UART`（沿用上一轮的口径：这条构建里 43/44 是"日志+回放口"），所以这个 TU
+  根本不进新平台的构建；而它进的那几条 env（`esp32s3` / `linkloop`）仍在旧平台。
+* `lib/dashcore/dash_log.h` 的 `DASH_LOG_UART0` —— **一个字没改**：`Serial0` 在 arduino-esp32
+  3.3.9 里**仍然存在**（`HardwareSerial.h` 照样声明），`Serial`/`Serial0`/CDC 的判断口径没变。
+* `src/dash_display_spi.cpp` 那段 `esp_lcd_panel_io_spi` —— **一个字没改**（它只属于
+  `[env:esp32s3-spi]`，那条 env 仍在旧平台）。
+* `lib/dashcore/van_phy_gpio.cpp`（`attachInterrupt` / `digitalRead`）、`src/main.cpp`
+  （`ESP.get*` / `esp_partition_find_first` / `esp_timer`）、`lib/themetool/*`、`src/dash_ui.cpp`
+  —— 全部**零改动**，在新平台上直接编过。
+  （`-DBOARD_HAS_PSRAM` 照旧保留；`memory_type = qio_opi` 照旧 → 自检 `psram: 8187KB` ✓）
+
+### ⑦ 本轮没做 / 拿不准的
+
+* **撕裂的"肉眼"确认**：见 ③ —— 数字齐了，**眼睛那一步留给车主**。
+* **PCLK 定 18MHz**（30MHz 实测过：帧率 +108/s、`timeout=0`，但**同一块 fb 的拷贝耗时从 19.9ms
+  涨到 27.2ms** ⇒ PSRAM 争用上升，而本栈没开 bounce buffer ⇒ 有欠载花屏的风险）⇒ **没有理由为了
+  +43Hz 扫描率去冒这个险**。要试只改一个数（`RGB_PIXEL_CLOCK_HZ`），`clk_src` 不用动
+  （`LCD_CLK_SRC_PLL160M` 带小数分频，160/30 也凑得出 30.0MHz；旧注释里"30MHz 必须 PLL240M"
+  是**旧驱动**的口径，已作废）。
+* **bounce buffer 没开**：它能让 DMA 从内部 SRAM 取像素，但与"双 fb + 局部刷新"互斥 ——
+  开了它驱动每帧要 CPU 搬 450KB 进 bounce buffer，CPU 直接被吃光。取舍写在 docs 9.5。
+* **两块屏共用一条总线**那件事**仍未做**（本文件还是单屏版本）—— 但换栈之后**硬阻塞没了**：
+  `num_fbs` / `get_frame_buffer` / 帧切换回调三样都在了，将来做双屏可以直接复用这套
+  back/换帧结构。
+* `tools/theme-editor/theme.json` **没碰**；CRC / SOF / `kSpeedScale=2.56` / VAN 脚极性 **没动**；
+  **没**新开 L 号；真仓库**没**跑 `pio clean`、**没**删 `.pio`；烧写**只认 COM6**（**没**烧 COM7）；
+  构建与烧写都在 `C:\206dash-scratch\Neru`（ASCII 副本）。
+* 本机 PlatformIO 的 Python 原本**校验不了 TLS 证书**（系统根证书在 certifi 里没有 ⇒ 任何
+  `pio` 下载都 `CERTIFICATE_VERIFY_FAILED`）。本轮把 Windows 根证书导成 PEM 合进
+  `C:\.platformio\penv\...\certifi\cacert.pem`（原文件备份为 `cacert.pem.orig`）才拉得下来。
+  ★ 这是**本机工具链**的一处改动，不在仓库里，但下一个人在同一台机器上跑 `pio` 会受益。
