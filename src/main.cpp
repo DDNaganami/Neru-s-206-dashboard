@@ -1060,6 +1060,10 @@ void loop() {
       } else {
         dash_ui_diag_next();
       }
+      // ★ 这一行**只报页号**，不报 fps：`g_ui_fps10` 是**本拍渲染完之后**才更新的
+      //   （见下面那段 EMA）⇒ 在这里读它要么是 0、要么是 200 ms 之前的旧值，
+      //   而那是"看着像 bug"的数字。**上屏那一格**是渲染时读的，所以它是对的；
+      //   要核对它只需要看屏（或控制台里每秒那行 `206 dash ok` 的节奏）。
       dash_logf("diag: %s page=%u/%u\n", dash_ui_diag_open() ? "open" : "closed",
                 (unsigned)(dash_ui_diag_page() + 1u), (unsigned)kDiagPageCount);
     }
