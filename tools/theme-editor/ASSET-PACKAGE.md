@@ -215,14 +215,18 @@ python -m esptool --chip esp32s3 --port COM6 --baud 921600 write_flash 0x254000 
 ## 8. 自测
 
 ```
-node tools/theme-editor/test-asset-package.js
+node tools/theme-editor/test-asset-package.js        # 105 项断言(命令行那一半)
+node tools/theme-editor/test-asset-package-core.js   #  95 项断言(纯字节内核,页面与命令行共用)
 ```
 
-纯 node、无依赖,全部用临时目录里自造的输入,不碰仓库里的任何文件。
-覆盖:布局算术、分区表解析(坏行/重复/不连续)、theme 长度与 JSON 校验、image 包头长度、
-往返逐字节一致、命令行真跑(退出码 0/2/1)、以及"宁可报错不猜"的那一批负例。
+两个都纯 node、无依赖,全部用临时目录里自造的输入,**不碰仓库里的任何文件**。
+合起来覆盖:布局算术、分区表解析(坏行/重复/不连续)、theme 长度与 JSON 校验、
+image 包头长度与清单、往返逐字节一致、命令行真跑(退出码 0/2/1)、
+**"CLI 产物 == 内核产物"(逐字节)**、**"内核里不许出现 `fs`/`path`/`Buffer`/`require`"**
+(页面是 `file://` 静态页,一个 `require` 就白屏),以及"宁可报错不猜"的那一批负例。
 
-★ 这个文件**不在** `syntax-check-pages.js` 里(那份只管 HTML 里的内联脚本,没被改过)。
+★ 这两个文件**都不在** `syntax-check-pages.js` 里(那份只管 HTML 里的内联脚本)。
+页面上那些按钮的端到端验证在**真实浏览器**里做(见第 9 节的验收记录)。
 
 ### 验收记录(车主那两份真文件,只读)
 
@@ -243,10 +247,14 @@ node tools/theme-editor/asset-package.js unpack --in assets.bin --theme-out them
 node -e "const c=require('crypto'),f=require('fs'),h=p=>c.createHash('sha256').update(f.readFileSync(p)).digest('hex');console.log(h('theme.json')===h('theme.copy.json'), h('image.bin')===h('image.copy.bin'))"
 ```
 
-### 页面 UI 还没接
+### 页面 UI 还没接（2026-09-24 已接上 —— 见第 9 节）
+
+> ★ **这一节是当时的记录,现在的情况请看第 9 节**:页面上的按钮已经接好了,
+> 而且与命令行共用同一份内核。下面这段保留下来,是为了留下"当时为什么没接、
+> 卡在哪一条上"的来龙去脉。
 
 **这一轮没有改任何页面**(`index.html` / `image-editor.html` 一个字节都没动 —— 它们当时正被别人改)。
-所以现在这条能力**只能用命令行**:
+所以当时这条能力**只能用命令行**:
 
 - 编辑器页面上的"导出"仍然导出 `theme.json` 与 `image.bin` 两份文件;
 - 想让页面直接给出**一个** `assets.bin`(以及那条刷写命令),需要下一轮在页面上接线
@@ -254,3 +262,96 @@ node -e "const c=require('crypto'),f=require('fs'),h=p=>c.createHash('sha256').u
 - `asset-package.js` 同时给浏览器与 Node 用,但**注意**它用了 `fs` / `path` / `Buffer`
   ⇒ 页面里要么走 Node 侧(如果将来有),要么把 `pack()` 的**纯字节部分**抽出来给浏览器
   (现在的 `pack()` 直接落盘,不是纯函数)。这一条留给接线那一轮决定,本页先记在这里。
+
+---
+
+## 9. 页面上的按钮（2026-09-24 接的，就是上一节说的"下一轮"）
+
+上一节最后一条说的**"把 `pack()` 的纯字节部分抽出来给浏览器"**已经做了,
+而且做得比"抽出来"更彻底:**那一份纯字节逻辑现在只有一处实现,两边共用**。
+
+| 文件 | 是什么 | 谁能跑 |
+|---|---|---|
+| `asset-package-core.js` | **纯字节内核**:布局怎么算、段多长、什么时候报错、报错怎么说。只用 `Uint8Array`/`DataView`/`TextDecoder`,**不许**出现 `fs`/`path`/`Buffer`/`require` | 浏览器(`window.AssetPackageCore`)**与** Node(`require`) |
+| `asset-package.js` | 命令行的**文件那一半**:读写文件、找分区表、打印、退出码。逻辑一行都不重复 | 只有 Node |
+
+```
+②图片页  ─┐
+          ├─→ asset-package-core.js  (packBytes / unpackBytes / computeLayout / checkThemeContent …)
+asset-package.js(CLI) ─┘
+```
+
+两边分叉的后果不是"页面导出的文件难看",而是**页面导出的容器刷上去 image 段整块错位,
+而且不报错** —— 所以"只有一份实现"是这个工具的硬要求,不是代码整洁问题。
+`test-asset-package-core.js` 第 ⑥ 组就是这条的硬证据:**同样两份输入,CLI 真跑一遍产出的
+容器与内核产出的容器 sha256 相同**;浏览器那边另有一条端到端(见下面的验收记录)。
+
+### ②图片页上多了什么
+
+| 位置 | 元素 | 干什么 |
+|---|---|---|
+| `2 · 尺寸与配色` 那一栏下面 | **「⬇ 导出 assets.bin（配色+图片）」** | 把**本页当前配色**与**本页当前的 `image.bin` 产物**合成**一个**文件落盘,文件名与大小写在提示里,并给出**那一条**刷写命令 |
+| 同一行 | **「读入 theme.json / assets.bin」**(原来的「读入 theme.json」) | 三种都收:`assets.bin`(合并容器)/ `theme.json` / `image.bin` |
+| 导入之后多出来 | **图片清单**(张数 / 每张的用途 / 尺寸 / 字节数) | 全来自 image 段自己的清单,不是页面猜的 |
+| 同一处 | **「把图片部分另存为 image.bin」** | 把容器里的 image 段**原样**存出来 ⇒ 想改哪张就单独拿去改 |
+
+**拖放也一样**:拖进来的 `.json` / `.bin` 走**同一条**读取路径(与点按钮选文件没有第二套行为)。
+
+### 配色从哪来（**取不到就明说，绝不用默认值顶替**）
+
+导出用的配色就是**②图片页自己当前那一份** `gTheme` —— 它与 ①配色页存在**同一个**
+`localStorage` 键 `206dash.theme` 上(两页共用,见 README)。所以"在①配色页调好色 →
+回到②图片页导出"这条路是通的。
+
+★ 但**没有配色时(键不存在、本页也没读过主题)会明确提示**
+「请先去 ① 配色页导出一份 theme.json」,**不会**悄悄拿固件默认色打一个容器出来 ——
+那种容器刷上去会把车主已经调好的配色盖掉,而他不会知道为什么。
+
+### 导出→导入**逐字节相同**（为它多留了一份"原始字节"）
+
+`gTheme` 是**解析后的对象**,再 `JSON.stringify` 一遍,键序/缩进/末尾换行都可能与原来不同
+(实测:车主那份 `theme.json` 是 **1388** 字节,重新序列化出来是 **1389** —— 多一个 `\n`,
+但"往返不一致"就是不一致)。所以读入时把**原始字节**留着,导出容器时优先用它:
+
+- `theme.json` → `assets.bin` → `theme.json` 是**原样往返**,一个字节不变;
+- 在本页改过配色(底色 / 弧 / 读数)之后,留的那份就**作废**,导出的自然是当前状态
+  (那才是你要导出的东西)。
+
+浏览器端到端里有一条专门验它:导入容器后 `gTheme` 的原始字节 sha256 与容器里 theme 段相同。
+
+### 偏移**不写死**（页面这半边怎么做的）
+
+命令行是从 `partitions-s3.csv` 现场读的。页面这边**读不到那张表** ——
+`file://` 下 `fetch` 读本地文件会被浏览器拦掉,而这个页面必须能**双击打开**。
+所以页面用 `ImageBlob.TARGETS[]`(image 分区大小,跟着「目标板」走)+ 那对**刻意相同**的偏移:
+
+```
+theme 0x210000 / image 0x254000   ← 经典板与 S3 板同值
+```
+
+出处就是第 1 节引过的 `partitions-s3.csv` 文件头注释
+("THEME / IMAGE OFFSETS ARE DELIBERATELY IDENTICAL TO partitions.csv")。
+换板/换表时改的是 `image-blob-build.js` 那一份数据,页面上没有任何一处另抄一个数
+(`coreForTarget()` 里只有一条注释指向它)。
+
+### 验收记录（真实浏览器:Edge 无头模式 + CDP）
+
+页面是一个**真的** ②图片页(原样搬过来的 DOM + 原样那段内联脚本),在
+`http://127.0.0.1` 上跑(不是 `file://` —— `file://` 下 `localStorage` 按文件隔离,
+两页看不见同一份配色)。**94 项断言全过,页面 JS 报错 0 条**。
+
+| 项 | 值 |
+|---|---|
+| 车主那份 `theme.json`(页面读进来) | 1,388 B `3AC5F92E…C0C8` |
+| 车主那份 `image.bin`(页面读进来) | 1,844,620 B `6FBE3B1A…F510` |
+| **页面**在浏览器里造的容器 | 2,123,148 B **`105BCDC0…3D2A`** |
+| **命令行**对同样两份输入产出的容器 | 2,123,148 B **`105BCDC0…3D2A`** ← ★ 逐字节相同 |
+| 容器里 theme 段 / image 段 | 1,388 B / 1,844,620 B(共 9 张,清单如实列出) |
+| 页面那条刷写命令 | `python -m esptool --chip esp32s3 --port COM6 --baud 921600 write_flash 0x210000 assets.bin` |
+
+导入路径(把**命令行**产出的容器喂给**页面自己的**导入函数):状态显示成功、配色真的被应用
+(底色与颜色选择器都跟着变、并写回本机记录)、图片 9 张的清单逐条列出。
+另有:老 `theme.json` / 老 `image.bin` 仍走老路、乱字节 `.bin` 报人话错、
+主题超 4095 字节被拒(文案与命令行同一套)、导航条 / 老按钮 / `#round-note` / 预览画布全在。
+
+

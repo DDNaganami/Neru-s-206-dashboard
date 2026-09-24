@@ -37,6 +37,21 @@
 两个分区彼此独立：只想换配色就只刷 `theme`，只想换图就只刷 `image`。
 **两种都不需要重新编译固件。**
 
+## ★ 现在可以只导出**一个**文件 `assets.bin`（2026-09-24）
+
+② 图片页多了**「⬇ 导出 assets.bin（配色+图片）」**：配色与图片合成**一个**文件，
+拷一次、刷**一条**命令就完事（偏移 `0x210000` 从分区表取，不是写死的）：
+
+```
+python -m esptool --chip esp32s3 --port COM6 --baud 921600 write_flash 0x210000 assets.bin
+```
+
+导入还是同一个「读入」按钮，它同时认 `assets.bin` / `theme.json` / `image.bin` 三种
+（**老路径一个都没删**）。容器为什么能成立、里面怎么摆、什么时候**必须**回到老办法
+（两份文件两条命令，**仍然有效**）：`ASSET-PACKAGE.md`。
+页面上那个按钮与命令行 `asset-package.js` 跑的是**同一份内核**（`asset-package-core.js`）
+—— 同样输入产出的容器逐字节相同，有单测盯着。
+
 ## ★ 档位口径（2026-09-24）
 
 **最终板是微雪 `ESP32-S3-LCD-2.8C`**：480×480 圆屏（ST7701S，RGB 并口），
@@ -426,6 +441,8 @@ node tools/theme-editor/check-system-status.js sweep preview/frames
 # 二、图片编辑器 `image-editor.html`
 
 双击打开，**拖图片进去 → 选用途 → 导出 `image.bin` → 刷到 image 分区**。
+同一页也能**一次导出 `assets.bin`**（配色 + 图片合成一个文件，一条 `write_flash` 刷完两块分区）
+—— 见上面「现在可以只导出**一个**文件」那一节。
 
 ## ★ 双 2.8C（最终板，= 默认档）的素材规格 —— 现在要做图就照这一节
 

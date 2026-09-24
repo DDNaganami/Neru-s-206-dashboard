@@ -161,7 +161,9 @@
         （尺寸、透明通道、圆形可视区），并给出两屏合成预览与占空间条。</p>
       <p class="kv"><b>什么时候用：</b>要放自己的背景图或表情图时 —— <b>这是唯一的上传入口</b>
         （预览那两页没有上传）。同一页也能改配色并导出 theme.json。</p>
-      <p class="kv"><b>产出：</b><code>image.bin</code> ⇒ 刷 <code>image</code> 分区。</p>
+      <p class="kv"><b>产出：</b><code>image.bin</code> ⇒ 刷 <code>image</code> 分区；
+        <b>也可以一次导出 <code>assets.bin</code></b>（配色 + 图片合成<b>一个</b>文件）
+        ⇒ 一条 <code>write_flash 0x210000 assets.bin</code> 刷完两块分区，只拷一个文件。</p>
       <div class="go"><a href="../theme-editor/image-editor.html">打开图片页 →</a>
         <div class="path">tools/theme-editor/image-editor.html</div></div>
     </div>
@@ -242,12 +244,20 @@
   </p>
 
   <div class="cmdbox">
-<pre><span class="c"># ① 配色 ⇒ theme 分区（COM6 是这台机器上的口，改成你自己的）</span>
+<pre><span class="c"># ⓪ 最省事：配色 + 图片已合成一个文件（②图片页「导出 assets.bin」）</span>
+<span class="c">#    一个文件、一条命令刷完两块分区；偏移 0x210000 = theme 分区的偏移（从分区表取）</span>
+python -m esptool --chip <span class="k">esp32s3</span> --port <span class="k">COM6</span> --baud 921600 write_flash <span class="k">0x210000</span> assets.bin
+
+<span class="c"># ① 配色 ⇒ theme 分区（COM6 是这台机器上的口，改成你自己的）</span>
 python -m esptool --chip <span class="k">esp32s3</span> --port <span class="k">COM6</span> --baud 921600 write_flash <span class="k">0x210000</span> theme.json
 
 <span class="c"># ② 图片 ⇒ image 分区（8 MB）</span>
 python -m esptool --chip <span class="k">esp32s3</span> --port <span class="k">COM6</span> --baud 921600 write_flash <span class="k">0x254000</span> image.bin</pre>
   </div>
+  <p class="hint">
+    ★ ⓪ 是<b>新的</b>、最省事的办法（只拷一个文件）；①② 那两条<b>老办法仍然有效</b>，一个字都没改
+    —— 只改配色或只改图片时它反而更快（容器里有 262 KB 的填充要一起写）。
+  </p>
   <p class="hint">
     ★ <b>端口改成你自己的</b>：<code>COM6</code> 只是这台机器上的值，在设备管理器里看一眼再填。
     2.8C 的刷写与监视走板载 UART（那个 Type-C 口，板载 CH343P）。

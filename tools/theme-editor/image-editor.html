@@ -145,7 +145,7 @@
 </div></div>
 <header>
   <h1>206Dash 图片编辑器</h1>
-  <span class="hint">拖图进来 → 选用途 → 导出 image.bin → 刷到 image 分区（固件不用重编译）</span>
+  <span class="hint">拖图进来 → 选用途 → 导出 image.bin（或一次导出 assets.bin＝配色+图片，刷一条命令）→ 刷到 image 分区（固件不用重编译）</span>
   <span class="grow"></span>
   <button id="btn-add">＋ 添加图片</button>
   <button id="btn-export" class="primary">⬇ 导出 image.bin</button>
@@ -178,8 +178,34 @@
       <div class="row">
         <label>仪表配色</label>
         <button id="btn-theme-export" class="primary">导出 theme.json</button>
-        <button id="btn-load-theme">读入 theme.json</button>
+        <button id="btn-load-theme">读入 theme.json / assets.bin</button>
         <button id="btn-reset-theme" class="tiny">用固件默认</button>
+      </div>
+      <!-- ★ 2026-09-24 新增:「配色 + 图片」的**单文件**导出/导入(车主的需求原话:
+           "theme 和 image 这两个 bin 我觉得最好导出导入的文件可以合并,这样每次
+            只需要拷贝一个文件就完事了")。
+           容器里就是一段连续 flash 的原样拷贝(见 asset-package-core.js 的头注释与
+           ASSET-PACKAGE.md),所以刷写只需要**一条**命令:0x210000 assets.bin。
+           旧的两份文件两条命令**仍然有效**,一个字节都没改 —— 上面那两个按钮还在。 -->
+      <div class="row">
+        <label>合并文件</label>
+        <button id="btn-assets-export" class="primary">⬇ 导出 assets.bin（配色+图片）</button>
+      </div>
+      <div class="hint" id="assets-hint" style="color:var(--dim);font-size:12px">
+        一个文件里同时装着配色与图片 ⇒ 拷一个文件、刷一条命令就够了。
+        导入时就点上面那个「读入 theme.json / assets.bin」——它同时认
+        <code>assets.bin</code>、<code>theme.json</code>、<code>image.bin</code> 三种
+        （老文件照样能读）。<b>老办法（两份文件两条命令）仍然有效。</b>
+      </div>
+      <!-- 导入 assets.bin 之后,"图片那一段读到了什么"写在这里(张数/用途/尺寸/字节数),
+           那是图片包头里**真实存在**的清单,不是页面猜的 —— 所以如实列出来。
+           ★ v1 **不**把每张图还原成可编辑的列表项(那要写解包,留到以后);
+             想改哪张就点下面那个按钮把图片那段原样存成 image.bin,单独处理。 -->
+      <div class="hint" id="assets-info"
+           style="display:none;color:var(--dim);font-size:12px;white-space:pre-line;margin-top:6px"></div>
+      <div class="row" id="assets-image-row" style="display:none">
+        <label>图片部分</label>
+        <button id="btn-assets-image-save" class="tiny">把图片部分另存为 image.bin</button>
       </div>
       <div id="arc-editors"></div>
       <div id="readout-editors"></div>
@@ -322,8 +348,10 @@
 </main>
 
 <input type="file" id="file-img" accept="image/*" multiple style="display:none">
-<!-- 主题文件(弧的配色)：只影响预览，不参与 image.bin -->
-<input type="file" id="file-theme" accept=".json,application/json" style="display:none">
+<!-- 主题文件(弧的配色)：只影响预览，不参与 image.bin
+     ★ 2026-09-24:同一个输入框也用来读**合并容器** assets.bin(accept 里加了 .bin)。
+       两种文件都是"读进来改本页状态",不需要第二个按钮、第二个 input。 -->
+<input type="file" id="file-theme" accept=".json,.bin,application/json,application/octet-stream" style="display:none">
 
 <!-- 打包器:同一份代码在 Node 里跑单测,保证界面导出的 bin 和设备端一致 -->
 <script src="image-blob-build.js"></script>
@@ -337,6 +365,13 @@
 <!-- 主题文件方言解析:固件接受 0xRRGGBB 颜色,JSON.parse 不认识。
      本页用它读入 theme.json,好让弧的配色与真车一致(见下面的说明)。 -->
 <script src="theme-json.js"></script>
+<!-- ★ 2026-09-24 新增:合并容器(assets.bin)的**纯字节内核**。
+     它是 asset-package.js(命令行)与**本页**共用的唯一一份实现 ——
+     布局、段长、报错文字全在它里面;页面上导出的 assets.bin 与命令行导出的
+     逐字节相同(有单测盯着:test-asset-package-core.js)。
+     ★ 这个文件只用 Uint8Array/DataView,不碰 fs/path/Buffer/网络 ⇒ file:// 双击可用。
+     ★ 它要在 theme-json.js **之后**加载(checkThemeContent 里要用到那个全局)。 -->
+<script src="asset-package-core.js"></script>
 <script>
 "use strict";
 
@@ -363,6 +398,17 @@ if (typeof ThemeJson === "undefined") {
     '这个页面必须和 face-stages.js、theme-json.js 放在同一个目录里。' +
     '（下载时别只保存 HTML）</div>';
   throw new Error("theme-json.js missing");
+}
+// ★ 合并容器的纯字节内核(与命令行共用那一份)。它也是 file:// 下必须能找到的文件:
+//   漏拷它的表现是"页面一片空白",所以这里明说文件名与怎么修。
+if (typeof AssetPackageCore === "undefined") {
+  document.body.innerHTML =
+    '<div style="padding:40px;color:#ffb4b4;font:15px sans-serif">' +
+    '找不到 asset-package-core.js。<br><br>' +
+    '这个页面必须和 asset-package-core.js、theme-json.js 放在同一个目录里' +
+    '（它负责把配色与图片合成一个 assets.bin，命令行用的是同一份内核）。' +
+    '（下载时别只保存 HTML）</div>';
+  throw new Error("asset-package-core.js missing");
 }
 
 // ============================================================
@@ -862,6 +908,21 @@ let gThemeSource = "固件默认主题（没改过）";
 // 用户刷新后看到"什么都没变"（实测踩过:水温弧从 145→330 改成 0→180 时）。
 let gThemeBase = null;
 
+// ★ 主题的**原始字节**(只在"这一份主题是从文件/容器里读进来的"时有值)。
+//
+//   为什么要有它:**导出→导入必须逐字节相同**,那是这个工具的核心判据
+//   (见 ASSET-PACKAGE.md 第 7 节最后两行)。而 gTheme 是**解析后的对象** ——
+//   再 stringify 一遍,键的顺序、缩进、末尾那一个换行都可能与原来不同
+//   (实测:车主那份 theme.json 是 1388 字节,重新 stringify 出来是 1389 ——
+//    就多一个 \n,但"往返不一致"就是不一致)。
+//   所以读进来时把原始字节留着,导出容器时**优先用它** —— 这样
+//   theme.json → assets.bin → theme.json 是原样往返,一个字节都不变。
+//   本页一改配色(底色/弧/读数)就把它丢掉,那时导出的是当前状态(应该的)。
+let gThemeSrcBytes = null;
+
+// 把"留着的原始字节"作废:任何一次改动配色之后都必须调它
+function forgetThemeSrcBytes() { gThemeSrcBytes = null; }
+
 // 底色跟着主题走:预览按它合成透明度
 function themeBgHex() {
   return typeof gTheme.bg_color === "number" ? hexOf(gTheme.bg_color) : "#141414";
@@ -926,6 +987,10 @@ function loadThemeText(text, sourceName) {
     // 免得读进来的值在下次刷新时被默认值"改回去"
     gThemeBase = ThemeJson.mergeDefaults(gThemeBase || {}, gThemeBase || {}, t);
     gThemeSource = "theme.json：" + (sourceName || "已读入");
+    // ★ 把**原始文本**的字节留着(见 gThemeSrcBytes 的说明):导出容器时优先用它，
+    //   这样"读进来什么样、导出就什么样",往返逐字节相同。
+    //   ★ 用 TextEncoder 而不是别的编码:设备端读的就是 UTF-8。
+    try { gThemeSrcBytes = new TextEncoder().encode(String(text)); } catch { gThemeSrcBytes = null; }
     saveTheme();
     applyThemeToUi();
     return true;
@@ -979,6 +1044,114 @@ function exportThemeJson() {
         ? "\n⚠ 超过 4096 字节：设备端缓冲只有 4KB（见 theme_store.h），请精简后重试。"
         : "\n大小在设备端 4KB 缓冲限制内，OK。"),
       bytes > 4096 ? "err" : "ok");
+}
+
+// ------------------------------------------------------------
+// 导出 assets.bin —— 配色 + 图片合成**一个**文件（2026-09-24）
+//
+// 车主的需求原话：
+//   "theme 和 image 这两个 bin 我觉得最好导出导入的文件可以合并，
+//    这样每次只需要拷贝一个文件就完事了。"
+//
+// ★ 这里**不自己拼字节**：走 AssetPackageCore.packBytes() —— 与命令行的
+//   asset-package.js 是同一份内核。页面与命令行各写一份的后果不是"文件难看"，
+//   而是**页面导出的容器刷上去 image 段整块错位，而且不报错**，所以只有一份实现。
+// ★ 偏移不写死：那条 write_flash 的地址来自分区表算出来的 layout.base。
+//   本页没法读 partitions-s3.csv（file:// 下 fetch 读本地文件会被浏览器拦掉），
+//   所以用 ImageBlob.TARGETS[].partitionBytes 与 image 分区的偏移对话：
+//   两块板(经典/S3)的 theme 与 image 偏移**刻意相同**，
+//   权威出处是 partitions-s3.csv 的文件头注释与 image-blob-build.js 的说明。
+// ★ 拿不到配色时**明确提示、不用默认值顶替**：悄悄用固件默认色打出来的容器，
+//   刷上去会把车主已经调好的配色覆盖掉，而他不会知道为什么。
+function coreForTarget() {
+  const themePartOffset = 0x210000;                    // 见上面那条注释(两块板同值)
+  const themePartSize = AssetPackageCore.THEME_SECTION_BYTES;   // 0x4000
+  const spiffsBytes = 0x40000;                         // theme 与 image 之间那一块
+  const imagePartOffset = 0x254000;                    // 两块板同值
+  const imageBytes = ImageBlob.partitionBytesFor(curTarget);
+  return {
+    base: themePartOffset,
+    themeSectionBytes: themePartSize,
+    spiffsBytes: spiffsBytes,
+    betweenLabels: ["spiffs"],
+    imageOffset: imagePartOffset - themePartOffset,
+    maxImageBytes: imageBytes,
+    containerMin: imagePartOffset - themePartOffset,
+    containerMax: imagePartOffset + imageBytes - themePartOffset,
+    themePart: { offset: themePartOffset, size: themePartSize, sizeText: "0x4000" },
+    imagePart: { offset: imagePartOffset, size: imageBytes,
+                 sizeText: "0x" + imageBytes.toString(16) }
+  };
+}
+
+function exportAssetsBin() {
+  if (!gTheme) {
+    say("还没有配色，导不出合并文件。\n\n" +
+        "配色在 ① 配色页调好之后会自动存到本机（两页共用同一份 " + THEME_KEY + "），" +
+        "回来点这个按钮就行。\n" +
+        "或者先在 ① 配色页点「导出主题文件」，把那份 theme.json 拖进本页也可以。", "err");
+    return;
+  }
+  if (!items.length) {
+    say("还没有图片，导不出合并文件。\n先加图（拖进来或点上面的「＋ 添加图片」）再导出。", "err");
+    return;
+  }
+
+  // 图片那一段 = 本页"导出 image.bin"的**同一份产物**（同一个 buildPayload →
+  // 同一个 ImageBlob.build），所以不用担心两边图不一样。
+  let built;
+  try { built = ImageBlob.build(buildPayload()); }
+  catch (e) { say("打包失败：" + e.message, "err"); return; }
+  if (built.totalBytes > partBytes()) {
+    say("打包结果是 " + built.totalBytes + " 字节，超过 image 分区（" +
+        (partBytes() / 1024) + " KB，目标板：" + ImageBlob.targetInfo(curTarget).label + "），" +
+        "刷进去会被截断 ⇒ 合并文件也装不下。\n" +
+        "两条路：① 把「目标宽度」改小；② 板上如果是 S3 那块(16MB)，" +
+        "把「目标板」切到它 —— 它的 image 分区是 8MB。", "err");
+    return;
+  }
+
+  // 配色那一段：
+  //   · 这一份主题是**从文件/容器读进来**的 ⇒ 用留着的**原始字节**，
+  //     于是 theme.json → assets.bin → theme.json 原样往返(逐字节相同)；
+  //   · 在本页改过色 ⇒ 用当前状态重新 stringify(那才是你要导出的东西)。
+  const themeBytes = gThemeSrcBytes || new TextEncoder().encode(JSON.stringify({ theme: gTheme }, null, 2));
+  const themeFrom = gThemeSrcBytes ? "原始字节(读进来那一份)" : "当前状态(重新序列化)";
+
+  let packed;
+  try {
+    packed = AssetPackageCore.packBytes({
+      themeBytes: themeBytes,
+      imageBytes: built.blob,
+      layout: coreForTarget(),
+      themeLabel: "本页的配色(" + gThemeSource + ")",
+      imageLabel: "本页的图片"
+    });
+  } catch (e) {
+    say(e.message, "err");
+    return;
+  }
+
+  download(new Blob([packed.bytes], { type: "application/octet-stream" }), "assets.bin");
+
+  // 那条刷写命令：芯片跟着目标板走，端口提示"改成你自己的"
+  const cmd = AssetPackageCore.flashCommand(packed.layout, "assets.bin", {
+    chip: ImageBlob.targetInfo(curTarget).chip
+  });
+  say("已导出 assets.bin（" + packed.totalLen + " 字节，共 " +
+      packed.imageInfo.count + " 张图）。\n" +
+      "文件名：assets.bin　大小：" + packed.totalLen + " 字节（" +
+      (packed.totalLen / 1024 / 1024).toFixed(2) + " MB）\n" +
+      "里面：配色 " + packed.themeBytes + " 字节（" + themeFrom + "）+ 中间 " +
+      packed.layout.spiffsBytes + " 字节 0 填充 + 图片 " + packed.imageBytes + " 字节。\n\n" +
+      "刷进去只需要这一条命令（偏移 = theme 分区 " +
+      AssetPackageCore.hex(packed.layout.base) +
+      "，从分区表取的；端口换成你自己的）：\n" + cmd + "\n\n" +
+      "一个文件刷完「配色 + 图片」两块分区。\n" +
+      "老办法（两份文件两条命令）仍有效：theme.json 刷 " +
+      AssetPackageCore.hex(packed.layout.base) + "、image.bin 刷 " +
+      AssetPackageCore.hex(packed.layout.base + packed.layout.imageOffset) + "。",
+      "ok");
 }
 
 // 这一个阶段下,某条弧该点亮多少(与固件 arc_progress 同一套:按弧自己那一维算)
@@ -1051,6 +1224,7 @@ function colorRow(parent, label, get, set) {
     set(v);
     c.value = hexOf(v); t.value = hexOf(v);
     gThemeSource = "本页改过（记得导出 theme.json）";
+    forgetThemeSrcBytes();   // 改过了 ⇒ 留着的原始字节不再代表当前配色
     saveTheme();
     buildArcSourceLine();
     refresh(false);
@@ -1081,6 +1255,7 @@ function arcOpaRow(parent, get, set) {
   r.addEventListener("input", () => {
     set(+r.value); v.textContent = r.value;
     gThemeSource = "本页改过（记得导出 theme.json）";
+    forgetThemeSrcBytes();   // 改过了 ⇒ 留着的原始字节不再代表当前配色
     saveTheme();
     buildArcSourceLine();
     refresh(false);
@@ -1139,6 +1314,7 @@ function arcReverseRow(parent, get, set) {
   c.addEventListener("change", () => {
     set(c.checked ? 1 : 0);
     gThemeSource = "本页改过（记得导出 theme.json）";
+    forgetThemeSrcBytes();   // 改过了 ⇒ 留着的原始字节不再代表当前配色
     saveTheme();
     buildArcSourceLine();
     refresh(false);
@@ -2026,16 +2202,14 @@ document.getElementById("file-img").addEventListener("change", e => {
   addFiles(e.target.files); e.target.value = "";
 });
 
-// 拖放:图片进图片列表,**theme.json 用来读弧的配色**(两种可以一起拖)
+// 拖放:图片进图片列表,theme.json / assets.bin / image.bin 走**同一条**读取路径
+// （2026-09-24:以前只认 .json；现在 .bin 也拖得进来，而且走的是与按钮完全相同的
+//   readAssetFile()，所以"拖进来"和"点按钮选文件"不会有第二套行为）
 function handleDroppedFiles(files) {
   const list = Array.from(files || []);
-  const themes = list.filter(f => /\.json$/i.test(f.name));
-  const imgs = list.filter(f => !/\.json$/i.test(f.name));
-  if (themes.length) {
-    const r = new FileReader();
-    r.onload = () => loadThemeText(r.result, themes[0].name);
-    r.readAsText(themes[0]);
-  }
+  const docs = list.filter(f => /\.(json|bin)$/i.test(f.name));
+  const imgs = list.filter(f => !/\.(json|bin)$/i.test(f.name));
+  if (docs.length) readAssetFile(docs[0]);
   if (imgs.length) addFiles(imgs);
 }
 
@@ -2054,6 +2228,7 @@ document.getElementById("bg-color").addEventListener("input", e => {
   gTheme.bg_color = unhexOf(e.target.value);
   theme.bg = e.target.value;
   gThemeSource = "本页改过（记得导出 theme.json）";
+  forgetThemeSrcBytes();          // 改过了 ⇒ 留着的原始字节不再代表当前配色
   saveTheme();
   buildArcSourceLine();
   refresh(false);
@@ -2062,19 +2237,136 @@ document.getElementById("show-arcs").addEventListener("change", () => refresh(fa
 
 // 配色:导出 / 读入 / 恢复固件默认
 document.getElementById("btn-theme-export").addEventListener("click", exportThemeJson);
+document.getElementById("btn-assets-export").addEventListener("click", exportAssetsBin);
 document.getElementById("btn-load-theme").addEventListener("click", () =>
   document.getElementById("file-theme").click());
+
+// ------------------------------------------------------------
+// 导入：assets.bin（合并容器）/ theme.json / image.bin 三种都收（2026-09-24）
+//
+// 后向兼容的口径：**老路径一个都没删**。
+//   · .json            → 老路：loadThemeText()（与以前一模一样）
+//   · 别的 .bin        → 先按合并容器试（unpackBytes），
+//                        不是容器就回到老路"已读取 X 字节 + 刷写命令"，
+//                        所以单独导出的 image.bin 照样能读进来核对。
+//
+// ★ 配色走 loadThemeText() —— **本页既有的那一条路**，不另造一套：
+//   它负责解析、应用、存本机、刷 UI。容器里那段主题就是一份 theme.json 的内容。
+// ★ 报错文字全部来自 AssetPackageCore（与命令行同一套），这里一个字都不重写。
+// ------------------------------------------------------------
+const assetsInfoEl = document.getElementById("assets-info");   // 不能叫 assets：window.assets 是只读的
+
+// image 段的清单 → 给人看的几行（张数 / 每个用途 / 尺寸 / 字节数）
+// ★ 字段名按 AssetPackageCore.parseImageBlob() 的返回值来:
+//   总长是 **total**(不是 totalBytes)、每张的字节数是 **bytes**
+//   —— 第一版这里写成了 totalBytes,屏上就显示成"undefined 字节"(实测抓出来的)。
+function describeImageInfo(info) {
+  const lines = ["图片(来自 image 段的清单):共 " + info.count + " 张，" +
+                 info.total + " 字节(包头 " + info.headerBytes +
+                 " + 数据 " + info.dataBytes + ")"];
+  info.entries.forEach(e => {
+    const roleName = ImageBlob.ROLE_NAMES[e.role] || ("未知用途 " + e.role);
+    lines.push("  " + (e.index + 1) + ") " + (e.name || "(没写名字)") +
+               "　用途 " + roleName + "(role=" + e.role + ")" +
+               "　" + e.w + "×" + e.h + "　" + e.bytes + " 字节");
+  });
+  return lines.join("\n");
+}
+
+// 容器里的"图片部分"原样留在手里 ⇒ 想改哪张就单独存成 image.bin 去改
+let imagePartBlob = null;
+let imagePartName = "image.bin";
+function rememberImagePart(buf, containerName) {
+  imagePartBlob = new Blob([buf], { type: "application/octet-stream" });
+  imagePartName = String(containerName || "assets.bin").replace(/\.bin$/i, "") + "-image.bin";
+}
+document.getElementById("btn-assets-image-save").addEventListener("click", () => {
+  if (!imagePartBlob) return;
+  download(imagePartBlob, imagePartName);
+  say("已把合并文件里的图片部分原样另存为 " + imagePartName + "（" +
+      imagePartBlob.size + " 字节）。\n" +
+      "它与原来那份 image.bin 逐字节相同（容器里的 image 段就是原样拷进去的）⇒ " +
+      "拿它单独刷 image 分区、或喂给别的工具都行。");
+});
+
+// 这一份字节是"本工具产出的容器"吗？
+// 只做两个便宜的检查：长度落在合法区间内、theme 段尾部有 0 填充。
+// ★ 为什么必须要它：单独导出的 image.bin 也可能正好落在这个区间里，
+//   而"这不是本工具产出的容器"不该把老路径（读 image.bin 核对大小）搞坏。
+function looksLikeContainer(bytes, layout) {
+  return bytes.length >= layout.containerMin && bytes.length <= layout.containerMax &&
+         bytes[AssetPackageCore.THEME_SECTION_BYTES - 1] === 0;
+}
+
+// 真正的失败与人话报错
+function reportContainerError(e, f) {
+  say("这份文件读不进来：" + e.message + "\n\n" +
+      "（本页收三种：合并容器 assets.bin、单独的 theme.json、单独的 image.bin。" +
+      "「" + f.name + "」按合并容器读时是这个结果 —— 如果它其实是单独导出的 " +
+      "image.bin，请用本页的图片列表去改；如果是 theme.json，改个 .json 后缀再读。）", "err");
+}
+
+function readAssetFile(f) {
+  const r = new FileReader();
+  r.onload = () => {
+    const bytes = new Uint8Array(r.result);
+    // ---- ① 老路：.json 就是一份主题（与加这个按钮之前完全一样）----
+    if (/\.json$/i.test(f.name)) { loadThemeText(new TextDecoder("utf-8").decode(bytes), f.name); return; }
+
+    // ---- ② 不是容器 ⇒ 回到老路（单独导出的 image.bin 照样能读进来核对）----
+    const layout = coreForTarget();
+    if (!looksLikeContainer(bytes, layout)) { legacyFileInfo(f, bytes.length); return; }
+
+    // ---- ③ 合并容器 ----
+    let res;
+    try {
+      res = AssetPackageCore.unpackBytes({ bytes: bytes, layout: layout,
+                                           containerLabel: f.name });
+    } catch (e) { reportContainerError(e, f); return; }
+
+    // 配色：直接应用（走既有那条路）。主题那一段就是一份 theme.json 的内容。
+    const themeText = new TextDecoder("utf-8").decode(res.themeBytes);
+    if (!loadThemeText(themeText, f.name + " 里的 theme 段")) return;   // 失败时它已经 say 过了
+
+    // 图片：v1 不展开成可编辑的列表项，但**如实显示**清单（张数/用途/尺寸/字节数）
+    rememberImagePart(res.imageBytes, f.name);
+    assetsInfoEl.textContent = describeImageInfo(res.imageInfo);
+    assetsInfoEl.style.display = "";
+    document.getElementById("assets-image-row").style.display = "";
+
+    say("已读入 " + f.name + "（" + res.containerBytes + " 字节）：配色已应用（来源 " +
+        gThemeSource + "），图片 " + res.imageInfo.count + " 张已记账。\n\n" +
+        "图片那 " + res.imageInfo.count + " 张的清单在「图片部分」那一行下面" +
+        "（每张的用途 / 尺寸 / 字节数）。\n" +
+        "★ 本版**不**把每张图还原成可编辑的列表项 —— 想改哪张，就点「把图片部分另存为 " +
+        imagePartName + "」，再像以前那样刷它或另作处理。\n\n" +
+        "现在直接刷这一份就行（端口换成你自己的）：\n" +
+        AssetPackageCore.flashCommand(layout, f.name, {
+          chip: ImageBlob.targetInfo(curTarget).chip
+        }), "ok");
+  };
+  r.readAsArrayBuffer(f);
+}
+
+// 老路：只报"读到了多少字节"+ 刷写命令（这是加合并文件之前的行为，保留）
+function legacyFileInfo(f, byteLength) {
+  say("已读取 " + f.name + "（" + byteLength + " 字节）。\n" +
+      "注意：本工具不解析已有 bin 的像素，只用于核对大小与刷写命令。\n" +
+      "（如果这是「导出 assets.bin」存下来的合并文件，按说会认出它 —— " +
+      "认不出来说明它不是本工具产出的容器。）", "ok");
+  document.getElementById("cmd").value = ImageBlob.esptoolCommand("COM3", f.name, curTarget);
+}
+
 document.getElementById("file-theme").addEventListener("change", e => {
   const f = e.target.files[0];
   e.target.value = "";
   if (!f) return;
-  const r = new FileReader();
-  r.onload = () => loadThemeText(r.result, f.name);
-  r.readAsText(f);
+  readAssetFile(f);
 });
 document.getElementById("btn-reset-theme").addEventListener("click", () => {
   gTheme = cloneTheme(ARC_FALLBACK);
   gThemeSource = "固件默认主题（已恢复）";
+  forgetThemeSrcBytes();          // 主题换了对象 ⇒ 以前留着的原始字节作废
   try { localStorage.removeItem(THEME_KEY); } catch { /* ignore */ }
   applyThemeToUi();
   say("已恢复固件默认配色（底色 + 四条弧 + 四处读数文字颜色）。");
