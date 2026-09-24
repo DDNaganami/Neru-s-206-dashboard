@@ -781,6 +781,413 @@ static void tca9554_set(uint8_t bit, bool high) {
   tca9554_write(TCA9554_REG_OUTPUT, g_exio_out);
 }
 
+// ============================================================
+// ★★ 临时自检路径:板载蜂鸣器「**有源 / 无源**」判定(`-DBUZZER_SELFTEST=1`)
+//
+//   要问的问题(ARCHITECTURE §8 的 L14 那一半,一直没定):微雪 2.8C 的器件清单
+//   写的是 **`Buzzer`(蜂鸣器)而不是扬声器**,控制脚是 TCA9554 的 **EXIO8**
+//   (**零额外引脚** —— 同一颗扩展芯片本来就在驱动那块屏的 RST/CS)。
+//   可"**有源**(自带振荡电路,给直流就响)"还是"**无源**(要外部方波,频率=音高)",
+//   wiki 与官方例程**都没说** —— 而这两条在固件里是**两条不同的驱动路径**:
+//     · 有源 ⇒ 只要一个开关(EXIO8 置位/清零),响不响与频率无关;
+//     · 无源 ⇒ 必须给一路方波(频率决定音高、占空比决定音量),
+//              I2C 扩展器每次翻转一次事务 ⇒ 只能"很粗糙地"驱动。
+//   ⇒ 本自检就是把这半问**一次问掉**,而判据只有车主听得到 —— 所以每一步都在
+//     串口打一行标记,让他能把"听到什么"对上"哪一步"。
+//
+//   ★ 这是一条**临时自检路径**,不是长期功能:
+//     · **默认关**(下面 `#ifndef BUZZER_SELFTEST / #define 0`)⇒ 常规构建里这一段
+//       一个字节都不参与,行为与改动前**逐位相同**;
+//     · 唯一的打开方式:在 platformio.ini 的 `[env:esp32s3-rgb]` 的 build_flags 里
+//       **临时**加一行 `-DBUZZER_SELFTEST=1`,烧完测完就删掉
+//       (逐条命令在 docs/RGB-PANEL-2.8C.md 第 13 节);
+//     · 它**不进** alerts/buzzer 那套抽象(`lib/dashcore/buzzer.h` 一个字没动):
+//       "真机那一档怎么接"等结论出来、车主点头之后再按结论接(方案见 docs 13.4)。
+//
+//   ★ 为什么挂在本文件、由 `dash_display_poll()` 驱动:
+//     EXIO8 的位定义与影子寄存器(`tca9554_set`/`g_exio_out`)本来就在本文件里;
+//     而 `dash_display_poll()` 是 main.cpp 每圈都调的入口 ⇒ **main.cpp 一行都不用改**
+//     (也就不会多出"谁来调自检"这个新接口 —— 这条红线的原话是"只动这一条 env
+//      与该源文件")。
+//
+//   ★ 不阻塞主循环(硬要求,也是这里最需要小心的地方):
+//     每次 `dash_display_poll()` 调用只做**一小片**工作,然后立刻返回 ——
+//       ① 直流段:最多一次 I2C 写(100kHz 下 ~0.3ms);
+//       ② 方波段:在 **一次调用最多 2~3.5ms 的预算**内干活(`kBsSqBudgetMin/Max`)——
+//          还没到格点就在预算内**自旋等它**(第一版写成"没到点就 return",结果白丢
+//          一个主循环周期的精度:200Hz 只跑出 162Hz),预算一用完立刻返回;
+//       ③ 段与段之间按时间推进(状态机等 `millis()`),期间主循环照跑
+//          LVGL / VAN / 链路 —— 没有一次 `delay()`、没有一处死等。
+//
+//   ★★ 四段的顺序与它**各自能判什么**(2026-09-24 补第 ③④ 段的原因,别删):
+//     ① 直流 5 轮 / ② 方波四频 —— **这两段单独都不足以定性**:有源蜂鸣器被高频通断时
+//        "听起来也像音高在变"(那是在**斩波**它自己的输出:200Hz 斩波 ≈ 低音嗡嗡、
+//        4kHz 斩波 ≈ 高音嗡嗡),而无源蜂鸣器在直流段只会"咔哒" ——
+//        车主实测"两步都听到了",两种解释**都与它相容** ⇒ 必须补一个**只对其中一种成立**的:
+//     ③ **持续拉高 2 秒、中间一次都不翻转**:
+//          听到**一整段不间断的稳定音** ⇒ **有源**(自带振荡,给直流就响);
+//          只有按下/松开各一声"咔哒"、中间静音 ⇒ **无源**(要外部给频率才响)。
+//     ④ **持续拉低 2 秒**(对照):应当**完全静音** —— 用来排除"响的其实是别的东西"
+//        或"极性假设正好反了"。★ 顺序上它放在最后,听完即可下结论。
+//
+//   ★ 频率会很"糙"(**预期如此**,我们只判有源/无源,不判音质):
+//     EXIO8 在 I2C 扩展器上 ⇒ 每次翻转都要一次完整事务(START+地址+寄存器+数据+STOP),
+//     所以 ① 占空比不可能对称、② 高频段会被"事务耗时"封顶。
+//     因此每一段结束都把 **实测翻转次数与实际频率**打出来 —— 车主听到的音高要跟
+//     **实测值**对,而不是跟请求值对。
+//     (方波段临时把 I2C 提到 **400kHz**:TCA9554PWR 是 Fast-mode 器件,事务
+//      0.3ms → ~70µs,2k/4k 两段才有机会真的跑起来;测完**立刻回到 100kHz**。)
+// ============================================================
+#ifndef BUZZER_SELFTEST
+#define BUZZER_SELFTEST 0
+#endif
+
+#if BUZZER_SELFTEST
+
+namespace {
+
+const uint32_t kBsLeadInMs   = 6000;   // 开始前留 6 秒(开监视器 + 注意听)
+const uint8_t  kBsDcRounds   = 5;      // ① 直流开关 5 轮
+const uint32_t kBsDcHalfMs   = 200;    //    每半拍 200ms(高 200 / 低 200)
+const uint32_t kBsSqMs       = 1000;   // ② 每个频率响 1 秒
+const uint32_t kBsSqGapMs    = 300;    //    两段之间静音 300ms(便于分辨"这一段/那一段")
+// 单次 poll 内最多忙多久(然后让出主循环)。★ 它必须**盖得住半周期**,否则方波的
+// 平均频率会被主循环周期拖低(实测:1ms 预算下 200Hz 只跑出 166Hz —— 因为半周期
+// 2.5ms 里剩下那 1.5ms 我们提前返回了,下一圈回来时已经晚了整整一格)。
+// 所以取 `半周期 + 300µs`,并夹在 [2ms, 3.5ms] 之间:既盖得住 200Hz 的 2.5ms 半周期,
+// 又不至于让一次调用占用太久(4kHz 那两段会给到 2ms 上限,换取更高的翻转率)。
+const uint32_t kBsSqBudgetMin = 2000;
+const uint32_t kBsSqBudgetMax = 3500;
+const uint32_t kBsSqBudgetPad = 300;
+const uint32_t kBsHoldMs     = 2000;   // ③④ 持续拉高 / 持续拉低 各 2 秒(定性判据)
+const uint16_t kBsFreqs[]    = { 200, 1000, 2000, 4000 };
+const uint8_t  kBsFreqCount  = (uint8_t)(sizeof(kBsFreqs) / sizeof(kBsFreqs[0]));
+const uint32_t kBsI2cHz      = 400000; // 方波段临时用的 I2C 时钟(测完回 100kHz)
+const uint32_t kBsI2cHzIdle  = 100000; // Wire 的默认档(与显示初始化那一段一致)
+
+enum BsState : uint8_t {
+  BS_LEADIN, BS_DC_HI, BS_DC_LO, BS_SQ_GAP, BS_SQ,
+  BS_HOLD_HI, BS_HOLD_LO, BS_DONE
+};
+
+uint8_t  g_bs_state    = BS_LEADIN;
+bool     g_bs_started  = false;
+uint32_t g_bs_deadline = 0;      // 本状态何时结束(millis)
+uint32_t g_bs_next_us  = 0;      // 下一次翻转的**格点**(micros;只往前走)
+uint32_t g_bs_sq_t0_us = 0;      // 本段方波开始时刻(micros)
+uint32_t g_bs_toggles  = 0;      // 本段方波翻转次数(一来一回 = 一个周期)
+uint32_t g_bs_skip     = 0;      // 被跳过的格点数(= 事务跟不上请求频率的证据)
+uint32_t g_bs_last_us  = 0;      // 上一次翻转的时刻(算最大间隔)
+uint32_t g_bs_gap_max  = 0;      // 两次翻转之间的最大间隔(µs)
+uint32_t g_bs_set_us   = 0;      // 本段 I2C 事务累计耗时(µs)
+uint32_t g_bs_set_n    = 0;      // 本段 I2C 事务次数
+// ★ 主循环健康度(它既是"方波能到多高"的上限之一,也是"自检有没有把 UI 卡住"的判据):
+uint32_t g_bs_poll_last_us = 0;  // 上一次 poll 的时刻
+uint32_t g_bs_poll_gap_sum = 0;  // 相邻两次 poll 的间隔之和
+uint32_t g_bs_poll_gap_max = 0;  // 最大间隔(它一大就说明主循环里有别的东西在占时间)
+uint32_t g_bs_poll_n       = 0;
+uint32_t g_bs_busy_us      = 0;  // 本段自检**自己**占用的 CPU 时间(忙等 + I2C)
+uint8_t  g_bs_level    = 0;      // EXIO8 当前电平
+uint8_t  g_bs_dc_round = 0;
+uint8_t  g_bs_freq_i   = 0;
+
+// 写 EXIO8。★ 走的就是显示初始化那一套(tca9554_set + 影子寄存器)⇒
+// RST/CS 那两位**不会被顺手改掉**(Set_EXIO 是读-改-写)。
+// ★ 每次都把这次事务的耗时记下来:车主听到的音高上限就是它定的(见文件头那段)。
+void bs_set(bool high) {
+  const uint32_t t0 = micros();
+  tca9554_set(BUZZER_EXIO_BIT, high);
+  g_bs_set_us += (uint32_t)(micros() - t0);
+  ++g_bs_set_n;
+  g_bs_level = high ? 1u : 0u;
+}
+
+void bs_report_done() {
+  // 收尾:回读一次输出寄存器 —— 这是"自检有没有把扩展器写坏 / 有没有留下响声"的
+  // **客观证据**(期望 0x05:RST=EXIO1 高、CS=EXIO3 高、BUZZER=EXIO8 低)。
+  Wire.beginTransmission(TCA9554_ADDR);
+  Wire.write(TCA9554_REG_OUTPUT);
+  if (Wire.endTransmission(false) != 0) {
+    dash_logf("buzzer: 回读 TCA9554 失败(无应答) —— 影子寄存器=0x%02X\n",
+              (unsigned)g_exio_out);
+    return;
+  }
+  const size_t n = Wire.requestFrom((uint8_t)TCA9554_ADDR, (uint8_t)1);
+  if (n != 1) {
+    dash_logf("buzzer: 回读 TCA9554 只拿到 %u 字节(期望 1)\n", (unsigned)n);
+    return;
+  }
+  const uint8_t v = (uint8_t)Wire.read();
+  dash_logf("buzzer: 回读 TCA9554 输出寄存器=0x%02X(本机影子=0x%02X)%s\n",
+            (unsigned)v, (unsigned)g_exio_out,
+            (v == g_exio_out) ? "" : "  <-- 两者不一致,检查 I2C");
+  dash_logf("buzzer: 期望 0x%02X = LCD_RST(EXIO1)高 + LCD_CS(EXIO3)高 + 蜂鸣器(EXIO8)低"
+            " ⇒ 屏没被扰动、蜂鸣器已静音\n",
+            (unsigned)((1u << LCD_RST_EXIO_BIT) | (1u << LCD_CS_EXIO_BIT)));
+}
+
+void bs_dc_high(uint32_t now) {
+  bs_set(true);
+  dash_logf("buzzer: ① 第%u/%u轮  EXIO8=**高** %ums   <== 现在应当有一声(有源蜂鸣器)\n",
+            (unsigned)g_bs_dc_round, (unsigned)kBsDcRounds, (unsigned)kBsDcHalfMs);
+  g_bs_deadline = now + kBsDcHalfMs;
+  g_bs_state = BS_DC_HI;
+}
+
+void bs_dc_low(uint32_t now) {
+  bs_set(false);
+  dash_logf("buzzer: ① 第%u/%u轮  EXIO8=低   %ums(静音段)\n",
+            (unsigned)g_bs_dc_round, (unsigned)kBsDcRounds, (unsigned)kBsDcHalfMs);
+  g_bs_deadline = now + kBsDcHalfMs;
+  g_bs_state = BS_DC_LO;
+}
+
+// 进入第 i 个频率的"静音间隔"(先静一下,车主才分得清上一段与下一段)
+void bs_sq_gap(uint32_t now) {
+  bs_set(false);
+  const uint16_t f = kBsFreqs[g_bs_freq_i];
+  dash_logf("buzzer: ② 方波 %uHz(%u/%u) 前的 %ums 静音段\n",
+            (unsigned)f, (unsigned)(g_bs_freq_i + 1u), (unsigned)kBsFreqCount,
+            (unsigned)kBsSqGapMs);
+  g_bs_deadline = now + kBsSqGapMs;
+  g_bs_state = BS_SQ_GAP;
+}
+
+void bs_sq_begin(uint32_t now) {
+  const uint16_t f = kBsFreqs[g_bs_freq_i];
+  const uint32_t half_us = 500000u / (uint32_t)f;   // 半周期(µs)
+  g_bs_toggles = 0;
+  g_bs_skip = 0;
+  g_bs_gap_max = 0;
+  g_bs_last_us = 0;
+  g_bs_set_us = 0;
+  g_bs_set_n = 0;
+  g_bs_poll_gap_sum = 0;
+  g_bs_poll_gap_max = 0;
+  g_bs_poll_n = 0;
+  g_bs_busy_us = 0;
+  g_bs_level = 0;
+  bs_set(false);                                     // 从静止起振
+  g_bs_next_us = micros() + half_us;
+  g_bs_sq_t0_us = micros();
+  dash_logf("buzzer: ② 方波 %uHz(半周期%uus) 开始,持续 %ums  <== 现在听**音高**\n"
+            "        (这一段 EXIO8 每翻转一次就是一次 I2C 事务,所以占空比很糙、"
+            "高频段可能跑不到请求值 —— 结束时会报**实测**频率)\n",
+            (unsigned)f, (unsigned)half_us, (unsigned)kBsSqMs);
+  g_bs_state = BS_SQ;
+  (void)now;
+}
+
+// ③ **持续拉高 2 秒,中间一次都不翻转** —— 这一段的判据是**唯一**的:
+//   有源蜂鸣器自带振荡电路 ⇒ 给它一个稳定直流就"自己响" ⇒ 听到**一整段不间断的稳定音**;
+//   无源蜂鸣器只是一片压电/电磁振膜 ⇒ 直流只会把它推到一个固定位置 ⇒
+//   只有按下/松开各一声"咔哒",**中间是静音**。
+//   ★ 为什么非要有这一段:①(直流 5 轮)与 ②(方波四频)**两段都听到**,对
+//     "有源"和"无源"两种解释**都相容**(有源被高频通断时听起来也像音高在变 ——
+//     那是在斩波它自己的输出)⇒ 必须补一个只对其中一种成立的。
+void bs_hold_high(uint32_t now) {
+  bs_set(true);
+  dash_logf("buzzer: ③ **持续拉高 %ums、中间一次都不翻转**(有源/无源的**唯一判据**)\n"
+            "        ★ 请听:(a) **一整段不间断的稳定音** ⇒ **有源**;"
+            "(b) 只有开始/结束各一声'咔哒'、**中间是静音** ⇒ **无源**\n"
+            "        顺便记一下音量/音色(大声/小声、清脆/沙哑)—— 夜里会不会太吵\n",
+            (unsigned)kBsHoldMs);
+  g_bs_deadline = now + kBsHoldMs;
+  g_bs_state = BS_HOLD_HI;
+}
+
+void bs_hold_low(uint32_t now) {
+  bs_set(false);
+  dash_logf("buzzer: ④ **持续拉低 %ums** 对照段 —— 这一段应当**完全静音**\n"
+            "        (若这一段里还有声音 ⇒ 响的不是这颗蜂鸣器,或者极性与假设正好相反)\n",
+            (unsigned)kBsHoldMs);
+  g_bs_deadline = now + kBsHoldMs;
+  g_bs_state = BS_HOLD_LO;
+}
+
+void bs_finish() {
+  bs_set(false);
+  dash_logf("buzzer: ③④ 持续段结束 —— EXIO8 已回低(**静音**),UI 继续正常跑\n");
+  bs_report_done();
+  dash_logf("buzzer: ★ 请回答三问:"
+            "① 直流 5 轮听到几声'哔'(有源=5 声 / 无源=只有咔哒)?"
+            "② 200/1k/2k/4k 四段音高有没有变化?"
+            "③ **持续拉高那 2 秒里是'一整段稳定音'还是'咔哒+中间静音'**(这一问定性)?\n");
+}
+
+void bs_sq_end() {
+  const uint16_t f = kBsFreqs[g_bs_freq_i];
+  const uint32_t dur_us = (uint32_t)(micros() - g_bs_sq_t0_us);
+  bs_set(false);
+  // 实测频率 = 周期数 / 实际时长。★ 车主要拿**这个数**去对听到的音高,不是请求值。
+  const uint32_t cycles_x10 = (uint32_t)(((uint64_t)g_bs_toggles * 10ull) / 2ull);
+  const uint32_t hz_x10 = dur_us ? (uint32_t)(((uint64_t)cycles_x10 * 1000000ull) / dur_us) : 0u;
+  const uint32_t set_avg = g_bs_set_n ? (g_bs_set_us / g_bs_set_n) : 0u;
+  dash_logf("buzzer: ② 方波 %uHz 段结束:翻转 %u 次 / 实际 %u.%03ums"
+            " ⇒ **实测平均 ≈%u.%uHz**(请求 %uHz)\n",
+            (unsigned)f, (unsigned)g_bs_toggles,
+            (unsigned)(dur_us / 1000u), (unsigned)(dur_us % 1000u),
+            (unsigned)(hz_x10 / 10u), (unsigned)(hz_x10 % 10u),
+            (unsigned)f);
+  // ★ 这一行是"糙到什么程度"的**客观数字**:I2C 事务平均耗时(它决定音高上限)、
+  //   两次翻转的最大间隔(占空比/节奏有多不齐)、被跳过的格点数(跟不上请求值的证据);
+  //   再加上主循环健康度 —— 自检自己占了多少 CPU、主循环间隔有多大。
+  const uint32_t busy_pm = dur_us ? (uint32_t)(((uint64_t)g_bs_busy_us * 1000ull) / dur_us) : 0u;
+  dash_logf("        事务 %u 次、平均 %uus/次(= 音高上限 ≈%uHz);两次翻转最大间隔 %uus;"
+            "跳过格点 %u 个%s\n",
+            (unsigned)g_bs_set_n, (unsigned)set_avg,
+            (unsigned)(set_avg ? (500000u / set_avg) : 0u),
+            (unsigned)g_bs_gap_max, (unsigned)g_bs_skip,
+            g_bs_skip ? "  <-- 请求频率超出 I2C 事务能力(预期之内)" : "");
+  dash_logf("        自检占用 %u.%ums(%u.%u%% 的段时长);主循环间隔 平均%uus/最大%uus%s\n",
+            (unsigned)(g_bs_busy_us / 1000u), (unsigned)(g_bs_busy_us % 1000u),
+            (unsigned)(busy_pm / 10u), (unsigned)(busy_pm % 10u),
+            (unsigned)(g_bs_poll_n ? (g_bs_poll_gap_sum / g_bs_poll_n) : 0u),
+            (unsigned)g_bs_poll_gap_max,
+            (g_bs_poll_gap_max > 20000u) ? "(最大那一下是 1Hz 日志行写串口,见 docs)" : "");
+  if (++g_bs_freq_i < kBsFreqCount) {
+    bs_sq_gap(millis());
+  } else {
+    Wire.setClock(kBsI2cHzIdle);   // ★ 把 I2C 时钟放回默认档
+    dash_logf("buzzer: ② 方波四段结束 —— I2C 时钟已放回 %uHz\n", (unsigned)kBsI2cHzIdle);
+    bs_hold_high(millis());        // ③ 定性判据(见 bs_hold_high 上面那段说明)
+  }
+}
+
+void buzzer_selftest_poll() {
+  if (g_bs_state == BS_DONE) return;
+  const uint32_t now = millis();
+
+  // ★ 主循环健康度:相邻两次调用之间的间隔(它同时是"方波频率上限"的一个来源,
+  //   也是"自检有没有把 UI/VAN 卡住"的客观判据 —— 稳态应当是几百µs~几ms)。
+  {
+    const uint32_t now_us = micros();
+    if (g_bs_poll_last_us != 0) {
+      const uint32_t d = (uint32_t)(now_us - g_bs_poll_last_us);
+      g_bs_poll_gap_sum += d;
+      if (d > g_bs_poll_gap_max) g_bs_poll_gap_max = d;
+      ++g_bs_poll_n;
+    }
+    g_bs_poll_last_us = now_us;
+  }
+
+  if (!g_bs_started) {
+    g_bs_started = true;
+    dash_logf("buzzer: ===== 板载蜂鸣器自检开始(BUZZER_SELFTEST)=====\n");
+    dash_logf("buzzer: 控制脚 = TCA9554(0x%02X) 的 EXIO8(bit%u);极性假设 **高=响**"
+              "(官方例程初始化时把它拉低=静音)\n",
+              (unsigned)TCA9554_ADDR, (unsigned)BUZZER_EXIO_BIT);
+    dash_logf("buzzer: 判据 —— ①直流 5 轮(每半拍 %ums):有源'哔'5 声 / 无源只有咔哒;"
+              "②方波四频:无源音高随之变、有源只是被斩波;\n"
+              "        ★ **③ 持续拉高 2 秒(不翻转)才是唯一判据**:不间断稳定音=有源 / "
+              "咔哒+中间静音=无源;④ 持续拉低 2 秒应当完全静音(对照)\n",
+              (unsigned)kBsDcHalfMs);
+    dash_logf("buzzer: 自检 %u 秒后开始(请现在把串口监视器打开、注意听)…\n",
+              (unsigned)(kBsLeadInMs / 1000u));
+    g_bs_deadline = now + kBsLeadInMs;
+    g_bs_state = BS_LEADIN;
+    return;   // ★ 这一圈只打头,不占用主循环
+  }
+
+  switch (g_bs_state) {
+    case BS_LEADIN:
+      if ((int32_t)(now - g_bs_deadline) < 0) return;
+      bs_set(false);
+      dash_logf("buzzer: ① 直流开关:EXIO8 高 %ums → 低 %ums,共 %u 轮(有源蜂鸣器会'哔'%u 声)\n",
+                (unsigned)kBsDcHalfMs, (unsigned)kBsDcHalfMs,
+                (unsigned)kBsDcRounds, (unsigned)kBsDcRounds);
+      g_bs_dc_round = 1;
+      bs_dc_high(now);
+      return;
+
+    case BS_DC_HI:
+      if ((int32_t)(now - g_bs_deadline) < 0) return;
+      bs_dc_low(now);
+      return;
+
+    case BS_DC_LO:
+      if ((int32_t)(now - g_bs_deadline) < 0) return;
+      if (g_bs_dc_round < kBsDcRounds) {
+        ++g_bs_dc_round;
+        bs_dc_high(now);
+      } else {
+        dash_logf("buzzer: ① 直流开关结束 —— 请记住:**这几秒里听到几声'哔'?**"
+                  "(有源蜂鸣器 = %u 声)\n", (unsigned)kBsDcRounds);
+        bs_set(false);
+        Wire.setClock(kBsI2cHz);   // 方波段才提时钟(见文件头那张说明)
+        dash_logf("buzzer: ② 方波:I2C 时钟 %uHz → %uHz(为让 2k/4k 段有机会跑起来)\n",
+                  (unsigned)kBsI2cHzIdle, (unsigned)kBsI2cHz);
+        g_bs_freq_i = 0;
+        bs_sq_gap(now);
+      }
+      return;
+
+    case BS_SQ_GAP:
+      if ((int32_t)(now - g_bs_deadline) < 0) return;
+      bs_sq_begin(now);
+      return;
+
+    case BS_HOLD_HI:
+      if ((int32_t)(now - g_bs_deadline) < 0) return;
+      bs_hold_low(now);
+      return;
+
+    case BS_HOLD_LO:
+      if ((int32_t)(now - g_bs_deadline) < 0) return;
+      g_bs_state = BS_DONE;
+      bs_finish();
+      return;
+
+    case BS_SQ: {
+      const uint32_t half_us = 500000u / (uint32_t)kBsFreqs[g_bs_freq_i];
+      // ★ 预算必须盖得住半周期(见 kBsSqBudgetMin 那段说明):1ms 预算下 200Hz 只跑出
+      //   166Hz —— 半周期 2.5ms 里剩下的 1.5ms 提前返回了,下一圈回来已经晚一整格。
+      uint32_t budget = half_us + kBsSqBudgetPad;
+      if (budget < kBsSqBudgetMin) budget = kBsSqBudgetMin;
+      if (budget > kBsSqBudgetMax) budget = kBsSqBudgetMax;
+      const uint32_t t_enter = micros();
+      bool finished = false;
+      for (;;) {
+        const uint32_t now_us = micros();
+        if ((int32_t)(now_us - g_bs_next_us) < 0) {
+          // 还没到格点:在**预算内自旋等它**。
+          // ★ 这里绝不能 `return` —— 一返回主循环就白丢一整个主循环周期(实测 ~0.6ms),
+          //   而那正好是"200Hz 只跑到 162Hz"的原因(第一版就是这么写的)。
+          if ((uint32_t)(now_us - t_enter) >= budget) break;
+          continue;
+        }
+        bs_set(g_bs_level == 0);
+        ++g_bs_toggles;
+        const uint32_t t_tog = micros();
+        if (g_bs_last_us != 0) {
+          const uint32_t gap = (uint32_t)(t_tog - g_bs_last_us);
+          if (gap > g_bs_gap_max) g_bs_gap_max = gap;
+        }
+        g_bs_last_us = t_tog;
+        // ★ 格点**只往前走,绝不因为"晚了"就往后推**:晚了就晚了,平均频率仍然严格
+        //   贴着请求值(把格点往后推 = 把频率整体拉低;补发 = 变成一串尖脉冲)。
+        //   落下的整格点直接跳过并计数 —— 那个计数就是"事务跟不上"的证据。
+        g_bs_next_us += half_us;
+        while ((int32_t)(micros() - g_bs_next_us) >= 0) {
+          g_bs_next_us += half_us;
+          ++g_bs_skip;
+        }
+        if ((uint32_t)(micros() - g_bs_sq_t0_us) >= kBsSqMs * 1000u) { finished = true; break; }
+      }
+      g_bs_busy_us += (uint32_t)(micros() - t_enter);
+      if (finished) bs_sq_end();
+      return;
+    }
+
+    default:
+      return;
+  }
+}
+
+}  // namespace
+
+#endif  // BUZZER_SELFTEST
+
 // 背光:PWM 走 LEDC。★ 这块框架是 arduino-esp32 **3.3.9**,LEDC 的 API 在 3.x
 // 换过一次:2.x 是 `ledcSetup(通道,频率,位数)` + `ledcAttachPin(脚,通道)` 两步,
 // 3.x 合成一步 **`ledcAttach(脚, 频率, 位数)`**,之后 `ledcWrite(脚, 占空比)`
@@ -1062,6 +1469,13 @@ void dash_display_poll() {
   static uint32_t last_copy_sum = 0;
   static uint32_t last_copy_n = 0;
   const uint32_t now = millis();
+
+#if BUZZER_SELFTEST
+  // ★ 临时自检路径(默认关,见上面第 4 块 TCA9554 之后那一大段)。
+  //   挂在这里是因为 main.cpp 每圈都调 `dash_display_poll()` ⇒ 不用改 main.cpp;
+  //   它自带"每圈最多干一小片"的上界(方波段 2~3.5ms 预算),不会把 UI/VAN 卡住。
+  buzzer_selftest_poll();
+#endif
 
   // ---- ① 对比档:全屏重绘 / 局部刷新 ----
   //   ★ 这一段**必须放在下面那个 "1 秒才打一行" 的早退之前**(否则开关只在打日志时生效)。
