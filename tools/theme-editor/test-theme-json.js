@@ -64,7 +64,7 @@ section("真实的 theme-default.json 必须能被导入");
 
   const t = TJ.themeObject(TJ.parseThemeJson(text));
   eq(t.bg_color, 0x141414, "背景色");
-  eq(t.readout.digit_cy, 72, "读数位置");
+  eq(t.readout.digit_cy, 88, "读数位置");
   eq(t.readout.coolant_cy, 384, "水温读数位置");
   eq(t.screens.length, 2, "两屏");
   eq(t.screens[0].arcs.length, 2, "左屏两条弧");

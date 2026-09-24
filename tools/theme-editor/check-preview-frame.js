@@ -160,10 +160,13 @@ function inkBox(img, x0, y0, x1, y1, want, tol, radiusFilter) {
 }
 
 // 读数带(480 基准,与 ui_theme.h 的默认位置对应):
-//   数字中心 y=72(48 号 → 约 47..97)、单位中心 y=107(18 号 → 约 97..117)、
+//   数字中心 y=88(48 号 → 墨迹实测 71..104)、单位中心 y=110(18 号 → 墨迹实测 107..120)、
 //   水温中心 y=384。x 取中间一段,避开弧带(外沿语义下是 181..205 那一圈)。
-const BAND_DIGIT   = { x0: 150, y0: 48, x1: 330, y1: 96 };
-const BAND_UNIT    = { x0: 190, y0: 96, x1: 290, y1: 120 };
+//   ★ 2026-09-24 第七轮把数字从 72 下移到 88、单位 107 → 110（车主："外弧被数字挡住"）:
+//     墨迹整体下移 16px 之后**一个数字像素都不落在弧带上**（判据与前后值见
+//     tools/theme-editor/check-readout-clearance.js）。这两条带跟着挪。
+const BAND_DIGIT   = { x0: 150, y0: 64, x1: 330, y1: 112 };
+const BAND_UNIT    = { x0: 190, y0: 100, x1: 290, y1: 124 };
 const BAND_COOLANT = { x0: 190, y0: 370, x1: 290, y1: 400 };
 
 // ------------------------------------------------------------
@@ -405,25 +408,28 @@ function main() {
     addBand("大数字带(白字已画出)", BAND_DIGIT, READOUT_DIGIT, 0x40, 40);
     addBand("单位带(灰字已画出)", BAND_UNIT, READOUT_UNIT, 0x30, 8);
 
-    // 字号/位置契约:48 号数字的墨迹该落在 47..97 那 50 像素里,
-    // 18 号单位落在 97..117 那 20 像素里(ui_theme.h 的默认位置)。
+    // 字号/位置契约:48 号数字的墨迹该落在 71..104 那 34 像素里,
+    // 18 号单位落在 107..120 那 14 像素里(ui_theme.h 的默认位置,第七轮下移后)。
     // 顺带把"默认文本 Text"这类错误挡在门外:它的墨迹位置对不上。
-    const dBox = inkBox(img, 60, 20, 420, 130, READOUT_DIGIT, 0x40);
+    // ★ 两个扫描窗口的边界是**量出来的**(见 check-readout-clearance.js 的落帧):
+    //   数字墨迹+抗锯齿到 y=104 为止,单位墨迹从 y=107 起 ⇒ 窗口在 105 分开;
+    //   下边界停在 136:表情(白色)从 y=140 起,扫过去会把脸当成"数字"。
+    const dBox = inkBox(img, 60, 20, 420, 136, READOUT_DIGIT, 0x40);
     checks.push({
-      name: "大数字墨迹范围(48 号,47..97)", x: dBox.minX, y: dBox.minY,
+      name: "大数字墨迹范围(48 号,71..104)", x: dBox.minX, y: dBox.minY,
       got: { r: dBox.w, g: dBox.h, b: dBox.n },
       expect: { r: 0, g: 0, b: 0 },
-      ok: dBox.n > 0 && dBox.minY >= 45 && dBox.maxY <= 99 &&
+      ok: dBox.n > 0 && dBox.minY >= 69 && dBox.maxY <= 106 &&
           dBox.w > 30 && dBox.w < 300,
       text: "外框 x[" + dBox.minX + ".." + dBox.maxX + "] y[" + dBox.minY + ".." + dBox.maxY +
             "] 宽" + dBox.w + " 高" + dBox.h + " 命中" + dBox.n
     });
-    const uBox = inkBox(img, 60, 90, 420, 125, READOUT_UNIT, 0x30);
+    const uBox = inkBox(img, 60, 105, 420, 130, READOUT_UNIT, 0x30);
     checks.push({
-      name: "单位墨迹范围(18 号,97..117)", x: uBox.minX, y: uBox.minY,
+      name: "单位墨迹范围(18 号,107..120)", x: uBox.minX, y: uBox.minY,
       got: { r: uBox.w, g: uBox.h, b: uBox.n },
       expect: { r: 0, g: 0, b: 0 },
-      ok: uBox.n > 0 && uBox.minY >= 90 && uBox.maxY <= 119,
+      ok: uBox.n > 0 && uBox.minY >= 103 && uBox.maxY <= 122,
       text: "外框 x[" + uBox.minX + ".." + uBox.maxX + "] y[" + uBox.minY + ".." + uBox.maxY +
             "] 宽" + uBox.w + " 高" + uBox.h + " 命中" + uBox.n
     });
