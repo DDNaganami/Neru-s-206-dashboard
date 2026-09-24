@@ -2727,4 +2727,97 @@ PSRAM 会慢一点，但 40MHz 的 SPI 本来就不是瓶颈）。
         门活动窗口 `kDoorActivityMs = 8000` 是**工程判断**（抓包那轮的门脉冲是 10 s 档），
         真车标定要 owner 拿屏试一次；超速告警阈值 `120`（表情那一档是 >130，两者**刻意不同**）；
         转向灯忘关 `20 s` 也是工程判断。
+## 2.8C 圆屏：点亮、"整屏花屏"与"撕裂"的根因与修法（2026-09-24 实机）
 
+**板**：微雪 **ESP32-S3-LCD-2.8C（非触控，最终板）**，CH343P → **COM6**；
+屏 = 2.8" 圆 IPS 480×480 / **ST7701** / **RGB565 并口**。
+引脚表、41 步初始化、时序、缓冲与同步策略的完整记录见 **`docs/RGB-PANEL-2.8C.md`**
+（引脚顺序、7 个时序宏、41 步初始化都拿官方 `ESP32-S3-LCD-2.8C-Demo.zip` 的
+`Display_ST7701.{h,cpp}` **逐条机器比对过**：全同）。
+
+### 点屏时撞到的两个"静默失败"（都已修）
+
+1. **少了 `esp_lcd_panel_init()`** ⇒ `rgb: frames=0`、屏全黑。
+   旧 API 的 `esp_lcd_new_rgb_panel()` 只建对象，**真正开 DMA**的是 `esp_lcd_panel_init()`。
+2. **LVGL 绘制缓冲没按 `LV_DRAW_BUF_ALIGN` 对齐** ⇒ `rgb: flush=0`、屏全黑。
+   LVGL 9.3 的 `lv_display_set_buffers()` 校验 `buf1 == lv_draw_buf_align(buf1)`，
+   不满足就**静默 return**；`static lv_color_t buf[...]`（uint16_t）只保证 2 字节对齐。
+
+### ① 整屏花屏（每次更新整屏花，之后自恢复）
+
+**根因**：这份 esp_lcd（arduino-esp32 2.0.17 / IDF 4.4 系）**没有 bounce buffer**
+（头文件里没有 `bounce_buffer_size_px`），framebuffer 只有一块且在 PSRAM ⇒
+LCD_CAM 的 DMA 在整帧有效像素期间**直接从 PSRAM 读**，而 LVGL flush 时 CPU 往同一块
+PSRAM 里 memcpy（几十 KB + cache 回写）⇒ 抢带宽、DMA FIFO 欠载 ⇒ 那一帧整屏花。
+**与 porch/极性配错的区分**：配错是"从头花到尾"，欠载是"只在写的那一下花"。
+
+**★ 被证据否掉的一条假设**：不是"缺 cache 回写" —— 反汇编 `libesp_lcd.a` 的
+`esp_lcd_rgb_panel.c.obj`，`rgb_panel_draw_bitmap` **确实调用** `Cache_WriteBack_Addr`
+（`.literal.rgb_panel_draw_bitmap` + 1 个调用点）。
+
+**修法 A**：PCLK 从 Arduino 例程的 **30MHz 降到 18MHz**。
+18MHz 是官方 **ESP-IDF** 例程的值 —— 那份例程的 bounce buffer 是**可选项**；
+30MHz 那档（Arduino 例程）是**依赖** bounce buffer 的，而我们要不了。
+
+### ② 撕裂（同屏上下半新旧两帧，横缝）
+
+**根因**：等"帧结束"的粒度不够 + 单次写的字节数超窗。
+消隐期只有 **0.85ms**（18MHz、28 行）；而实测 `draw_bitmap` 写 19200B 要 **1309µs**
+⇒ 一次写会溢进有效像素，横缝就出来了。
+
+**修法 B**（两处，都在 `src/dash_display_rgb.cpp`）：
+
+1. 等帧结束改成**微秒级自旋**（原来是 `delay(1)`，最坏晚 1ms 才醒 —— 早就扎进有效像素了）；
+2. 每次写 fb **按字节定额分块**（`RGB_FLUSH_MAX_BYTES = 8192`，实测出来的余量），
+   一块一块地等各自的消隐期。
+
+### 实测（原始串口行）
+
+```
+rgb: RGB565 480x480 pclk=18000000Hz 数据位=16 已就绪(第二块屏待接)
+rgb: RGB565 480x480 ... 板=微雪 ESP32-S3-LCD-2.8C(非触控) ST7701 RST=EXIO1 CS=EXIO3 BL=GPIO6/PWM20000 @50%
+rgb: frames=499(+65/s) flush=136 sync=495(+65/s) timeout=0 chunk=495 copy_max=561us copy_avg=208us wait_max=15237us
+```
+
+* `frames` **+64~+67/s** = 18e6/(548×508) = 64.7Hz ✓
+* `sync == chunk`、`timeout = 0` ⇒ **每一次**写 fb 都等到了帧结束，没有一次靠超时放行
+* `copy_max = 561µs < 850µs`（消隐期）⇒ 每次写都落在消隐期之内
+* heap 223KB（setup 后）/ 219KB（稳态）、PSRAM 8189KB、LVGL 堆 26KB/45.8KB
+
+**★ 还没验的一条**：车主**肉眼**确认撕裂是否真的消失。数字只能说"每次写都落在消隐期内"，
+**玻璃上什么样只有人眼能判**。
+**已知边界**：整屏更新（开机动画）要 450KB÷8KB = 55 块 ≈ 0.85 秒 —— 慢，但不花不撕。
+要"又快又干净"只剩**换到带 `num_fbs`/`on_vsync` 的 esp_lcd**（换构建级改动，
+影响面见 `docs/RGB-PANEL-2.8C.md` 第 9 节）—— **本轮没做**。
+
+### 顺带：PC 中继（没有 VAN 收发器也能把数据喂上屏）
+
+新增 `tools/serial-capture/relay.ps1`（**零第三方依赖**：只用 .NET 自带 `System.IO.Ports`；
+本机系统 python 里没有 pyserial）。实测（文件源 → 2.8C，`SRC` 行原文）：
+
+```
+SRC speed=van rpm=van coolant=sim intake=sim | v=99.8km/h 799rpm 93.0C 30.0C
+SRC speed=van rpm=van coolant=sim intake=sim | v=105.0km/h 799rpm 92.9C 28.2C
+SRC speed=van rpm=van coolant=sim intake=sim | v=102.4km/h 799rpm 92.4C 26.4C
+```
+
+★ 格式坑：设备/抓帧盒自己打的帧行**不能直接回放** ——
+`VAN 824 18 F8 27 10 00 00 00   # cmd=1 ack=0` 里那段 `# …` 会让
+`parseVanReplayLine()` 判错（回显 `VAN? …`，数据层一帧收不到）。
+`-ReplayLinesOnly` 就是干这个的。**第一次中继 30 行全被判错**，就是少了这一步。
+
+### 本轮没做 / 拿不准的
+
+* **裸 S3 抓帧盒（COM7 / CH340）**：插着、能复位（`ESP-ROM:esp32s3-20210327` + `boot:0x8`），
+  但**UART0 上一个字节都不打** —— 不是坏：`[env:esp32s3]` 带 `-DLINK_PHY_UART=1`
+  ⇒ `DASH_LOG_UART0=0`，日志只走**原生 USB-CDC**（那一路没插）。
+  ⇒ 明天做"真·两块板中继"时 PC 要接抓帧盒的**原生 USB 口**才有 `VAN …` 行。
+  COM7→COM6 只做了通路自检（转发 0 行，因它没说话）。**没**为这个改任何固件。
+* 桩驱动 `src/dash_display.cpp` 的 `buf_left/buf_right` 有**同类对齐隐患**，
+  但它是 esp32dev / 抓帧盒在用的构建 ⇒ **本轮没动**。
+* 外径/留白观感：**没对着 Ø89 表壳比过** ⇒ 仍未测（机械尺寸更正在 `PURCHASE.md`）。
+* `theme.json` 未跟踪、**没碰**；CRC / SOF / `kSpeedScale=2.56` / VAN 脚极性**没动**；
+  **没**新开 L 号；真仓库**没**跑 `pio clean`、**没**删 `.pio`；构建/烧写都在
+  `C:\206dash-scratch\Neru`（ASCII 副本），且每次都显式 `--upload-port COM6`。
+* native **234 test cases: 2 skipped, 232 succeeded**（基线不变）；
+  JS 五套 71 / 429 / 259 / 155 / 369。
