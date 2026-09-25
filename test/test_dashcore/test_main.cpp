@@ -27,6 +27,7 @@ void register_boot_persist_tests(void);  // 跨重启留档:上一次 reason/上
 void register_serial_cmd_tests(void);    // 串口单字符命令的判据层:d/m/b/r + 别多吃回放字符(2026-09-24)
 void register_role_layout_tests(void);   // 角色 ↔ 屏幕的映射:哪块板显示哪一屏(2026-09-25)
 void register_face_stage_tests(void);
+void register_log_ring_tests(void);            // 日志环 + 节流闸门(2026-09-26)
 void register_link_crc_coverage_tests(void);   // 双板链路 v1:CRC-15 检错覆盖枚举(§8 L4)
 void register_link_frame_tests(void);          // 双板链路 v1:帧层(§2)—— 布局/帧长/CRC 覆盖/拒绝路径
 void register_link_msg_tests(void);            // 双板链路 v1:消息载荷(§3)—— 逐字节打包/量纲/钳制
@@ -93,6 +94,11 @@ int main(void) {
   //   （`MASTER (RIGHT)` / `SLAVE (LEFT)`），没有一行判据、也没有文档 ⇒ 本单把它
   //   写成代码 + 文档，并在这里逐条钉住（含"两块板**不是**同一屏"这条反向判据）。
   register_role_layout_tests();
+  // ★ 2026-09-26 新增：**日志环 + 节流闸门**（`lib/dashcore/dash_log.h`）。
+  //   这是本单那条硬约定的判据层："主循环永不因日志阻塞"——
+  //   ①环满整行丢+计数 ②排空按预算、端口报满就立刻停手（不重试）
+  //   ③丢弃/挡住都可观测。同样排在 face_stages 之前（顺序纪律见上）。
+  register_log_ring_tests();
   register_face_stage_tests();
   return UNITY_END();
 }
