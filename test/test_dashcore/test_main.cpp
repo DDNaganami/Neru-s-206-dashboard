@@ -42,6 +42,13 @@ void register_link_app_tests(void);            // 双板链路 v1:数据接线(�
 //   这一组钉四件事：HELLO 的 5 s 口径与 ack 停发、STATUS 的 2 Hz 与逐字节载荷、
 //   flags 三位有生产者/第四位恒 0、以及 ★ **发不挤占收**（只由 loop 顺序保证）。
 void register_link_slave_tx_tests(void);
+// ★ 2026-09-27（另一单）新增：**无线那一档**（ESP-NOW）+ **测速/测丢包**。
+//   它钉三件事：① ESP-NOW 的 PHY 与 UART 的 PHY 是**同一套形状**
+//   （`begin/pumpTx/port/txPin/rxPin/loopback/started/baud` 一个不少）；
+//   ② 寻址/信道/上限的口径（信道 6、广播地址、环与在途上限、一帧装进一个包）；
+//   ③ 测量信封与判据（丢包率 / 连续最大间隔 / p50-p95-p99，以及"门槛达不到
+//   就报不适合"）。★ 它**不动协议**：测量帧走的是既有的 `MsgType::Data`。
+void register_link_espnow_meas_tests(void);
 
 int main(void) {
   UNITY_BEGIN();
@@ -69,6 +76,9 @@ int main(void) {
   // ★ 2026-09-27：从板发送（HELLO + STATUS）。**必须**排在 face_stages 之前
   //   （顺序纪律见上：face_stages 历史上崩过一次，排在它后面的用例跑不到）。
   register_link_slave_tx_tests();
+  // ★ 2026-09-27：无线那一档（ESP-NOW）+ 测速/测丢包。同样**必须**排在
+  //   face_stages 之前（顺序纪律见上：那一组历史上崩过一次，排在它后面的跑不到）。
+  register_link_espnow_meas_tests();
   // ★ 2026-09-24 新增两组:已解字段(灯位/门/VIN)与告警层。
   //   排在 face_stages 之前(与上面那段的理由一致:face_stages 历史上崩过一次,
   //   排在它后面的用例跑不到 —— 崩溃虽已修掉,这条顺序纪律照旧保留)。

@@ -20,7 +20,7 @@
 #include "serial_cmd.h"
 
 // ============================================================
-// 一、命令表：**只有这五个小写字符**是命令
+// 一、命令表：**只有这六个小写字符**是命令
 // ============================================================
 void test_serial_cmd_table(void) {
   TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::Diag,   (uint8_t)serial_cmd_classify('d'));
@@ -30,6 +30,11 @@ void test_serial_cmd_table(void) {
   TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::Inject, (uint8_t)serial_cmd_classify('i'));
   // ★ 注入那一档的**动作**由编译开关决定（默认构建里恒 false ⇒ 调用方把它当普通字符）
   //   —— 判据层只回答"这个字符可能是注入"，行为逐字节变不变由调用方那两行决定。
+  // ★★ 2026-09-27 新增 `w` = **RF 测速/测丢包**（下一单要在 10 分钟内量出
+  //   丢包/间隔/抖动，现场不可能为了开一次测量重刷固件 ⇒ 敲一个字符就开跑）。
+  //   与 `i` 逐字同一个口径：判据层只说"可能是那条命令"，
+  //   **默认构建（没有无线 PHY）里调用方返回 false ⇒ 它照旧进回放路径**。
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::Wire, (uint8_t)serial_cmd_classify('w'));
 }
 
 // ============================================================
