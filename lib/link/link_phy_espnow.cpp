@@ -179,11 +179,25 @@ void LinkPhyEspNow::onRecv(const uint8_t* src, const uint8_t* data, int len) {
     mRxOverflow += n;
     return;
   }
-  // 环里"还能连着的空位"：从 head 到 tail（不含）之间那一段
-  const uint16_t tailNext = (uint16_t)((mRxTail + kRxRingBytes - 1u) % kRxRingBytes);
-  uint16_t contiguous = (uint16_t)((mRxHead <= tailNext) ? (tailNext - mRxHead)
-                                                         : (kRxRingBytes - mRxHead));
-  if (n > contiguous) {
+  // ★★ 真正的可用空间 = `(tail - 1 - head) mod N`（留一格区分"空/满"），**允许环绕**。
+  //
+  // 为什么必须这么算 —— 2026-09-27 上板实测抓到的**永久死锁**（本文件最贵的一个 bug）：
+  //   老写法是"从 head 到 tailNext 这一段连续空位"，而**环空**（head == tail == H）时
+  //   它算出来是 `N - H`：
+  //     · H 因为包长累积会落在任意值上；一旦 H 落进 **241..255**，
+  //       `N - H` 就小于最短的帧（TICK = 13 B）⇒ 任何一个包都放不下；
+  //     · 而 `mRxHead` **只在放得下时才前进** ⇒ 它再也回不到 0 去绕环 ⇒ 卡死。
+  //   实测症状与之一一对应：`rx_frames/rx_bytes` 冻住、`overflow` 无界增长
+  //   （每次 +2500 B 左右）、`gap_rx` 单调涨、`tx`/`tx_fail` 完全正常、两块板都一样。
+  //   ⇒ 这不是射频问题，是**环形缓冲的空位算法**问题。
+  //
+  // ★ 环绕是安全的，不要再用"包不许跨接缝"去挡它：下面那个逐字节拷贝本来就用
+  //   `% kRxRingBytes`；而且 `mRxHead` 是**整包拷完之后**才前进的（第 190~191 行），
+  //   读侧永远不可能看到半个包。老注释里"半个包进来会让上层解出一个永远等不到尾巴
+  //   的帧"担心的是**拷贝一半就暴露 head**，那件事在这个写法下不会发生。
+  const uint16_t freeBytes =
+      (uint16_t)((mRxTail + kRxRingBytes - 1u - mRxHead) % kRxRingBytes);
+  if (n > freeBytes) {
     mRxOverflow += n;
     return;
   }
