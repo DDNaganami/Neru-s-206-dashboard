@@ -1469,11 +1469,22 @@ static void loop_probe_end(uint32_t now) {
   const uint32_t span = (uint32_t)(now - g_loop_last_report_ms);
   g_loop_last_report_ms = now;
   const dashlink::LinkRxStats& rs = g_link_rx.stats();
-  dash_logf("loop: n=%lu in %lums (%lu/s) max=%lums stall=%lu | link rx bytes=%lu frames=%lu\n",
+  // ★★ 日志那一路的读数（2026-09-26）：**丢了多少必须看得见**。
+  //   `drop=`/`dropped=` 非 0 ⇒ "这一窗口里日志被丢过"（环满，因为没人读）；
+  //   `blocked=` ⇒ "有多少圈在排空时撞上'端口满'、一个字节都没写出去"。
+  //   ★ 这两个数**不是错误**，是设计取舍的读数：宁可丢日志，也不能堵主循环。
+  //   ★ `drain=` 是累计交付字节数（差值 = 这一窗口真的送出去多少）。
+  const dashlog::Stats ls = dash_log_stats();
+  dash_logf("loop: n=%lu in %lums (%lu/s) max=%lums stall=%lu | link rx bytes=%lu frames=%lu | "
+            "log drain=%lu drop=%lu dropped=%lu blocked=%lu ring=%lu/%lu hwm=%lu\n",
             (unsigned long)g_loop_n, (unsigned long)span,
             (unsigned long)(span ? (g_loop_n * 1000u / span) : 0u),
             (unsigned long)g_loop_max_ms, (unsigned long)g_loop_stalls,
-            (unsigned long)rs.bytes_read, (unsigned long)rs.frames_ok);
+            (unsigned long)rs.bytes_read, (unsigned long)rs.frames_ok,
+            (unsigned long)ls.drained_bytes, (unsigned long)ls.drop_count,
+            (unsigned long)ls.dropped_bytes, (unsigned long)ls.blocked_drains,
+            (unsigned long)ls.ring_bytes, (unsigned long)ls.ring_capacity,
+            (unsigned long)ls.high_water_mark);
   g_loop_n = 0;
   g_loop_max_ms = 0;
   g_loop_stalls = 0;
@@ -2197,6 +2208,10 @@ void loop() {
   // 数值是必须的:桩驱动丢弃画面,开机动画/换屏之前只能靠串口确认
   // 假数据弧确实在扫量程(见 ACCEPTANCE.md 的"假数据扫表"一条)。
   // ★ 无条件打印(别加"主机连上才打"的判断 —— 那会把 connected 卡死,见上)。
+  //   ★★ 2026-09-26 补：那条纪律**依然成立**，但它的形态变了 —— 现在
+  //     `dash_logf()` 只是"格式化进环"（`lib/dashcore/dash_log.h` 的硬约定）：
+  //     有没有人在读**完全不影响**主循环这一行花多久；没人读时环满就丢 + 计数。
+  //     所以"无条件打印"现在是一个**便宜**的选择（以前它是一次可能阻塞 2 s 的写）。
   if (now - last_status_ms >= 5000) {
     last_status_ms = now;
     const DataSourceStatus& s = g_data.status();
@@ -2213,6 +2228,10 @@ void loop() {
                     s.obd_speed_polled ? "已开" : "关闭");
     }
 
+    // ★★ 2026-09-26：这几行**周期性遥测**统一走"每 5 秒那一拍"（本来就是
+    //   同一个 `if`），不再额外挂闸门 —— 它们已经在最低频那一档了。
+    //   真正需要节流的是**每秒**那几条（`206 dash ok` / `rgb:` / `SRC` 家族），
+    //   见 `kTelemetryLogMs` 与各调用点上的 `RateGate`。
     dash_logf("SRC speed=%s rpm=%s coolant=%s intake=%s | v=%.1fkm/h %.0frpm %.1fC %.1fC\n",
                   fieldSourceName(s.speed),
                   fieldSourceName(s.rpm),
@@ -2293,6 +2312,15 @@ void loop() {
     van_sniff_report(now);
 #endif
   }
+
+  // ★★ 日志排空（2026-09-26）：**整圈的最后一步**。
+  //   为什么放在最后：`dash_logf()` 现在只是"格式化进环"（`lib/dashcore/dash_log.h`），
+  //   真的写串口只有这一处 —— 于是"这一圈花了多久"里**包含**了写串口那一段，
+  //   而 `loop_probe_begin` 量的正是它 ⇒ 判据（`max=` / `stall=`）是**带日志成本**的。
+  //   它**不会阻塞**：预算 512 B/圈 + 写之前先问 `availableForWrite()`；
+  //   端口报满就一个字节都不写（剩下的下一圈再来，环满了就丢并计数）。
+  //   ⇒ 车上的常态"没有电脑读串口"从此不再是"卡死"，而是"日志丢几行"。
+  dash_log_drain();
 
   // ★★ 停顿探测的收尾（2026-09-25）：到点打一行摘要（`n=` / `max=` / `stall=`）。
   //   放在**整圈的最后一行** —— 于是它统计的 `n=` 就是"这一窗口里完整跑完的圈数"，
