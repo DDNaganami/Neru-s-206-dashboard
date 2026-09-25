@@ -52,6 +52,11 @@
 //   （`WiFi.mode(WIFI_STA)` + `disconnect()`，见 link_phy_espnow.cpp 的 begin()），
 //   所以信道完全由本常量说了算。
 #ifndef LINK_ESPNOW_CHANNEL
+// ★ 步骤③ 信道 A/B 实测（2026-09-27）：ch6 与 ch1 **没有可测差异** ——
+//   同样 2000 帧 @100Hz：两者都是 lost=0 (0.00%)、p50=10ms、p99=42ms、
+//   gap_max 113ms(ch6) vs 119ms(ch1)、wire_gap_max 93 vs 95ms。
+//   ⇒ "ch6 挤"这个假设被排除；瓶颈在**我们自己的调度**（见步骤②：主循环被抢占 ~90ms）。
+//   既然没有收益，就保持默认 6（三个互不重叠信道 1/6/11 的正中间）。
 #define LINK_ESPNOW_CHANNEL 6
 #endif
 
