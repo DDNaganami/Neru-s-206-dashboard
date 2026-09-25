@@ -767,7 +767,48 @@ static dashlink::LinkPhyNull g_link_phy;
 //   里的"测量信封闸门"要用到 `g_meas_rx`，C++ 要求**先声明后使用**。
 static dashlink::MeasSender   g_meas_tx;
 static dashlink::MeasReceiver g_meas_rx;
-#endif
+
+// ============================================================================
+//  ★★ 选项 (a) 的**可行性探针**（2026-09-27 深夜；车主选了 (a)，但先验前提）
+// ============================================================================
+//  (a) 的内容：把 TICK 的**发送**搬到一个更高优先级的任务里，好让它躲开主循环那
+//  ~90ms 的抢占。可它**有一个前提必须先验证**：那 90ms 到底是
+//    · "**另一个任务在跑**"  ⇒ 更高优先级的任务能躲开 ⇒ (a) 可行；
+//    · "**关中断 / 关 cache**"（例如 flash 擦写期间 cache 停了）
+//                            ⇒ **任何任务都跑不了**，加 TX 任务也一样没用 ⇒ 只能走 (b)。
+//
+//  判据：这个 **20ms 周期**的 `esp_timer` 回调（跑在 esp_timer 任务里，优先级远高于
+//  loopTask）在 5 秒窗口里记到的**两次回调之间的最大间隔**：
+//    · ≈20ms（与主循环的 88~219ms 无关）⇒ 躲得开 ⇒ (a) 可行；
+//    · 也出现 ~90ms 的空档 ⇒ 抢占是全局性的 ⇒ (a) 无效，如实回报、改走 (b)。
+//  ★ 只加探针、**不碰发送路径**：这一步本身不改变任何行为（与"先加归因再动手"同一条纪律）。
+static volatile uint32_t g_probe_n       = 0;   // 回调次数
+static volatile uint32_t g_probe_max_us  = 0;   // 本窗口内"两次回调之间的最大间隔"
+static volatile uint32_t g_probe_last_us = 0;   // 上一次回调的时刻
+
+static void probe_cb(void*) {
+  // ★ 写者只有 esp_timer 任务一个（主循环只读并清零），所以这里不需要临界区。
+  const uint32_t t = (uint32_t)esp_timer_get_time();
+  const uint32_t d = t - g_probe_last_us;
+  g_probe_last_us = t;
+  if (d > g_probe_max_us) g_probe_max_us = d;
+  g_probe_n = g_probe_n + 1u;
+}
+
+// 只在主循环里调一次（懒启动：不必去改 setup 的初始化顺序）。
+static void probe_start_once() {
+  static bool started = false;
+  if (started) return;
+  started = true;
+  esp_timer_create_args_t args = {};
+  args.callback = &probe_cb;
+  args.name = "lnk_probe";
+  esp_timer_handle_t t = nullptr;
+  if (esp_timer_create(&args, &t) == ESP_OK) {
+    esp_timer_start_periodic(t, 20000);   // 20ms = 与 TICK 同档
+  }
+}
+#endif  // LINK_PHY_ESP_NOW
 
 // ★★ 一条走错过的路，留档（2026-09-27 上板实测）——**"让无线档只留一个读者"是错的**。
 //
@@ -1641,16 +1682,27 @@ static void loop_probe_end(uint32_t now) {
   //   ★ 这两个数**不是错误**，是设计取舍的读数：宁可丢日志，也不能堵主循环。
   //   ★ `drain=` 是累计交付字节数（差值 = 这一窗口真的送出去多少）。
   const dashlog::Stats ls = dash_log_stats();
+#if LINK_PHY_ESP_NOW
+  // ★ 选项(a) 可行性探针的读数：`txprobe=` 是"高优先级 20ms 定时器回调"在本窗口里
+  //   两次之间的**最大间隔**。与同一行的 `max=`（主循环最长的一圈）并排读：
+  //     max=95ms 而 txprobe≈20ms ⇒ 高优先级任务躲得开 ⇒ (a) 可行
+  //     max=95ms 且 txprobe≈95ms ⇒ 抢占是全局的（关中断/关 cache）⇒ (a) 无效
+  const uint32_t probe_max_us = g_probe_max_us;
+  g_probe_max_us = 0;
+#else
+  const uint32_t probe_max_us = 0;
+#endif
   // ★ 步骤②归因：`stage=<最慢阶段耗时>us@<阶段名>` —— "这一窗口最长的一圈卡在哪"。
   //   与 `max=` 配套读：`max=95ms` 而 `stage=94000us@render` ⇒ 卡在渲染块里。
   dash_logf("loop: n=%lu in %lums (%lu/s) max=%lums stall=%lu | link rx bytes=%lu frames=%lu | "
-            "stage=%luus@%s | "
+            "stage=%luus@%s | txprobe=%luus | "
             "log drain=%lu drop=%lu dropped=%lu blocked=%lu ring=%lu/%lu hwm=%lu\n",
             (unsigned long)g_loop_n, (unsigned long)span,
             (unsigned long)(span ? (g_loop_n * 1000u / span) : 0u),
             (unsigned long)g_loop_max_ms, (unsigned long)g_loop_stalls,
             (unsigned long)rs.bytes_read, (unsigned long)rs.frames_ok,
             (unsigned long)(g_stage_worst_us / 1000u), g_stage_worst,
+            (unsigned long)probe_max_us,
             (unsigned long)ls.drained_bytes, (unsigned long)ls.drop_count,
             (unsigned long)ls.dropped_bytes, (unsigned long)ls.blocked_drains,
             (unsigned long)ls.ring_bytes, (unsigned long)ls.ring_capacity,
@@ -2470,6 +2522,9 @@ void loop() {
   // 所以卡在哪一步,串口上看到的就是哪一步。
   BOOT_STAGE(6);
   loop_stage("van");     // ★ 步骤②归因：以下各阶段标记只为把长圈归因，不改变行为
+#if LINK_PHY_ESP_NOW
+  probe_start_once();    // ★ 选项(a) 可行性探针：20ms 定时器回调的实际节拍（见它的说明）
+#endif
   g_van_phy.tick(now);   // VAN 物理层解帧 → 喂给 data_service
                          // (桩 / GPIO 收帧两种实现共用这一个接口,见 van_phy.h:
                          //  加 -DVAN_PHY_GPIO=1 时这里就是真的 GPIO 收帧)
