@@ -388,6 +388,99 @@ void test_buzzer_exio_begin_is_idempotent(void) {
   TEST_ASSERT_FALSE(b.sequenceActive());
 }
 
+// ============================================================
+// ★★ ⑥ 绝对上限兜底（2026-09-25 新增）—— `Buzzer::safety()`
+//
+// 起因（车主原话，逐字）："**现在会长鸣一会儿，画面也卡住了**"。
+// 这块板上的蜂鸣器是**软开关**（写 TCA9554 的 EXIO8，没有硬件定时）⇒
+// "到点关"那个动作**只在主循环转得动的时候**才被执行。而 `tick()` 是主循环调的
+// ⇒ 主循环一停，"到点关"就再也不会发生，高电平**留在总线上谁也关不掉**。
+//
+// ★ 所以这一组测的是"**tick() 没被调用**"这一种病：
+//   这里**刻意不调 `tick()`**（也不调 `off()`），只推进假时钟再调 `safety()` ——
+//   断言高电平被无条件关掉、序列被丢掉、`safetyCuts()` +1。
+//
+// ★ 另一半（反向判据）：**合法的长序列不许被它误掐** ——
+//   `safety()` 放行的最坏情况是"一直到上限为止都没调用 tick"，而合法序列里
+//   `tick()` 每轮都在跑、到点就关 ⇒ 上限必须**严于**最长的一拍，否则正常告警
+//   会听起来少一声（那种 bug 极难查：它只在"某几拍恰好很慢"的时候出现）。
+// ============================================================
+
+// 上限那个数本身：与"最长的一拍"的关系（`Urgent` = 4×300 + 3×80 = 1440ms）。
+void test_buzzer_exio_safety_is_the_absolute_cap(void) {
+  TEST_ASSERT_EQUAL_UINT32(2000u, kBuzzerSafetyMs);
+  const uint32_t worst = 4u * kMaxPulseMs + 3u * kGapMs;   // Urgent 的最坏时长
+  TEST_ASSERT_EQUAL_UINT32(1440u, worst);
+  TEST_ASSERT_TRUE(worst < kBuzzerSafetyMs);   // ★ 上限必须严于最长的一拍
+}
+
+// 正向：起表之后**谁都不再调 tick()**（模拟"主循环停住"）⇒ 到上限就地关掉。
+void test_buzzer_exio_safety_ignores_state_machine(void) {
+  resetHarness();
+  BuzzerExio b(&fakeSet, nullptr, &fakeNow);
+  b.begin();
+  TEST_ASSERT_EQUAL_UINT32(0u, b.safetyCuts());
+
+  // 3 短哔里最长的一相是 300ms：正常走的话 1060ms 就收完了。
+  b.beep(BeepPattern::Long, 300);
+  g_now_ms = 10u;
+  b.tick();                                     // 起第一声（唯一一次 tick）
+  TEST_ASSERT_TRUE(b.sequenceActive());
+  TEST_ASSERT_TRUE(b.pulseActive());
+  TEST_ASSERT_EQUAL_HEX8(0x85, g_reg);          // 真的在响（EXIO8 = 1）
+
+  // ★ 从此**不再 tick**（= 主循环被堵住），只推进时钟 + 每"圈"调一次 safety。
+  //   上限之前：一个字节都不许动。
+  for (g_now_ms = 11u; g_now_ms < kBuzzerSafetyMs; ++g_now_ms) b.safety();
+  TEST_ASSERT_TRUE(b.sequenceActive());
+  TEST_ASSERT_EQUAL_HEX8(0x85, g_reg);
+  TEST_ASSERT_EQUAL_UINT32(0u, b.safetyCuts());
+
+  // 到上限的那一拍：无条件关掉 + 丢序列 + 计数 +1（**不依赖** tick 是否被调用过）
+  g_now_ms = kBuzzerSafetyMs;
+  b.safety();
+  TEST_ASSERT_EQUAL_HEX8(0x05, g_reg);          // ★ 静音了（电平原样，只有 bit7 被清）
+  TEST_ASSERT_FALSE(b.sequenceActive());
+  TEST_ASSERT_FALSE(b.pulseActive());
+  TEST_ASSERT_EQUAL_UINT32(1u, b.safetyCuts());
+  TEST_ASSERT_EQUAL_STRING("exio8", b.name());
+
+  // ★ 掐断之后**必须能再响**：`clearSequence()` 会把幂等缓存一起清掉，
+  //   否则"同模式同长的下一次 beep"会被永久吞掉（那种 bug 看起来像"只响第一次"）。
+  b.beep(BeepPattern::Short, 120);
+  TEST_ASSERT_TRUE(b.sequenceActive());
+  g_now_ms += 1u;
+  b.tick();
+  TEST_ASSERT_EQUAL_HEX8(0x85, g_reg);
+  TEST_ASSERT_EQUAL_UINT32(1u, b.safetyCuts());   // 计数是**累计**的，不因新序列归零
+}
+
+// 反向：**合法序列不许被它误掐** —— `tick()` 每轮都在跑的那条正常路径。
+void test_buzzer_exio_safety_does_not_cut_legal_pulses(void) {
+  resetHarness();
+  BuzzerExio b(&fakeSet, nullptr, &fakeNow);
+  b.begin();
+
+  // 最长的一拍（`Urgent` = 4 声 × 300ms + 3 个 80ms 间隙）：每毫秒 tick + safety 各一次
+  // （与真机主循环同形），全程**一次都不许**被上限掐掉。
+  b.beep(BeepPattern::Urgent, 300);
+  bool seen = false;
+  for (int guard = 0; guard < 40000; ++guard) {
+    if (b.sequenceActive()) seen = true;
+    else if (seen) break;
+    b.tick();
+    b.safety();
+    ++g_now_ms;
+  }
+  TEST_ASSERT_TRUE(seen);
+  TEST_ASSERT_FALSE(b.sequenceActive());
+  TEST_ASSERT_EQUAL_UINT32(0u, b.safetyCuts());   // ★ 一次都没掐
+  TEST_ASSERT_EQUAL_HEX8(0x05, g_reg);
+  // 4 声都真的响过：电平跳变 4 开 4 关
+  bool lv[16];
+  TEST_ASSERT_EQUAL_INT(8, transitions(lv, 16));
+}
+
 void register_buzzer_exio_tests(void) {
   RUN_TEST(test_buzzer_exio_mask_only_target_bit);
   RUN_TEST(test_buzzer_exio_long_degrades_to_three_short);
@@ -398,4 +491,10 @@ void register_buzzer_exio_tests(void) {
   RUN_TEST(test_buzzer_exio_repeat_beep_is_idempotent);
   RUN_TEST(test_buzzer_exio_off_cancels_immediately);
   RUN_TEST(test_buzzer_exio_begin_is_idempotent);
+  // ★★ 2026-09-25 新增（"屏卡死 + 蜂鸣器长鸣"那一单）：**绝对上限兜底**。
+  //   上面那九条管的是"序列怎么走"；这一条管的是"**序列没机会走**" ——
+  //   真机上那种形态是"主循环停住 ⇒ 到点关那个动作根本没被执行 ⇒ 高电平留在总线上"。
+  RUN_TEST(test_buzzer_exio_safety_is_the_absolute_cap);
+  RUN_TEST(test_buzzer_exio_safety_does_not_cut_legal_pulses);
+  RUN_TEST(test_buzzer_exio_safety_ignores_state_machine);
 }
