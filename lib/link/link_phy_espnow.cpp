@@ -541,12 +541,50 @@ uint16_t LinkPhyEspNow::pumpTx(uint32_t now_ms) {
 
   uint16_t sent_bytes = 0;
   uint8_t packets = 0;
+  // ★★ 一个 ESP-NOW 包 = **恰好一帧**（2026-09-27 上板实测后改；这是丢包率的真因）
+  //
+  //   老写法按"环里连续有多少字节"发（`chunk = min(mTxCount, 到环尾)`）⇒ 只要环里
+  //   攒了 2~3 帧，**一个包就带上 2~3 帧**。发出去本身没问题（`tx_fail=0`、`done`
+  //   跟得上），但接收回调的 `looksLikeV1Frame()` 用的是"一个包 = 一帧"的判据
+  //   （`len == 7 + LEN` 是**等号**）⇒ 凡是打包了多帧的包，长度对不上，**整包被
+  //   当成杂散包丢掉**（记 `rxForeign`）。
+  //
+  //   实测证据（两块板分开放、ch6、主板敲一次 `w`）：
+  //     · 主板 `tx_frames` 41→8403、`tx_fail=0`、`done` 涨到 8289 ⇒ 射频**确实发出去了**；
+  //     · 从板 PHY `rx_frames` 199→6068、`gap_rx=0..1ms` ⇒ 空中**也收到了**；
+  //     · 可 `rx_foreign` 47→2134，测量只认了 609/1995 帧 ⇒ 丢在"判成外来包"这一步；
+  //     · 且 `p50 = 20ms`（发送周期 10ms 的整数倍）⇒ 成批发的时候**整批**丢掉。
+  //   ★ 这一条也解释了为什么"两块板分开摆"反而更差（36.75% → 69.47%）：成批的
+  //     程度取决于主循环节奏与环里攒了多少，跟距离无关。
+  //
+  //   ⇒ 修法：**从环头解出下一帧的真实长度**（v1 帧自定长：7 + LEN，见 §2），只发
+  //     这一帧；整帧还没齐就等下一圈。跨环接缝的帧先拷进栈上小缓冲再发 ——
+  //     `esp_now_send()` 本来就会拷贝，多这一次拷贝是免费的，换来的是"**包 = 帧**"
+  //     这条不变量在收发两侧都成立。
+  uint8_t pkt[kFrameBytesMax];
   while (packets < kPumpPackets && mTxCount > 0u && mPending < kMaxPending) {
-    const uint16_t first = (uint16_t)(kTxRingBytes - mTxHead);
-    const uint16_t chunk = (mTxCount < first) ? mTxCount : first;
+    if (mTxCount < (uint16_t)kOverhead) break;      // 连帧头都没齐：等下一圈
+    uint8_t hdr[kOverhead];
+    for (uint16_t i = 0; i < (uint16_t)kOverhead; ++i) {
+      hdr[i] = mTxBuf[(mTxHead + i) % kTxRingBytes];
+    }
+    const uint8_t plen = hdr[kOffLen];
+    if (hdr[kOffSync] != kSync || !lenInRange(plen)) {
+      // 环里应当永远是整帧进出（`LinkTx::pump()` 按帧写、这里按帧取）⇒ 帧头必须自洽。
+      // 不自洽说明上游写坏了：**丢一个字节重同步**，绝不把垃圾当帧发出去。
+      ++mTxDropFrames;
+      mTxOverflow += 1u;
+      mTxHead = (uint16_t)((mTxHead + 1u) % kTxRingBytes);
+      --mTxCount;
+      continue;
+    }
+    const uint16_t flen = (uint16_t)(kOverhead + plen);
+    if (mTxCount < flen) break;                     // 整帧还没齐：等下一圈
+    for (uint16_t i = 0; i < flen; ++i) pkt[i] = mTxBuf[(mTxHead + i) % kTxRingBytes];
+
     // ★ esp_now_send 会把这一段**拷进驱动自己的待发队列**（IDF 的语义：
     //   "the data will be copied"）⇒ 我们下一圈就能复用环里的这些字节。
-    const esp_err_t e = esp_now_send(dst, mTxBuf + mTxHead, (size_t)chunk);
+    const esp_err_t e = esp_now_send(dst, pkt, (size_t)flen);
     mLastSendErr = (int8_t)e;                  // ★ 最近一次的真实返回值（日志里打）
     if (e != ESP_OK) {
       // ★★ **第一次**失败立刻单独打一行（2026-09-27 上板实测之后追加）：
@@ -569,15 +607,15 @@ uint16_t LinkPhyEspNow::pumpTx(uint32_t now_ms) {
       //   为什么不能"重试到成功"：主循环每多花一毫秒，VAN 边沿采集就多一分
       //   丢边沿的风险（§1.2 引的那次实测教训）。丢帧比拖住主循环轻。
       ++mTxSendFail;
-      mTxOverflow += chunk;      // 字节账仍要对得上（丢掉的字节也算"没送出去的"）
-      mTxHead = (uint16_t)((mTxHead + chunk) % kTxRingBytes);
-      mTxCount = (uint16_t)(mTxCount - chunk);
+      mTxOverflow += flen;      // 字节账仍要对得上（丢掉的字节也算"没送出去的"）
+      mTxHead = (uint16_t)((mTxHead + flen) % kTxRingBytes);
+      mTxCount = (uint16_t)(mTxCount - flen);
       break;
     }
-    mTxHead = (uint16_t)((mTxHead + chunk) % kTxRingBytes);
-    mTxCount = (uint16_t)(mTxCount - chunk);
-    mTxTotal += chunk;
-    sent_bytes = (uint16_t)(sent_bytes + chunk);
+    mTxHead = (uint16_t)((mTxHead + flen) % kTxRingBytes);
+    mTxCount = (uint16_t)(mTxCount - flen);
+    mTxTotal += flen;
+    sent_bytes = (uint16_t)(sent_bytes + flen);
     ++mTxFrames;
     ++packets;
     ++mPending;

@@ -1990,11 +1990,12 @@ static void link_master_tick(uint32_t now, const VehicleState& snapshot) {
 //     `link_poll_*()` 看到的是"有新字节再来"这一条正常路径。
 //
 // ★ 有界与不阻塞（与 `kLinkRxBytesPerLoop` 同一条口径）：
-//   · 一圈最多从 PHY 取走 512 B、最多解析 8 帧；
+//   · 一圈最多从 PHY 取走 512 B —— **这就是上界**（帧数由它天然封顶：最小帧 11 B
+//     ⇒ 最多约 46 帧）。★ 2026-09-27 上板实测之后**删掉了"最多解析 8 帧"那条**：
+//     它会把多出来的整帧推给 `LinkRx`，既漏统计又污染车辆数据（详见 `meas_poll()` 里那段）；
 //   · 发送侧一拍最多 `MeasSender::kMaxPerPoll` 帧，且只往 PHY 的环里写（不碰射频）；
 //   · **不格式化、不打印**任何东西（真发/真收都在 PHY 与回调里，见它们的文件头）。
 static const uint16_t kMeasBytesPerLoop = 512u;
-static const uint8_t  kMeasFramesPerLoop = 8u;
 
 static dashlink::MeasSender   g_meas_tx;
 static dashlink::MeasReceiver g_meas_rx;
@@ -2032,8 +2033,23 @@ static void meas_poll(uint32_t now) {
   }
   if (n > 0u) {
     uint16_t i = 0;
-    uint8_t frames = 0;
-    while (i + dashlink::kOverhead <= n && frames < kMeasFramesPerLoop) {
+    // ★★ 2026-09-27 上板实测：这里**不要再限制"一次最多解析几帧"**。
+    //
+    //   老条件是 `&& frames < kMeasFramesPerLoop`（8 帧）。它造成的后果非常隐蔽：
+    //   这一圈只解析前 8 帧，**剩下的整帧会被下面那段"尾巴"逐字节喂给 `LinkRx`** ⇒
+    //     ① 那些**测量帧不再被计为测量帧** ⇒ 测量器把它们算成"丢了"；
+    //     ② 它们的 DSM1 载荷经 `LinkRx` 进了数据层 ⇒ 屏上出现
+    //        `coolant=9.0C intake=-39.0C` 这种不可能读数、`SRC …` 在 sim/link 之间跳。
+    //
+    //   实测对账（一包一帧修复之后、收环已放大到 1024 B）：从板主循环被刷屏拖住
+    //   约 95 ms 时会积压约 22 个包，一圈只放行 8 个 ⇒ 每次停顿漏掉约 14 帧；
+    //   20 秒里约 20 次停顿 ≈ 280 帧，而实测 `lost=298`（14.9%）—— 量级对得上。
+    //   放大收环只把 15.50% 变成 14.90% ⇒ **瓶颈不在环的大小，在这一行**。
+    //
+    //   ★ 为什么去掉上界仍然是"有界"的：**字节预算就是上界** —— 本函数一圈最多从
+    //     PHY 取 `kMeasBytesPerLoop`(512) B，而最小帧 11 B ⇒ 最多约 46 帧。
+    //     解析本身只是几次比较 + 一次入队（`noteArrival` 不格式化、不打日志）。
+    while (i + dashlink::kOverhead <= n) {
       const uint8_t type = buf[i + dashlink::kOffType];
       const uint8_t len = buf[i + dashlink::kOffLen];
       if (buf[i + dashlink::kOffSync] != dashlink::kSync || !dashlink::lenInRange(len)) {
@@ -2054,9 +2070,9 @@ static void meas_poll(uint32_t now) {
         }
       }
       i = (uint16_t)(i + need);
-      ++frames;
     }
-    // 尾巴（半截帧）交给 LinkRx：它本来就为"字节流分帧"而生（§2 的重同步）
+    // 尾巴（**只可能是半截帧** —— 整帧在上面那个 while 里已经全部处理完了）
+    // 交给 LinkRx：它本来就为"字节流分帧"而生（§2 的重同步）
     {
       dashlink::Frame f;
       for (; i < n; ++i) {
