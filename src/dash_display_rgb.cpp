@@ -1708,6 +1708,15 @@ void dash_display_poll() {
   static uint32_t last_forced_kb = 0;
   static uint32_t last_copy_sum = 0;
   static uint32_t last_copy_n = 0;
+  // ★★ 2026-09-26：下面那两行 `rgb:` **每秒一条**，是本构建里日志量的最大一块
+  //   （vsync 那行 ~280 B、脏区那行 ~90 B ⇒ 合计 ≈370 B/s），而它俩都是
+  //   "这一秒的统计"，属于**周期性遥测** ⇒ 挂闸门降到每 2 秒一条。
+  //   ★ 注意闸门**只挡打印**：下面那一整套统计（`flush_stats_reset` 与
+  //     `last_*` 推进）**照旧每秒做一次** —— 只有这样才能保证那两行里的
+  //     数字永远是**每秒**的口径（不是"两秒攒一起"）。这一点是硬的。
+  //   ★ 为什么是 2 s：与 `206 dash ok` 那一行同一档、且整除 5 秒的摘要窗口
+  //     （理由逐条写在 `src/dash_ui.cpp` 的 `g_ok_gate` 那里）。
+  static dashlogring::RateGate rgb_log_gate(2000u);
   const uint32_t now = millis();
 
 #if BUZZER_SELFTEST
@@ -1759,62 +1768,71 @@ void dash_display_poll() {
   }
 
   if (now - last_ms < 1000) return;
+  // ★★ 2026-09-26：这一秒**要不要打**那两行（闸门见上面的 `rgb_log_gate`）。
+  //   ★ 只挡打印，**不挡**下面那些统计的重置 —— 见那段说明。
+  const bool log_now = rgb_log_gate.take(now);
   const uint32_t v = g_vsync;
   const uint32_t wp = g_frame_wrap;
   const uint32_t sw = g_swap;
   const uint32_t dn = g_copy_n - last_copy_n;
   const uint32_t dsum = g_copy_us_sum - last_copy_sum;
-  // bounce 模式下驱动每帧要从 PSRAM 搬多少:wrap/s × 一帧的字节数(这就是那一行的代价)
-  const uint32_t fill_mb = (uint32_t)(((uint64_t)(wp - last_wrap) * RGB_FB_BYTES) / (1024ull * 1024ull));
-  const uint32_t dcatch = g_catchup_n - last_catchup;
-  const uint32_t dcatch_kb = g_catchup_kb - last_catchup_kb;
-  const uint32_t dforced = g_forced_kb - last_forced_kb;
-  const uint32_t iv_avg = g_swap_int_n ? (uint32_t)(g_swap_int_sum_us / g_swap_int_n) : 0u;
-  const uint32_t iv_min = (g_swap_int_n && g_swap_int_min_us != 0xFFFFFFFFu) ? g_swap_int_min_us : 0u;
   // ★ 车主要的诊断:**每一笔 PSRAM 搬运的最大耗时,按来源分开**
   //   blit_max = 当次脏区那一笔(受 RGB_DRAW_BUF_LINES 限制) / step_max = 小碎步一步
-  dash_logf("rgb: vsync=%u(+%u/s) wrap=%u(+%u/s) swap=%u(+%u/s) flush=%u "
-            "blit_max=%uus step_max=%uus copy_max=%uus copy_avg=%uus swap_wait_max=%uus "
-            "phase_max=%uus timeout=%u fb=%u/%u "
-            "catchup=%u(+%u/s %uKB/s forced%uKB) refresh=%u/%u/%uus fullrb=%u/s bounce=%uMB/s "
-            "模式=%s psram=%uKB heap=%uKB\n",
-                (unsigned)v, (unsigned)(v - last_vsync),
-                (unsigned)wp, (unsigned)(wp - last_wrap),
-                (unsigned)sw, (unsigned)(sw - last_swap),
-                (unsigned)g_flush_count,
-                (unsigned)g_blit_max_us, (unsigned)g_step_max_us,
-                (unsigned)g_copy_us_max, (unsigned)(dn ? (dsum / dn) : 0u),
-                (unsigned)g_swap_wait_max_us,
-                (unsigned)g_swap_phase_max_us,
-                (unsigned)g_swap_timeout,
-                (unsigned)g_front, (unsigned)g_back,
-                (unsigned)g_catchup_n, (unsigned)dcatch, (unsigned)dcatch_kb, (unsigned)dforced,
-                (unsigned)iv_avg, (unsigned)iv_min, (unsigned)g_swap_int_max_us,
-                (unsigned)g_fullrb_n,
-                (unsigned)fill_mb,
-                g_full_refresh ? "全屏重绘" : "局部刷新",
-                (unsigned)(ESP.getFreePsram() / 1024u),
-                (unsigned)(ESP.getFreeHeap() / 1024u));
+  if (log_now) {
+    // ★★ 下面这几个**只给这一行用**的量放在 `if` 里（2026-09-26）：
+    //   闸门挡掉的那一秒它们本来也不会被读 ⇒ 放外面就是白算 + 白编译出
+    //   "未使用变量"的噪音。（`v/wp/sw/dn/dsum` 不一样：它们还参与下面
+    //   每秒重置的那套 bookkeeping，所以留在外面。）
+    // bounce 模式下驱动每帧要从 PSRAM 搬多少:wrap/s × 一帧的字节数(这就是那一行的代价)
+    const uint32_t fill_mb = (uint32_t)(((uint64_t)(wp - last_wrap) * RGB_FB_BYTES) / (1024ull * 1024ull));
+    const uint32_t dcatch = g_catchup_n - last_catchup;
+    const uint32_t dcatch_kb = g_catchup_kb - last_catchup_kb;
+    const uint32_t dforced = g_forced_kb - last_forced_kb;
+    const uint32_t iv_avg = g_swap_int_n ? (uint32_t)(g_swap_int_sum_us / g_swap_int_n) : 0u;
+    const uint32_t iv_min = (g_swap_int_n && g_swap_int_min_us != 0xFFFFFFFFu) ? g_swap_int_min_us : 0u;
+    dash_logf("rgb: vsync=%u(+%u/s) wrap=%u(+%u/s) swap=%u(+%u/s) flush=%u "
+              "blit_max=%uus step_max=%uus copy_max=%uus copy_avg=%uus swap_wait_max=%uus "
+              "phase_max=%uus timeout=%u fb=%u/%u "
+              "catchup=%u(+%u/s %uKB/s forced%uKB) refresh=%u/%u/%uus fullrb=%u/s bounce=%uMB/s "
+              "模式=%s psram=%uKB heap=%uKB\n",
+                  (unsigned)v, (unsigned)(v - last_vsync),
+                  (unsigned)wp, (unsigned)(wp - last_wrap),
+                  (unsigned)sw, (unsigned)(sw - last_swap),
+                  (unsigned)g_flush_count,
+                  (unsigned)g_blit_max_us, (unsigned)g_step_max_us,
+                  (unsigned)g_copy_us_max, (unsigned)(dn ? (dsum / dn) : 0u),
+                  (unsigned)g_swap_wait_max_us,
+                  (unsigned)g_swap_phase_max_us,
+                  (unsigned)g_swap_timeout,
+                  (unsigned)g_front, (unsigned)g_back,
+                  (unsigned)g_catchup_n, (unsigned)dcatch, (unsigned)dcatch_kb, (unsigned)dforced,
+                  (unsigned)iv_avg, (unsigned)iv_min, (unsigned)g_swap_int_max_us,
+                  (unsigned)g_fullrb_n,
+                  (unsigned)fill_mb,
+                  g_full_refresh ? "全屏重绘" : "局部刷新",
+                  (unsigned)(ESP.getFreePsram() / 1024u),
+                  (unsigned)(ESP.getFreeHeap() / 1024u));
 
-  // ★★ 每秒第二行：**"脏了多少"**（只读统计，口径见 lib/dashcore/flush_stats.h）。
-  //   与上面那一行同一个节奏、同一个前缀风格；分开打是为了不动上面那行的格式
-  //   （它已经被 ACCEPTANCE / docs 多处引用，逐字节保持原样）。
-  //   怎么读：`inv` ÷ 一屏(230400px²) = 这一秒相当于把屏幕刷了几遍；
-  //   `fmax` 是**单次**最大的那一块（它受 RGB_DRAW_BUF_LINES 限制，见那段说明）。
-  {
-    const uint32_t scr_px = (uint32_t)THEME_DISPLAY_RES * (uint32_t)THEME_DISPLAY_RES;
-    const uint32_t inv_pct = flush_stats_pct_x10(g_fstats.area_sum, scr_px);
-    const uint32_t fmax_pct = flush_stats_pct_x10(g_fstats.max_area, scr_px);
-    dash_logf("rgb: 脏区/s inv=%upx2(=一屏的 %u.%u%%) flush=%u/s(累计%u) "
-              "fmax=%dx%d(一屏的 %u.%u%%) 单屏=%upx2\n",
-                  (unsigned)g_fstats.area_sum,
-                  (unsigned)(inv_pct / 10u), (unsigned)(inv_pct % 10u),
-                  (unsigned)g_fstats.n, (unsigned)g_flush_count,
-                  (int)g_fstats.max_w, (int)g_fstats.max_h,
-                  (unsigned)(fmax_pct / 10u), (unsigned)(fmax_pct % 10u),
-                  (unsigned)scr_px);
-    flush_stats_reset(g_fstats);
+    // ★★ 每秒第二行：**"脏了多少"**（只读统计，口径见 lib/dashcore/flush_stats.h）。
+    //   与上面那一行同一个节奏、同一个前缀风格；分开打是为了不动上面那行的格式
+    //   （它已经被 ACCEPTANCE / docs 多处引用，逐字节保持原样）。
+    //   怎么读：`inv` ÷ 一屏(230400px²) = 这一秒相当于把屏幕刷了几遍；
+    //   `fmax` 是**单次**最大的那一块（它受 RGB_DRAW_BUF_LINES 限制，见那段说明）。
+    {
+      const uint32_t scr_px = (uint32_t)THEME_DISPLAY_RES * (uint32_t)THEME_DISPLAY_RES;
+      const uint32_t inv_pct = flush_stats_pct_x10(g_fstats.area_sum, scr_px);
+      const uint32_t fmax_pct = flush_stats_pct_x10(g_fstats.max_area, scr_px);
+      dash_logf("rgb: 脏区/s inv=%upx2(=一屏的 %u.%u%%) flush=%u/s(累计%u) "
+                "fmax=%dx%d(一屏的 %u.%u%%) 单屏=%upx2\n",
+                    (unsigned)g_fstats.area_sum,
+                    (unsigned)(inv_pct / 10u), (unsigned)(inv_pct % 10u),
+                    (unsigned)g_fstats.n, (unsigned)g_flush_count,
+                    (int)g_fstats.max_w, (int)g_fstats.max_h,
+                    (unsigned)(fmax_pct / 10u), (unsigned)(fmax_pct % 10u),
+                    (unsigned)scr_px);
+    }
   }
+  flush_stats_reset(g_fstats);
   last_forced_kb = g_forced_kb;
   // 刷新节奏统计:每秒清零重来(min 用 0xFFFFFFFF 当"还没测到")
   g_swap_int_n = 0;

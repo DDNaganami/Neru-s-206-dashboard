@@ -89,6 +89,18 @@ static bool g_boot_done_printed = false;
 static uint32_t last_ok_ms = 0;
 static uint32_t last_tick_ms = 0;
 
+// ★★ 2026-09-26：`206 dash ok` 那一行的**节流闸门**。
+//   为什么是 2 秒（而不是 1 秒或 5 秒）：见 `lib/dashcore/dash_log.h` 文件头那段
+//   "日志绝不许阻塞主循环" —— 节流是为了**少写**，不是为了让读数变糊。
+//   选 2 s 的三个具体理由：
+//     · 它**整除** 5 秒那个摘要窗口（`kLoopStallReportMs`）⇒ 每个窗口里的样点
+//       个数是确定的（2~3 个），不会忽多忽少；
+//     · 它正好是"人看屏 + 看串口"能对上的尺度（屏上换档 → 1~2 秒内出现在串口）；
+//     · 5 秒那一档就太糊了：这一行还兼着"`role=`/`last=` 到底生效没"的判据。
+//   ★ 这一行属于"周期性遥测"，**可以**节流；守护/蜂鸣器/告警/诊断页那些
+//     "变化那一刻才有意义"的行**一律不许**挂闸门（见 dash_log.h 的 `RateGate`）。
+static dashlogring::RateGate g_ok_gate(2000u);
+
 // ============ 数据不可信角标 / 诊断页（2026-09-24）============
 //
 // ★ 几何（**480 基准**，与弧/读数/灯条同一套 ts() 缩放 ⇒ 240 档自动成立）。
@@ -1253,11 +1265,17 @@ void dash_ui_render(const ArcDashView& v, const LampView& lamps, SystemStatus& s
     // ★ 2026-09-25（本单 B）：后面再挂一格 `role=` + `last=` —— 屏上跑的是哪一套表盘，
     //   这一行是**唯一**能在串口上看到它的地方（车主报的就是"从板刷成了速度表"，
     //   而那件事在这一行加这两格之前**一个字都看不出来**）。
-    dash_logf("206 dash ok  spd=%3.0f%% rpm=%3.0f%% coolant=%.0fC face=%s/%s | role=%s last=%s\n",
-                  v.speed_t * 100.0f, v.rpm_t * 100.0f, v.coolant_c,
-                  face_name(v.face_left), face_name(v.face_right),
-                  dashlayout::roleName(),
-                  dashlayout::panelNameForScreen(dashlayout::kScreenTop));
+    // ★★ 2026-09-26：**这一行降频到每 2 秒一条**（闸门见下）。
+    //   它是本构建里"每秒一行"的**主要来源之一**（~90 B/行），内容却是缓变量
+    //   （三个百分比 + 两个表情名）—— 1 Hz 是习惯，不是需求。
+    //   ★ 它要回答的那两件事（`role=` / `last=`）一个字都没少，只是慢了一倍。
+    if (g_ok_gate.take(now)) {
+      dash_logf("206 dash ok  spd=%3.0f%% rpm=%3.0f%% coolant=%.0fC face=%s/%s | role=%s last=%s\n",
+                    v.speed_t * 100.0f, v.rpm_t * 100.0f, v.coolant_c,
+                    face_name(v.face_left), face_name(v.face_right),
+                    dashlayout::roleName(),
+                    dashlayout::panelNameForScreen(dashlayout::kScreenTop));
+    }
   }
 
   // ---- ① 数据不可信状态机：**每拍都推进**（即使屏上什么都不显示）----
