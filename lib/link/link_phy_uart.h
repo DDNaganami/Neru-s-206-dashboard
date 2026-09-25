@@ -166,8 +166,24 @@ class LinkPhyUart : public LinkPhy {
 
   // 入方向（UART → read）
   uint8_t  mRxBuf[kRxRingBytes] = {0};
-  uint16_t mRxHead = 0;
-  uint16_t mRxTail = 0;
+  // ★★ 2026-09-27：这两个下标现在标了 `volatile`（**只加限定符，行为一个字没改**）。
+  //   为什么（这是同日 ESP-NOW 那一档复核时同一条判据，车主点出来的）：
+  //     · `onReceive` 回调跑在 **UART 的 RX 任务**上下文，`available()`/`read()`
+  //       跑在主循环 ⇒ 这三个量**跨上下文**；
+  //     · `available()`/`read()` 是**只靠这两个下标**判断"有没有数据"的，
+  //       而"把非 volatile 的读提到循环外"在单线程内存模型下是**合法优化** ⇒
+  //       症状恰好是"`link rx bytes=0 frames=0`，而对面在发"（也就是本单现场那个卡点
+  //       在软件侧最像的形态）。
+  //   ★ 为什么**现在**才加：这一档的 RX 从来没在硬件上被证实过（副板一直 `rx bytes=0`，
+  //     根因已定位到排针/Typ-C 那颗 `FSUSB42UMX`，见 ARCHITECTURE §8.2）—— 也就是说
+  //     "到底是硬件没通、还是这里有优化坑"这两件事**在实测里分不开**。
+  //     加 `volatile` **只可能更安全**（不给编译器省的余地，代价是每次读都真去内存取），
+  //     所以与"排针"那条一起修，别让这个岔口继续悬着。判据见 ACCEPTANCE.md 本单那一节。
+  //   · `mRxBuf` 本体**不标**：它是载荷，不是判据（顺序由两个 volatile 写保证；
+  //     `volatile` 不是同步原语 —— 单生产者 + 单消费者这个模式够用，与
+  //     `link_phy_espnow.h`、`link_meas.h` 的队列同一条口径）。
+  volatile uint16_t mRxHead = 0;
+  volatile uint16_t mRxTail = 0;
   // ★ 这两个由 UART 的 RX 任务（ISR 上下文）写、主循环读 ⇒ volatile。
   //   其余成员只由主循环碰，不需要。
   volatile uint32_t mRxTotal = 0;
