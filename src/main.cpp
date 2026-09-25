@@ -69,6 +69,17 @@
 //   ★ 角色仍旧是**编译期唯一权威**（`link_role.h` 的 `LINK_ROLE`）：它决定
 //     "发什么、收什么怎么消费"，**不**决定"有没有 PHY"。§5 的 ①②③ 三条判据一行没动。
 #include "link_phy_null.h"
+#if LINK_PHY_ESP_NOW
+// ★★ 2026-09-27（另一单）：**无线那一档**（ESP-NOW）。
+//   理由一句话：有线（UART0 的 43/44）在台面上卡住了（信号到得了副板排针、但副板
+//   `link rx bytes=0`，主假设是那颗 FSUSB42UMX 把 4Pin UART 从 ESP32 上摘走了，
+//   见 ARCHITECTURE §8.2 / docs/LINK-TWO-BOARD.md 的「前置条件」一节）⇒ 车主拍板
+//   **再加一条无线链路**。跑在 WiFi 那半边射频上（S3 没有经典蓝牙）。
+//   ★ 它与 UART 那一档**抢同一份资源**（一个占 UART0、一个占射频与外设矩阵），
+//     所以不许同时进固件 —— 下面紧跟着那条 static_assert 就是这道闸门。
+#include "link_phy_espnow.h"
+#include "link_meas.h"      // 测速/测丢包（信封 + 判据；协议一个字没动）
+#endif
 #if LINK_PHY_UART
 #include "link_phy_uart.h"
 #endif
@@ -725,12 +736,41 @@ static dashlink::StatusSender g_link_status;  // §3 `0x30` 行的 2 Hz 节奏
 #endif
 
 // 链路 PHY 本身：**一份定义、两个角色共用**（§0：谁都是 43 发、44 收）。
-// 有 `LINK_PHY_UART` ⇒ 真 UART0（115200 8N1 / GPIO43=TX、GPIO44=RX）；
-// 没有 ⇒ 空壳（pcpreview / esp32dev，见文件头）。
-#if LINK_PHY_UART
+// 有 `LINK_PHY_ESP_NOW` ⇒ ESP-NOW（无线那一档，**没有引脚**：txPin()/rxPin() 报 -1、
+//                            port() 报 -1，见 link_phy_espnow.h）；
+// 有 `LINK_PHY_UART`    ⇒ 真 UART0（115200 8N1 / GPIO43=TX、GPIO44=RX）；
+// 都没有                ⇒ 空壳（pcpreview / esp32dev，见文件头）。
+// ★★ 三条编译期纪律（下面那条 static_assert 判前两条）：
+//   ① **一份固件只能有一个链路 PHY**（UART 与 ESP-NOW 抢的是同一份资源）；
+//   ② 两个宏都为 0 是**合法**的（空壳档，链路静默，不卡主循环）；
+//   ③ 谁被选到就**只由这两个宏**决定 —— `LINK_ROLE` 仍然只管"发什么、怎么消费"（§5）。
+#if LINK_PHY_ESP_NOW && LINK_PHY_UART
+// 这条不是防御性代码：两个宏同时为 1 只可能来自"复制了一个 env 忘了改一行"，
+// 而那种构建在板上的表现是"某一档 PHY 静默不工作"（没有编译错误、只有行为丢失）。
+// 宁可在编译期炸掉，也不要上板猜。
+// ★ 用 `#error` 而不是 `static_assert`：2026-09-23 实测过"套模板的 static_assert
+//   在 -Os 下不一定被求值"（见 link_phy_uart.cpp 里那段留档）—— 这种闸门唯一的价值
+//   就是"一定拦得住"，所以用最朴素、最没有解释余地的 `#error`。
+#error "一份固件里只能有一个链路 PHY：LINK_PHY_UART 与 LINK_PHY_ESP_NOW 不许同时为 1（见 platformio.ini 里那两个 -now env：它们显式写 -DLINK_PHY_UART=0）"
+#endif
+#if LINK_PHY_ESP_NOW
+static dashlink::LinkPhyEspNow g_link_phy;
+#elif LINK_PHY_UART
 static dashlink::LinkPhyUart g_link_phy;
 #else
 static dashlink::LinkPhyNull g_link_phy;
+#endif
+
+// 开机那一行要报"这一份固件用的是哪种链路 PHY"（两种 PHY 的形状不同：
+// UART 有引脚、无线没有，而 `txPin()` 在无线那一档报 -1 —— 直接打
+// "TX=GPIO-1" 是读不懂的）。★ 放在这里、**不**散进 setup() 的两个分支：
+// 这样"两个角色共用一份形状"那条设计在日志上也成立。
+#if LINK_PHY_ESP_NOW
+static const char* kLinkPhyTail() { return "—— 真 PHY(ESP-NOW)"; }
+#elif LINK_PHY_UART
+static const char* kLinkPhyTail() { return "—— 真 PHY(UART0)"; }
+#else
+static const char* kLinkPhyTail() { return "PHY 是空壳(这份固件没编 -DLINK_PHY_UART / -DLINK_PHY_ESP_NOW)"; }
 #endif
 
 #if LINK_ROLE == 1
@@ -1174,6 +1214,13 @@ static void fault_inject_poll(uint32_t now) {
 #endif
 }
 
+// ★★ 2026-09-27（另一单）：无线那一档的**测速/测丢包**由这个命令发起
+//   （`SerialCmd::Wire`）。它的**定义**在下面（无线 PHY 那一段里），
+//   而命令表在这里 ⇒ 先给一条声明，形状与 `fault_inject_from_serial` 一致：
+//   命令表只"发起"，动作在后面。
+static void meas_start_from_serial();
+static void meas_poll(uint32_t now);
+
 static bool serial_cmd_handle(char c, char* line, uint8_t& len) {
   if (len != 0u) {
     if (line[0] == 'V' || line[0] == 'v') return false;   // 可能是回放行 ⇒ 交给它
@@ -1215,6 +1262,19 @@ static bool serial_cmd_handle(char c, char* line, uint8_t& len) {
       return true;
 #else
       return false;                // 没开注入 ⇒ 这个字符照旧走回放路径（行为不变）
+#endif
+    case SerialCmd::Wire:
+      // ★★ RF 测速/测丢包（2026-09-27 新增，另一单）—— 与 `i` **逐字同一个口径**：
+      //   判据层只说"`w` 可能是这条命令"，**动作**由编译开关决定。
+      //   没有无线 PHY 的构建（抓帧盒 / 真屏 / pcpreview）里恒 false ⇒
+      //   这个字符照旧进回放路径 ⇒ 它们的串口行为**一个字节都没变**。
+#if LINK_PHY_ESP_NOW
+      // 只**开跑**（enqueue 一行 + 打一行）；真正的收发在主循环的 `meas_poll()` 里，
+      // 一行都不在这里等 —— 串口路径上不许阻塞（与 `fault_inject_from_serial` 同一条纪律）。
+      meas_start_from_serial();
+      return true;
+#else
+      return false;
 #endif
     case SerialCmd::None:
     default:
@@ -1906,6 +1966,116 @@ static void link_master_tick(uint32_t now, const VehicleState& snapshot) {
 }
 #endif  // LINK_ROLE == 1
 
+#if LINK_PHY_ESP_NOW
+// ============================================================================
+//  ★★ 无线那一档的**测速/测丢包**（2026-09-27 新增，另一单）
+// ============================================================================
+// 用途：下一单要在**真机、真距离（约 20 cm）**上回答"这条无线链路能不能用"。
+//   判据（丢包 < 0.1 % / 连续最大间隔 < 100 ms / p99 抖动 < 20 ms）与理由写在
+//   `lib/link/link_meas.h` 的文件头；**下一单 10 分钟怎么跑**写在
+//   `docs/LINK-TWO-BOARD.md` 的「无线档」一节。本函数只负责"接上主循环"。
+//
+// ★ 为什么要"先按帧长把测量帧摘出来、再把剩下的字节喂给 `LinkRx`"：
+//   测量帧本身**也是**一帧合法的 v1 DATA 帧（协议一个字没动，见 link_meas.h），
+//   所以它躺在 PHY 的环里时与普通数据帧**长得一样**。如果直接让 `LinkRx` 去吃，
+//   它会把它当 DATA 解出来并喂进数据层（那是**测量流量**，不该污染车辆数据）。
+//   ⇒ 这里按"帧头 + LEN"（`LinkRx` 同样的一条判据）把整帧取出来看一眼：
+//     是测量信封 ⇒ 交给 `MeasReceiver`（只统计，不进数据层）；不是 ⇒ 交给 `LinkRx`。
+//   ★ 顺序是**硬的**：本函数必须在 `link_poll_*()` **之前**跑（否则 `LinkRx` 会先
+//     把测量帧吃进数据层）；而且它**读空** PHY 之后，紧随其后的
+//     `link_poll_*()` 看到的是"有新字节再来"这一条正常路径。
+//
+// ★ 有界与不阻塞（与 `kLinkRxBytesPerLoop` 同一条口径）：
+//   · 一圈最多从 PHY 取走 512 B、最多解析 8 帧；
+//   · 发送侧一拍最多 `MeasSender::kMaxPerPoll` 帧，且只往 PHY 的环里写（不碰射频）；
+//   · **不格式化、不打印**任何东西（真发/真收都在 PHY 与回调里，见它们的文件头）。
+static const uint16_t kMeasBytesPerLoop = 512u;
+static const uint8_t  kMeasFramesPerLoop = 8u;
+
+static dashlink::MeasSender   g_meas_tx;
+static dashlink::MeasReceiver g_meas_rx;
+
+// 串口 `w`：开一次测量流（只在无线 PHY 的构建里真的有动作；其余构建里这个字符
+// 照旧是一个普通字符 ⇒ 串口行为逐字节不变，见 `lib/dashcore/serial_cmd.h`）。
+// ★ 那一行日志刻意写成**纯 ASCII**（`--` 而不是破折号）：下一单要在串口上贴这一行
+//   回来对账，而"抄一行"这件事在中文标点上最容易出岔（同一仓库已有先例注释）。
+static void meas_start_from_serial() {
+  g_meas_tx.start(millis(), dashlink::kLocalRole);
+  dash_logf("meas: 开跑 count=%lu period=%ums -- 收端那行 `meas rx:` 会在 burst 结束后自动打出\n",
+            (unsigned long)g_meas_tx.planned(), (unsigned)g_meas_tx.periodMs());
+}
+
+static void meas_poll(uint32_t now) {
+  // ---- ① 发（只往 PHY 的环里写；真发在下面的 pumpTx 里）----
+  if (g_meas_tx.active()) {
+    const uint8_t n = g_meas_tx.poll(now, g_link_phy);
+    if (n > 0u && !g_meas_tx.active()) {
+      // 刚好发满：把发端那一行打出来（**发端判据**只有"真的按节奏发出去了"这一条；
+      // 丢包/间隔/抖动**只有收端量得到**，别拿"发出去了"当"收到了"）。
+      char line[256] = {0};
+      dashlink::measFormatTxSummary(g_meas_tx, now, line, (int)sizeof(line));
+      dash_logf("%s\n", line);
+    }
+  }
+
+  // ---- ② 收（把 PHY 的环读空，按帧长分流）----
+  uint8_t buf[kMeasBytesPerLoop] = {0};
+  uint16_t n = 0;
+  while (n < kMeasBytesPerLoop) {
+    const int c = g_link_phy.read();
+    if (c < 0) break;
+    buf[n++] = (uint8_t)c;
+  }
+  if (n > 0u) {
+    uint16_t i = 0;
+    uint8_t frames = 0;
+    while (i + dashlink::kOverhead <= n && frames < kMeasFramesPerLoop) {
+      const uint8_t type = buf[i + dashlink::kOffType];
+      const uint8_t len = buf[i + dashlink::kOffLen];
+      if (buf[i + dashlink::kOffSync] != dashlink::kSync || !dashlink::lenInRange(len)) {
+        ++i;                       // 不是帧头：跳一个字节继续找（LinkRx 的同一策略）
+        continue;
+      }
+      const uint16_t need = (uint16_t)(dashlink::kOverhead + len);
+      if ((uint16_t)(i + need) > n) break;    // 这一帧还没收全：留给 LinkRx
+      if (type == (uint8_t)dashlink::MsgType::Data &&
+          g_meas_rx.noteArrival(buf + i + dashlink::kOffPayload, len, now)) {
+        // 测量信封：只统计，**不进数据层**
+      } else {
+        // 不是测量信封的帧：交给既有的 `LinkRx`（收下并计数；它的计数就是
+        // `link rx bytes/frames` 那两个数 —— 与 UART 那一档**同一套**口径）。
+        dashlink::Frame f;
+        for (uint16_t k = 0; k < need; ++k) {
+          g_link_rx.feed(buf[i + k], &f);
+        }
+      }
+      i = (uint16_t)(i + need);
+      ++frames;
+    }
+    // 尾巴（半截帧）交给 LinkRx：它本来就为"字节流分帧"而生（§2 的重同步）
+    {
+      dashlink::Frame f;
+      for (; i < n; ++i) {
+        g_link_rx.feed(buf[i], &f);
+      }
+    }
+  }
+  g_meas_rx.poll();
+
+  // ---- ③ burst 结束 ⇒ 打收端那一行（只打一次）----
+  if (g_meas_rx.endedBy(now)) {
+    char line[320] = {0};
+    dashlink::measFormatRxSummary(g_meas_rx.result(), line, (int)sizeof(line));
+    const dashlink::LinkRxStats& rs = g_link_rx.stats();
+    // ★ 既有计数器一起打（`link rx bytes/frames` 那两项就是"这条链路收了多少"）：
+    //   不新造一套格式，把测量行的读数接在既有口径后面。
+    dash_logf("%s | link rx bytes=%lu frames=%lu crc=%lu\n", line,
+              (unsigned long)rs.bytes_read, (unsigned long)rs.frames_ok,
+              (unsigned long)rs.crc_err);
+  }
+}
+#endif  // LINK_PHY_ESP_NOW
+
 void setup() {
   dash_log_begin(115200);
   delay(200);
@@ -2034,9 +2204,19 @@ void setup() {
   //   "没有 VAN 快照"那一条路会把主循环每一圈都当一份新快照 ⇒ 不设这一行就会
   //   以满线速发（实测 946 帧/秒）。设成 12 ms = 契约 §3 给的那一档（≈80 Hz）。
   g_link_data.setMinIntervalMs(kLinkDataMinIntervalMs);
+  // ★ 2026-09-27（另一单）：这一行按**编译进来的 PHY** 分两种说法 —— 无线那一档
+  //   没有引脚（`txPin()/rxPin()` 报 -1），打 "TX=GPIO-1" 是读不懂的；而 UART 那一档
+  //   的字符串**一个字都没改**（`#if` 把无线那一支整个排除在外 ⇒ 逐字节相同）。
+#if LINK_PHY_ESP_NOW
+  dash_logf("link: 主板侧就绪 %s ch=%u (no pins) @%u%s%s\n",
+            g_link_phy.phyName(), (unsigned)g_link_phy.channel(), g_link_phy.baud(),
+            g_link_phy.online() ? "" : "  <-- PHY 没起来(见上面 espnow: 那几行)",
+            kLinkPhyTail());
+#else
   dash_logf("link: 主板侧就绪 TX=GPIO%d RX=GPIO%d @%u 8N1(§0/§1.1)%s\n",
             (int)g_link_phy.txPin(), (int)g_link_phy.rxPin(), (unsigned)dashlink::kLinkBaud,
             g_link_phy.online() ? "" : "  <-- PHY 是空壳(这份固件没编 -DLINK_PHY_UART)");
+#endif
 #else
   // 从板侧（§5 的角色自检 + §4 时基状态机的初值）+ **真 PHY**（2026-09-25 起）。
   // ★ 与主板那一侧**同一个 `LinkPhyUart`、同一组脚（43 发 / 44 收）、同一个 115200**
@@ -2057,11 +2237,22 @@ void setup() {
   //   ★ `docs/LINK-TWO-BOARD.md` §3.1「应当看到的关键几行（从板）」里那句
   //     `… —— 真 PHY(UART0),等主板的 TICK/DATA` 随之改成了 `—— 真 PHY(UART0)`
   //     （"等主板"已经不是全部了：它现在也发）。两处一起改的，别只改一处。
+  // ★ 2026-09-27（另一单）：尾缀改成 `kLinkPhyTail()` —— 那一句现在按**编译进来的
+  //   PHY** 分档（"真 PHY(UART0)" / "真 PHY(ESP-NOW)" / "空壳"）。UART 那一档打出来的
+  //   字符串**逐字节与改之前相同**（见 kLinkPhyTail() 那段）；无线那一档另有
+  //   `espnow: …` 那几行（信道 / 学到对端 MAC）补上"引脚"之外的信息。
+#if LINK_PHY_ESP_NOW
+  dash_logf("link: 从板侧就绪(§5, LINK_ROLE=0) %s ch=%u (no pins) @%u%s"
+            " —— 收主板的 TICK/DATA，发 HELLO(每 5s 直到收到对端)+STATUS(2Hz,§3)\n",
+            g_link_phy.phyName(), (unsigned)g_link_phy.channel(), g_link_phy.baud(),
+            kLinkPhyTail());
+#else
   dash_logf("link: 从板侧就绪(§5, LINK_ROLE=0) TX=GPIO%d RX=GPIO%d @%u 8N1%s"
             " —— 收主板的 TICK/DATA，发 HELLO(每 5s 直到收到对端)+STATUS(2Hz,§3)\n",
             (int)g_link_phy.txPin(), (int)g_link_phy.rxPin(), (unsigned)dashlink::kLinkBaud,
             g_link_phy.online() ? " —— 真 PHY(UART0)"
                                 : " —— PHY 是空壳(这份固件没编 -DLINK_PHY_UART)");
+#endif
 #endif
   // 主题:先默认值(由 dash_ui_init 兜底),再尝试用 flash 里的主题文件覆盖。
   // 加载失败不影响启动 —— 降级到默认主题继续跑。
@@ -2133,6 +2324,15 @@ void loop() {
   link_poll_bounded_slave(now);
 #endif
 
+#if LINK_PHY_ESP_NOW
+  // ---- 无线那一档的测速/测丢包：**必须在 `link_poll_*()` 之前** ----
+  // ★ 顺序是硬的：测量帧本身也是合法的 v1 DATA 帧，`LinkRx` 会把它当车辆数据
+  //   喂进数据层 ⇒ 先在这里按帧长把测量信封摘走（见 `meas_poll()` 的说明）。
+  // ★ 它在 UART / 空壳两档里**整个不存在**（`#if` 之外一行都没有）⇒
+  //   那两档的主循环逐字节与以前相同。
+  meas_poll(now);
+#endif
+
   // ★ 2026-09-24：由 `const VehicleState st` 改成**可写**的 `st_mut` ——
   //   pcpreview 的输入注入要在这份快照上覆写几个字段（见下面 preview_apply）。
   //   设备侧一个字都没变：`st_mut` 在那边从来不会被改（那一段在 #if 里）。
@@ -2151,6 +2351,20 @@ void loop() {
   //      都不忙等（见 link_tx.h / link_phy_uart.h）。
   link_poll_inbound(now);
   link_master_tick(now, st_mut);
+#endif
+#if LINK_PHY_ESP_NOW
+  // ---- 无线那一档的测速/测丢包（主板侧）----
+  // ★ 顺序与从板那一支**刻意不同**，理由是本机发出的测量帧被本机收帧路径看见时
+  //   会发生什么：
+  //     · **从板**（下面那一支）的收帧会把 DATA 喂进数据层 ⇒ `meas_poll` 必须
+  //       在它**之前**（把测量信封先摘走，别污染车辆数据）；
+  //     · **主板**这一支的收帧只把对端帧转成日志、不碰数据层，而且测量帧的
+  //       role 是**本机**角色 ⇒ `LinkRx` 会按 §5① 角色冲突把它丢掉并计数（§5 的
+  //       判据一个字没动）⇒ 它压根到不了 `handleInbound`。
+  //   ⇒ 放在后面即可：这一档不需要"摘"，只需要"读统计"。
+  //   ★ 已知后果（写清，别当成 bug）：测速期间主板的 `role=` 会涨 ——
+  //     那是"本方发出去的帧被本方收帧路径看见"这一条的自证。
+  meas_poll(now);
 #endif
 #if defined(DASH_DISPLAY_PREVIEW)
   // ---- pcpreview 的输入注入：在数据合并**之后**、算视图**之前** ----

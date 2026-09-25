@@ -1,0 +1,20 @@
+# ESP32-S3 N16R8 partition table -- used by the two ESP-NOW envs only.
+#
+# WHY A THIRD TABLE: the ESP-NOW images link the whole WiFi stack (net80211 / pp /
+#   lwIP / wpa_supplicant) and no longer fit the 1 MB app0/app1 slots that the
+#   wired images still use. This table gives the app a single 2 MB factory slot.
+# WHAT IS DELIBERATELY UNCHANGED: nvs @0x9000 (so the mute flag survives a reflash),
+#   and theme @0x210000 / spiffs @0x214000 / image @0x254000 / coredump @0xa54000 --
+#   the web editor prints those offsets in its esptool command, so moving them would
+#   silently invalidate every flashing instruction in the docs.
+# NO OTA HERE: one slot, subtype factory. OTA over ESP-NOW is explicitly deferred;
+#   with otadata present but never written the bootloader boots the factory app.
+#
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  factory, 0x10000,  0x200000,
+theme,    data, 0x40,    0x210000, 0x4000,
+spiffs,   data, spiffs,  0x214000, 0x40000,
+image,    data, 0x41,    0x254000, 0x800000,
+coredump, data, coredump,0xa54000, 0x10000,
