@@ -41,6 +41,19 @@ struct LinkRxStats {
   uint32_t role_conflict  = 0;   // §5 ①：对端角色与本机相同
   uint32_t noise_bytes    = 0;   // 找 SYNC 时丢掉的非 SYNC 字节（回放行/噪声）
 
+  // ★★ 2026-09-25：**从 PHY 真的读进来了多少字节**（累计）。
+  //   为什么在 `LinkRxStats` 里再加一个计数器（`noise_bytes` 不已经数了"丢掉的"吗）：
+  //   两者**不是一回事**，而且差的那一项正是排查"主循环被输入堵住"时要看的东西 ——
+  //     · `noise_bytes` 只数**猎手阶段丢掉的**字节（还没进候选帧的那些）；
+  //     · 收进来的字节里只要有一个 `SYNC`(0x5A)，后面那些**既不是 noise 也不算帧**
+  //       （半截帧、长度不对、CRC 不过……），它们只在 `crc_err`/`bad_len` 里露头；
+  //     · 而"**这一圈到底吃了多少字节**"这个问题，只有把"每一次 `phy.read()` 成功"
+  //       都数一遍才答得准 —— 悬空 RX 脚上的噪声流正是这种"一直在读、什么都没解出来"
+  //       的形态（`noise_bytes` 涨、`frames_ok` 不涨、`crc_err` 偶尔涨）。
+  //   ★ 用途（主循环侧）：`main.cpp` 用它给"一整圈最多吃多少字节"设**上界** ——
+  //     见 `loop()` 里那段 `link_poll_bounded()` 的说明。
+  uint32_t bytes_read      = 0;  // 累计从 PHY 读进的字节（含噪声、含半截帧）
+
   // "丢掉了几帧" —— STATUS.frames_dropped 用它（§3）
   uint32_t framesDropped() const {
     return crc_err + bad_len + bad_sync + len_mismatch + unknown_type + role_conflict;

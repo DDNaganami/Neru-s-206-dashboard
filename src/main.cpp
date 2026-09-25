@@ -150,6 +150,19 @@ static BuzzerExio g_buzzer_exio(&dash_buzzer_set, nullptr, &millis);
 #endif
 static Buzzer* g_buzzer = &g_buzzer_null;
 
+// ★ 蜂鸣器"绝对上限掐过几次"的两个出口（2026-09-25 新增）。
+//   ★ 为什么要有这个读数：真机上"主循环有没有停过"这件事，除了屏上的现象，
+//     只有这一格是**硬的** —— `BuzzerExio::safety()` 只在"起表之后超过 2 秒还在响"
+//     时才 +1，而那正是"没人去执行到点关"的形态（见 `lib/dashcore/buzzer_exio.h`
+//     的 `kBuzzerSafetyMs` 那一段）。
+//   ★ 门用**既有的** `DASH_DISPLAY_RGB`（真屏那一档）：其余构建里 `g_buzzer` 挂的是
+//     `BuzzerNull`/`BuzzerHost`（没有这个读数）⇒ 这里必须编译期分叉，不新增任何 -D。
+#if defined(DASH_DISPLAY_RGB)
+static uint32_t buzzer_safety_cuts() { return g_buzzer_exio.safetyCuts(); }
+#else
+static uint32_t buzzer_safety_cuts() { return 0u; }
+#endif
+
 // 告警状态的一行回执（只在**变了**的时候打：每 5 秒那行只报"当前是什么"）。
 static uint8_t g_alert_last = 0xFF;   // 0xFF = 还没打过
 static uint32_t g_beep_seen = 0;
@@ -1352,6 +1365,150 @@ static void print_selftest(const char* tag) {
 #endif  // DASH_DEVICE_SELFTEST
 
 // ============================================================================
+// ★★ 主循环**停顿探测**（2026-09-25 新增）—— "下次再卡就有现场"的唯一办法
+// ============================================================================
+// ★ 起因（车主的现场，逐字记）：新板（从板镜像）插着 Type-C、没接 4Pin 的时候
+//   **"现在会长鸣一会儿，画面也卡住了"**。而这块板上的蜂鸣器是**软开关**
+//   （写 TCA9554 的 EXIO8，没有硬件定时，见 lib/dashcore/buzzer_exio.*）⇒
+//   "一直响"只可能是**主循环停住了、没人去执行到点关掉**；画面冻结是同一件事的
+//   另一半（渲染也在主循环里）。⇒ **这两个症状是同一次"主循环被堵死"**。
+//
+// ★ 为什么先要探测而不是直接猜原因：那一夜的症状是**偶发**的，而我们要的不是
+//   "也许是这样"，是**一行数字**。所以这里把两件事记下来：
+//     ① 每一圈花了多久（`millis()` 差值）—— 超阈值就打一行，带当时的一圈态：
+//        链路收了多少字节（`LinkRxStats::bytes_read`）、一圈跑完花了多少微秒；
+//     ② 一圈的**上界**（见 `link_poll_bounded_*`）—— "任何输入速率下都能回到渲染"。
+//
+// ★ 阈值：**200 ms**（任务书给的那个数）。为什么是这个量级而不是几十毫秒：
+//   本构建上有两处**合法的**长圈，它们不是故障 ——
+//     · 开机第一次整屏刷新（RGB 那条路上按块写、每块等一个消隐期）≈ **1 秒**；
+//     · 每 30 ms 一次的整屏失效那一拍的重绘（实测 `整屏刷新 141.0ms`）。
+//   把阈值压到几十毫秒就会把这两条**正常**路径打成噪音（噪音一多，真现场就被淹了）。
+//   而"卡死"是**秒级到永久**的，200 ms 这条线抓得住它、又不会天天误报。
+//   ★ 每 5 秒**一行摘要**（`loop: max=…`）是有意加的：不做摘要的话，
+//     "到底有没有 200 ms 以上的圈"只能靠"没有 WARN 行"来推断，而那是**无法证明**的
+//     （日志可能只是没打出来）。有摘要就是**正面读数**：`stall=0` 是有证据的 0。
+//
+// ★ 循环号那一格（`n=`）的用途：它是"这两行之间主循环真的转过多少圈"的**唯一**读数
+//   —— 只有 WARN 行时，你分不出"卡了 1 次"还是"卡了 900 次每次都很短"。
+static uint32_t g_loop_n = 0;          // 主循环跑了多少圈（探测用；每个摘要窗口从 0 数）
+static uint32_t g_loop_max_ms = 0;     // 自上次摘要以来，最长的一圈
+static uint32_t g_loop_stalls = 0;     // 自上次摘要以来，超过 kLoopStallMs 的圈数
+static uint32_t g_loop_last_report_ms = 0;
+static uint32_t g_loop_prev_ms = 0;    // 上一圈的时刻（探测要的 `millis()` 差值）
+static const uint32_t kLoopStallMs        = 200u;    // 打一行的阈值（任务书给的数）
+static const uint32_t kLoopStallReportMs  = 5000u;   // 摘要周期（与 SRC 那一行同一个节拍）
+
+// 探测行里的 `prev=`：**这一次运行是"上一次怎么结束"之后的**，而上一次是
+// 看门狗/PANIC 复位还是断电，跟"这一次会不会卡"直接相关 ⇒ 一行里带上。
+// ★ 门与 `boot_note()` 同一道（`DASH_DEVICE_SELFTEST` = 真设备）：宿主机没有
+//   `esp_reset_reason()`，pcpreview 编到这一行会直接报未声明。
+#if defined(DASH_DEVICE_SELFTEST)
+static const char* resetReasonShort() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:  return "POWERON";
+    case ESP_RST_EXT:      return "EXT";
+    case ESP_RST_SW:       return "SW";
+    case ESP_RST_PANIC:    return "PANIC";
+    case ESP_RST_INT_WDT:  return "INT_WDT";
+    case ESP_RST_TASK_WDT: return "TASK_WDT";
+    case ESP_RST_WDT:      return "WDT";
+    case ESP_RST_DEEPSLEEP:return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT: return "BROWNOUT";
+    default:               return "UNKNOWN";
+  }
+}
+#else
+static const char* resetReasonShort() { return "host"; }
+#endif
+
+// 探测行里 `probe_took=` 用的微秒时钟。
+// ★ 为什么宿主机构建里没有它：pcpreview 的 Arduino 桩（`preview/arduino_shim`）
+//   只提供 `millis()`，没有 `micros()` ⇒ 直接调会 `use of undeclared identifier`。
+//   而"打印这一行自己花了多久"只有**真机**上有意义（宿主机上那一行也不会被打出来）
+//   ⇒ 宿主机构建里报 0，一个符号都不引用。
+#if defined(DASH_DEVICE_SELFTEST)
+static uint32_t probe_us() { return (uint32_t)micros(); }
+#else
+static uint32_t probe_us() { return 0u; }
+#endif
+
+// 每圈开头调一次：记时长、超阈值就**当场**打一行（带链路字节数 + 打印这一行花了几微秒）。
+static void loop_probe_begin(uint32_t now) {
+  if (g_loop_last_report_ms == 0u) {
+    g_loop_last_report_ms = now;
+    g_loop_prev_ms = now;
+  }
+  ++g_loop_n;
+  const uint32_t dt = (uint32_t)(now - g_loop_prev_ms);
+
+  if (dt >= kLoopStallMs) {
+    ++g_loop_stalls;
+    // `probe_took` = **打印这一行自己**花了多久。它是有意加的：探测本身要读
+    // `millis()`/`micros()` 并格式化几十个字节，而它跑的正是"主循环已经卡了"的那一刻
+    // ⇒ 得能看见"是不是我把日志打爆了"。真机上这个数是几十微秒。
+    const uint32_t t0 = probe_us();
+    const dashlink::LinkRxStats& rs = g_link_rx.stats();
+    const uint32_t spent = probe_us() - t0;
+    dash_logf("loop: stalled %lums (n=%lu link rx bytes=%lu crc=%lu bad_len=%lu noise=%lu) "
+              "probe_took=%luus prev=%s\n",
+              (unsigned long)dt, (unsigned long)g_loop_n,
+              (unsigned long)rs.bytes_read, (unsigned long)rs.crc_err,
+              (unsigned long)rs.bad_len, (unsigned long)rs.noise_bytes,
+              (unsigned long)spent, resetReasonShort());
+  }
+  if (dt > g_loop_max_ms) g_loop_max_ms = dt;
+  g_loop_prev_ms = now;
+}
+
+// 每圈**末尾**调一次：到点打一行摘要。
+// ★ 它是"没有 WARN 行"这句推断变成**正面读数**的那一半：`max=…` 是这一窗口里
+//   最长的一圈，`stall=0` 是"一次 200 ms 都没超过"的实测值（而不是"没看见"）。
+static void loop_probe_end(uint32_t now) {
+  if ((uint32_t)(now - g_loop_last_report_ms) < kLoopStallReportMs) return;
+  const uint32_t span = (uint32_t)(now - g_loop_last_report_ms);
+  g_loop_last_report_ms = now;
+  const dashlink::LinkRxStats& rs = g_link_rx.stats();
+  dash_logf("loop: n=%lu in %lums (%lu/s) max=%lums stall=%lu | link rx bytes=%lu frames=%lu\n",
+            (unsigned long)g_loop_n, (unsigned long)span,
+            (unsigned long)(span ? (g_loop_n * 1000u / span) : 0u),
+            (unsigned long)g_loop_max_ms, (unsigned long)g_loop_stalls,
+            (unsigned long)rs.bytes_read, (unsigned long)rs.frames_ok);
+  g_loop_n = 0;
+  g_loop_max_ms = 0;
+  g_loop_stalls = 0;
+}
+
+// ============================================================================
+// ★★ 链路收帧的**每圈上界**（2026-09-25 新增）
+// ============================================================================
+// ★ 为什么要"再包一层"：`LinkRx::poll()` 自己已经有单次预算（默认 64 B/次），
+//   但主循环用的是 `while (g_link_rx.poll(...)) { … }` —— **每一圈可以调它很多次**，
+//   于是"一圈总共能吃多少字节"这件事**根本没有上界**。
+//   悬空 RX 脚（Type-C 插着时 4Pin 那一路被 FSUSB42 断开，见 ARCHITECTURE §8 L1）收到的
+//   伪字节流会让这个 while 一遍遍地跑；一圈里吃掉的字节数只由**线路上的字节速率**决定，
+//   不由我们决定 ⇒ 极端情况下主循环回不到"渲染那一行"。
+//
+// ★ 判据（`LinkRxStats::bytes_read` 的差值）：它是"真的从 PHY 读进来"的累计值，
+//   与"解出了几帧""丢了多少噪声"都无关 —— 悬空脚上最典型的形态正是
+//   **一直在读、什么都没解出来**（`noise_bytes` 甚至可能不怎么涨：字节里只要夹着一个
+//   SYNC，后面那串就不算 noise）。
+//
+// ★ 上界取多少：`kLinkRxBytesPerLoop = 512`。
+//   · 115200 8N1 的线速 = 11520 B/s ⇒ 512 B ≈ **44 ms 的线上时间**；而解帧那条路
+//     实测 ~0.43 µs/B（`loop: stalled` 行里的 `probe_took` 同一量级）⇒ CPU 上是零点几毫秒。
+//   · 剩下的字节**不丢**：它们还在 PHY 的环/驱动的 FIFO 里，下一圈接着读
+//     （`LinkRx::poll` 的早退语义就是"剩下的下一圈再来"，见 link_rx.h ①）。
+//   · 从板每圈要收的是主板那 ≈80 Hz 的 TICK/DATA（十几个字节/圈）⇒ 512 B 这一档
+//     对**正常流量完全不构成限制**，它只在"线路出问题"的时候生效。
+//   · ★ 它**不改**收发协议、不改 §5 的角色、也不改 §1.2 的任何一条：只是把
+//     "一圈"这个粒度上的工作量封了顶。
+static const uint32_t kLinkRxBytesPerLoop = 512u;
+
+// 累计读进字节数（判据只有一个：`LinkRxStats::bytes_read`）。
+static uint32_t link_rx_bytes_now() { return g_link_rx.stats().bytes_read; }
+
+// ============================================================================
 //  链路（**两个角色共用**的一步）：收帧 → 路由
 // ============================================================================
 // ★ 为什么共用：主板收 B 的 STATUS/EVENT（只进日志，§3 的单一日志出口），从板收
@@ -1386,6 +1543,52 @@ static bool link_poll_frames_slave(uint32_t now) {
     // 不参与数据面 —— 从板这一侧本轮不打日志（它自己的 USB-C 上要看的是数据层那几行）。
   }
   g_link_time.update(now);   // §4：推进年龄与三级超时（100 ms/500 ms/3 s）
+  return got_data;
+}
+
+// ★★ 从板侧的**有界**收帧（2026-09-25）：与 `link_poll_frames_slave()` **同一个形状**，
+//   只多一件事 —— 一整圈吃掉的字节数封顶（理由与取值见 `kLinkRxBytesPerLoop` 那一段）。
+//   ★ 判据是 `bytes_read` 的**差值**，不是"解出了几帧"：悬空脚上最典型的形态正是
+//     "一直在读、一帧都没解出来"，那种时候帧计数一个都不动，只有这个差值在涨。
+//   ★ 超预算时**不是丢字节**：剩下的还在 PHY 里，下一圈接着读（`LinkRx::poll` 的早退语义）。
+static bool link_poll_bounded_slave(uint32_t now) {
+  bool got_data = false;
+  dashlink::Frame f;
+  ::LinkData ld;
+  const uint32_t bytes0 = link_rx_bytes_now();
+  for (;;) {
+    // ★ 预算判据放在**每一趟循环的入口**（不是只在"解出帧"那一支）：`poll()` 返回
+    //   false 的那条路同样在吃字节（噪声 / 半截帧 / CRC 不过），而"一直返回 false、
+    //   一直有字节"正是悬空 RX 脚上的形态 ⇒ 这里才是必须封顶的地方。
+    if ((uint32_t)(link_rx_bytes_now() - bytes0) >= kLinkRxBytesPerLoop) break;
+    if (!g_link_rx.poll(g_link_phy, &f)) {
+      // ★★ **这一条是本单用探测程序实测出来的**（差点写成 `break`，那是个真 bug）：
+      //   `poll()` 返回 false 有**两种**完全不同的意思 ——
+      //     ① "PHY 现在没有字节了"（`phy.read() < 0` ⇒ 这一圈真的收完了）；
+      //     ② "**这一次调用**的预算用完了"（默认 64 B ⇒ 我一次只读这么多）。
+      //   把 ② 当成 ① 就地退出，就等于"每圈最多读 64 字节" —— 那会在**连续字节流**
+      //   （悬空脚上的伪字节流、或对端背靠背发）里把主循环的收帧速率压到 64 B/圈，
+      //   而主循环是 ~900 圈/秒 ⇒ 约 57 KB/s 的上限看着够用，**但它同时把
+      //   `rxLeft` 变成了一个只增不减的积压**：一旦线路速率超过"每圈 64 B"，
+      //   环里就永远排不干净，`LinkTime` 的 tick 年龄跟着一直涨（"链路看着像断了"）。
+      //   ⇒ 正确的判据是**分清这两种 false**：
+      //     · 缓冲里还有没解完的字节（`pending()`）⇒ 继续（还有活干）；
+      //     · 环里还有没取走的字节（`available()`）⇒ 继续（还有货可吃）；
+      //     · 都不是 ⇒ 这一圈真的空了，退出。
+      //   （上限仍然由上面那一行的 `kLinkRxBytesPerLoop` 兜着 ⇒ 不会变成死循环。）
+      if (g_link_rx.pending() || g_link_phy.available() > 0) continue;
+      break;
+    }
+    if (dashlink::handleInbound(f, &g_link_time, now, &ld)) {
+      if (f.type == (uint8_t)dashlink::MsgType::Data) {
+        g_data.applyLinkData(ld);
+        got_data = true;
+      }
+      continue;
+    }
+    // HELLO / STATUS / EVENT：v1 实际只用 B→A（§3）⇒ 从板这一侧不打日志（同上）。
+  }
+  g_link_time.update(now);
   return got_data;
 }
 #endif
@@ -1434,13 +1637,25 @@ static void link_log_peer_line(const dashlink::Frame& f) {
 }
 
 // 从板侧要报的那些"结构化状态"在主板这一侧只进日志（§3 的单一日志出口）。
+// ★★ 2026-09-25：循环里加了**每圈字节上界**（`kLinkRxBytesPerLoop`，理由与判据见那一段）。
+//   形态与从板侧 `link_poll_bounded_slave()` **同一个形状**：判据在每一趟循环的入口，
+//   超了就地退出 —— 剩下的字节留在 PHY 里，下一圈接着来。
 static void link_poll_inbound(uint32_t now) {
   static bool announced_peer = false;
   static bool announced_conflict = false;
   static bool announced_ver = false;
 
+  const uint32_t bytes0 = link_rx_bytes_now();
   dashlink::Frame f;
-  while (g_link_rx.poll(g_link_phy, &f)) {
+  for (;;) {
+    if ((uint32_t)(link_rx_bytes_now() - bytes0) >= kLinkRxBytesPerLoop) break;
+    if (!g_link_rx.poll(g_link_phy, &f)) {
+      // ★ 与从板那一侧**逐字同一条**：`poll()` 的 false 分两种（"真的空了" vs
+      //   "这一次调用的预算用完了"），只有"缓冲也空、环也空"才是这一圈收完了。
+      //   理由与那次实测（差点写成 `break`）见 `link_poll_bounded_slave()` 里那段。
+      if (g_link_rx.pending() || g_link_phy.available() > 0) continue;
+      break;
+    }
     g_link_peer_ms = now;   // 收到的任何一帧都算"从板还活着"（§8 L13 的 30 s 判据用它）
     if (!announced_peer) {
       announced_peer = true;
@@ -1684,6 +1899,11 @@ void setup() {
 
 void loop() {
   const uint32_t now = millis();
+  // ★★ 停顿探测（2026-09-25）：**放在第一行** —— 它量的就是"上一圈整个花了多久"，
+  //   而"上一圈"包括下面所有分支（链路收帧、数据更新、LVGL 渲染、显示 poll）。
+  //   放在第一行的另一个好处：卡死那一刻**打不出来的那一行**就是证据本身 ——
+  //   串口上最后一行 `loop: stalled` 的 `n=` 与"之后一共转过几圈"能对上账。
+  loop_probe_begin(now);
   // 示位标报的"第几步"= 本轮**已经走到**的最后一步(不是累计值):
   // 所以卡在哪一步,串口上看到的就是哪一步。
   BOOT_STAGE(6);
@@ -1698,11 +1918,14 @@ void loop() {
   //   这样这一圈收到的值当圈就进快照与上屏（晚一圈也行，但没必要）。
   // ★ 从板的 PHY 从 2026-09-25 起是**真 UART**（有 `LINK_PHY_UART` 时，见本文件上方
   //   那段）—— 所以这一行现在真的会去读 GPIO44。
+  // ★★ 2026-09-25：改名 `link_poll_frames_slave` → `link_poll_bounded_slave`。
+  //   同名同形，唯一的差别是**每圈吃进来的字节数封顶**（`kLinkRxBytesPerLoop`）——
+  //   车主那条"画面卡住 + 蜂鸣器长鸣"就指着这一条不再发生（见那一段的说明）。
   // ★ 排水那一行：v1 的 DATA/TICK **只由主板发**（§3），所以从板的 `LinkTx` 环今天
   //   恒空、这一调用是空转（`pumpTx()` 见 `mTxCount == 0` 立刻返回 0，不碰 UART）。
   //   留着它与主板同形：将来从板要发 STATUS/EVENT 时，改的是"谁 enqueue"，
   //   不是"谁排水"。
-  link_poll_frames_slave(now);
+  link_poll_bounded_slave(now);
   g_link_tx.pump(g_link_phy);
   g_link_phy.pumpTx();
 #endif
@@ -1782,6 +2005,15 @@ void loop() {
   //     会永远停在第一相 —— 听起来就是"本该 3 声、只响 1 声"。
   //   ★ 它**不阻塞**（`BuzzerExio::tick()` 只是几次整数比较 + 至多一次写位）。
   g_buzzer->tick();
+  // ★★ 蜂鸣器的**绝对上限**（2026-09-25 新增，`Buzzer::safety()`）：
+  //   `tick()` 那条路是"到点关"，可它**只在主循环转得动时才走**。车主那条
+  //   "长鸣一会儿"说明存在"主循环停住 ⇒ 谁都没去关"的形态 ⇒ 这里再加一条
+  //   **与序列状态机无关**的兜底：任何一次 `beep()` 起表之后，只要墙钟超过
+  //   `kBuzzerSafetyMs`（2 s）还在响，就无条件关掉 + 丢弃序列 + 打一行日志。
+  //   ★ 它**不动**既有那条"单次哔 ≤300ms"的硬约束（序列自己仍然按相走）——
+  //     这一条是**额外**的、只在"那段逻辑没机会跑"的时候才生效的天花板。
+  //   ★ 代价：每圈两次整数比较（`beep()` 里的起表时刻 + `millis()`）。
+  g_buzzer->safety();
 #if defined(DASH_DISPLAY_RGB)
   // ★★ 串口 `b` 那一拍的窗口内：**只推进、不取消**（理由见 `beep_cmd_window()`）。
   //   这一段**只进真屏那一份构建**（`DASH_DISPLAY_RGB`，与命令 `b` 同一道门）
@@ -2016,7 +2248,7 @@ void loop() {
                     cur.door_activity ? "active" : "idle",
                     (cur.vin[0] != '\0') ? cur.vin : "-");
       dash_logf("SRC-VAN age lights=%sms door=%sms vin=%sms | src turn=%s door=%s vin=%s"
-                " | alert=%s beeps=%lu%s\n",
+                " | alert=%s beeps=%lu%s | buzz safety=%lu\n",
                     (s.lights_age_ms == UINT32_MAX) ? "-" : age_lights,
                     (s.door_age_ms == UINT32_MAX) ? "-" : age_door,
                     (s.vin_age_ms == UINT32_MAX) ? "-" : age_vin,
@@ -2025,7 +2257,10 @@ void loop() {
                     fieldSourceName(s.vin),
                     alertName(g_alerts.active()),
                     (unsigned long)g_alerts.beepCount(),
-                    g_alerts.muted() ? " muted" : "");
+                    g_alerts.muted() ? " muted" : "",
+                    // ★ 2026-09-25：被"2 秒绝对上限"掐过几次（真屏那一档才有实际值）。
+                    //   `0` = 没发生过"到点关那个动作没被执行"这件事。
+                    (unsigned long)buzzer_safety_cuts());
     }
 #if LINK_ROLE == 1
     // 链路质量（§7 的失败模式表：链路断/从板无响应那一行就看这里）。
@@ -2058,6 +2293,11 @@ void loop() {
     van_sniff_report(now);
 #endif
   }
+
+  // ★★ 停顿探测的收尾（2026-09-25）：到点打一行摘要（`n=` / `max=` / `stall=`）。
+  //   放在**整圈的最后一行** —— 于是它统计的 `n=` 就是"这一窗口里完整跑完的圈数"，
+  //   而"卡住的那一圈"永远不会被计入（它根本没走到这里）⇒ 这正是要的读数。
+  loop_probe_end(now);
 }
 
 #endif  // !defined(LINK_LOOPBACK_FIRMWARE)

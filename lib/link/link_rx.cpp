@@ -139,6 +139,11 @@ bool LinkRx::poll(LinkPhy& phy, Frame* out, uint16_t max_bytes) {
     const int b = phy.read();
     if (b < 0) return false;                 // 现在没有字节（非阻塞契约）
     --budget;
+    // ★ 2026-09-25：**每一个真的从 PHY 读出来的字节**都记一笔。
+    //   为什么在这里数、而不是看 `noise_bytes`：见 `link_rx.h` 里 `bytes_read` 那一段 ——
+    //   主循环要的是"这一圈吃了多少"（悬空 RX 脚上的噪声流只会让 noise 涨、
+    //   而带 SYNC 的伪帧连 noise 都不涨）。它同时也是"输入速率"的唯一实测出口。
+    ++mStats.bytes_read;
     push((uint8_t)b);
   }
 }
