@@ -1552,6 +1552,35 @@ static uint32_t probe_us() { return (uint32_t)micros(); }
 static uint32_t probe_us() { return 0u; }
 #endif
 
+// ★★ 步骤②归因（2026-09-27）：主循环**每个阶段各花了多久**。
+//
+//   背景（为什么必须加这个才能动手）：实测 `loop: … max=83~100ms`，而测量里的
+//   `wire_gap_max=93ms`（**发端信封里记的发出间隔最大值**）说明：`gap_max`(113ms) 与
+//   p99(42ms) 这两项不达标，地板来自这些长圈，而不是空中。
+//   可 `loop:` 那一行只报 `max=`，**没说卡在哪** —— 而纪律是"先加归因、不许盲改渲染路径"。
+//
+//   原理：`loop_stage(x)` 在**进入** x 时调用；它把"距上一次进入阶段的时长"记到
+//   **上一个**阶段的账上（那一整段就是上个阶段的真实耗时）。
+//   ⇒ 窗口结束时 `g_stage_worst` 就是"最慢的那个阶段"，直接回答"卡在哪"。
+//   ★ 只在 `DASH_DEVICE_SELFTEST`（真机）下取值：宿主机没有 `micros()`（见 `probe_us()`）。
+static const char* g_stage_name  = "start";   // 当前进入的阶段
+static const char* g_stage_worst = "-";       // 本窗口最慢的阶段名
+static uint32_t g_stage_mark_us  = 0;         // 上一次进入阶段的时刻
+static uint32_t g_stage_worst_us = 0;         // 本窗口内"单阶段最长"的微秒数
+
+static inline void loop_stage(const char* s) {
+  const uint32_t t = probe_us();
+  if (t != 0u) {
+    const uint32_t d = t - g_stage_mark_us;
+    g_stage_mark_us = t;
+    if (d > g_stage_worst_us) {
+      g_stage_worst_us = d;
+      g_stage_worst = g_stage_name;
+    }
+  }
+  g_stage_name = s;
+}
+
 // 每圈开头调一次：记时长、超阈值就**当场**打一行（带链路字节数 + 打印这一行花了几微秒）。
 static void loop_probe_begin(uint32_t now) {
   if (g_loop_last_report_ms == 0u) {
@@ -1578,6 +1607,24 @@ static void loop_probe_begin(uint32_t now) {
   }
   if (dt > g_loop_max_ms) g_loop_max_ms = dt;
   g_loop_prev_ms = now;
+
+  // ★★ 步骤②归因的关键一步（2026-09-27）：把"上一圈最后一个阶段标记 → 本圈开始"
+  //   这一段**也记账**，归到上一个阶段（正常就是 `log`）。
+  //   ★ 为什么不能只重置：第一版就是只重置 → 实测出现
+  //     `max=97ms` 而**每个阶段都只有几十微秒**的自相矛盾结果 —— 因为
+  //     `dash_log_drain()`（整圈最后一步）+ 收尾那一段正好落在
+  //     "log 标记 → 下一圈 probe_begin" 之间，被这条重置**丢掉了** ⇒
+  //     盲区刚好盖住真凶。这一条补上之后 `stage=` 才可能指向它。
+  if (g_stage_mark_us != 0u) {
+    const uint32_t t = probe_us();
+    const uint32_t d = t - g_stage_mark_us;
+    if (d > g_stage_worst_us) {
+      g_stage_worst_us = d;
+      g_stage_worst = g_stage_name;   // 此时它应当是 "log"
+    }
+  }
+  g_stage_mark_us = probe_us();   // ★ 步骤②归因：本圈从"这里"开始计时
+  g_stage_name = "start";
 }
 
 // 每圈**末尾**调一次：到点打一行摘要。
@@ -1594,12 +1641,16 @@ static void loop_probe_end(uint32_t now) {
   //   ★ 这两个数**不是错误**，是设计取舍的读数：宁可丢日志，也不能堵主循环。
   //   ★ `drain=` 是累计交付字节数（差值 = 这一窗口真的送出去多少）。
   const dashlog::Stats ls = dash_log_stats();
+  // ★ 步骤②归因：`stage=<最慢阶段耗时>us@<阶段名>` —— "这一窗口最长的一圈卡在哪"。
+  //   与 `max=` 配套读：`max=95ms` 而 `stage=94000us@render` ⇒ 卡在渲染块里。
   dash_logf("loop: n=%lu in %lums (%lu/s) max=%lums stall=%lu | link rx bytes=%lu frames=%lu | "
+            "stage=%luus@%s | "
             "log drain=%lu drop=%lu dropped=%lu blocked=%lu ring=%lu/%lu hwm=%lu\n",
             (unsigned long)g_loop_n, (unsigned long)span,
             (unsigned long)(span ? (g_loop_n * 1000u / span) : 0u),
             (unsigned long)g_loop_max_ms, (unsigned long)g_loop_stalls,
             (unsigned long)rs.bytes_read, (unsigned long)rs.frames_ok,
+            (unsigned long)(g_stage_worst_us / 1000u), g_stage_worst,
             (unsigned long)ls.drained_bytes, (unsigned long)ls.drop_count,
             (unsigned long)ls.dropped_bytes, (unsigned long)ls.blocked_drains,
             (unsigned long)ls.ring_bytes, (unsigned long)ls.ring_capacity,
@@ -1607,6 +1658,8 @@ static void loop_probe_end(uint32_t now) {
   g_loop_n = 0;
   g_loop_max_ms = 0;
   g_loop_stalls = 0;
+  g_stage_worst_us = 0;     // ★ 窗口复位（与 max/stall 同步）
+  g_stage_worst = "-";
 }
 
 // ============================================================================
@@ -2416,6 +2469,7 @@ void loop() {
   // 示位标报的"第几步"= 本轮**已经走到**的最后一步(不是累计值):
   // 所以卡在哪一步,串口上看到的就是哪一步。
   BOOT_STAGE(6);
+  loop_stage("van");     // ★ 步骤②归因：以下各阶段标记只为把长圈归因，不改变行为
   g_van_phy.tick(now);   // VAN 物理层解帧 → 喂给 data_service
                          // (桩 / GPIO 收帧两种实现共用这一个接口,见 van_phy.h:
                          //  加 -DVAN_PHY_GPIO=1 时这里就是真的 GPIO 收帧)
@@ -2438,6 +2492,7 @@ void loop() {
   //        字节已经被 `link_poll_*()` 取空了 ⇒ 统计器一帧都没见过。
   //   ⇒ 位置就是判据：**放在两个角色分支之前**（一处、两种角色共用），
   //     而不是"放在从板分支后面、再在主板分支后面补一次"（那样主板还会被调两次）。
+  loop_stage("linkrx");
   meas_poll(now);
 #endif
 
@@ -2465,6 +2520,7 @@ void loop() {
   //   pcpreview 的输入注入要在这份快照上覆写几个字段（见下面 preview_apply）。
   //   设备侧一个字都没变：`st_mut` 在那边从来不会被改（那一段在 #if 里）。
   //   名字刻意带 `_mut`：后面读代码的人一眼知道"这里可能被注入改过"。
+  loop_stage("data");
   VehicleState st_mut = g_data.update(now);
   BOOT_STAGE(7);
 
@@ -2639,6 +2695,7 @@ void loop() {
   }
 #endif
 
+  loop_stage("render");   // ★ 归因重点：这一支是"上一帧渲染已过 200ms"的大块
   if (now - last_ui_ms >= 200) {
     last_ui_ms = now;
     // ---- 系统状态层（2026-09-24）：先备好这一拍的输入，再做两件事 ----
@@ -2858,6 +2915,7 @@ void loop() {
   //   它**不会阻塞**：预算 512 B/圈 + 写之前先问 `availableForWrite()`；
   //   端口报满就一个字节都不写（剩下的下一圈再来，环满了就丢并计数）。
   //   ⇒ 车上的常态"没有电脑读串口"从此不再是"卡死"，而是"日志丢几行"。
+  loop_stage("log");
   dash_log_drain();
 
   // ★★ 停顿探测的收尾（2026-09-25）：到点打一行摘要（`n=` / `max=` / `stall=`）。
