@@ -48,7 +48,14 @@ static const uint8_t kEventLen  = 4u;    // evt_id u8 + value u16 + face u8
 uint8_t payloadLenForType(uint8_t type);
 
 // ---- 0x01 HELLO（双向，上电 1 次、之后每 5 s 重发直到收到对端 HELLO） ----
-// 幂等、可重复、无超时概念。
+// ★ `kHelloRepeatMs` 是 §3 表那一行的 "5 s" 的**唯一出处**（两个角色共用）：
+//   2026-09-27 之前主板那一支把这个数字手写在 `main.cpp` 的 if 里，从板那一支
+//   **一行发送代码都没有** ⇒ 补从板发送时若各写一遍，两条口径迟早会漂。
+static const uint32_t kHelloRepeatMs = 5000u;
+
+// ---- 0x30 STATUS（B→A）的周期：§3 表那一行的 "2 Hz（500 ms）" 的唯一出处 ----
+static const uint32_t kStatusPeriodMs = 500u;
+
 struct HelloMsg {
   uint16_t fw_ver     = 0;   // 固件版本，**与协议 VER 分开**（§3 原话）
   uint16_t build_tag  = 0;   // 构建标记（两板"是不是同一份固件"靠它 + fw_ver）
@@ -73,6 +80,8 @@ struct DataMsg {
 };
 
 // ---- 0x30 STATUS（B→A，2 Hz / 500 ms） ----
+// ★ 2026-09-27：从板那一支真的开始发了（`link_app.h` 的 `StatusSender`）——
+//   之前 v1 只有 A→B 那一半在跑，这个结构体只有主板在**解**、没有人在**填**。
 // "单一日志出口"的基础 + 链路质量；uptime_ms 用来发现"从板在反复重启"（§7 #7）。
 struct StatusMsg {
   uint16_t fw_ver        = 0;

@@ -676,8 +676,19 @@ static void test_link_slave_side_real_phy_wiring_and_data_channel(void) {
   TEST_ASSERT_TRUE(svc.status().intake == FieldSource::Link);
 
   // ---- ⑤ 排水那一行（从板 loop() 里的 `g_link_tx.pump()` + `pumpTx()`）：
-  //     从板今天**不发帧**（§3：TICK/DATA 只由主板发）⇒ 它的环必须是空的、
-  //     而且 pump 一个字节都不许写出去（写了就是"两个发送方"，§5 的现场事故）。
+  //     ★★ 2026-09-27 **本条的期望值改了**（这是本单唯一改动既有期望值的一处，
+  //     原因是它钉的那条契约本身变了，不是用例算错了）：
+  //       原来写的是"从板今天**不发帧**（§3：TICK/DATA 只由主板发）⇒ 环必须空、
+  //       pump 一个字节都不许写出去（写了就是'两个发送方'，§5 的现场事故）"。
+  //       而 §3 表的 `0x01` 写的是 HELLO **双向**、`0x30` 的方向写的就是 **B→A** ——
+  //       也就是说"从板一个字节都不发"**才是**那个契约缺口（§3 的"双向"当时只兑现了
+  //       A→B 那一半）。所以这一段的判据换成"**从板发出去的东西必须是它该发的**"：
+  //       · 本用例**没有把它自己的帧排出去过**（它收完就结束，没调 `link_slave_tick`
+  //         那一支）⇒ `tx` 这个**局部**对象仍旧是空的，`pump` 仍旧一个字节都不写
+  //         （这一半原样保留：`LinkTx` 自己不会凭空产生字节）；
+  //       · 而"从板会发什么、什么时候发、发多少"改由**新的一组用例**钉：
+  //         `test_link_slave_tx.cpp`（HELLO 5 s/ack 停发、STATUS 2 Hz/逐字节载荷、
+  //         发不挤占收、发送预算）。这样两边各管一段、不留空档。
   TEST_ASSERT_EQUAL_UINT32(0u, tx.queued());
   phy_slave.clearCounters();
   tx.pump(phy_slave);

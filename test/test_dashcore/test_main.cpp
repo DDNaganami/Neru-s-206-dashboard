@@ -36,6 +36,12 @@ void register_link_time_tests(void);           // 双板链路 v1:时基(§4)—
 void register_link_phy_tests(void);            // 双板链路 v1:传输层(§1/§2 重同步)—— 假 PHY/非阻塞收发
 void register_link_phy_uart_tests(void);       // 双板链路 v1:真实 UART 的接线口径(§0/§1.1)—— 43 发/44 收/回环脚
 void register_link_app_tests(void);            // 双板链路 v1:数据接线(§1.2③/§3/§5)—— DATA 打包/节奏/第五档 Link
+// ★ 2026-09-27 新增：**从板也会发**（§3 表 `0x01` HELLO 双向 / `0x30` STATUS 的方向
+//   本来就是 B→A）。补之前从板那一支一行 enqueue 都没有 ⇒ v1 的"双向"只兑现了 A→B，
+//   主板那 30 s 的"从板无响应"判据（§8 L13）恒为真、`link: B uptime=…` 一次都打不出来。
+//   这一组钉四件事：HELLO 的 5 s 口径与 ack 停发、STATUS 的 2 Hz 与逐字节载荷、
+//   flags 三位有生产者/第四位恒 0、以及 ★ **发不挤占收**（只由 loop 顺序保证）。
+void register_link_slave_tx_tests(void);
 
 int main(void) {
   UNITY_BEGIN();
@@ -60,6 +66,9 @@ int main(void) {
   register_link_phy_tests();
   register_link_phy_uart_tests();
   register_link_app_tests();
+  // ★ 2026-09-27：从板发送（HELLO + STATUS）。**必须**排在 face_stages 之前
+  //   （顺序纪律见上：face_stages 历史上崩过一次，排在它后面的用例跑不到）。
+  register_link_slave_tx_tests();
   // ★ 2026-09-24 新增两组:已解字段(灯位/门/VIN)与告警层。
   //   排在 face_stages 之前(与上面那段的理由一致:face_stages 历史上崩过一次,
   //   排在它后面的用例跑不到 —— 崩溃虽已修掉,这条顺序纪律照旧保留)。

@@ -28,6 +28,16 @@
 //   · 别在 `LinkRx` 解出帧的当场顺手发帧 —— 收帧与发帧都只在主循环里；
 //   · 别自己起定时器发 `DATA`：§3 明写"跟随 VAN 0x824 到达，**不另建定时器**"；
 //   · 别把 `DATA` 的内容**缓存起来等以后发**：那会让"从快照发"退化成"从旧值发"。
+//
+// ★★ 2026-09-27 补的契约缺口（**从板也会发**）：§3 的 `HELLO` 是**双向**的，
+//   而 §3 的 `STATUS`(`0x30`) 方向就是 **B → A** —— 但从板那一侧**一行发送代码都没有**
+//   （`main.cpp` 里从板的 `LinkTx` 环恒空、`pump()` 是空转）⇒ v1 的"双向"只兑现了
+//   A→B 那一半，主板那 30 s 的"从板无响应"判据永远为真。本文件补上从板侧那两件：
+//     ① `helloDue()` —— HELLO 的重发口径（**与主板逐字同一条**：上电 1 次、
+//        之后每 5 s，直到收到对端 HELLO）；
+//     ② `StatusSender` —— STATUS 的 2 Hz 节奏（§3 表 `0x30` 行的 500 ms）。
+//   ★ 本节**不动协议**：消息类型、LEN、字段次序、CRC 覆盖范围、`LINK_ROLE` 的编译期
+//     权威地位（§5）一个字都没改。新增的只有"谁在什么时刻 enqueue"。
 // ============================================================
 
 namespace dashlink {
@@ -51,7 +61,106 @@ LinkData unpackDataToLinkData(const DataMsg& m, uint32_t rx_ms);
 DataMsg packLinkData(const VehicleState& st, const DataSourceStatus& src);
 
 // ------------------------------------------------------------
-// ② 主板侧：DATA 的发送节奏（§3 的 DATA 行）
+// ② HELLO 的重发口径（§3 表 `0x01` 行）—— **两个角色共用同一条**
+// ------------------------------------------------------------
+// 契约原文：`HELLO` **双向**，上电 1 次，之后每 **5 s** 重发，**直到收到对端 HELLO**；
+// 幂等、可重复、**无超时概念**。
+//
+// ★ 为什么把它抽成一个函数（而不是在 main.cpp 的两支里各写一遍 if）：
+//   主板那一支原来自己写了一遍（`g_link_hello_ms == 0 || now - ms >= 5000`），
+//   而 2026-09-27 补从板发送时**必须**与它逐字同口径 —— 抄一遍就一定会漂；
+//   抽出来之后"5 s"只在这里出现一次，两个角色共用，用例也只钉一处。
+//
+// 用法（调用方自己持有 `last_ms` 与"收到过对端 HELLO 没有"这两个状态）：
+//     uint32_t last = 0; bool acked = false;
+//     if (helloDue(now, last, acked)) { last = now; ...enqueueFrame(Hello...); }
+//   ★ 先判、后推时刻：`last_ms` 由调用方在**真的要发**那一拍写。
+inline bool helloDue(uint32_t now_ms, uint32_t& last_ms, bool acked) {
+  if (acked) return false;                                   // 收到对端 HELLO ⇒ 停发（§3）
+  if (last_ms == 0u) return true;                            // 上电第一次
+  return (int32_t)(now_ms - last_ms) >= (int32_t)kHelloRepeatMs;
+}
+
+// ------------------------------------------------------------
+// ② 从板侧：STATUS 的发送节奏（§3 的 `0x30` 行，2 Hz / 500 ms）
+// ------------------------------------------------------------
+// 契约原文：`STATUS`(`0x30`) 方向 **B → A**，频率 **2 Hz（500 ms）**，载荷 16 B。
+// 形状与下面的 `DataSender` **刻意同形**（`due(now, out)` ⇒ 调用方直接
+// `enqueueFrame(Status, …)`）：本层只算"该不该发、发什么"，**不碰 PHY、不碰缓冲**。
+//
+// ★ 为什么用"到点了"而不是别的东西：与 `DATA` 不同，`STATUS` **没有**任何外部事件
+//   可以跟随（契约给的就是一条定时节奏），所以它是本仓库里唯一一个**自带周期**的
+//   发送者。周期仍然由调用方的主循环驱动（不在这里起定时器 —— 本层不碰 millis()）。
+class StatusSender {
+ public:
+  void reset();
+
+  // 到点了吗？true ⇒ 已把 out 填好（调用方直接 enqueueFrame(Status, …) 即可）。
+  //   now_ms = 主循环当前毫秒（调用方给的，本层不读 millis()）
+  bool due(uint32_t now_ms, StatusMsg* out);
+
+  uint32_t sent() const { return mSent; }
+  uint32_t lastSentMs() const { return mLastSentMs; }
+
+ private:
+  // ★ 与 DataSender 同一条理由：不用"0"当"还没发过"的哨兵（now_ms 完全可能是 0）。
+  bool     mHasSent    = false;
+  uint32_t mLastSentMs = 0;
+  uint32_t mSent       = 0;
+};
+
+// ------------------------------------------------------------
+// ② 从板侧：STATUS.flags 这四位怎么来（§3 表 `0x30` 行的位号）
+// ------------------------------------------------------------
+// ★ 这里只填**从板确实有生产者**的那三位，另外一位**老老实实留 0**：
+//   · `bit0 ver_mismatch`  ← `LinkRx::verMismatchSeen()`（§2：主版本不匹配告警过）
+//   · `bit1 role_conflict` ← `LinkRx::roleConflictSeen()`（§5 ①：收到过同角色的帧）
+//   · `bit2 无 DATA 超时`   ← `LinkTime::dataState()`：**§3 的 DATA 行**把 DATA 的
+//     超时策略与 TICK 归成一档（>100 ms 失基准 / >500 ms 降级 / >3 s 回退 Sim）⇒
+//     "无 DATA 超时" = `dataState()` 已经**不是 Locked**（含"开机以来一帧都没见过"，
+//     那时 `LinkTime` 自己就报 SimFallback）。★ 没有新闸门、没有新阈值 ——
+//     用的就是 §3/§4 既有那三档。
+//   · ★ `bit3 温度弧无源`：**v1 从板这一侧没有生产者，恒 0**。理由（别按字段名猜）：
+//     从板的水温/进气**只能**来自主板那条 `DATA`（它自己没有 VAN、也没有本地 OBD），
+//     而 §3 的 `DATA.flags` 每个字段只有 2 位（0 None/1 Sim/2 Obd/3 Van）——
+//     **"链路"这一档编不进去**（`link_app.cpp` 的 `fieldSourceToSrc()` 把 Link 编成 Sim）。
+//     ⇒ "温度弧有没有源"这件事从板答不出来，而"敢不敢报一个自己也不确定的值"的
+//     答案是不报（§8 的口径：没生产者就不填，见 `STATUS.last_gap_ms` 那条定案）。
+uint8_t slaveStatusFlags(bool ver_mismatch, bool role_conflict, LinkTimeState data_state);
+
+// ------------------------------------------------------------
+// ② **发送预算**：把这些消息都按契约频率跑，一秒吃掉多少线时（毫秒）
+// ------------------------------------------------------------
+// ★ 为什么它是一段**代码**而不是注释里的一句话：本单让**从板也开口说话**了
+//   （HELLO + STATUS），而契约 §1.1 那张占空比表是按"两边都说话"算的 —— 也就是说
+//   "从板那 2 Hz 到底占多少"这件事必须**算得出来、且能被用例钉住**，
+//   否则将来谁把 STATUS 提到 10 Hz、或者把 DATA 的上限调大，都没有任何信号。
+//
+// 口径（与 §1.1 那张表逐列对齐）：
+//   · 一字节 8N1 = **10 bit**；线速率 = kLinkBaud bit/s
+//   · 一帧的线时 = `frameBytesForLen(len) × 10 / kLinkBaud`（秒）⇒ 换成毫秒
+//   · 一秒里的线时 = 各消息的**帧率**乘各自的帧线时，然后相加
+// ★ 结果与 §1.1 原话对账（`test_link_slave_tx.cpp` 里逐条钉着）：
+//     主板 A→B：`DATA`(79.7 Hz, 13 B) + `TICK`(50 Hz, 12 B) ≈ **142 ms/s ≈ 14%**
+//     从板 B→A：`STATUS`(2 Hz, 23 B) + `HELLO`(≤0.2 Hz, 12 B) ≈ **4.2 ms/s ≈ 0.42%**
+//   ⇒ 合计 ≈ **14.6%**，与契约"≈15%（A→B ≈14%，B→A ≈0.4%）"逐项吻合。
+// ★ `payload_len` 是**载荷**长度（不是整帧）：整帧 = 7 + 载荷（§2 的 `frameBytesForLen`）。
+//   本函数内部自己套那 7 个字节的开销 ⇒ 调用方传 `kStatusLen`（= 16）而**不是** 23，
+//   传 23 会算成 30 字节的帧（本仓库的用例第一次就是这么写错的，见 `test_link_slave_tx.cpp`）。
+uint32_t lineMsPerSecondForFrame(uint8_t payload_len, uint32_t frames_per_second);
+
+// 本仓库那两个发送方**按契约频率全速跑**时的合计线时（毫秒/秒）。
+//   master_data_hz / master_tick_hz —— 主板那一侧（§3：DATA ≈79.7、TICK 50）
+//   slave_status_hz  / slave_hello_hz —— 从板那一侧（§3：STATUS 2、HELLO ≤0.2）
+// ★ 默认参数**就是契约值**，调用方（`main.cpp` 的注释、用例、将来的诊断页）
+//   不必各抄一遍数字；要算"提高频率会怎样"时显式传别的值。
+uint32_t linkBudgetMsPerSecond(uint32_t master_data_hz  = 80u,
+                               uint32_t master_tick_hz  = 50u,
+                               uint32_t slave_status_hz = 2u,
+                               uint32_t slave_hello_hz  = 0u);
+
+// ------------------------------------------------------------
+// ③ 主板侧：DATA 的发送节奏（§3 的 DATA 行）
 // ------------------------------------------------------------
 // 契约原文：DATA **跟随 VAN 0x824 到达（≈79.7 Hz）**，**不另建定时器**。
 // 实现方式：调用方把"这一份快照是什么时候的"（`VanSource::lastUpdateMs()` 就是

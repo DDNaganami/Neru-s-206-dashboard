@@ -6664,3 +6664,192 @@ python -m platformio run -e pcpreview-8m   # 8MB 档：image ok: 9 张,…
    仍然是残的（`No pyvenv.cfg file`），本单没去修它。
 6. ★ **预览那次"打不开"的误判**已在 ③ 里更正（根因是我夹具脚本的编码，不是仓库行为）——
    这条留在文档里是为了避免下次有人照着"中文路径不能用"去做无用的规避。
+
+
+---
+
+## 2026-09-27 双板链路：从板发送契约缺口 + 排针 43/44 选边（本单**未上板**）
+
+> ★★ **本单一次都没有开串口、没有烧板、没有 upload、没有 read_flash。**
+> 现场是"副板在 `COM8`、主板由副板 5V 供电（没有 USB）、两板已接 GND + 5V + 43/44 交叉"，
+> 两块板正在做链路联调 ⇒ 本单**只做代码 + 宿主机 + 网页查证**，需要上板的一律标"待上板"。
+> ★ 构建一律在 ASCII 副本（`C:\206dash-scratch\link2`）里做；两块 2.8C 的镜像**只编译**。
+
+### ① 补上契约缺口：**从板也会发**（HELLO + STATUS）
+
+**缺口的原话（改动前 `src/main.cpp` 自己写着的）**：
+> "从板多了一个 `pumpTx()`：`LinkTx` 那个环**今天还空着**（v1 的 **DATA/TICK
+>  只由主板发**，§3）…… 今天它是个空转：环里 0 字节 ⇒ 立刻返回 0。"
+
+而契约「双板链路协议 v1 范围」的 §3 表写的是：`0x01 HELLO` **双向**、
+`0x30 STATUS` 的方向就是 **B → A**。⇒ **v1 的"双向"当时只兑现了 A→B 那一半**：
+从板一个字节都不发 ⇒ 主板那 30 s 的"从板无响应"判据（§8 L13）恒为真、
+`link: B uptime=…` 那一行**一次都打不出来**（现场看到的就是"线接好了、两板都在跑、
+主板上那些 `B` 行没有"）。
+
+**改法（不动协议一个字）**：
+
+| 改动 | 位置 | 说明 |
+|---|---|---|
+| `helloDue()` | `lib/link/link_app.h` | HELLO 的重发判据抽成**一个**函数（上电 1 次、之后每 5 s、直到收到对端 HELLO）。原来主板那一支在 `main.cpp` 里手写 `5000`；从板要发就得再抄一遍 ⇒ 抽出来两边共用，"5 s"只出现一次（`kHelloRepeatMs`，挪到 `link_msg.h`） |
+| `StatusSender` | `lib/link/link_app.h/.cpp` | STATUS 的 2 Hz 节奏（§3 表 `0x30` 行的 500 ms）。形状与 `DataSender` 同形：只算"该不该发/发什么"，不碰 PHY |
+| `slaveStatusFlags()` | `lib/link/link_app.h/.cpp` | `STATUS.flags` 四位里**有生产者的三位**：`bit0 ver_mismatch` / `bit1 role_conflict` / `bit2 无 DATA 超时`（用 §3/§4 既有的三级超时）。★ `bit3 温度弧无源` **恒 0** —— 从板没有生产者（Link 编不进 `DATA.flags` 那 2 位），不猜 |
+| `lineMsPerSecondForFrame()` / `linkBudgetMsPerSecond()` | `lib/link/link_app.h/.cpp` | **发送预算算得出来**（见下），并被用例钉住 |
+| `link_slave_tick()` | `src/main.cpp` | 从板那一支：HELLO + STATUS + 排水。放在"上一帧渲染已过 200 ms"那一支里（因为 `STATUS.left_face` 必须是**这一拍上屏的那个档位**，不能另调一次 `face_update()`） |
+| `loop()` 从板分支 | `src/main.cpp` | 删掉原来那两行空转的排水，改成 ① 先收（`link_poll_bounded_slave`）… ② 在渲染那一支里发 → **RX 优先** |
+| HELLO 的三个状态 | `src/main.cpp` | 从 `#if LINK_ROLE == 1` 里**搬出来**（两个角色共用）：原来只在主板那一支定义，从板要发就得再定义一份 |
+| 从板收 HELLO | `src/main.cpp` | 补 `g_link_hello_acked = true`（§3 那句"直到收到对端 HELLO"的唯一判据） |
+| 从板开机行 | `src/main.cpp` | 尾巴加上"收主板的 TICK/DATA，发 HELLO(每 5s 直到收到对端)+STATUS(2Hz,§3)" —— 判据不能只活在代码里 |
+| 主板 `STATUS` 日志 | `src/main.cpp` | ★ **格式一个字都没改**（`link: B uptime=…`）：它本来就在 `docs/LINK-TWO-BOARD.md` §4.1 的判据表里逐字写着。本单补的是"**它终于会出现了**"，不是"换个前缀" |
+
+**★ 发送预算（两个发送方都在 115200 上说话，这笔账算清并写进代码注释）**：
+一字节 8N1 = 10 bit ÷ 115200 = 86.8 µs（§1.1 那张表第一列）。
+
+| 发送方 | 消息 | 帧长（=7+载荷） | 节奏 | 线时 |
+|---|---|---|---|---|
+| 从板 | `STATUS` `0x30` | 23 B ≈ 2.00 ms | 2 Hz | **4.00 ms/s** |
+| 从板 | `HELLO` `0x01` | 12 B ≈ 1.04 ms | ≤0.2 Hz（ack 后**永久停发**） | ≤0.21 ms/s |
+| | | | **从板合计** | **≤4.21 ms/s ≈ 0.42%** |
+| 主板 | `DATA` `0x20` | 13 B ≈ 1.13 ms | ≈79.7 Hz（实测那 12 ms 限速压回 80） | ≈90 ms/s |
+| 主板 | `TICK` `0x10` | 12 B ≈ 1.04 ms | 50 Hz | 52 ms/s |
+| | | | **A→B 合计** | **≈142 ms/s ≈ 14%** |
+
+⇒ **合计 ≈14.4%**，与契约 §1.1 原话"≈15%（A→B ≈14%，B→A ≈0.4%）"**逐项吻合** ——
+也就是说**契约当初就是按"从板 2 Hz STATUS"算的那笔账**，本轮补上的正是那个
+一直被算进去、却一直没有实现的 0.4%。★ 结论：**不需要动波特率、不需要降频、不需要改 `platformio.ini`**。
+
+**★ RX 优先（从板不会因为发送而挤掉接收）**：靠两处**顺序**保证 ——
+① `loop()` 里 `link_poll_bounded_slave()` 在 `link_slave_tick()` **之前**；
+② 发送只在"上一帧渲染已过 200 ms"那一支里做（每 200 ms 最多排一帧 STATUS）。
+本函数只往环里写（纯内存、无阻塞），真的碰 UART 的只有 `pump()` 那两行
+（`availableForWrite()` 报 0 就一个字节都不写）；环满时 `enqueueFrame` **整帧丢并计数**
+⇒ 最坏情况是"少一条 STATUS"，**不是**"收帧被拖住"。
+
+**native 用例**：新增 `test/test_dashcore/test_link_slave_tx.cpp`（**8 条**）：
+
+| 用例 | 钉住什么 |
+|---|---|
+| `test_link_slave_hello_first_immediately_then_every_5s` | 上电立刻一条（**`last == 0` 也是合法时刻**，别拿 0 当哨兵）、之后每 5 s、边界 `>=` |
+| `test_link_slave_hello_stops_after_ack` | 收到对端 HELLO 后**永久**停发（含"刚好到 5 s 那一拍"、含 60 s 后） |
+| `test_link_status_sender_is_2hz_and_fires_first_immediately` | 上电立刻一条、每 500 ms、半开区间 [t, t+1000) 里正好 2 条 |
+| `test_link_status_encodes_contract_fields` | 载荷**逐字节**照契约表（大端 + 字段次序 + 宽度）+ 往返 |
+| `test_link_slave_status_flags_three_producers` | 三位有生产者；`bit3` **恒 0**；位号本身没变 |
+| `test_link_send_budget_matches_contract_duty_cycle` | 发送预算与 §1.1 那张表对账（从板那一半**远小于**主板那一半） |
+| `test_link_slave_sending_does_not_starve_receiving` | ★ **发不挤占收**：TX 容量卡到 24 B ⇒ 发送长期积压，同时上游持续灌 64 条 TICK ⇒ **一条不差收全**（判据是"**每一拍**都在推进"，不是"最后收到了"） |
+| `test_link_slave_frames_carry_slave_role_and_known_type` | 从板写出去的帧：`ROLE = 0`、TYPE 是 v1 认识的、`VER = 0x10`，且主板那一侧**不会**当角色冲突丢掉 |
+
+**★ 既有用例的期望值只改了一处**（如实说明，见下"没做/拿不准"第 1 条）：
+`test_link_app.cpp` 的 `test_link_slave_side_real_phy_wiring_and_data_channel` 第 ⑤ 段，
+原文钉的是"从板今天**不发帧** ⇒ 环必须空、pump 一个字节都不许写出去"。
+**那条契约本身变了**（§3 的 HELLO 是双向、STATUS 是 B→A）⇒ 期望值随之改成
+"那个**局部** `tx` 对象仍旧是空的、`pump` 仍旧一个字节都不写"，而"从板会发什么、
+什么时候发、发多少"改由上面那 8 条钉。**其余既有用例的期望值一个字没动。**
+
+**数字**：native 基线 **340 例（2 skipped / 338 ok）** ⇒ 现在 **348 例（2 skipped / 346 ok）**，
+**0 失败**。★ 说明：任务书里写的基线是"337 例（2 skipped / 335 ok）"，而本机在**改动前**
+实测到的是 **340 例（2 skipped / 338 ok）** —— 两个数字的口径差 3 例（不是本单引入的：
+本单只新增 8 条、并把 1 条既有用例的期望值改准）。**如实记下这个差异**，没有把基线
+硬写成任务书那个数。
+
+### ② 排针 43/44 什么时候真的通向 ESP32 —— **本款（非触控）的口径**
+
+> **上一轮读的是 Touch 版原理图，而车主的板子是**非触控版 `ESP32-S3-LCD-2.8C`** ⇒
+> 那一份**标"不适用"**。本款**没有**自己的原理图（见下），所以本款的结论只由
+> "**官方 wiki 本款页面的原话** + **车主台面实测**"两路证据支撑。
+
+**查证到的出处（两条，都可点开核对）**
+
+1. **官方 wiki，本款页面**：<https://docs.waveshare.com/ESP32-S3-LCD-2.8C>
+   —— Onboard Resources 第 4 条，原文逐字：
+   > "**FSUSB42UMX** UART selection chip: when the UART Type-C is connected, the 4Pin UART is
+   > disabled; when the UART Type-C is not connected, the 4Pin UART is enabled"
+
+   同页第 17 条（UART Header）：
+   > "This interface is not available when the USB TO UART Type-C interface is connected"
+
+   同页 **12PIN 引脚表**（43/44 的归属）：
+   > "`TXD` | TXD (GPIO43) | UART data transmit or can be used as a regular GPIO"
+   > "`RXD` | RXD (GPIO44) | UART data receive or can be used as a regular GPIO"
+
+   ⇒ **本款页面自己就列出了 `FSUSB42UMX`**（所以"非触控版还有没有这颗芯片"有答案：**在**）。
+
+2. **本款资料页**：<https://docs.waveshare.com/ESP32-S3-LCD-2.8C/Resources-And-Documents>
+   ★★ **它给的"原理图"就是 Touch 版那一份**：链接指向
+   `.../ESP32-S3-LCD-2.8C/ESP32-S3-Touch-LCD-2.8C_schematic_diagram.pdf`，
+   下载核对 **946,158 B / `SHA256 = 01EAE811F2B777B3F919108ACB48C61E79734055F517A07D516185EF26299D76`**
+   —— 与仓库既有引用的 **Touch 版**那份**逐字节相同**；
+   中文站（`docs.waveshare.net`）指向 `waveshare.net/w/upload/c/c4/…Touch…pdf`，
+   **同样 946,158 B**。
+   把文件名里的 `Touch` 换成 `LCD` 的两个 URL 探测 ⇒ **404**。
+   ⇒ **本款（非触控）没有自己的原理图**（这是"查不到"，如实记；不是"没查"）。
+
+**结论（三条问题的逐条回答）**
+
+| # | 问题 | 回答 | 依据 |
+|---|---|---|---|
+| 1 | 非触控版上 **`FSUSB42UMX`（或等价物）还在不在**？**SEL 由谁驱动**（GPIO0？VBUS 检测？没有这颗芯片？） | ★ **在**（官方页面本款条目里就写着）。★ **"由谁驱动"：本款查不到原理图 ⇒ 无法从图纸回答**。能确定的是**行为**：选边跟着 **"UART Type-C 插没插"** 走（wiki 原话），★ 而它**不是** GPIO0 —— 见下第 3 条与更正留档 | 上面出处①（原话）+ 出处②（没有本款图纸） |
+| 2 | ★ **12PIN 的第 9/10 脚（43/44）在"用 12PIN 的 VBus(5V) 供电、Type-C 不插"时是有效还是被桥占着？** | ★★ **有效（通的）**。wiki 原话的判据是"**Type-C 连接器**插没插"，而"不插 Type-C + 用 12PIN 的 VBus 供电"正好落在"not connected ⇒ **4Pin UART is enabled**"这一档。★ **现场实测正面印证**：主板 Type-C 拔掉、由 12PIN 的 `VBus` 供电时，其第 9 脚（`TXD`=43）**3.11↔2.95 V 跳动** = 在发、且**排针这一侧是通的** | 出处①原话 + 车主实测（下表） |
+| 3 | 若是 VBUS/连接检测决定的 ⇒ **检测的是 Type-C 连接器的 VBUS，还是板上的 5V 轨？** | ★ **检测的是"Type-C 连接器这一侧"**，**不是**板上的 5V 轨。① wiki 原话写的是 "the UART Type-C **is connected / is not connected**"（判据是**连接器**）；② **实测反证**：主板**正是用 12PIN 的 VBus 供电**的，而它的排针**是通的** ⇒ "5V 轨有电"本身**不会**把排针关掉。★ **但具体是哪一根网络在驱动 SEL（CC / VBUS 分压 / 别的）本款未知**（没有图纸）⇒ 这一条只回答"什么条件下通"，**不回答"电气上怎么实现的"** | 出处①原话 + 实测；★ 结论的边界也写在这里 |
+
+**车主台面实测（2026-09-27，本款真板，逐条可复现）**
+
+| 测点 | 读数 | 它证明了什么 |
+|---|---|---|
+| 主板（**Type-C 拔掉**、12PIN 的 `VBus` 供电）第 9 脚（`TXD`） | **3.11 ↔ 2.95 V 跳动** | 排针这一侧**通**、且在发数据 ⇒ 问题 2 的正面证据 |
+| 副板（**Type-C 插着**）同一根线那一针 | **同样量到跳动** | 信号**物理上到了排针** |
+| 副板自己的日志 | `link rx bytes=0`、`SIM` 角标常驻 | ★ 信号到了针上、**芯片却收不到** ⇒ 排针 43/44 与 ESP32 **断开** |
+| 通断档（断电）主板 9 ↔ 副板 10 / 主板 9 ↔ 副板 9 | **响 / 不响** | 线是**交叉**的且**导通**（排除"线接错/断线"这一路） |
+| GND | 通 | 有共同参考地（主板靠副板 5V 供电 ⇒ 必有回路） |
+
+⇒ **两路证据独立同向**，与 wiki 原话逐条吻合。
+
+**★ 更正留档（撤回/更正必须留痕）**
+
+| 位置 | 原来写的 | 现在改成 |
+|---|---|---|
+| `ARCHITECTURE.md` §8.1 标题与正文 | "`FSUSB42UMX` 的 `SEL` = **GPIO0**" | ★ **Touch 版口径，本款不适用**；本款已按 §8.2（新增）的 wiki 原话 + 实测定案为"按 Type-C 插没插选边" |
+| 同 §8.1 的"启用前提" | "给需要的那份 env 加 `-DUSB_PERSONALITY_AUTO=1`" | ★ **本款不需要它**：只要**不插** Type-C，排针 43/44 就通 ⇒ 那个开关（连同它"GPIO0 是 BOOT strap"的风险）在本款上没有存在的理由 |
+| 「链路协议 v1」§0 的 L1 行 ③ | "`SEL`(10) 由 `UART0SEL` 驱动：只有 `IO0` + 两个 10 K（`R44`/`R45`）" | ★ 同上：**Touch 版口径**；★ 并记一条**同一张图上读到的阻值文字不一致**（本单几何抽取读到 `R44` 标注 **`1K`**、不是 10 K），**不构成本款结论**，只作为"将来拿到本款图纸先核这两处"的线索 |
+| `lib/dashcore/usb_personality.h` 第三节注释 | 同上两句（出处归属） | ★ 同此更正。**常量、默认值、行为一个字都没动**（`USB_PERSONALITY_AUTO` 默认仍是 0、`setup()` 里一个寄存器都不碰） |
+
+★ **本单没有为了这条更正改任何代码行为**；改的只有文档与注释里的**出处归属**。
+
+### ③ 构建（三份，**只编译、绝不 upload**）
+
+| env | 结果 | Flash | RAM |
+|---|---|---|---|
+| `pcpreview` | **SUCCESS** | — | — |
+| `esp32s3-rgb-master`（主板镜像） | **SUCCESS** | **918,631 B**（87.6%） | 134,840 B（41.1%） |
+| `esp32s3-rgb-slave`（从板镜像） | **SUCCESS** | **917,027 B**（87.5%） | 135,104 B（41.2%） |
+
+★ 基线对账：任务书给的从板基线是 **916,151**、主板 **918,631** ⇒ **主板一字不差**
+（它的代码路径没变：从板那一支整个在 `#if LINK_ROLE != 1` 里），
+从板 **+876 B**（= 新增的 HELLO/STATUS 发送路径 + 那几行日志，合理量级）。
+
+★ **本机环境上的两处坑（记下来免得下次又踩，都不是仓库的问题）**：
+
+1. `C:\206dash-scratch\pio-core-mix\penv` 的 `uv.exe` **在、但 `C:\.platformio\penv` 是残的**
+   （`No pyvenv.cfg file`）；而 `pioarduino` 平台的 `penv_setup.py` 里 `core_dir` 取的是
+   `C:\.platformio` ⇒ 它会去装 `uv` 并**失败**（`exit code 106`）。
+   ★ 根因是**我自己那个 `env.ps1` 存成了带中文注释的非 ASCII 文件**，
+   被 PowerShell 按 GBK 读 ⇒ 第一行注释把 `$env:PLATFORMIO_CORE_DIR = …` 那**一整行吞掉了**
+   ⇒ `core_dir` 回落到默认值。改成**纯 ASCII 注释**后一切正常。
+   （`ACCEPTANCE.md` 里既有的那条"PlatformIO 用 `pio-core-mix`"记的是正确用法，未变。）
+2. 本机没有系统 `gcc`，native 用 `C:\206dash-scratch\zigbin` 的 `gcc.cmd` → `zig cc`（既有做法，未变）。
+
+### ④ 没做 / 拿不准（如实列）
+
+1. ★ **从板的发送路径没有上板验证过**（本单**只编译**）。它的判据只有宿主面的 8 条用例；
+   "真板上 HELLO/STATUS 到底上不上线"要等烧板 —— ★ **待上板**。
+2. ★★ **决定性判据（已设计好，待上板）**：烧上带本单改动的从板镜像后，**在副板上把
+   9 脚与 10 脚短接**（自环，**测完必须拆掉**）：
+   * 若副板能收到**自己的**帧 ⇒ **排针与芯片是通的** ⇒ 上面第 2 条的假设**被推翻**，得另找原因；
+   * 若收不到 ⇒ 假设**被证实**（Type-C 插着 ⇒ 排针断路）。
+   ★ 这一步**要烧板**，车主已收工 ⇒ **未做**，写进 `docs/LINK-TWO-BOARD.md` 的"当前卡点"一节。
+3. ★ **非触控版原理图：查不到**（不存在公开版本，见 ②-2）⇒ "SEL 具体由哪根网络驱动"
+   **没有答案**。本单**没有**用 Touch 版的读数去冒充本款的结论。
+4. ★ `C:\.platformio\penv` 那个**残缺的 penv** 本单**没修**（只在自己的构建里绕开）。
+5. ★ 任务书里的 native 基线（337 例）与本机实测（**340 例**）差 3 例 —— 见 ① 末尾，**未自行解释掉**。
+6. ★ `docs/LINK-TWO-BOARD.md` 里 §4.2 那句从板开机行**跟着代码改了**
+   （原来是 `… —— 真 PHY(UART0),等主板的 TICK/DATA`，现在是 `—— 真 PHY(UART0)` +
+   一句"收…发…"）。★ 这是**判据文本**，代码与文档**两处一起改的**（只改一处会让判据对不上）。

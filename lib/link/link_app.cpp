@@ -1,6 +1,12 @@
 // 双板链路协议 v1 —— 应用层接线（§1.2 ③ / §3 / §5）。纯逻辑：不碰 UART / LVGL / millis()。
 #include "link_app.h"
 
+// ★ 只为 `kLinkBaud`（§1.1 的 115200，唯一出处是 `link_phy_pins.h`）——
+//   `lineMsPerSecondForFrame()` 要拿它把"字节数"折成"线时"。
+//   那个头是**纯常量 + 编译期守卫**（只 include <stdint.h>，无 Arduino 依赖），
+//   所以这一层引它不破坏"lib/link 在宿主机上可编"这条纪律。
+#include "link_phy_pins.h"
+
 namespace dashlink {
 
 // ------------------------------------------------------------
@@ -111,6 +117,77 @@ bool DataSender::due(uint32_t now_ms, uint32_t snapshot_ms, const VehicleState& 
   mLastSentMs = now_ms;
   ++mSent;
   return true;
+}
+
+// ------------------------------------------------------------
+// ③ STATUS 的发送节奏（§3 的 `0x30` 行：2 Hz / 500 ms）
+// ------------------------------------------------------------
+void StatusSender::reset() {
+  mHasSent    = false;
+  mLastSentMs = 0;
+  mSent       = 0;
+}
+
+bool StatusSender::due(uint32_t now_ms, StatusMsg* out) {
+  if (out == nullptr) return false;
+  // ★ 有符号差 ⇒ `millis()` 回绕天然正确（与 §4 的 d、TickGen::due 同一个套路）。
+  //   `!mHasSent` 那一支保证**上电第一次立刻发**（否则要等满 500 ms 才有第一行
+  //   `link: B uptime=…`，而"从板到底活没活"正要看那第一行 —— 本单之前那一行
+  //   **永远打不出来**，因为从板一条 STATUS 都不发）。
+  if (mHasSent && (int32_t)(now_ms - mLastSentMs) < (int32_t)kStatusPeriodMs) return false;
+
+  // ★ 只填**属于本层**的两个字段，其余一律留给调用方（它才认识固件版本、接收计数、
+  //   屏上档位）：
+  //     · `uptime_ms` —— 契约就是"从复位起算的单调毫秒"，而 `now_ms` 正是调用方
+  //       传进来的那个 millis() ⇒ 这里填它，调用方不必再传一遍；
+  //     · `build_tag` —— §3 的 HELLO 用它，STATUS 表里没有这一项，**不填**。
+  // ★ 其余字段**一个都不碰**（包括 `last_gap_ms`）：§3 定案"字段保留、v1 一律发 0、
+  //   没有生产者" ⇒ 让调用方的 `StatusMsg{}` 默认值自然流过去。在这里补一行 `= 0`
+  //   会把"没有生产者"伪装成"生产者说是 0"（两者将来要分开看）。
+  out->uptime_ms = now_ms;
+
+  mLastSentMs = now_ms;
+  mHasSent    = true;
+  ++mSent;
+  return true;
+}
+
+uint8_t slaveStatusFlags(bool ver_mismatch, bool role_conflict, LinkTimeState data_state) {
+  uint8_t f = 0u;
+  if (ver_mismatch)  f = (uint8_t)(f | kStFlagVerMismatch);
+  if (role_conflict) f = (uint8_t)(f | kStFlagRoleConflict);
+  // §3 的 DATA 行：跟 TICK 同一条三级超时 ⇒ "不是 Locked"就是"没有新鲜的 DATA"。
+  if (data_state != LinkTimeState::Locked) f = (uint8_t)(f | kStFlagNoData);
+  // ★ `kStFlagTempNoSource` 恒不置位 —— 生产者不存在，理由见 link_app.h 那一段。
+  return f;
+}
+
+// ------------------------------------------------------------
+// ④ 发送预算（§1.1 那张占空比表的算术化）
+// ------------------------------------------------------------
+uint32_t lineMsPerSecondForFrame(uint8_t payload_len, uint32_t frames_per_second) {
+  if (frames_per_second == 0u) return 0u;
+  // 一帧的 bit 数 = 整帧字节 × 10（8N1：1 起始 + 8 数据 + 1 停止）
+  // 线时(ms/s) = 帧率 × bit数 × 1000 / kLinkBaud
+  const uint32_t bytes = (uint32_t)frameBytesForLen(payload_len);
+  const uint32_t bits  = bytes * 10u;
+  const uint32_t num   = frames_per_second * bits * 1000u;
+  // ★ **四舍五入到整毫秒**，不是截断。为什么这一条要专门写：
+  //   契约 §1.1 的原话是 "`STATUS`（23 B）**2.00 ms**"、"`TICK`（12 B）1.04 ms" ——
+  //   23 B @115200 8N1 的真值是 **1.9965 ms**。整除截断会把它算成 **1**，
+  //   于是"照契约算出来的预算"与作者写下的那个数字**差一倍**，
+  //   而这条函数的全部意义就是与契约那张表对账（用例逐条钉着）。
+  //   ⇒ 取最接近的整数：1.9965 → 2；1.0417 → 1（两者都与 §1.1 写的一致）。
+  //   ★ 分子最大量级：50 帧/s × 230 bit × 1000 = 1.15e7 ⇒ u32 绰绰有余（不溢出）。
+  return (num + (kLinkBaud / 2u)) / kLinkBaud;
+}
+
+uint32_t linkBudgetMsPerSecond(uint32_t master_data_hz, uint32_t master_tick_hz,
+                               uint32_t slave_status_hz, uint32_t slave_hello_hz) {
+  return lineMsPerSecondForFrame(kDataLen, master_data_hz) +
+         lineMsPerSecondForFrame(kTickLen, master_tick_hz) +
+         lineMsPerSecondForFrame(kStatusLen, slave_status_hz) +
+         lineMsPerSecondForFrame(kHelloLen, slave_hello_hz);
 }
 
 bool handleInbound(const Frame& f, LinkTime* t, uint32_t now_ms, LinkData* out_data) {

@@ -699,9 +699,17 @@ static VanLogSink g_van_log;
 //   解帧/重同步/角色自检），改的只有两处：
 //     · 从板的 PHY 从 `LinkPhyNull` 换成 `LinkPhyUart`（有 `LINK_PHY_UART` 时）
 //       —— 上行（B→A）这才真的跑得起来；
-//     · 从板多了一个 `pumpTx()`：`LinkTx` 那个环今天还空着（v1 的 **DATA/TICK
-//       只由主板发**，§3），但排水这一步两侧都要有 —— 将来从板要发 STATUS/EVENT
-//       时，缺的就是这一行（今天它是个空转：环里 0 字节 ⇒ 立刻返回 0）。
+//     · 从板多了一个 `pumpTx()`：排水这一步两侧都要有。
+//
+//   ★★ 2026-09-27：上面那句"从板那个环今天还空着"**已经作废** —— 从板现在真的发
+//     两个消息（见下面 `link_slave_tick()` 那一段）：
+//       · `HELLO`(0x01) —— **双向**（§3 表 `0x01` 行），与主板同一条口径
+//         （`helloDue()`：上电 1 次、之后每 5 s，直到收到对端 HELLO）；
+//       · `STATUS`(0x30) —— §3 表写的就是 **B → A 的 2 Hz**，而从板此前**一行发送
+//         代码都没有** ⇒ v1 的"双向"只兑现了 A→B 那一半，主板那 30 s 的
+//         "从板无响应"判据恒为真（§8 L13 那行日志永远等不到 `B 在线`）。
+//     这两条**只补"谁在什么时刻 enqueue"**：TYPE / LEN / 字段次序 / CRC 覆盖范围
+//     与 `LINK_ROLE` 的编译期权威（§5）一个字都没动。
 //
 //   ★ 两侧的"谁发什么"仍旧由 `LINK_ROLE` 说了算，**没有**变成运行期判断（§5）。
 #if LINK_ROLE == 1
@@ -712,8 +720,8 @@ static dashlink::DataSender  g_link_data;  // §3 的 DATA（跟随 0x824 到达
 #else
 static dashlink::LinkRx      g_link_rx;    // 收：§2 的重同步 + §5 的角色冲突自检
 static dashlink::LinkTime    g_link_time;  // §4：TICK 偏移估计 + 三级超时
-static dashlink::LinkTx      g_link_tx;    // ★ 从板今天不发帧（§3），但排水那一步
-                                           //   与主板同形 —— 见下面 loop() 里那两行
+static dashlink::LinkTx      g_link_tx;    // 发：B→A 的 HELLO + STATUS（2026-09-27 起）
+static dashlink::StatusSender g_link_status;  // §3 `0x30` 行的 2 Hz 节奏
 #endif
 
 // 链路 PHY 本身：**一份定义、两个角色共用**（§0：谁都是 43 发、44 收）。
@@ -726,12 +734,6 @@ static dashlink::LinkPhyNull g_link_phy;
 #endif
 
 #if LINK_ROLE == 1
-// 主板自己的固件版本/构建标记（§3 的 HELLO：`fw_ver` 与协议 `VER` **分开**）。
-// 取值口径：仓库里没有既有编码（§3 也这么说），所以先定 0/0 并把出处写在这里 ——
-// 真要拿它判"两块板是不是同一份固件"，得在两块板各自刷同一份固件时才可比。
-static const uint16_t kLinkFwVer    = 0;
-static const uint16_t kLinkBuildTag = 0;
-
 // ★★ DATA 的**下限**（2026-09-25 上板实测补的一行）：**12 ms ⇒ ≤80 帧/s**。
 //
 // 为什么必须有它（这是实测出来的，不是防御性代码）：`DataSender::due()` 对
@@ -754,10 +756,30 @@ static const uint16_t kLinkBuildTag = 0;
 //   `test_link_app.cpp` 的 `test_link_app_data_sender_min_interval`（同一条判据的宿主面）。
 static const uint32_t kLinkDataMinIntervalMs = 12u;
 
+#endif  // LINK_ROLE == 1
+
+// ============================================================================
+//  HELLO 的三个状态 —— ★ **两个角色共用**（2026-09-27 从主板那一支里搬出来的）
+// ============================================================================
+// 为什么搬：§3 表 `0x01` 行的 HELLO 是**双向**的，两个角色的口径逐字相同
+// （上电 1 次、之后每 5 s、直到收到对端 HELLO）。这三个变量原来只在 `LINK_ROLE==1`
+// 那一支里定义 —— 从板那一支要发 HELLO 就得再定义一份，而"两份同名状态"迟早会漂。
+// ⇒ 定义提到角色分支**外面**，两个角色共用；`kHelloRepeatMs`（那个 5 s）也搬到了
+//   `lib/link/link_msg.h`，于是"5 s"在全仓库只出现一次。
+//   ★ 分支外面定义**不代表两个角色都会发**：谁发由 `LINK_ROLE` 说了算（§5），
+//     只是两边的**状态与判据**是同一份。
 static uint32_t g_link_hello_ms = 0;         // 上一次发 HELLO 的时刻（0 = 还没发过）
 static uint32_t g_link_peer_ms  = 0;         // 最近一次收到**对端任何一帧**的时刻
 static bool     g_link_hello_acked = false;  // 收到过对端 HELLO ⇒ 停止重发（§3）
-#endif  // LINK_ROLE == 1
+// 主板自己的固件版本/构建标记（§3 的 HELLO：`fw_ver` 与协议 `VER` **分开**）。
+// 取值口径：仓库里没有既有编码（§3 也这么说），所以先定 0/0 并把出处写在这里 ——
+// 真要拿它判"两块板是不是同一份固件"，得在两块板各自刷同一份固件时才可比。
+// ★ 从板也报**同一对常量**：两块板刷的是同一次构建里的两份镜像，`fw_ver`/`build_tag`
+//   本来就是"这份固件是哪一版"的标记（角色不算版本）⇒ 主板那行 `link: B HELLO fw=…
+//   build=…` 后面**不该**出现"与本机 fw/build 不同"那句尾巴。真出现尾巴了，
+//   说明两块板刷的不是同一次构建 —— 那正是这个字段要回答的问题。
+static const uint16_t kLinkFwVer    = 0;
+static const uint16_t kLinkBuildTag = 0;
 
 static uint32_t last_ui_ms = 0;
 static uint32_t last_status_ms = 0;
@@ -1604,10 +1626,121 @@ static bool link_poll_bounded_slave(uint32_t now) {
       }
       continue;
     }
-    // HELLO / STATUS / EVENT：v1 实际只用 B→A（§3）⇒ 从板这一侧不打日志（同上）。
+    // HELLO / STATUS / EVENT：v1 从板这一侧 **A→B 的这三类只用来对账**
+    // （TICK/DATA 已经走上面那一支进了时基与数据层）。
+    // ★ 2026-09-27：HELLO 多了一件**必须做的事** —— 收到对端的 HELLO 就要
+    //   `g_link_hello_acked = true`，否则从板会**永远**每 5 s 重复发 HELLO
+    //   （§3 那句"直到收到对端 HELLO"就是这条状态的唯一判据）。
+    //   与主板侧那一行（`link_poll_inbound()` 里）逐字同形 —— 两边的状态是**同一份**
+    //   全局变量（见它定义处那段说明）。
+    if (f.type == (uint8_t)dashlink::MsgType::Hello) g_link_hello_acked = true;
+    // ★ 其余两类仍然不打日志：从板自己的 USB-C 上要看的是数据层那几行
+    //   （§3 的"单一日志出口"是**从板→主板**那一向，不是反过来）。
   }
   g_link_time.update(now);
   return got_data;
+}
+
+// ============================================================================
+//  链路（从板侧）：主循环里的"发 HELLO + 发 STATUS + 排水"（★ 2026-09-27 新增）
+// ============================================================================
+// 这一段补的是契约里那个**从板也会发**的缺口（§3 表：`0x01` HELLO 是**双向**、
+// `0x30` STATUS 的方向写的就是 **B → A**）。补之前从板那一支**一行 enqueue 都没有**
+// ⇒ v1 的"双向"只兑现了 A→B 那一半，而主板那 30 s 的 `从板无响应` 判据（§8 L13）
+// 恒为真、`link: 首次收到从板帧(…)` 那一行永远等不到。
+//
+// ★★ 发送预算（**两个发送方都在 115200 上说话**，所以这笔账要在这里算清）
+//   一字节 8N1 = 10 bit ÷ 115200 = 86.8 µs（§1.1 那张表第一列）。
+//     从板这一侧新增的两个消息（帧长 = 7 + 载荷，§2）：
+//       · HELLO  0x01 ：载荷 5 B ⇒ 帧 **12 B** ⇒ 1.04 ms/帧
+//                       节奏 = 上电 1 次 + 之后每 5 s ⇒ **0.2 帧/s ⇒ 0.21 ms/s**
+//                       （而且收到对端 HELLO 就**永久停发** ⇒ 这是上界，不是稳态）
+//       · STATUS 0x30 ：载荷 16 B ⇒ 帧 **23 B** ⇒ 2.00 ms/帧
+//                       节奏 = 2 Hz（§3 表那一行的 500 ms）⇒ **2 帧/s ⇒ 4.00 ms/s**
+//     ⇒ 从板合计 **≤ 4.21 ms/s ≈ 0.42% 线时**。
+//   主板那一侧（§1.1 的同一张表）：`DATA` ≈79.7 Hz × 1.13 ms/s + `TICK` 50 Hz ×
+//   1.04 ms/s ⇒ 约 **142 ms/s ≈ 14%**（实测那一条 12 ms 限速把 DATA 压回 80 Hz，
+//   见 `kLinkDataMinIntervalMs` 那段）。
+//     ⇒ **A→B + B→A 合计 ≈ 14.4%**，与契约 §1.1 原话"≈15%（A→B ≈14%，B→A ≈0.4%）"
+//       逐项吻合 —— 也就是说**契约当初就是按"从板 2 Hz STATUS"算的那笔账**，
+//       本轮补上的正是那个一直被算进去、却一直没有实现的那 0.4%。
+//   ★ 结论：**不需要动波特率、不需要降频、不需要改 `platformio.ini`**。
+//
+// ★★ RX 优先（从板**不会**因为发送而挤掉接收）—— 这一条靠两处**顺序**保证：
+//     ① `loop()` 里 `link_poll_bounded_slave(now)` 在 `link_slave_tick()` **之前**
+//        （收是 latency-sensitive 的：TICK 20 ms 一格、三级超时 100 ms 起算）；
+//     ② 一个**渲染周期**里也只做一次收发：`link_poll_bounded_slave()` 在 `loop()`
+//        开头，而 `link_slave_tick()` 在"上一帧渲染已过 200 ms"那一支里（与
+//        `make_view()` 同一支，见下面那段说明）⇒ 每 200 ms 最多排一帧 STATUS。
+//   而且本函数**只往环里写**（`LinkTx::enqueue` 是纯内存、无阻塞），真的碰 UART 的
+//   只有 `pump()` 那两行，两次都**只走能走的字节**、`availableForWrite()` 报 0 就
+//   一个字节都不写（§1.2 ②③）。⇒ 发送最多让主循环多花"一次环拷贝",
+//   而收帧的预算（`kLinkRxBytesPerLoop`）在它**之前**就已经花掉了。
+//   ★ 还有一层：环满时 `enqueueFrame` **整帧丢并计数**（不会把半帧写进去，
+//     也不会重试等待）⇒ 最坏情况是"少一条 STATUS"，不是"收帧被拖住"。
+//
+// ★ 顺序上的第三件事（**不要改**）：enqueue 之后才 pump。先 pump 再 enqueue 会让
+//   这一拍刚排进去的帧白等一整圈（主循环 ~900 圈/秒 ⇒ 浪费 1.04~2.00 ms 的发送窗口）。
+//
+// ★ 为什么必须收 `ArcDashView`（而不是在 loop() 里另算一个 `face_update()`）：
+//   `STATUS.left_face` 要报的是"**这一拍上屏的那个档位**"（§3 表 `0x30` 行）。
+//   再调一次 `face_update()` 会**推进第二条状态机**（它有超速迟滞记忆）⇒ 报出去的值
+//   与屏上的值在边界上会不一致，而且两次调用互相搅动对方的记忆。
+//   ⇒ 只认 `make_view()` 那一次的结果，它在 loop() 里每 200 ms 算一次（与渲染同拍）。
+//
+// ★ 本函数**不碰** `LINK_ROLE`：它是 `#if LINK_ROLE != 1` 那一支里的代码
+//   （§5：谁发什么由编译期角色定，运行期没有任何判据）。
+static void link_slave_tick(uint32_t now, const ArcDashView& view) {
+  // ① HELLO：上电 1 次，之后每 5 s，直到收到对端 HELLO（§3）。
+  //    判据与主板那一支是**同一个函数**（`dashlink::helloDue`）——
+  //    不是"抄了一遍"，所以两边不可能漂。
+  if (dashlink::helloDue(now, g_link_hello_ms, g_link_hello_acked)) {
+    g_link_hello_ms = now;
+    dashlink::HelloMsg hm;
+    hm.fw_ver      = kLinkFwVer;      // 与主板同一对常量（见定义处那段）
+    hm.build_tag   = kLinkBuildTag;
+    hm.boot_reason = 0;               // §3：取值由发送侧定，仓库里没有既有编码
+    uint8_t payload[dashlink::kHelloLen];
+    if (dashlink::packHello(hm, payload)) {
+      g_link_tx.enqueueFrame((uint8_t)dashlink::MsgType::Hello, payload, dashlink::kHelloLen,
+                             dashlink::kLocalRole);
+    }
+  }
+
+  // ② STATUS：2 Hz（§3 表 `0x30` 行的 500 ms）。字段逐个照契约填，**一个不多一个不少**：
+  //      fw_ver         = 与 HELLO 同一对常量（§3：与协议 VER 分开）
+  //      uptime_ms      = 本机单调毫秒（§7 失败模式 7 靠它发现"从板在反复重启"）
+  //      frames_ok      = LinkRx 收下并交给上层的帧
+  //      frames_dropped = §2 那三种（crc / bad_len / unknown_type）+ 角色冲突等
+  //                       —— 直接用 `LinkRxStats::framesDropped()`（与 §3 的语义同源）
+  //      crc_err        = §2 的 CRC 不过
+  //      last_gap_ms    = **保留、v1 一律 0**（§3 那条定案；`StatusSender` 刻意不碰它）
+  //      left_face      = 左屏当前档位（`expression.h` 的 Face 槽位下标）
+  //      flags          = `slaveStatusFlags()`：bit0/bit1/bit2 有生产者，bit3 恒 0
+  //    ★ 计数**截到 u16** 是契约的宽度（§3 表：三个都是 u16）—— 累计量在
+  //      `LinkRxStats` 里是 u32，这里按契约窄化；截断由主板那行日志的单调性可见。
+  dashlink::StatusMsg sm;
+  if (g_link_status.due(now, &sm)) {
+    const dashlink::LinkRxStats& rs = g_link_rx.stats();
+    sm.fw_ver         = kLinkFwVer;
+    sm.frames_ok      = (uint16_t)rs.frames_ok;
+    sm.frames_dropped = (uint16_t)rs.framesDropped();
+    sm.crc_err        = (uint16_t)rs.crc_err;
+    // last_gap_ms 不写：见上面那一行（保持 StatusMsg 的默认值 0）
+    sm.left_face      = (uint8_t)view.face_left;
+    sm.flags          = dashlink::slaveStatusFlags(g_link_rx.verMismatchSeen(),
+                                                   g_link_rx.roleConflictSeen(),
+                                                   g_link_time.dataState());
+    uint8_t payload[dashlink::kStatusLen];
+    if (dashlink::packStatus(sm, payload)) {
+      g_link_tx.enqueueFrame((uint8_t)dashlink::MsgType::Status, payload, dashlink::kStatusLen,
+                             dashlink::kLocalRole);
+    }
+  }
+
+  // ③ 排水：`LinkTx` 的环 → PHY 的环 → UART 的 FIFO。与主板那一支**同一形状**。
+  g_link_tx.pump(g_link_phy);
+  g_link_phy.pumpTx();
 }
 #endif
 
@@ -1625,6 +1758,24 @@ static void link_log_peer_line(const dashlink::Frame& f) {
         dash_logf("link: B STATUS 载荷解不出(len=%u)\n", (unsigned)f.len);
         return;
       }
+      // ★★ 2026-09-27：这一行是"**从板真的活了**"在主板上的**唯一**可见证据
+      //   （§3 的"单一日志出口"就是它）。为什么本单要专门说它：
+      //     · 从板那一侧此前**从来不发** STATUS（`LinkTx` 的环恒空）⇒ v1 的
+      //       "双向"只兑现了 A→B，而这个 `switch` 里 STATUS/EVENT 两支
+      //       **一次都没被执行过** —— 现场看到的就是"线接好了、两板都在跑、
+      //       主板上那些 `link: B …` 一行都没有"（本单的现场卡点）。
+      //     · 加上它之后，只插**主板**一个口就能同时看到 A 与 B 的关键状态：
+      //       `uptime` 单调涨 = 从板活着且没在反复重启（§7 失败模式 7：
+      //       5V 带不动 ⇒ 这个数会反复归零）；`rx_ok` 涨 = 它在收我的 TICK/DATA；
+      //       `crc`/`dropped` = 链路质量（§7 失败模式 8）。
+      //   ★ 格式**一个字都没改**（`link: B uptime=…`）：它已经在
+      //     `docs/LINK-TWO-BOARD.md` §4.1 的判据表与 §3 的"单一日志出口"
+      //     示例里逐字写着了（那份示例的**建议**就是这一行）——
+      //     本单补的是"它终于会出现了"，不是"换一个更好听的前缀"。
+      //   ★ 频率提醒：**2 Hz**（§3 表 `0x30` 行）⇒ 每 500 ms 一条。
+      //     刻意**不再降频**（与 `206 dash ok` 那两行不同）：它是"从板在线"的心跳，
+      //     与 `link: tx=… B 在线` 那个 1 Hz 的门限（§8 L13 的 30 s）互补 ——
+      //     降频会让"从板刚开始不上报"与"从板掉线"看起来一样。
       dash_logf("link: B uptime=%lums rx_ok=%u dropped=%u crc=%u gap=%u face=%u flags=0x%02X\n",
                 (unsigned long)s.uptime_ms, (unsigned)s.frames_ok,
                 (unsigned)s.frames_dropped, (unsigned)s.crc_err,
@@ -1721,8 +1872,9 @@ static void link_master_tick(uint32_t now, const VehicleState& snapshot) {
   }
 
   // ② HELLO：上电 1 次，之后每 5 s 重发，**直到收到对端 HELLO**（§3）。
-  if (!g_link_hello_acked &&
-      (g_link_hello_ms == 0u || (now - g_link_hello_ms) >= 5000u)) {
+  //    ★ 2026-09-27：判据搬进 `dashlink::helloDue()`（`lib/link/link_app.h`）——
+  //      从板那一支要用**逐字同一条**，抄一遍就一定会漂。
+  if (dashlink::helloDue(now, g_link_hello_ms, g_link_hello_acked)) {
     g_link_hello_ms = now;
     dashlink::HelloMsg hm;
     hm.fw_ver = kLinkFwVer;
@@ -1894,9 +2046,21 @@ void setup() {
   g_link_phy.begin(false);
   g_link_rx.setLocalRole(dashlink::kLocalRole);
   g_link_time.reset();
-  dash_logf("link: 从板侧就绪(§5, LINK_ROLE=0) TX=GPIO%d RX=GPIO%d @%u 8N1%s\n",
+  // ★ 2026-09-27：从板**也发**了（HELLO + STATUS，见 `link_slave_tick()`）。
+  //   `reset()` 让"上电第一条 STATUS"立刻发（`mHasSent == false`），
+  //   与 `g_link_time.reset()` 同一个位置、同一个理由：开机态要显式摆正。
+  g_link_status.reset();
+  // ★ 2026-09-27：开机这一行把"从板也会发"写进去 —— 判据不能只活在代码里。
+  //   两块板外观一样、两个镜像的**这一行是可以对账的**：从板写"发 HELLO/STATUS"，
+  //   主板那行写"收 B 的 STATUS/EVENT"（见上面主板那一支）。照 §3：从板这条
+  //   UART 是数据面，它自己的日志在**原生 USB-CDC** 上。
+  //   ★ `docs/LINK-TWO-BOARD.md` §3.1「应当看到的关键几行（从板）」里那句
+  //     `… —— 真 PHY(UART0),等主板的 TICK/DATA` 随之改成了 `—— 真 PHY(UART0)`
+  //     （"等主板"已经不是全部了：它现在也发）。两处一起改的，别只改一处。
+  dash_logf("link: 从板侧就绪(§5, LINK_ROLE=0) TX=GPIO%d RX=GPIO%d @%u 8N1%s"
+            " —— 收主板的 TICK/DATA，发 HELLO(每 5s 直到收到对端)+STATUS(2Hz,§3)\n",
             (int)g_link_phy.txPin(), (int)g_link_phy.rxPin(), (unsigned)dashlink::kLinkBaud,
-            g_link_phy.online() ? " —— 真 PHY(UART0),等主板的 TICK/DATA"
+            g_link_phy.online() ? " —— 真 PHY(UART0)"
                                 : " —— PHY 是空壳(这份固件没编 -DLINK_PHY_UART)");
 #endif
   // 主题:先默认值(由 dash_ui_init 兜底),再尝试用 flash 里的主题文件覆盖。
@@ -1958,13 +2122,15 @@ void loop() {
   // ★★ 2026-09-25：改名 `link_poll_frames_slave` → `link_poll_bounded_slave`。
   //   同名同形，唯一的差别是**每圈吃进来的字节数封顶**（`kLinkRxBytesPerLoop`）——
   //   车主那条"画面卡住 + 蜂鸣器长鸣"就指着这一条不再发生（见那一段的说明）。
-  // ★ 排水那一行：v1 的 DATA/TICK **只由主板发**（§3），所以从板的 `LinkTx` 环今天
-  //   恒空、这一调用是空转（`pumpTx()` 见 `mTxCount == 0` 立刻返回 0，不碰 UART）。
-  //   留着它与主板同形：将来从板要发 STATUS/EVENT 时，改的是"谁 enqueue"，
-  //   不是"谁排水"。
+  // ★★ 2026-09-27：**从板也会发**了 —— 排水那一行不再是空转的注释（见
+  //   `link_slave_tick()` 那一段）。顺序是硬的，两处都在下面写着：
+  //     ① 这里是 loop() 开头 ⇒ **先收**（`link_poll_bounded_slave` 已经跑完了）；
+  //     ② 真正的"enqueue + 排水"在下面"上一帧渲染已过 200 ms"那一支里 ——
+  //        因为 `STATUS.left_face` 要的是**这一拍上屏的档位**，而 `make_view()`
+  //        就在那一支里算（理由与"为什么不能再调一次 face_update()"见上面那段）。
+  //   ⇒ 去掉下面那一支里的 `link_slave_tick()` 会让从板退回到"收得到、一个字都不发"，
+  //     而且**不会有任何编译期信号**（这正是本单要补的那个缺口）。
   link_poll_bounded_slave(now);
-  g_link_tx.pump(g_link_phy);
-  g_link_phy.pumpTx();
 #endif
 
   // ★ 2026-09-24：由 `const VehicleState st` 改成**可写**的 `st_mut` ——
@@ -2206,7 +2372,21 @@ void loop() {
                 trust_beeped ? " beep" : (g_sys.untrusted() ? " muted" : ""),
                 (unsigned long)g_sys.episodes());
     }
-    dash_ui_render(make_view(st_mut, now), lamps, g_sys, diag_in, now);
+    // ★★ 这一行是**唯一**算 `ArcDashView` 的地方 —— 于是它也是从板唯一能拿到
+    //   `STATUS.left_face` 的地方（理由见 `link_slave_tick()` 文件头那段：
+    //   不能另调一次 `face_update()`，那会推进第二条状态机）。
+    //   ★ 顺序：**先 render（把这一拍的档位推上屏）、再把它报给主板** ——
+    //     反过来写会让 `left_face` 比屏上晚一拍（200 ms 的错位，肉眼看不出来，
+    //     但"屏上显示的档位"与"主板日志里记的档位"就不是同一个时刻的了）。
+    const ArcDashView view = make_view(st_mut, now);
+    dash_ui_render(view, lamps, g_sys, diag_in, now);
+#if LINK_ROLE != 1
+    // ---- 链路（从板侧）：发 HELLO + STATUS + 排水（★ 2026-09-27 新增）----
+    // ★ 位置就是上面那段的第一条理由：`view` 是刚刚推上屏的那一份 ⇒
+    //   `left_face` 与屏上一致；而且它与渲染同拍（200 ms），正好把 2 Hz 的
+    //   STATUS 节奏卡得整整齐齐（§3 的 500 ms 是节流的整数倍，不会抖动）。
+    link_slave_tick(now, view);
+#endif
     // 渲染帧率（EMA，alpha = 1/8，×10 定点）：它回答"这条 200 ms 节流有没有被卡住"
     // （RGB 那条路上第一次整屏刷新要 ≈1 秒 ⇒ 那一秒 fps 会掉下来）。
     // ★ 用 `dt` 的**实际值**（夹在 1..1000 ms）：主循环被长 flush 挡住时
