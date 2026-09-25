@@ -73,6 +73,13 @@
 #include "link_phy_uart.h"
 #endif
 
+// ★★ 板上 USB/串口"人格"（`FSUSB42UMX` 的 `SEL` = GPIO0）—— 2026-09-26。
+//   ★ **默认不驱动**（`USB_PERSONALITY_AUTO` 默认 0）：方案/风险/退回路径全写在
+//     那个头文件里，一句话是"GPIO0 同时是 BOOT strapping 脚，复位期间保持低
+//     有可能把芯片带进下载模式"。要不要开由 owner 拍板（纪律照 §7.5.7）。
+//   ★ 它的**唯一**调用点在 `setup()` 里 `boot_note()` 之后（那里有注释说明顺序）。
+#include "usb_personality.h"
+
 // ============================================================================
 //  OBD(K 线)串口接线 —— 2026-09-21 启用(此前一直是注释,设备端从不问 OBD)
 // ============================================================================
@@ -1763,6 +1770,25 @@ void setup() {
   //     设备端才有（pcpreview 编这一段会直接编不过，与自检那一段同一条纪律）。
 #if defined(ARDUINO)
   boot_note();
+#endif
+
+  // ★★ 板上串口"人格"（`FSUSB42UMX` 的 `SEL` = GPIO0）—— 2026-09-26。
+  //   位置的两条理由（都写在这儿，免得被挪走）：
+  //     ① **在日志起来之后**：这一行是"固件要求哪一边"的自证，
+  //        没有 `dash_log_begin()` 就没地方打；
+  //     ② **在 43/44 被 UART0 抓走之前**：这里离 `dash_display_init()` /
+  //        链路 `begin()` 都还远，GPIO0 这一个脚与 UART 无关，
+  //        但顺序写清楚 = 将来没人把它塞到显示初始化之后。
+  //   ★ 默认那一档（`USB_PERSONALITY_AUTO = 0`）**一个寄存器都不碰**，
+  //     日志照打（它说的是"我们没去扳开关"），与今天的行为逐字节相同。
+#if defined(ARDUINO)
+  {
+    const bool drove = usb_personality_select();
+    dash_logf("usb: personality=%s (GPIO0 %s)\n",
+              dashusb::requestedPersonalityName(),
+              drove ? "driven LOW by us -> FSUSB42 SEL = native USB"
+                    : "left alone -> FSUSB42 SEL follows R44/R45 (ch343p)");
+  }
 #endif
 
   // ★ 设备端的 USB-CDC 是**没有主机的缓冲**的:监视器如果没在开机前打开,

@@ -26,6 +26,7 @@ void register_panel_guard_tests(void);   // 面板健康守护:回读对账/按�
 void register_boot_persist_tests(void);  // 跨重启留档:上一次 reason/上一次跑了多久/守护累计(2026-09-25)
 void register_serial_cmd_tests(void);    // 串口单字符命令的判据层:d/m/b/r + 别多吃回放字符(2026-09-24)
 void register_role_layout_tests(void);   // 角色 ↔ 屏幕的映射:哪块板显示哪一屏(2026-09-25)
+void register_usb_personality_tests(void); // 板上 USB/串口"人格"(FSUSB42 SEL=GPIO0)——方案与默认档(2026-09-26)
 void register_face_stage_tests(void);
 void register_log_ring_tests(void);            // 日志环 + 节流闸门(2026-09-26)
 void register_link_crc_coverage_tests(void);   // 双板链路 v1:CRC-15 检错覆盖枚举(§8 L4)
@@ -94,6 +95,12 @@ int main(void) {
   //   （`MASTER (RIGHT)` / `SLAVE (LEFT)`），没有一行判据、也没有文档 ⇒ 本单把它
   //   写成代码 + 文档，并在这里逐条钉住（含"两块板**不是**同一屏"这条反向判据）。
   register_role_layout_tests();
+  // ★ 2026-09-26 新增：**板上 USB/串口"人格"**（`usb_personality.h`）。
+  //   它把 `FSUSB42UMX` 的 `SEL`（= GPIO0）那件事写成**一处常量 + 默认不驱动**：
+  //   车主实测"按住 BOOT 插电 = 原生 USB"，而 GPIO0 同时是 BOOT strapping 脚
+  //   ⇒ 驱动它的风险（复位期间保持低 ⇒ 可能进下载模式）写在那个头文件里，
+  //   **要不要开由 owner 拍板**（纪律照 §7.5.7）。这一组钉住的是"默认没偷偷开"。
+  register_usb_personality_tests();
   // ★ 2026-09-26 新增：**日志环 + 节流闸门**（`lib/dashcore/dash_log.h`）。
   //   这是本单那条硬约定的判据层："主循环永不因日志阻塞"——
   //   ①环满整行丢+计数 ②排空按预算、端口报满就立刻停手（不重试）

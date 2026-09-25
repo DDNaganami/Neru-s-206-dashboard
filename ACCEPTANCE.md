@@ -6116,4 +6116,286 @@ loop: n=79263 in 5000ms (15852/s) max=37ms stall=0 | link rx bytes=0 frames=0 | 
 本单**没有**深挖它（它离"卡死"差三个数量级，而且 `stall=0`）——
 记在这里，供下一轮需要时当线索。
 
+---
+
+## ★★ 主板（`COM9`）重烧 + **图案不跟角色换**（"表情像随机变"）+ 固件自选 USB 人格（2026-09-26）
+
+> **本单边界（红线）**：只开 **`COM9`**（主板，`USB 串行设备` = 芯片原生 USB；
+> 它开工时跑的是**今天修复之前**的旧主板镜像）与刷写它自己。**`COM8`（从板）一次都没开**；
+> `COM1` 从未碰过；**`COM7`（抓帧盒）车主已拔掉**，不存在。
+> `tools/theme-editor/theme.json` 与 `tools/theme-editor/local/`（车主的本地产物）
+> **全程未碰**（本单要用的真素材是从 `.dsh-drop` **只读拷到 scratch** 的那一份）。
+> ★ `platformio.ini` **一个字节都没动**（仓库那份 `Get-FileHash` 与开工时相同）——
+> 两个 `pcpreview` 角色变体是**只在 ASCII 副本上**临时追加的 env（副本不进仓库）。
+> 红线复核：PCLK / bounce / `num_fbs` / 驱动时序 / 抓帧盒三个 env / 17-18 / GPIO15
+> **全部未动**；**没有新开 L 号**（C 那件事按 §7.5.7 只写方案）。仓库起点 `a0e2fe1`。
+
+### ① 车主现场 → 两句话定案（本单的两个 bug）
+
+| # | 车主原话（逐字） | 读出来的机制 |
+|---|---|---|
+| **A** | ——（本单的任务书）"**主板（`COM9`）还跑着今天修复之前的旧主板镜像**" | 从板镜像（`a0e2fe1`）已在 `COM8` 上跑着，主板没有 ⇒ 重烧 `esp32s3-rgb-master` |
+| **B** | "**转速表的表情好像跟转速失去关联了，现在表情变化怎么感觉是随机变动的。**" | 副板（转速表那一屏）的**弧与读数已经跟转速**，可"**表情图片取哪一组**"还在按**车速**那 5 张挑（车速在模拟里乱扫） |
+| **B′** | "**转速表转速下来的时候表情依然是红区表情，而且转速拉满的时候反而变成巡航和怠速表情了，速度表那块反而挺正常。**" | 补强：两个信号在模拟数据里反向 ⇒ "低转速配红区脸、满转速配怠速脸"**正是按车速挑脸的签名**；而主板 `s == ti`（屏号恰好等于表号）⇒ **一直是对的** |
+
+**B 的根因（一行）**：`dash_ui.cpp` 把 `dashlayout::faceIndexForScreen(s)` 的返回值
+当成**屏号**去索引两张按**屏槽位**排的表（`g_face_ok[2][…]` / `g_face_dsc[2][…]`）。
+从板上"表号"与"屏号"**正好对调** ⇒ 末屏（看得见的那一屏）的表是**左/转速**，
+可它的图却从**右/车速**那一组取。★ 主板 `s == ti` ⇒ 巧合正确 ⇒ **这个 bug 只在从板上现形**。
+
+### ② B 的修法（**一处出口**）+ 判据
+
+**改法**（`lib/dashcore/dash_role_layout.h` 扩成"表盘 + 表情 + 图片 + 数据轴"的唯一权威）：
+
+| 式子 | 作用 |
+|---|---|
+| `themeIndexForScreen(s)` | 这一屏用主题里**哪一套表盘**（弧 + 读数）—— 2026-09-25 就有 |
+| `faceGaugeIndexForScreen(s)` | 这一屏的**表情槽位表**用哪一组（`kFaceRoleId` 的第 0/1 组） |
+| `faceImageIndexForScreen(s)` | 这一屏的**表情图片**用哪一组（`ImageRole` 的左 5 / 右 5） |
+| `gaugeKindForScreen(s)` / `faceAxisForScreen(s)` / `gaugeNameForScreen(s)` | 这一屏的表情**看哪一路数据**（`kGaugeRpm` ⇒ `v.face_left`、`kGaugeSpeed` ⇒ `v.face_right`） |
+
+★ 四个下标**写成同一个式子**（② = ③ = ①），由 native 用例钉住恒等；
+`src/dash_ui.cpp` 里 `ScreenUi::idx` 改名 `ScreenUi::face_group`（只由上面那条赋值），
+`face_apply_image()` 也**不再**接受"屏号当组号"的参数 —— 屏号进、分组在**一处**算出来。
+★ 新增开机自证一行（两屏各一行）：
+
+```
+layout: role=MASTER last=RIGHT/speed+intake slots=[LEFT/rpm+coolant | RIGHT/speed+intake]
+faceimg: screen=0 group=0 panel=LEFT/rpm+coolant gauge=rpm idle_role=3
+faceimg: screen=1 group=1 panel=RIGHT/speed+intake gauge=speed idle_role=6
+```
+
+**判据一：用车主真素材的逐像素判据（新工具 `tools/theme-editor/check-face-image.js`）**
+
+`assets.bin`（车主的 `theme.json` + `image.bin` 打出来的那份）：
+`sha256 = 105BCDC074961EFB95A0BDFDDEB001DC9674732EBF1B120AFDF31B99386D3D2A`
+= **与 ACCEPTANCE 里那个 KNOWN-GOOD 逐字符相同** ✓（★ 本单任务书里写的那串是它**前 56 字符**，
+末尾 `386D3D2A` 被截掉了 —— 值本身没变）。
+`image.bin` 里 **9 张图**：1 张背景（480×480 RGB565）+ 左组 4 张 + 右组 4 张
+（★ 车主还没导 **左·运动(13)**，那不影响本判据）。
+
+工具把 9 张图逐个**按 alpha 合成**到帧的底色上、与 `pcpreview` 落帧**逐点比**，
+取差值的 **p60**（弧/读数/灯是后画的上层，会盖住一部分点 ⇒ 用分位数而不是平均值）。
+实测三档互不重叠：**对的那张 p60=0**、同组另一张 **8**、另一组任意一张 **74~82**。
+
+```
+=== C1 从板·rpm=6200 + speed=0   (期望组 = left) ===
+  4      L redline    left       0     0  HIT   <== 屏上这张
+  3      L idle       left       8    16  NEAR
+  12     L cruise     left       8    16  NEAR
+  21     L high       left       8    16  NEAR
+  8      R overspeed  right     77   165  OTHER
+  6      R idle       right     82   165  OTHER
+  18     R sport      right     82   165  OTHER
+  22     R city       right     82   165  OTHER
+  判据① 最佳 p60=0 ≤ 12（HIT 档）          : OK
+  判据② 最佳属于期望组（left）              : OK  （最佳 = 角色 4 L redline）
+  判据④ 另一组最近一张 p60=77 落在 OTHER 档 : OK
+FACE-IMAGE-OK
+
+=== C2 从板·rpm=800 + speed=0    (期望组 = left) ===
+  3      L idle       left       0     0  HIT   <== 屏上这张
+  ...（另一组 75~77，OTHER）
+FACE-IMAGE-OK          ← ★ 这一条就是车主那句"**转速掉下来脸还停在红区**"的反面证据
+
+=== C3 主板·speed=115 + rpm=0    (期望组 = right) ===
+  18     R sport      right      0     0  HIT   <== 屏上这张
+  8      R overspeed  right      0    10  HIT
+  6      R idle       right      4     9  NEAR
+  22     R city       right      4     9  NEAR
+  3/12/21/4  L 组                74~80  164~165  OTHER
+FACE-IMAGE-OK
+
+=== C4 主板·speed=0 + rpm=0      (期望组 = right) ===
+  6      R idle       right      0     0  HIT   <== 屏上这张
+  18/22/8 R 组                   4     9~12  NEAR
+  L 组                           74~80  164~165  OTHER
+FACE-IMAGE-OK
+```
+
+★ **反面判据（把"修之前那条式子"喂给同一个工具）**：同一批从板帧，按
+`组号 = 屏号 = 1 = 右组` 去判 ⇒ **`FACE-IMAGE-FAIL`**（判据② 与 判据④ 同时红）：
+
+```
+=== C1-slave-redline\r_0045.bmp  (期望组 = right) ===
+  判据② 最佳属于期望组（right）              : FAIL  （最佳 = 角色 4 L redline）
+  判据④ 另一组最近一张 p60=0 落在 OTHER 档   : FAIL
+FACE-IMAGE-FAIL
+```
+
+⇒ 这个工具**能抓住本单修的那个 bug**（不是恒真判据）。
+
+**判据二：native 反向判据**（`test/test_dashcore/test_role_layout.cpp`，本单 +3 条）：
+`test_role_layout_image_group_follows_gauge`（三个名字恒等）、
+`test_role_layout_face_axis_follows_gauge`（轴与表同源、两屏轴必须不同）、
+`test_role_layout_redline_axis_is_the_rpm_one`（**红区只可能落在按转速那条轴上**）。
+
+**判据三：★ 编辑器的"左屏/右屏"口径与固件同向**（车主点名要核的那一条）——
+新增 `tools/theme-editor/test-role-orientation.js`：**59 项断言全绿**。
+它把固件的 `roleThemeIndex()` / `gaugeKindForScreen()` / `ui_theme.h` 的弧 kind /
+`kFaceRoleId[组]` / `expression.h` 的 `Face` 槽位 与编辑器的
+`face-stages.js` 的 `SCREENS`（`key`/`idx`/`gauge`）与 `asset-spec.js` 的 `ROLES` 标签
+**逐条对账**：
+
+| 口径 | 固件 | 编辑器 | 结论 |
+|---|---|---|---|
+| `screens[0]` / `idx 0` | 外弧 `ArcKind::Rpm` + 水温 | `key="left"`, `gauge="rpm"`, label"左屏 · 转速表（+水温）" | **同向** ✓ |
+| `screens[1]` / `idx 1` | 外弧 `ArcKind::Speed` + 进气温度 | `key="right"`, `gauge="speed"`, label"右屏 · 速度表（+进气温度）" | **同向** ✓ |
+| 表情角色号 | `kFaceRoleId[0]` = 3/12/13/21/4（左） | `SCREENS[0].states[*].role` 逐个相同 | **同向** ✓ |
+| 图片用途标签 | 左组 5 个角色 | `ROLES` 里 `左屏…` 的正是那 5 个（反向：谁都不许两边都出现） | **同向** ✓ |
+
+⇒ **口径没有反**，编辑器文案/文档**不需要改方向**（本单因此**没有**动那两处文案）。
+
+### ③ A：主板重烧 + **三情形**（COM9，原文）
+
+**烧写**：`python -m platformio run -e esp32s3-rgb-master -t upload --upload-port COM9`
+⇒ `SUCCESS`（`Hash of data verified.` ×4、`Hard resetting via RTS pin...`）；
+`MAC: 80:45:6b:35:a3:c4`；**`Flash 918,631 B (87.6%)` / `RAM 134,840 B (41.1%)`**。
+
+**身份（先钉住，免得烧反）**——复位后的开机行（`com9-boot-after-reset.txt` 原文节选）：
+
+```
+206 dash ok
+boot: reason=UNKNOWN n=58 (raw=11) up=221ms | prev=UNKNOWN (raw=11) prev_up=10min | hb=19 | role=MASTER
+usb: personality=ch343p(43/44 to the on-board bridge) (GPIO0 left alone -> FSUSB42 SEL follows R44/R45 (ch343p))
+...
+layout: role=MASTER last=RIGHT/speed+intake slots=[LEFT/rpm+coolant | RIGHT/speed+intake]
+faceimg: screen=0 group=0 panel=LEFT/rpm+coolant gauge=rpm idle_role=3
+faceimg: screen=1 group=1 panel=RIGHT/speed+intake gauge=speed idle_role=6
+206 dash boot
+```
+
+⇒ COM9 是自己给自己打 `role=MASTER` **且** 该显示 `RIGHT/speed+intake`（速度表）的那一板
+= **主板** ✓（车主在屏上看到的开机标签 `MASTER (RIGHT)` 与它一致 —— 那句是给人眼的）。
+
+**三情形**（同一台机器、同一条脚本，`10 / 95 / 30` 秒）：
+
+```
+情形①：打开 COM9 边读 25 s（这一次开串口 = 第 1 次）
+情形②：口关着，静置 95 s（>90 s）—— 这 95 秒里没人读 COM9
+情形③：再打开 COM9 读 30 s（第 2 次开串口）
+```
+
+| 判据 | 情形① 原文 | 情形③ 原文 |
+|---|---|---|
+| `stall=0` | `loop: n=78836 in 5000ms (15767/s) max=159ms stall=0 \| link rx bytes=0 frames=0 \| log drain=248 drop=0 dropped=0 blocked=78836 ring=4831/8192 hwm=4831` | `loop: n=92355 in 5000ms (18471/s) max=83ms stall=0 \| link rx bytes=0 frames=0 \| log drain=19045 drop=218 dropped=24392 blocked=1472557 ring=4808/8192 hwm=8189` |
+| `max=` 是**几十毫秒**那一档 | `max=159ms`（这一格是**开机那一个窗口**，含开机整屏刷新）→ 稳态 `31ms / 80ms` | `83ms / 84ms / 25ms / 82ms / 85ms` —— **没有一格进到秒级** |
+| 三格都在 | `drain=248 drop=0 dropped=0 blocked=78836` | `drain=19045 drop=218 dropped=24392 blocked=1472557` |
+| 43/44 **没被 USB 占** | `link: tx=6142B → 14068B → 108266B → 116361B rx_ok=0 crc=0 bad_len=0 unk=0`（TX 在涨 = UART0/43 真的在用） | `link: tx=163516B → 328156B ...`（继续涨） |
+
+★ 两处**诚实标注**：
+① `max=159ms` 那一个窗口在**开机头 5 秒**里（首帧整屏刷新 142.8ms 就在那一段，
+`rgb: 整屏刷新 142.8ms(...)`）—— 它的绝对值与基线里"开机那一次整屏刷新"同量级，
+**不是**新的长圈；稳态五格全在 25~85ms。
+② `drop=218 / dropped=24392` 是**情形② 那 95 秒**攒下的（没人读 ⇒ 按 §7.5.7 的约定
+整行丢弃、绝不阻塞）：情形③ 一开就 `ring=4808 → 0`（补投完），`drop` 在这一段**没有再涨**
+（19045 → 30399 是排空计数，`drop` 停在 218 → 507 只涨了一小段后又停）。
+
+**屏上**：情形② 那 95 秒里表盘**照常动**（车主**亲眼确认**，见 ⑦ 的问话①）；
+`rgb: vsync` 全程 `+53~54/s`，`flush` 也在涨 —— 设备侧的另一半证据。
+
+### ④ C（固件自己选 USB 人格）：**按 §7.5.7 只写方案，默认不开**
+
+- 代码就位：`lib/dashcore/usb_personality.h`（脚位/极性/日志名/开漏写法/退回路径全在里面），
+  唯一调用点在 `setup()` 的 `boot_note()` 之后；**默认 `USB_PERSONALITY_AUTO=0` = 一个寄存器都不碰**。
+- **极性**照车主实测：按住 BOOT（= GPIO0 拉低）插电 ⇒ 原生 USB ⇒ `kSelectNativeLevel = 0`。
+- ★ **为什么不默认开**：GPIO0 同时是 **BOOT strapping** 脚。已查证（ESP-IDF v5.5
+  「Application Startup Flow」）：ROM 启动代码对 **power-on / software SoC / watchdog SoC**
+  这几类复位**会读 `GPIO_STRAP_REG`**（="要进下载模式吗"），而 CPU 级复位不读；
+  数据手册那条更直接：strapping 的锁存器在 **power-on / RTC watchdog / brownout** 时**重新采样**。
+  ⇒ **"会重新采样的那几类"恰好都是车上真会发生的**（掉电、看门狗、欠压），
+  而"复位期间保持低"我们**关不掉**（开关的 `SEL` 是硬件端子）。
+- **不会变砖**：进下载模式之后 esptool 照烧（下载模式正是它要的状态）；退回一步**只要拔掉重插**。
+- **四条判据现在一条都没有**（默认没开 ⇒ 谈不上）。★ 判据④（"复位/重插多次从没进过下载模式"）
+  **给不出来**：要证明"RTC 看门狗/欠压复位不会把它带进下载模式"，必须真去制造那几类复位，
+  而每一次尝试都有"板子停在下载模式、要车主去拔线"的代价 —— 那不该在没有车主在场的台面上做。
+  ⇒ 方案 + 风险 + 退回路径见 `ARCHITECTURE.md` §8.1；**要不要开请车主拍板**（一行 `-D`）。
+
+### ⑤ 开过几次 `COM9`（本单每次为什么）
+
+| # | 时刻 | 动作 | 为什么 |
+|---|---|---|---|
+| 1 | 21:59 | `pio run -e esp32s3-rgb-master -t upload --upload-port COM9` | **A 的主体重烧**（esptool 自己开一次口；结束后 `Hard resetting via RTS pin`） |
+| 2 | 22:03 | `capture.py COM9 25 quiet` | 三情形 **① 有人读** |
+| — | 22:03→22:04 | **口关着 95 s** | 三情形 **② 没人读**（这一段不开任何口） |
+| 3 | 22:04 | `capture.py COM9 30 quiet` | 三情形 **③ 再打开** |
+| 4 | 22:14 | pyserial 拉 RTS 复位 + 同一会话读 12 s | 抓**复位后的开机原文**（要那一行 `usb: personality=` 与三行 `layout:/faceimg:`；环里那一段已被冲掉） |
+
+★ 都是"开完就关"，没有长驻监视器；`COM8` 与 `COM1` **一次都没开**。
+★ 前两次 `pio` 尝试**没有开成口**（平台包缺失 / SSL，见 ⑧），不计入。
+
+### ⑥ 回归数字
+
+| 项 | 基线 | 本单 |
+|---|---|---|
+| native | **331 例 / 2 skipped / 329 ok** | **337 例 / 2 skipped / 335 ok**（+6：`role_layout` +3、`usb_personality` +3，0 失败） |
+| JS 八套 | 95 / 105 / 261 / 429 / 71 / 372 / 259 + `syntax 42` | **95 / 105 / 261 / 429 / 71 / 372 / 259 + syntax 42**（逐项相同，**没有降**） |
+| ★ 新增 JS | —— | `test-role-orientation.js` **59 项全绿** |
+| `pcpreview` | SUCCESS | **SUCCESS**（另外 `pcpreview-master` / `pcpreview-slave` 两个**临时角色** env 各 SUCCESS，见 ⑧-5） |
+| `esp32s3-rgb` | SUCCESS（Flash **902,451 B**） | **SUCCESS** —— `RAM 134,528 B (41.1%)` / **`Flash 902,747 B (86.1%)`** |
+| `esp32s3-rgb-slave` | SUCCESS（Flash **915,791 B**） | **SUCCESS** —— `RAM 135,088 B (41.2%)` / **`Flash 916,151 B (87.4%)`** |
+| `esp32s3-rgb-master` | SUCCESS（上一单那次是烧写调用） | **SUCCESS** —— `RAM 134,840 B (41.1%)` / **`Flash 918,631 B (87.6%)`** |
+| ★ 显示档增量 | —— | **+296 B**（902,451 → 902,747）；从板 **+360 B**；主板 918,631 B |
+
+★ **Flash 涨的那 ~300 B 是什么**（如实归因，没有做裁剪）：新增的开机自证两行
+`faceimg: screen=%u group=%u panel=%s gauge=%s idle_role=%u` 与 `usb: personality=%s (…)`
+（格式串进 `.rodata`）+ `dash_role_layout.h` 新增的几个 `inline` 常量。
+量级对得上"两行日志 ≈ 几百字节"这一档；**没有**动任何既有日志行、没有动任何驱动常量。
+
+### ⑦ 需要车主**用眼睛/耳朵**确认的三条
+
+1. ★ **情形② 那 95 秒里（串口关着、没人读），表盘是不是照常动** ——
+   设备侧证据是 `rgb: vsync` 一直在 `+53~54/s`、`flush` 也在涨；
+   但"看不看得见它在动"只有人眼能答。
+2. ★ **屏上的图案现在对不对**：把转速推到红区 ⇒ 那张脸应该是**红区**那张；
+   转速掉回怠速 ⇒ 脸跟着回来；**车速为零时不该出现任何"高速/超速"脸**。
+   （本单在 `pcpreview` 里用**车主自己的素材**逐像素验过 C1~C4 四组；板上这一条只有他能看一眼。）
+3. ★ **`COM9` 是不是真的在显示速度表**（= 没烧反）：开机那一秒多是 `MASTER (RIGHT)`，
+   之后是速度表。烧之前它跑的是旧主板镜像，所以这一条也是"重烧生效"的人眼判据。
+
+### ⑧ 没做 / 拿不准（如实列）
+
+1. ★ **C 没有开**（默认 `USB_PERSONALITY_AUTO=0`）：方案/风险/退回路径都在
+   `ARCHITECTURE.md` §8.1 + `lib/dashcore/usb_personality.h`，**四条判据一条都没有**。
+   判据④ 需要真去制造 RTC 看门狗/欠压复位，而失败代价是"要车主去拔线"。
+2. ★ **两块板仍然没有对打过**：本单只重烧了主板；`COM8`（从板）**一次都没开**。
+   `link: rx bytes=0 frames=0`（主板在发、没人回）在**本单的台面**上是预期的：
+   43/44 上没有交叉线。⇒ "43/44 没被 USB 占"这一半有证据（`tx` 在涨、`rx` 为 0 但不报错），
+   "跨板能收"那一半**仍未实测**。
+3. ★ **主板 `max=159ms` 的那一格在开机窗口里**（含首帧整屏刷新 142.8ms），
+   本单**没有**把它与"稳态几十毫秒"分开再跑一遍取更细的分位 —— 稳态五格已够本单判据。
+4. ★ **车主素材少一张**：`image.bin` 里**左组只有 4 张**（缺 `FaceSport`=13）。
+   本单的四组判据不受影响（用的都是有的那几张），但"运动档那张脸"在板上会是降级链的结果。
+   这一条**只是提醒**，不是缺陷。
+5. ★ **两个 `pcpreview` 角色变体只在 ASCII 副本里**（临时 env）；
+   仓库 `platformio.ini` **未动**（`Get-FileHash` 与开工时相同）。
+   ⇒ 想复现这两个角色，要么照 ⑨ 的做法在副本里追加，要么给 `pcpreview` 加 `-DLINK_ROLE`。
+   ★ 顺带踩到一条：宿主机那条路默认只放 **1 MB** 的图片预算
+   （`image_blob.h` 的 `IMAGE_PARTITION_BYTES`），而车主真素材是 **1,844,620 B**
+   ⇒ 不额外加 `-DIMAGE_PARTITION_BYTES=(8u*1024u*1024u)` 时，预览会**静默退回**
+   "没有图片资源"那条降级路径（表情变成程序化占位形状）。
+   本单已在副本的临时 env 里加了这一条（判据：`image: 已加载 9 张图`）。
+6. ★ **前两次 `pio` 尝试都失败在环境上，不是代码**（如实记）：
+   ① 用 `C:\Users\Public\206dash\.pio-core` 时它**没有 pioarduino 平台**
+   ⇒ 去 GitHub 下载 ⇒ `SSLCertVerificationError`（证书链）；改用
+   `C:\206dash-scratch\pio-core-mix`（里面同时有 `espressif32` 与 `espressif32@7.1.3`）后成功。
+   ② `C:\.platformio\penv\Scripts\python.exe` 报 `No pyvenv.cfg file`（那个 venv 已残），
+   所以串口脚本用的是系统 python + `PYTHONPATH=.pio-pylibs`。
+
+### ⑨ 复现本单那四组像素判据（一步不差）
+
+```powershell
+# 1) 车主的真素材（只读拷到 scratch；sha256 见 ②）
+#    .dsh-drop\...\3ac5f92ee198-theme.json  -> .scratch\B-assets\theme.json
+#    .dsh-drop\...\6fbe3b1a948c-image.bin    -> .scratch\B-assets\image.bin
+node tools/theme-editor/asset-package.js pack --theme theme.json --image image.bin --out assets.bin
+# 2) 在 ASCII 副本上临时加两个 pcpreview 角色 env（-DLINK_ROLE=0/1 + 8MB 图片预算），
+#    然后 run -e pcpreview-slave / -e pcpreview-master
+# 3) 摆数据：preview/inject.txt 写 mask=1 + rpm=6200 + speed=0（其余三组照 ② 那四行改）
+# 4) 跑 10 秒，落帧在 preview/frames/r_XXXX.bmp
+node tools/theme-editor/check-face-image.js <image.bin> <r_0045.bmp> left
+```
+
+
+
 

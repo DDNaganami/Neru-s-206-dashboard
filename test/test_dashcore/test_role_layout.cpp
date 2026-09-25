@@ -84,9 +84,8 @@ void test_role_layout_other_screen_is_complementary(void) {
 
 // ============================================================
 // 四、表情/图片角色与表盘**共用同一个下标**
-//   ★ 为什么必须恒等：`kFaceRoleId[screen][slot]`（`face_stages.h`）是**按屏分**的
-//     —— 左屏（转速表）有红区/高转、右屏（速度表）有超速/市区。而 `ScreenUi::idx`
-//     就是那个下标（`dash_ui.cpp` 里 `g_ui[s].idx = faceIndexForScreen(s)`）。
+//   ★ 为什么必须恒等：`kFaceRoleId[组][slot]`（`face_stages.h`）是**按表分**的
+//     —— 左屏（转速表）有红区/高转、右屏（速度表）有超速/市区。
 //     表盘走一套、表情走另一套 ⇒ "转速表的弧配速度表的表情"（不报错、只是看着不对）。
 // ============================================================
 void test_role_layout_face_and_theme_share_one_index(void) {
@@ -94,6 +93,82 @@ void test_role_layout_face_and_theme_share_one_index(void) {
     TEST_ASSERT_EQUAL_UINT8(dashlayout::themeIndexForScreen(s),
                             dashlayout::faceIndexForScreen(s));
   }
+}
+
+// ============================================================
+// 四之二、★★ 图片分组也必须跟着表走（2026-09-26 本单 B 的**核心判据**）
+//
+// 车主第二次实测的原话："**转速表的表情好像跟转速失去关联了，现在表情变化
+// 怎么感觉是随机变动的。**"
+//
+// 机制（上一版漏掉的那一半）：`dash_ui.cpp` 把 `faceIndexForScreen(s)` 的返回值
+//   当成**屏号**去索引按屏槽位排的 `g_face_ok[2][…]` ⇒ 从板上那两屏的"表号"与
+//   "屏号"正好对调，于是转速表那一屏的脸去**车速**那 5 张图里挑 ⇒ 车速在模拟里
+//   乱扫 ⇒ 看着就是"随机变"。
+//
+// 判据三条（缺一不可）：
+//   ① `faceGaugeIndexForScreen` / `faceImageIndexForScreen` 与 `themeIndexForScreen`
+//      **恒等**（三个名字 = 一个式子 = 一处出口）；
+//   ② `faceAxisForScreen` 与 `gaugeKindForScreen` 一致，而且**与表盘同源**：
+//      转速表那屏 ⇒ 轴 = rpm（= `face_left`），速度表那屏 ⇒ 轴 = speed；
+//   ③ 两条轴**必须不同**（"弧看 A、脸看 B"的错位形态就是某一屏两边不等）。
+// ============================================================
+void test_role_layout_image_group_follows_gauge(void) {
+  for (uint8_t s = 0; s < dashlayout::kScreenCount; ++s) {
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(dashlayout::themeIndexForScreen(s),
+                                    dashlayout::faceGaugeIndexForScreen(s),
+                                    "表情槽位分组必须 = 表盘下标");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(dashlayout::themeIndexForScreen(s),
+                                    dashlayout::faceImageIndexForScreen(s),
+                                    "表情图片分组必须 = 表盘下标（本单 B 修的就是这条）");
+    TEST_ASSERT_EQUAL_UINT8(dashlayout::faceIndexForScreen(s),
+                            dashlayout::faceImageIndexForScreen(s));
+  }
+}
+
+void test_role_layout_face_axis_follows_gauge(void) {
+  for (uint8_t s = 0; s < dashlayout::kScreenCount; ++s) {
+    const dashlayout::GaugeKind k = dashlayout::gaugeKindForScreen(s);
+    // 轴编号 = 表号（Rpm ⇒ 0 = face_left、Speed ⇒ 1 = face_right）
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)k, dashlayout::faceAxisForScreen(s));
+    // 表名与轴名同一口径（日志那一格 `face=` 的两个来源不能分叉）
+    TEST_ASSERT_EQUAL_STRING((k == dashlayout::kGaugeSpeed) ? "speed" : "rpm",
+                             dashlayout::gaugeNameForScreen(s));
+    // 主弧那一位也要与表一致：转速表 ⇒ 1（Rpm），速度表 ⇒ 0（Speed）
+    if (k == dashlayout::kGaugeRpm) {
+      TEST_ASSERT_EQUAL_UINT8(1u, dashlayout::primaryKindCodeForScreen(s));
+    } else {
+      TEST_ASSERT_EQUAL_UINT8(0u, dashlayout::primaryKindCodeForScreen(s));
+    }
+  }
+  // ★ 反向判据：两屏的轴**必须不同**（同一套 = 分叉了）
+  TEST_ASSERT_NOT_EQUAL(dashlayout::faceAxisForScreen(0u),
+                        dashlayout::faceAxisForScreen(1u));
+}
+
+// ★ 车主那条"可判定的规则"的可执行形态（**红区必须按转速判**）：
+//   本文件不 include expression.h（它是"纯头"），所以这里只断言**口径**——
+//   转速表那屏的轴是 rpm ⇒ 决定它表情的那份数据就是转速，因此
+//   "车速为零、转速在红区 ⇒ 这张脸仍是红区脸"这条在数据层是逐字成立的
+//   （`test_expression.cpp` 的 `test_redline_left_only_exhaustive` 钉住
+//     "红区只可能出现在按转速的那条轴上"，两条合起来就是整条判据）。
+//   ★ 这一条**不是**重复：上面那条只说"轴选对了"，这一条说"选对的轴里，
+//     红区是它的属性、不是另一条轴的"。两条缺一条都还能"看着随机变"。
+void test_role_layout_redline_axis_is_the_rpm_one(void) {
+  for (uint8_t s = 0; s < dashlayout::kScreenCount; ++s) {
+    if (dashlayout::gaugeKindForScreen(s) != dashlayout::kGaugeRpm) continue;
+    // 这一屏是转速表 ⇒ 表情轴必须是 0（`face_left` = expression.cpp 里的 tach_face，
+    // 它只看 rpm、红区阈值 5800 在它身上）
+    TEST_ASSERT_EQUAL_UINT8(0u, dashlayout::faceAxisForScreen(s));
+    // 而它**不是**速度表（速度表那屏走 face_right / speed_face）
+    TEST_ASSERT_TRUE(dashlayout::primaryKindCodeForScreen(s) == 1u);
+  }
+  // 两屏里**恰好有一屏**是转速表（否则"红区脸"就没有归属了）
+  uint8_t rpm_screens = 0;
+  for (uint8_t s = 0; s < dashlayout::kScreenCount; ++s) {
+    if (dashlayout::gaugeKindForScreen(s) == dashlayout::kGaugeRpm) ++rpm_screens;
+  }
+  TEST_ASSERT_EQUAL_UINT8(1u, rpm_screens);
 }
 
 // ============================================================
@@ -145,6 +220,9 @@ void register_role_layout_tests(void) {
   RUN_TEST(test_role_layout_last_screen_is_the_role_panel);
   RUN_TEST(test_role_layout_other_screen_is_complementary);
   RUN_TEST(test_role_layout_face_and_theme_share_one_index);
+  RUN_TEST(test_role_layout_image_group_follows_gauge);
+  RUN_TEST(test_role_layout_face_axis_follows_gauge);
+  RUN_TEST(test_role_layout_redline_axis_is_the_rpm_one);
   RUN_TEST(test_role_layout_primary_kind_code);
   RUN_TEST(test_role_layout_names_are_distinct_ascii);
 }

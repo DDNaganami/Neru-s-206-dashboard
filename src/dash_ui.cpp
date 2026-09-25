@@ -25,7 +25,20 @@ static_assert((uint8_t)Face::Count == kFaceSlotCount,
 
 // ============ 运行时对象 ============
 struct ScreenUi {
-  uint8_t idx = 0;                  // 这是第几屏(0=左/转速表,1=右/速度表);图片按屏取
+  // 这一屏的**屏号**（0 = 先建、1 = 末建/压在上面）。它是 LVGL 对象数组
+  //   （`g_screens[]` / `g_face_img[]` / `g_bg_img[]`）与"哪一屏看得见"的键，
+  //   **不是**表号 —— 表号是下面那个 `face_group`。
+  uint8_t screen = 0;
+  // ★★ 这一屏的**表情分组下标**（= 这一屏那块表的编号，见 `dash_role_layout.h` 第五节）。
+  //   它同时是：主题表盘下标（`themeIndexForScreen`）、`kFaceRoleId` 的组号、
+  //   以及 `g_face_ok/g_face_dsc` 的**第一维**。
+  //   ★ 历史教训（2026-09-26）：这个字段以前叫 `idx` 并存的是**屏号**，
+  //     而它的两个读者（表盘那一路 / 图片那一路）要的却是**表号** ⇒
+  //     从板上 `s` 与 `ti` 对调，脸就按**车速**那 5 张图去挑了，
+  //     车主看到的正是"表情跟转速没关系、随机变"。
+  //   ⇒ 名字改成 `face_group`（说清它是"分组"不是"屏号"），并且**只由**
+  //     `dashlayout::faceGaugeIndexForScreen(s)` 赋值。
+  uint8_t face_group = 0;
   lv_obj_t* arcs[kMaxArcs];
   uint8_t arc_count = 0;
   float arc_cur[kMaxArcs];          // 弧当前值(缓动用),开机扫表后从这里平滑过渡
@@ -178,13 +191,18 @@ static const char* diagFontTag(const lv_font_t* f) {
 
 // ============ 图片资源 ============
 // lv_image_dsc_t 必须由我们持有 —— LVGL 会一直引用它(set_src 不复制)。
-// 每屏一张背景 + 每屏 4 个状态的表情(两屏的状态集合不完全一样,见 face_stages.h)。
-// 下标 = (uint8_t)Face(见 expression.h:枚举顺序就是槽位顺序)。
+// 每屏一张背景 + 每屏 5 个状态的表情(两屏的状态集合不完全一样,见 face_stages.h)。
+//
+// ★★ 第一维是**表情分组**（= 表号，0=左/转速、1=右/车速），**不是屏号** ——
+//   取值一律走 `faceGroupFor(s)`（= `dashlayout::faceGaugeIndexForScreen(s)`）。
+//   从板上屏号与表号正好对调，混用就是车主报的"表情跟转速无关、随机变"。
+//   第二维 = (uint8_t)Face(见 expression.h:枚举顺序就是槽位顺序)。
 static lv_image_dsc_t g_bg_dsc[2];
 static lv_image_dsc_t g_face_dsc[2][kFaceSlotCount];
 static bool g_bg_ok[2] = {false, false};
 static bool g_face_ok[2][kFaceSlotCount] = {};
 static lv_obj_t* g_bg_img[2] = {nullptr, nullptr};
+// 表情图片对象是**按屏**建的（每屏一个 LVGL 对象），所以这个数组的第一维是屏号。
 static lv_obj_t* g_face_img[2] = {nullptr, nullptr};
 static int8_t g_face_slot[2] = {-1, -1};    // 当前正显示哪一张(-1 = 还没显示过图片)
 
@@ -193,34 +211,51 @@ static int8_t g_face_slot[2] = {-1, -1};    // 当前正显示哪一张(-1 = 还
 // 所以"刷进去的表情左右颠倒"这种错不会悄悄发生。
 // ★ 0 表示"这屏用不到这个状态"(左屏没有超速、右屏没有红区),
 //   调用方必须把它当"没有图"处理,不能拿去 image_dsc_for_role()。
-static ImageRole faceRole(uint8_t screen, uint8_t slot) {
-  return (ImageRole)kFaceRoleId[screen][slot];
+//
+// ★★ 2026-09-26（本单 B 的第二次修正）：下面这三个函数的第一个参数
+//   **是"表号"（组号），不是"屏号"** —— 取值只有一个来源：
+//   `dashlayout::faceGaugeIndexForScreen(s)`。名字里带 `g` 就是为了让
+//   "屏号"与"组号"在调用点上一眼分得开（从板上这两个数正好对调，
+//   混用的症状是"表情跟着另一块表的数据变"，不报错、只是看着不对）。
+static ImageRole faceRole(uint8_t group, uint8_t slot) {
+  return (ImageRole)kFaceRoleId[group][slot];
 }
 
-static bool faceSlotExists(uint8_t screen, uint8_t slot) {
-  return kFaceRoleId[screen][slot] != 0;
+static bool faceSlotExists(uint8_t group, uint8_t slot) {
+  return kFaceRoleId[group][slot] != 0;
 }
 
-// 该状态该用哪张图:**按降级链找第一张"这屏导入过"的**。
-// 返回槽位下标;这张屏一张表情图都没有 → 返回 -1(交给程序化表情)。
+// 该状态该用哪张图:**按降级链找第一张"这组导入过"的**。
+// 返回槽位下标;这一组一张表情图都没有 → 返回 -1(交给程序化表情)。
 //
 // 为什么要降级链:一套 8 张图没人会一次凑齐。只导入常态一张时,
 // 巡航/运动/红区都应该落到它,而不是"图片消失、变回占位圆脸"。
-static int faceResolve(uint8_t screen, Face f) {
+static int faceResolve(uint8_t group, Face f) {
   const uint8_t slot = (uint8_t)f;
   if (slot >= kFaceSlotCount) return -1;
   const int8_t* chain = kFaceFallback[slot];
   for (uint8_t i = 0; i < 4; ++i) {
     const int8_t s = chain[i];
-    if (s >= 0 && s < (int8_t)kFaceSlotCount && g_face_ok[screen][s]) return s;
+    if (s >= 0 && s < (int8_t)kFaceSlotCount && g_face_ok[group][s]) return s;
   }
   // 兜底:链里一条都没有,有图就用 ——
   // 图片摆在那儿却去画占位表情,才是最差的结果。
   for (uint8_t s = 0; s < kFaceSlotCount; ++s) {
-    if (g_face_ok[screen][s]) return s;
+    if (g_face_ok[group][s]) return s;
   }
   return -1;
 }
+
+// ★★ 本单 B 的**唯一出口**：`g_face_ok` / `g_face_dsc` 的第一维就是这里给的下标。
+//   `faceRole()` / `faceSlotExists()` / `faceResolve()` 三个都只认它。
+//   ⇒ "表盘 / 表情槽位 / 表情图片"三条路共用 `dash_role_layout.h` 那一个式子。
+static uint8_t faceGroupFor(uint8_t screen) {
+  return dashlayout::faceGaugeIndexForScreen(screen);
+}
+
+// 背景图两屏共用一张（`image_blob.h`：`ImageRole::Background` 只有 1 号），
+// 所以它**不按分组取** —— 分组是"表情"的事，背景没有左右之分。
+static const ImageRole kBackgroundRole = ImageRole::Background;
 
 // 主题尺寸换算:480 基准 → 实际分辨率(四舍五入,见 ui_theme.h 分辨率适配)
 static int32_t ts(float v480) {
@@ -328,13 +363,18 @@ static void build_face(lv_obj_t* parent, ScreenUi& ui) {
 
 // 有图片表情时,只切图、不碰程序化形状。
 // 返回 true 表示这次由图片接管了。
+//
+// ★★ 参数是"这一屏" + "这次要显示哪张脸（哪条轴的表情）"，**不是**分组下标：
+//   分组在函数里由 `faceGroupFor(screen)` 算 —— 那张脸属于哪块表，
+//   就取哪块表的图片组。**一个式子，一处出口**。
 static bool face_apply_image(uint8_t screen, Face f) {
   if (g_face_img[screen] == nullptr) return false;
-  const int slot = faceResolve(screen, f);
-  if (slot < 0) return false;                      // 这屏一张表情图都没有
+  const uint8_t group = faceGroupFor(screen);
+  const int slot = faceResolve(group, f);
+  if (slot < 0) return false;                      // 这组一张表情图都没有
   if (slot != g_face_slot[screen]) {               // 同一张图不重复 set_src
     g_face_slot[screen] = (int8_t)slot;
-    lv_image_set_src(g_face_img[screen], &g_face_dsc[screen][slot]);
+    lv_image_set_src(g_face_img[screen], &g_face_dsc[group][slot]);
   }
   return true;
 }
@@ -345,7 +385,10 @@ static void face_apply(ScreenUi& ui, Face f) {
 
   // ★ 有图片表情时由图片接管,程序化形状保持隐藏。
   //   注意 early return 必须在 last_face 更新之后 —— 否则每次都会重复判定。
-  if (face_apply_image(ui.idx, f)) return;
+  //   ★ `ui.face_group` 在这里**没有**被读：分组由 `face_apply_image()` 内部
+  //     按"这一屏是哪块表"算（见那里的说明）。ui.face_group 只是给建屏那一段
+  //     与日志用的同一份缓存，避免两处各算一次。
+  if (face_apply_image(ui.screen, f)) return;
 
   // 程序化占位表情:5 个状态里它只能表达"眯眼/睁大眼/张嘴/红底"这几种差别
   // (导入了图片就用图片,这一段只在完全没刷表情图时露脸)。
@@ -1104,27 +1147,37 @@ void dash_ui_init() {
   g_screens[1] = make_screen(dash_display_right());
   lv_display_set_default(def);
 
-  // 图片资源:先探测每个角色有没有图(没刷图片时全部 false,走降级路径)
+  // 图片资源:先探测**每一组**有没有图(没刷图片时全部 false,走降级路径)。
+  //
+  // ★★ 第一维是**表情分组**（表号），不是屏号 —— 取值只此一个来源：
+  //   `faceGroupFor(s)`。★ 为什么必须由它来，而不是"顺手用循环变量 s"：
+  //   从板上末屏（看得见的那一屏）的表号与屏号**正好对调**，
+  //   用 `s` 就是把"左/转速那 5 张图"填进右边那一组 —— 而下面的
+  //   `g_face_ok[group][…]` / 渲染层的取值都按**表号**读，
+  //   于是那一屏的脸会按**另一块表的数据**挑图（车主原话："表情变化
+  //   怎么感觉是随机变动的"，2026-09-26 实测报的就是这个）。
   for (uint8_t s = 0; s < 2; ++s) {
-    g_bg_ok[s] = image_dsc_for_role(ImageRole::Background, &g_bg_dsc[s]);
+    const uint8_t g = faceGroupFor(s);
+    g_ui[s].screen = s;
+    g_ui[s].face_group = g;
+    // 背景：两屏共用 1 号角色，所以两张 dsc 是同一张图（各自持有，互不影响）。
+    g_bg_ok[g] = image_dsc_for_role(kBackgroundRole, &g_bg_dsc[g]);
     for (uint8_t slot = 0; slot < kFaceSlotCount; ++slot) {
-      // 这屏用不到的状态(角色号 0)不要去查图:查也查不到,但会把
+      // 这组用不到的状态(角色号 0)不要去查图:查也查不到,但会把
       // "0 号角色"当成一个真实编号传下去,将来加角色时容易踩到。
-      g_face_ok[s][slot] = faceSlotExists(s, slot) &&
-                           image_dsc_for_role(faceRole(s, slot), &g_face_dsc[s][slot]);
+      g_face_ok[g][slot] = faceSlotExists(g, slot) &&
+                           image_dsc_for_role(faceRole(g, slot), &g_face_dsc[g][slot]);
     }
   }
 
   for (uint8_t s = 0; s < 2; ++s) {
-    // ★★ 这一行是**图片按屏取**的那个下标（`face_apply_image(ui.idx, …)` /
-    //   `faceResolve(screen, …)` 用它查 `g_face_ok[idx][slot]` / `g_face_dsc[idx][slot]`，
-    //   而槽位映射 `kFaceRoleId[screen][slot]` 就是按它索引的）⇒ 它必须与**表盘**
-    //   走同一个角色映射，否则"转速表的表情"会去速度表那一套里找图。
-    //   （`dash_role_layout.h` 的 `faceIndexForScreen()` 就是 `themeIndexForScreen()`。）
-    g_ui[s].idx = dashlayout::faceIndexForScreen(s);   // 图片按屏取,index 必须先设
-    if (g_bg_ok[g_ui[s].idx]) {
+    // ★★ 分组（本单 B 的唯一出口）：表盘 / 表情槽位 / 表情图片三条路共用这一个数。
+    //   `dash_role_layout.h` 的 `faceGaugeIndexForScreen()` 就是
+    //   `themeIndexForScreen()`（同一个式子，`test_role_layout` 钉住恒等）。
+    const uint8_t g = g_ui[s].face_group;
+    if (g_bg_ok[g]) {
       g_bg_img[s] = lv_image_create(g_screens[s]);
-      lv_image_set_src(g_bg_img[s], &g_bg_dsc[g_ui[s].idx]);
+      lv_image_set_src(g_bg_img[s], &g_bg_dsc[g]);
       lv_obj_center(g_bg_img[s]);
     }
 
@@ -1140,27 +1193,28 @@ void dash_ui_init() {
     //   从板（`LINK_ROLE==0`）⇒ 末屏 = `screens[0]`（转速表 + 水温）。
     //   ★ 判据不是"哪块玻璃"（今天两块屏指向同一个 `lv_display_t`），而是
     //     "**哪一屏是这一角色该显示的那一屏**" —— 理由与边界全在那个头文件里。
-    const uint8_t ti = dashlayout::themeIndexForScreen(s);
-    if (kScreens[ti].show_face) build_face(g_screens[s], g_ui[s]);
+    //   ★ `g` 就是 `themeIndexForScreen(s)`（同一个数），所以这里直接用 `g`：
+    //     **表盘与表情图片不许各算一次下标**（那正是上一版断掉的地方）。
+    if (kScreens[g].show_face) build_face(g_screens[s], g_ui[s]);
 
     // 用图片表情替换(或隐藏)程序化表情。
     // ★ 降级:没有表情图时**保留程序化形状表情** —— 这条路径是刻意留的,
     //   与"没有主题就用默认主题"是同一个原则:资源缺失不能让界面空掉。
     bool any_face_img = false;
-    for (uint8_t i = 0; i < kFaceSlotCount; ++i) any_face_img = any_face_img || g_face_ok[s][i];
+    for (uint8_t i = 0; i < kFaceSlotCount; ++i) any_face_img = any_face_img || g_face_ok[g][i];
     if (any_face_img) {
       g_face_img[s] = lv_image_create(g_screens[s]);
       lv_obj_center(g_face_img[s]);
       // 有图就把程序化表情藏起来(不能删 —— face_apply 还会去访问那几个对象)
       if (g_ui[s].face_bg) lv_obj_add_flag(g_ui[s].face_bg, LV_OBJ_FLAG_HIDDEN);
       // 先摆"常态该用的那张"(可能降级到别的槽),后续 face_apply 按状态切换
-      const int slot = faceResolve(s, Face::Idle);
+      const int slot = faceResolve(g, Face::Idle);
       g_face_slot[s] = (int8_t)slot;
-      lv_image_set_src(g_face_img[s], &g_face_dsc[s][slot]);
+      lv_image_set_src(g_face_img[s], &g_face_dsc[g][slot]);
     }
 
     // ---- 第 3 层：表盘弧（**永远在表情之上**，车主定稿）----
-    build_arcs(g_screens[s], kScreens[ti], g_ui[s]);
+    build_arcs(g_screens[s], kScreens[g], g_ui[s]);
   }
 
   // 指示灯槽位(占位图形):建在**读数之前** —— 于是副表数字(水温/进气)
@@ -1203,6 +1257,25 @@ void dash_ui_init() {
             dashlayout::panelNameForScreen(dashlayout::kScreenTop),
             dashlayout::panelNameForScreen(0u),
             dashlayout::panelNameForScreen(1u));
+
+  // ★★ 2026-09-26（本单 B 的第二次修正）：把"**表情图片按哪一组取**"打出来。
+  //   为什么非有这一行不可：车主第二次报的现象（"表情跟转速失去关联、像随机变"）
+  //   在屏上**看不出是哪一环**（表盘是对的、读数是对的、脸也在变），
+  //   而根因恰恰是"图片分组"这一环拿了**另一块表**的数据 ——
+  //   它在串口上唯一能被看见的形态就是这两个数：**这一屏的表号 + 它的取图组号**。
+  //   ★ 判据：`group` 必须等于同一行的 `panel=`（表号）——`test_role_layout`
+  //     那组用例钉住的那条恒等，在这里以"运行期事实"的形式再出现一次。
+  //   ★ 纯 ASCII；`idle_role=` 是**实际拿去 image_dsc_for_role() 的那个角色号**
+  //     （不是表里的理论值）：有图就是它，没图就是 0 —— 一眼能看出"这一屏取的是
+  //     左那 5 张还是右那 5 张"（左=3/12/13/21/4、右=6/22/17/18/8，见 image_blob.h）。
+  for (uint8_t s = 0; s < 2; ++s) {
+    const uint8_t g = g_ui[s].face_group;
+    dash_logf("faceimg: screen=%u group=%u panel=%s gauge=%s idle_role=%u\n",
+              (unsigned)s, (unsigned)g,
+              dashlayout::panelNameForScreen(s),
+              dashlayout::gaugeNameForScreen(s),
+              (unsigned)kFaceRoleId[g][(uint8_t)Face::Idle]);
+  }
 
   g_boot.start(millis());
   dash_logf("206 dash boot\n");

@@ -54,10 +54,43 @@
 //     而**另一屏**（没被显示的那一屏）跑的是**互补**的那一套 —— 它今天落在
 //     同一个 display 上、被压住看不见，第二块屏到货后**自然就是对的**
 //     （两块屏各自要显示什么，从今天起由本文件说了算）。
-//   · 表情（`Face`）与图片资源（`ImageRole`）也是**按屏分**的
-//     （`face_stages.h` 的 `kFaceRoleId[screen][slot]`）⇒ 它们必须跟着同一个映射走，
+//   · 表情（`Face`）与图片资源（`ImageRole`）也是**按表分**的
+//     （`face_stages.h` 的 `kFaceRoleId[表][slot]`）⇒ 它们必须跟着同一个映射走，
 //     否则会出现"转速表的弧配速度表的表情"（那种错不报错、只是看着不对）。
-//     `dash_ui.cpp` 里 `ScreenUi::idx`（= 图片按屏取的那个下标）也走这里。
+//     `dash_ui.cpp` 里 `ScreenUi::face_group`（= 图片按表取的那个下标）也走这里。
+//
+// ------------------------------------------------------------
+// 五、★★ 2026-09-26 补：**三个下标不是同一个数**（这一节是本单 B 的第二次修正）
+// ------------------------------------------------------------
+//   车主实测（原话）："**转速表的表情好像跟转速失去关联了，现在表情变化怎么感觉是
+//   随机变动的。**"
+//
+//   机制（上一版 `055585e` 漏掉的那一半）：本文件把"**表盘**"那一半收进来了，
+//   可是 `dash_ui.cpp` 里"**图片**"那一半还拿 `faceIndexForScreen(s)` 当
+//   **屏号**去索引两张按**屏槽位**排的表（`g_face_ok[2][…]` / `g_face_dsc[2][…]`，
+//   它们在 `dash_ui_init()` 里是按 `s` 填的）。于是两张下标在**从板**上正好对调：
+//     从板末屏（s=1，看得见的那一屏）：表盘 = 左/转速 ✓、表情源 = `face_left`（转速）✓、
+//       可是**图片分组**查的是 0 号 = **右/车速**那 5 张 ⇒ 拿"车速档"去挑图，
+//       而车速在模拟里乱扫 ⇒ 屏上的脸"跟转速没关系、看着随机变" ✗
+//     主板：s == ti，巧合相等 ⇒ 一直看着是对的（所以这个 bug 只在从板上现形）。
+//
+//   修法：**把"三个下标"写成本文件里的三条式子，别处一个字都不许自己算** ——
+//     ① `themeIndexForScreen(s)`：这一屏用主题里哪一套表盘（弧 + 读数）；
+//     ② `faceGaugeIndexForScreen(s)`：这一屏的表情槽位表用哪一组
+//        （`kFaceRoleId` 的第 0/1 组 = 左/转速、右/车速）；
+//     ③ `faceImageIndexForScreen(s)`：这一屏的**表情图片**用哪一组
+//        （`image_blob.h` 的 ImageRole：`FaceIdle/12/13/21/4` 是左、`6/22/17/18/8` 是右）。
+//     ★ ② = ③ = ①（同一个数）**不是巧合，是产品口径**：一张脸属于"哪块表"，
+//       而"哪块表"就是①②③共用的那个下标。所以下面把它们写成**同一个函数**，
+//       由 `test_role_layout` 钉住"三者恒等"——上一次就是这里断掉的。
+//     ★ 还有第三件事必须一起钉住：**表情的"数据源"也要跟着表走** ——
+//       转速表那屏的脸必须按**转速**挑（含红区判定），车速表那屏才按车速
+//       （`ui_model.h` 的 `face_left`/`face_right` 就是这个口径，
+//        `expression.cpp` 的 `face_update()` 里两条轴各看各的）。
+//       所以本文件暴露 `gaugeKindForScreen()`，`dash_ui.cpp` 按它取
+//       `ArcDashView::face_left` / `face_right` —— **不许**再在渲染层写
+//       `ti == 0 ? 左 : 右` 那种看着像"下标比较"、实际是"数据源选择"的判据。
+//       （弧看 A、脸看 B 的错位正是车主那个"随机变"的形态。）
 // ============================================================
 
 namespace dashlayout {
@@ -86,11 +119,54 @@ inline uint8_t themeIndexForScreen(uint8_t s) {
   return (s == kScreenTop) ? roleThemeIndex() : (uint8_t)(1u - roleThemeIndex());
 }
 
-// 第 s 屏该用哪一套**表情/图片角色**（`face_stages.h` 的 `kFaceRoleId[screen][…]`）。
+// 第 s 屏该用哪一套**表情槽位/表情图片角色**（`face_stages.h` 的
+// `kFaceRoleId[组][slot]`、`image_blob.h` 的 `ImageRole`）。
 // ★ 它与表盘**必须是同一个下标**：表情是"看这一屏那块表"给的
 //   （`ui_model.h`：左屏只看转速、右屏只看车速）⇒ 这里直接复用上面那一个函数，
 //   不另写第二条判据（两条判据 = 迟早会分叉）。
+// ★★ 这也是本单 B 的**唯一出口**：`dash_ui.cpp` 里"图片分组"那两处
+//   （建屏时填 `ScreenUi::face_group` / `face_apply_image()` 取槽位）必须走它，
+//   **不许**把屏号 `s` 直接当组号用 —— 从板上 `s` 与 `ti` 正好对调，
+//   拿 `s` 当组号就是车主看到的"表情跟转速无关、随机变"（见文件头第五节）。
 inline uint8_t faceIndexForScreen(uint8_t s) { return themeIndexForScreen(s); }
+
+// 同上的**别名**，名字里带 `image`：专门给"表情图片用哪一组 ImageRole"这条读法用。
+// ★ 三个名字指向同一个式子，是为了让调用点读起来就说清了它在选什么；
+//   真正要守的判据是"它们恒等"，由 `test_role_layout_image_group_follows_gauge` 钉住。
+inline uint8_t faceGaugeIndexForScreen(uint8_t s) { return faceIndexForScreen(s); }
+inline uint8_t faceImageIndexForScreen(uint8_t s) { return faceIndexForScreen(s); }
+
+// ============================================================
+// 第 s 屏那块表的**数据轴**：弧看哪一路、表情就必须看哪一路（本单 B 的硬判据）。
+//
+// ★ 车主那句"随机变"的根因就是"弧看 A、脸看 B"。所以这里把"数据源"也变成
+//   本文件的输出，而不是渲染层自己 `ti == 0 ? … : …` 推出来的。
+// ★ 枚举顺序刻意与 `face_stages.h` 的 `kFaceStages[]` 列头一致
+//   （`{"group", …}` 里 rpm 在 speed 前），日志/文档引用同一套名字。
+// ============================================================
+enum GaugeKind : uint8_t {
+  kGaugeRpm = 0u,     // 左屏：外圈转速弧 + 内圈水温；表情只看**转速**（含红区）
+  kGaugeSpeed = 1u,   // 右屏：外圈车速弧 + 内圈进气温度；表情只看**车速**（含超速）
+};
+
+inline GaugeKind gaugeKindForScreen(uint8_t s) {
+  return (themeIndexForScreen(s) == 1u) ? kGaugeSpeed : kGaugeRpm;
+}
+
+// 该轴在 `ArcDashView` 里对应哪一个表情字段（0 = `face_left`、1 = `face_right`）。
+// ★ 为什么给编号而不是直接返回 `Face`：本文件是"宿主机也要编的纯头"，
+//   不 include `ui_model.h`/`expression.h`（那会把它和 LVGL 那一侧绑在一起）。
+//   返回一个 0/1 的**轴编号**，调用点只做一次"0 还是 1"的取值。
+// ★ 它与 `gaugeKindForScreen()` 是同一个式子（Rpm ⇒ 0、Speed ⇒ 1），
+//   由 `test_role_layout_face_axis_follows_gauge` 钉住 —— 别再各写一份。
+inline uint8_t faceAxisForScreen(uint8_t s) {
+  return (uint8_t)gaugeKindForScreen(s);
+}
+
+// 该轴的纯 ASCII 名字（与 `face_stages.h` 的组名同一个口径；日志用）。
+inline const char* gaugeNameForScreen(uint8_t s) {
+  return (gaugeKindForScreen(s) == kGaugeSpeed) ? "speed" : "rpm";
+}
 
 // 第 s 屏该显示的那块表**主弧是哪一种**？（日志/自证用；`ArcKind` 的两个值在这里
 // 只作为**编号**出现，避免本文件去 include LVGL/主题头 —— 它是宿主机也要编的纯头。）
