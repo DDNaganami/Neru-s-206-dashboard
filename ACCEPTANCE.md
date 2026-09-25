@@ -5536,3 +5536,291 @@ USB-CDC，而它只在 12PIN 上 ⇒ 台面上够不着"**这一步前提在本�
 `step4-restore-app.log`、`assets.bin`(2123148 B)、`com8-head.raw`(7868 B)、
 `com8-full-boot.raw`(9424 B)、`parse-part.py`、`read-com8.py`、`capture-boot.py`、
 `run-esptool.ps1`。
+---
+
+## ★★ 从板（`COM8`）"屏卡死 + 蜂鸣器长鸣" + 从板显示错了表（2026-09-25，**上板 COM8**）
+
+> **本单边界（红线）**：只动 **COM8**（新板，设备名 `USB 串行设备`、`VID_303A&PID_1001`
+> = 芯片原生 USB）。**`COM7`（抓帧盒 CH340）本单期间已被车主拔掉**；**主板那块 2.8C
+> 以 CH343 出现，它的端口一次都没打开**；`COM1` 从未碰过。
+> `tools/theme-editor/theme.json` 与 `tools/theme-editor/local/`（车主的本地产物）
+> **全程未碰**。`platformio.ini` **一个字节都没动**（无新增 env / 无新增 -D）。
+> 红线复核：PCLK / bounce / num_fbs / 驱动时序 / 抓帧盒三个 env / 17-18 / GPIO15
+> **全部未动**；**没有新开 L 号**。仓库起点 `37f7604`；
+> 设备构建在 ASCII 副本 `C:\206dash-scratch\slave-com8\Neru`（`git clone` 自本仓库，
+> 见 ⑧-1"为什么不能在中文路径里链"）。
+
+### ① 车主看到的两件事，以及它们为什么是**同一件事**
+
+车主原话（逐字，2026-09-25）：
+
+> ① 开机那一下屏上写了 **`SLAVE (LEFT)`**
+> ② 之后是表盘 + `SIM` 角标
+> ③ **这块新板的蜂鸣器会响**
+> ④ ★★ **"现在会长鸣一会儿，画面也卡住了"**
+
+★★ **④ 的判据性推理（本单的出发点）**：这块板上的蜂鸣器是**软开关** ——
+写 `TCA9554` 的 `EXIO8`，**没有硬件定时**（`lib/dashcore/buzzer_exio.*`）⇒
+"到点关"这个动作**只在主循环转得动的时候**才被执行。于是：
+
+| 现象 | 唯一说得通的解释 |
+|---|---|
+| 蜂鸣器**长鸣**（不是一个 300 ms 的相） | 主循环停住 ⇒ `off()`/`tick()` 都没人调 ⇒ 高电平**留在总线上** |
+| 画面**冻结** | 渲染也在主循环里 ⇒ 同一次"主循环被堵死"的另一半 |
+| 面板**没有黑**（车主没说黑，只说卡） | 面板照旧在扫那块 framebuffer ⇒ 与「显示约定」§3.5.1 那条"黑屏 ≠ 卡死"**对得上** |
+
+⇒ 这两条现象**不是两个 bug，是同一个**。所以本单的做法是：**先让"卡住"有现场**
+（停顿探测），**再让"卡住"不会变成"永远响"**（蜂鸣器 2 秒绝对上限），
+最后才谈根因（RX 悬空 + 每圈收帧无上界）。
+
+★ 车主那两条**肉眼结论**（本单期间到齐，都已写进文档）：
+
+| 车主原话 | 它关闭了什么 |
+|---|---|
+| "**刚刚第一次开机已经能看见 `SLAVE (LEFT)` 了**" | 开机角色标签从"只有 `check-role-label.js` 的像素证据"升级为**人眼确认**（也印证了"纯 ASCII 粗体大字"这个选择） |
+| "**这块新板的蜂鸣器响，不然我怎么会跟你说蜂鸣器会长鸣之后画面卡死**" | ★★ **L14 的另一半结案**：两块同型号 2.8C **都有**蜂鸣器（**实测**，不再是从"同型号"推的）。★ 判据来源是**人耳**；机器侧只到 `buzz: 回读=0x85(影子=0x85)`（寄存器级） |
+
+### ② A 的四处改动（判据 / 上拉 / 有界 / 兜底）
+
+| # | 改什么 | 在哪 | 判据（可执行） |
+|---|---|---|---|
+| **A1** | **主循环停顿探测**：每圈记 `millis()` 差值，≥200 ms 当场打一行；每 5 秒一行摘要 | `src/main.cpp` 的 `loop_probe_begin()` / `loop_probe_end()` | 串口上那两行原文见 ⑤；`stall=0` 是**正面读数**（不是"没看见"） |
+| **A2** | **RX 脚上拉**（只配 RX，绝不把 43/44 配成输出） | `lib/link/link_phy_uart.cpp` 的 `pinMode(rx, INPUT_PULLUP)` | 悬空输入 + 旁边 15 MHz RGB 并口的伪字节流被钉在空闲高电平；`LINK_RX_PIN` 编译期守卫仍拒绝 43==44 |
+| **A3** | **每圈收帧量有上界**（512 B/圈）+ `LinkRxStats::bytes_read` 计数 | `src/main.cpp` 的 `kLinkRxBytesPerLoop` / `link_poll_bounded_slave()` / `link_poll_inbound()`；`lib/link/link_rx.{h,cpp}` | native 三条（见 ⑥）：`bytes_read` ≠ `noise_bytes`、`poll()` 的两种 `false`、有界但**一帧不丢** |
+| **A4** | **蜂鸣器绝对上限** 2 秒（`safety()`，与序列状态机**无关**） | `lib/dashcore/buzzer.{h}`（虚函数）+ `buzzer_exio.{h,cpp}` 的 `safety()`；主循环每圈独立调 | native 三条（见 ⑥）+ 串口每 5 秒那行尾部 `\| buzz safety=N` |
+| **A5** | ★ **任务看门狗（Task WDT）：只写方案，默认不开** | `ARCHITECTURE.md` 显示约定 §7.5.5 | 理由与落地步骤（含超时取值、只喂主循环、`setup()` 末尾才订阅）都写在那一段；**本轮不启用**是因为合法长圈实测到 **2535 ms**（见 ⑤），先要把它量清楚 |
+
+### ③ ★★ A 的实测：**真的抓到了**一次 2.5 秒的主循环停顿（探针镜像 `esp32s3-rgb`，COM8）
+
+**探测行的原文**（`C:\206dash-scratch\slave-com8\probe-esp32s3-rgb.raw`，130 秒）：
+
+```
+loop: stalled 2535ms (n=3 link rx bytes=0 crc=0 bad_len=0 noise=0) probe_took=1us prev=UNKNOWN
+loop: n=15914 in 5021ms (3169/s) max=2535ms stall=2 | link rx bytes=0 frames=0
+```
+
+| 判据 | 读数 | 说明 |
+|---|---|---|
+| **停顿时长** | **2535 ms** | 就是任务书里那条阈值（200 ms）的 **12.7 倍** |
+| **当时链路收了多少字节** | `link rx bytes=0` | ★ **本单这条不是根因**：探针镜像不带链路 PHY（`LINK_PHY_UART=0`，43/44 归 UART0 日志）⇒ 收帧那一支**根本没编进固件**。所以这次停顿**与链路收帧无关** |
+| `probe_took` | **1 µs** | 探测行**自己**的开销可以忽略（它跑在"已经卡了"的那一刻，所以要能看见是不是日志打爆的） |
+| `prev=UNKNOWN` | 本次复位是 esptool 的 `--after hard_reset`（`raw=11` = `USB_UART_CHIP_RESET`） | ★ **不是**板子自己重启 |
+| 之后 130 秒 | **`stall=0` × 25 个窗口**，`max=` 34~124 ms | 停顿是**一次性**的（不是周期性的） |
+
+★ **这一次停顿为什么值钱**（不是"一个数字"）：`buzz:` 那三行**紧跟在它后面** ——
+
+```
+loop: stalled 2535ms (n=3 link rx bytes=0 crc=0 bad_len=0 noise=0) probe_took=1us prev=UNKNOWN
+buzz: exio 0x05 -> 0x85 (mask 0x80)
+buzz: 回读=0x85(影子=0x85)
+buzz: exio 0x85 -> 0x05 (mask 0x80)
+```
+
+⇒ **"蜂鸣器正在响的时候，主循环有 2.5 秒没转"**，而这 2.5 秒里**没有任何人去执行
+"到点关"** —— 这正是车主那句"长鸣一会儿"的机制，**在板子上被计时器抓到了**。
+★ 而这一次没有变成"长鸣"：`SRC-VAN` 那行尾部 `buzz safety=1` 就是证据
+（**2 秒绝对上限把它掐了**；见 ④）。**2500 ms 与 2000 ms 的差**就是"兜底生效"的代价 ——
+也就是"永远响"与"最多响 2 秒"的差。
+
+★ **老实说边界**：这一次停顿**没能定位到具体哪一行**（`BEACON` 的 `step=` 在那 130 秒里
+一直是 `7`，串口缓冲把 `rgb:` 那几行挤到了后面）。已知的**合法**长圈只有两处
+（开机第一次整屏刷新、每 30 ms 一次整屏失效那一拍的重绘，实测 141~225 ms），
+而 2535 ms 与"整屏第一次刷新"同一量级（`rgb:` 那行实测 `flush=16/s`、`fmax=414x27`）
+—— **但本单没有把它钉死**，写在 ⑧ 里。
+
+### ④ ★★ 最终从板镜像（`esp32s3-rgb-slave`，带链路 + 上拉 + 有界 + 兜底）200 秒实测
+
+**探测行：0 次**（`loop: stalled` 一次都没出现），40 个摘要窗口**全部** `stall=0`：
+
+```
+loop: n=144314 in 5000ms (28862/s) max=160ms stall=0 | link rx bytes=0 frames=0
+loop: n=184098 in 5000ms (36819/s) max=35ms stall=0 | link rx bytes=0 frames=0
+...
+loop: n=168072 in 5000ms (33614/s) max=92ms stall=0 | link rx bytes=0 frames=0
+```
+
+| 判据 | 读数 | 它在证明什么 |
+|---|---|---|
+| **`loop: stalled`** | **0 次 / 200 秒** | 目标镜像**跑满 200 秒没有一次 ≥200 ms 的圈**（对比探针镜像那一次 2535 ms） |
+| `max=` | **30 ~ 160 ms**（40 个窗口） | 最长的一圈仍在 200 ms 阈值**之下**；而它**不是** 0 ⇒ 探测真的在量东西 |
+| `link rx bytes=0` | 40 个窗口**全 0** | ★ **RX 上拉之后 44 脚上没有伪字节流**（`g_link_phy.available()` 恒空 ⇒ `poll()` 每次都是"真的空了"那一种 `false`） |
+| **`buzz safety=`** | **0**（全程），而 `beeps` 从 1 涨到 **47** | ★ **47 次发声、一次都没有触发 2 秒兜底** ⇒ 正常的告警序列**到点就关**，兜底只在"主循环停住"时才会介入 |
+| `role=SLAVE last=LEFT/rpm+coolant` | 每秒那行 | ★ B 的修法在**目标镜像**上生效（见 ⑦） |
+| `mute: 0 (loaded from NVS)` | 开机行 | 收尾状态：**有声**（车主没让静音） |
+
+### ⑤ B 的修法：**"角色 ↔ 屏幕"从旁白变成判据**
+
+**车主原话（本单的需求文档）**："**副表怎么也给你刷成速度表了**" ——
+新板（从板镜像）显示的是**速度表**，而它该显示**转速表（左屏 + 水温副表）**。
+
+**查清"哪块板显示哪一屏"由什么决定**（本单的考古结论）：
+
+| 事实 | 在哪 |
+|---|---|
+| 主题里两个屏是**两套表盘**：`screens[0]` = 转速（红 `0xFF5C5C`）+ 水温（绿 `0x7CFF6B`）；`screens[1]` = 车速（蓝 `0x39C5FF`）+ 进气（琥珀 `0xFFB020`） | `lib/themetool/ui_theme.h` 的 `theme_reset_to_defaults()` |
+| 契约 §5：`LINK_ROLE == 1` ⇒ **主板 = 右**；`== 0` ⇒ **从板 = 左** | `lib/link/link_role.h` |
+| **RGB 驱动是单屏**：`g_left` 与 `g_right` 指向**同一个** `lv_display_t` ⇒ 两个 LVGL screen 里**后建的那个在上面** | `src/dash_display_rgb.cpp` 的 `g_left = d0; g_right = d0;` |
+| 修之前：`dash_ui_init()` 是"第 s 屏用 `kScreens[s]`" ⇒ **末屏恒为 `screens[1]`（速度表）** ⇒ 两块板都显示速度表 | `src/dash_ui.cpp` |
+| ★ 这条"角色 ↔ 屏幕"的对应关系**以前没有任何一行判据、也没有一行文档** —— 只活在开机标签的**文案**（`MASTER (RIGHT)` / `SLAVE (LEFT)`）与 `ui_model.h` 的一句注释里 | —— |
+
+**修法**（新增 `lib/dashcore/dash_role_layout.h`，四两拨千斤）：
+
+* `roleThemeIndex()`：主板 ⇒ `1`（速度表）、从板 ⇒ `0`（转速表）；
+* `themeIndexForScreen(s)`：**末屏 = 本机角色该显示的那一屏**，另一屏 = 互补的那一套；
+* `faceIndexForScreen(s)` ≡ `themeIndexForScreen(s)`（表情/图片角色与表盘**共用同一个下标**
+  ⇒ 不会出现"转速表的弧配速度表的脸"）；
+* `src/dash_ui.cpp` 里**四处**（建弧 / 建读数 / 扫表 / 渲染）一律走它。
+* ★ **没有**改 `LINK_ROLE` 的语义（契约 §5 一行未动）、没有改链路协议、
+  没有改面板驱动、没有改两个 `lv_display_t` 的创建顺序。
+
+**判据 ①：串口自证**（pcpreview 落帧 + 设备实测都有这一行）
+
+```
+layout: role=SLAVE  last=LEFT/rpm+coolant  slots=[RIGHT/speed+intake | LEFT/rpm+coolant]
+layout: role=MASTER last=RIGHT/speed+intake slots=[LEFT/rpm+coolant | RIGHT/speed+intake]
+206 dash ok  spd=100% rpm= 75% coolant=89C face=high/overspeed | role=SLAVE last=LEFT/rpm+coolant
+```
+
+**判据 ②：★ 像素判据**（不靠人眼、不靠日志）——
+`node tools/theme-editor/check-gauge-identity.js <左屏帧.bmp> <右屏帧.bmp>`：
+
+```
+=== SLAVE 构建（LINK_ROLE=0）落帧 ===
+  l_0030.bmp: rpmRed=0     speedBlue=18005 => RIGHT/speed (margin=18005) OK
+  r_0030.bmp: rpmRed=20613 speedBlue=0     => LEFT/rpm    (margin=20613) OK
+  kinds=LR  verdict: ONE-RPM-ONE-SPEED OK
+  => GAUGE-IDENTITY-OK
+
+=== MASTER 构建（LINK_ROLE=1）落帧 ===
+  l_0030.bmp: rpmRed=20613 speedBlue=0     => LEFT/rpm    (margin=20613) OK
+  r_0030.bmp: rpmRed=0     speedBlue=18005 => RIGHT/speed (margin=18005) OK
+  kinds=LR  verdict: ONE-RPM-ONE-SPEED OK
+  => GAUGE-IDENTITY-OK
+```
+
+★★ **判据的形状**：同一份代码、只把编译期角色从 0 换成 1 ⇒ **那两条弧互换了那一屏**
+（`r_*` 那一帧：蓝 18005 → 红 20613）⇒ "从板末屏 = 转速表"是**数出来的**，
+不是"看着像"。★ 颜色取自**固件源码**（脚本解析 `ui_theme.h` 里那两行 `lv_color_hex`），
+不是脚本自己抄一遍 —— 抄一遍就会有一天与固件分叉。
+
+**判据 ③：几何自证**（落在**末屏**那一帧上的红转速弧 —— 转速表**独有的红区**）：
+
+```
+arc-probe r_0030.bmp color=0xFF5C5C
+  pixels=20613  angle range=[0.4 .. 350.0] deg (0=3 o'clock, clockwise)
+  hist(15deg bins): 0-15:1157 15-30:1181 30-45:1148 45-60:19 ...
+                    135-150:1191 150-165:1181 ... 330-345:1181 345-360:360
+```
+
+`[135°..405°]` 是转速表的外圈弧（从 7:30 顺时针到 4:30），而 `345°..360°` **不是全覆盖**、
+`0°..45°` 亮着 —— **那就是红区**（转速 ≥ 约 96% ⇒ 亮点伸进 345° 以后那一段）。
+速度表**没有红区**（它的弧色是蓝），所以这条几何在速度表上**数不出来**。
+
+### ⑥ 回归数字（前 → 后，全部真跑；★ 本机"成功"也可能返回非 0 ⇒ 看 `SUCCESS` 行）
+
+| 项 | 前（`37f7604` 基线） | 后（本单） | 差 |
+|---|---|---|---|
+| **native** | **307 例（2 skipped / 305 ok）**，0 失败 | **319 例（2 skipped / 317 ok）**，**0 失败** | **+12 例** |
+| **pcpreview** | SUCCESS | **SUCCESS** | — |
+| **esp32s3-rgb（探针档）** | SUCCESS / 913,007 B（87.1%）/ RAM 126,280 B | **SUCCESS** / **913,863 B（87.2%）** / RAM **126,312 B（38.5%）** | **+856 B** / +32 B |
+| **esp32s3-rgb-slave（从板镜像）** | SUCCESS / 914,319 B（87.2%）/ RAM 126,752 B | **SUCCESS** / **915,203 B（87.3%）** / RAM **126,784 B（38.7%）** | **+884 B** / +32 B |
+| **JS 八套** | 95 / 105 / 261 / 429 / 71 / 372 / 259 + `syntax 42` | **逐项相同** | 0 ✓ |
+
+★ **+12 例**的构成：角色↔屏幕映射 **6**（含"两屏必须是不同两套表"的反向判据）、
+链路 `bytes_read`/每圈上界 **3**（含那个实测出来的 `poll()` 两种 `false`）、
+蜂鸣器 2 秒兜底 **3**（上限与最长合法序列的关系 / 掐断 / **不误掐合法序列**）。
+★ **Flash +856 B / RAM +32 B** 换来的：主循环停顿探测 + 每圈收帧上界 + RX 上拉 +
+蜂鸣器绝对上限 + 角色↔屏幕映射（含它们的 native 用例）。
+从板镜像还余 **~133 KB** Flash。
+
+### ⑦ 上板（`COM8`）：探针镜像 → 最终从板镜像
+
+**(a) 探针镜像 `esp32s3-rgb`（= 从板角色 + 不带链路 PHY + 日志走 UART0）**
+
+```powershell
+python -m platformio run -e esp32s3-rgb -t upload --upload-port COM8
+```
+
+四个区各自 `Hash of data verified.`、`SUCCESS`（`0x0` 19984→13023 / `0x8000` 3072→173 /
+`0xe000` 8192→49 / `0x10000` 914272→506962）。开机那一行原文：
+
+```
+206 dash ok
+boot: reason=UNKNOWN n=7 (raw=11) up=224ms | prev=POWERON (raw=1) prev_up=20min | hb=2 | role=SLAVE
+psram : 8187 KB 可用 / 8192 KB 总
+206 dash ok  spd=100% rpm= 75% coolant=89C face=high/overspeed | role=SLAVE last=LEFT/rpm+coolant
+loop: stalled 2535ms (n=3 link rx bytes=0 crc=0 bad_len=0 noise=0) probe_took=1us prev=UNKNOWN
+BEACON 10  step=7(loop: 数据已更新)  uptime=12s heap=213KB psram=8192KB flash=16MB
+trust: sim-fallback  <-- 屏上出现数据不可信提示 beep (episodes=1)
+SRC speed=sim rpm=sim coolant=sim intake=sim | v=201.0km/h 2303rpm 89.9C 31.1C
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=overspeed beeps=2 | buzz safety=1
+link: sim tick_age=13257ms seen=0 seq_gap=0 miss=0 offset=0ms
+loop: n=15914 in 5021ms (3169/s) max=2535ms stall=2 | link rx bytes=0 frames=0
+```
+
+★ `role=SLAVE` + `link: sim …` 那一行（**与主板那行是 `#if LINK_ROLE == 1` 的互斥分支**）
+= 这份镜像确实是**从板角色**。
+
+**(b) 最终从板镜像 `esp32s3-rgb-slave`（带链路 PHY = RX 上拉生效的那一份）**
+
+`SUCCESS`（`0x10000` 915600→508014，四个区各自 `Hash of data verified.`）。200 秒读数：
+
+```
+boot: reason=UNKNOWN n=8 (raw=11) up=222ms | prev=UNKNOWN (raw=11) prev_up=20min | hb=2 | role=SLAVE
+mute: 0 (loaded from NVS)
+link: 从板侧就绪(§5, LINK_ROLE=0) TX=GPIO43 RX=GPIO44 @115200 8N1 —— 真 PHY(UART0),等主板的 TICK/DATA
+layout: role=SLAVE last=LEFT/rpm+coolant slots=[RIGHT/speed+intake | LEFT/rpm+coolant]
+alert: none / alert: overspeed / alert: redline
+trust: sim-fallback  <-- 屏上出现数据不可信提示 beep (episodes=1)
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=overspeed beeps=1 | buzz safety=0
+```
+
+★ **`loop: stalled` 0 次 / 40 个窗口全 `stall=0`**（原文见 ④）；
+★ **`buzz safety=0` 全程**（47 次发声一次都没触发兜底）；
+★ **`link rx bytes=0` 全程** ⇒ 44 脚上**没有**伪字节流（上拉生效的正面读数）。
+
+**(c) ★ `COM8` 是芯片原生 USB，所以从板镜像的日志**读得到**（与文档口径不同的一处实测）
+
+上一节记的是"带链路 PHY 的构建在 Type-C 上**没有日志**"（`DASH_LOG_UART0=0`，
+日志只走原生 USB-CDC）。而**本单现场**：`COM8` = `USB\VID_303A&PID_1001&MI_00`
+= **USB-Serial-JTAG**（芯片原生 USB 那一路，不是板载 CH343）⇒
+**从板镜像的全部日志都在 `COM8` 上读到了**（`final-slave.raw`，133,566 字节）。
+★ 这**不改**设计事实：`UART0`（43/44）上**一个字节文本都没有** —— 那才是
+`DASH_LOG_UART0=0` 要保证的事，而它今天正是链路的数据面。
+★ 与本单边界的交集：**读的是 `COM8` 这个原生 USB 口**；CH343 那块（主板）**一次都没打开**。
+
+### ⑧ 没做 / 拿不准（**如实列**）
+
+1. ★ **为什么设备构建不在中文路径的仓库里跑**（本单实测的一次踩坑）：
+   `C:\Users\张九思\206Dash\Neru-s-206-dashboard` 下链 `esp32s3-rgb` 会报
+   `ld.exe: cannot open map file …firmware.map: Invalid argument`（xtensa-ld + 非 ASCII 路径
+   + `--Map` 的已知形态）⇒ 设备构建改在 **ASCII 副本** `C:\206dash-scratch\slave-com8\Neru`
+   （`git clone` 自本仓库，内容就是 HEAD + 本单改动）里做。**仓库里的代码与文档照旧在真仓库里。**
+   ★ 也踩到过两次"构建失败"是**并发**造成的：同一个 `.pio/build` 被另一个进程占着
+   （`refusing access` / map 文件被占）⇒ 报告里区分"失败"与"被占"。
+2. ★★ **那一次 2535 ms 的停顿没有定位到具体哪一行**（见 ③ 的"老实说边界"）。
+   已排除的是"链路收帧"（那一次 `link rx bytes=0`，且探针镜像里收帧那一支根本没编）。
+   下一步要的是：**让探测行与 `rgb:`/`BEACON` 的缓冲区不要互相挤**（`BEACON` 里带
+   `step=` 已经是最好的线索，而这一次它一直是 7）。**探测已经就位，下一次卡就有现场。**
+3. ★ **任务看门狗没有打开**（只写了方案，见 `ARCHITECTURE.md` §7.5.5）。
+   理由：合法长圈实测到 **2535 ms**，在"多长的圈算合法"量清楚之前打开它，
+   风险是**把一次正常的长圈变成一次重启**。⇒ **需要车主点头**再开（或者先把 ② 定位掉）。
+4. ★ **"从板镜像 200 秒没卡"不等于"卡死已修好"**：车主那次的现场条件是
+   **Type-C 插着 + 4Pin 空着**（与本次实测相同），但**没有**接主板、也**没有**按 RST 折腾。
+   本单能给的是：**探测就位**（再卡就有原文）+ **上拉/有界/兜底三条防线**。
+   ⇒ 判据要等车主再跑一段。
+5. ★ **跨板那一半仍然没测**（主板那块 2.8C 今天在本单期间**没有被打开过**）：
+   `HELLO`/`STATUS` 真的过线、角色对账、主板那行 `role=` —— **仍未实测**。
+6. ★ **`COM7`（抓帧盒）本单期间被车主拔掉**（设备树里确实没有 CH34x 了）⇒
+   抓帧盒三个 env 的"行为一个字节不变"**只有编译期证据**（本单没改它们，也没烧它们）。
+7. ★ **`boot: … n=7/8` 的增长里有一部分是车主按 RST 造成的**（parent 转述：
+   他会按 RST，且 `prev_up` 可能只有几分钟）⇒ **不要把计数增长读成"板子自己重启"**，
+   也不要把 `prev_up=20min` 当作"夜里的悬案"。本单的每一次上电都是 **esptool
+   `--after hard_reset`**（`raw=11` = `USB_UART_CHIP_RESET`），**不是** `BROWNOUT`、
+   **不是** `PANIC`/`WDT` ⇒ 机制 B 在本单**依旧没有被证实**。
+
+**本单的原始件**（都在 `C:\206dash-scratch\slave-com8\`）：
+`probe-esp32s3-rgb.raw`（探针镜像 130 秒，含那一次 2535 ms 停顿）、
+`final-slave.raw`（最终从板镜像 200 秒，`stall=0` × 40）、
+`pcp-slave\`（从板角色的预览落帧 + stdout）、`pcp-master\`（主板角色的预览落帧 + stdout）、
+`run-preview.ps1`、`com8-capture.ps1`、`arc-probe.js`、`patch_arch.py`、`append_acc.py`。
