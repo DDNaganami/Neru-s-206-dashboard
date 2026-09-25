@@ -321,7 +321,24 @@ DiagView diagBuild(DiagPage page, const SysStatusInputs& in) {
              (unsigned long)(in.guard_uptime_ms / 1000u),
              (unsigned long)in.guard_rd_ok, (unsigned long)in.guard_fix,
              (unsigned long)in.guard_bl, (unsigned long)in.guard_anomaly);
-  } else {
+    // ★★ 跨重启累计那一行（2026-09-25 新增，见 lib/dashcore/boot_persist.h）：
+    //   · `s` 前缀 = **sum**（从这块板第一次跑本层固件起，跨重启累加）；
+    //   · `k` = 累计值**落盘过几次**（跨重启单调 +1）—— "k 变了 ⇒ 累计里已经含了
+    //     上一次运行的尾巴"；`k=0` 且开机不到 10 分钟也是正常的（心跳还没到点）；
+    //   · `n` = 第几次上电/复位（既有的 `bootn`）；`hb` = 心跳累计次数。
+    //   ★ 这一行与上面那一行的区别就是本单要解决的痛点：**上一行随重启归零，
+    //     这一行不归零** —— "某次夜里守护救过几回"从此不再丢。
+    //   ★ 拿不到（预览/抓帧盒：那些构建里没有 NVS）就明确写 `-`，不许假装 0 次。
+    diagLine(v, "sum rd=%lu fix=%lu bl=%lu anom=%lu k=%lu",
+             (unsigned long)in.guard_total_rd, (unsigned long)in.guard_total_fix,
+             (unsigned long)in.guard_total_bl, (unsigned long)in.guard_total_anom,
+             (unsigned long)in.guard_tot_snaps);
+    if (in.boot_count == 0u || in.boot_count == kBootCountUnknown) {
+      diagLine(v, "n=- hb=%lu", (unsigned long)in.boot_hb_n);
+    } else {
+      diagLine(v, "n=%lu hb=%lu", (unsigned long)in.boot_count,
+               (unsigned long)in.boot_hb_n);
+    }  } else {
     // ---- 第 2 页：**链路与告警**（"两台板之间那条线好不好"）----
     if (in.link_known) {
       diagLine(v, "link state=%ld age=%lums", (long)(int32_t)in.link_state,

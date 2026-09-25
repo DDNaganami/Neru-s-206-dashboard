@@ -23,6 +23,7 @@ void register_ui_lamp_tests(void);      // 指示灯槽位几何 + 预览注入�
 void register_system_status_tests(void); // 系统状态层:数据不可信提示 + 诊断页(2026-09-24)
 void register_buzzer_exio_tests(void);   // 真机蜂鸣器驱动:EXIO8 掩码/降级/夹时长/不阻塞(2026-09-24)
 void register_panel_guard_tests(void);   // 面板健康守护:回读对账/按影子重写/背光/2秒周期/自愈(2026-09-24)
+void register_boot_persist_tests(void);  // 跨重启留档:上一次 reason/上一次跑了多久/守护累计(2026-09-25)
 void register_serial_cmd_tests(void);    // 串口单字符命令的判据层:d/m/b/r + 别多吃回放字符(2026-09-24)
 void register_face_stage_tests(void);
 void register_link_crc_coverage_tests(void);   // 双板链路 v1:CRC-15 检错覆盖枚举(§8 L4)
@@ -74,6 +75,12 @@ int main(void) {
   //   一不一致"以及"背光占空还对不对"；判据/时钟/输出全是注入的 ⇒ 宿主机可测。
   //   同样排在 face_stages 之前（顺序纪律见上）。
   register_panel_guard_tests();
+  // ★ 2026-09-25 新增：**跨重启留档**（BootPersist）—— 起因是"累计启动次数 31 → 32
+  //   多了一次，而上一次的复位原因没有留档 ⇒ 判不出那次是断电还是板子自己掉电"。
+  //   它把三样东西写进 NVS 并在开机那一行一起打：上一次的 reason、**上一次运行了多久**
+  //   （靠 10 分钟一次的心跳）、守护四个计数的跨重启累计。判据/NVS 全是注入的 ⇒ 宿主机可测。
+  //   同样排在 face_stages 之前（顺序纪律见上）。
+  register_boot_persist_tests();
   // ★ 2026-09-24 新增：串口单字符命令的判据层（`d`/`m`/`b`/`r`）。
   //   抽出来的理由是"这一层原来是 `src/main.cpp` 里的代码，而 native 只编 lib/"
   //   （见 `serial_cmd.h` 的文件头）；这一个口上同时跑日志与回放帧 ⇒

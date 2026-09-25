@@ -585,6 +585,41 @@ void test_sys_freeze_rpm_boundary_500(void) {
   TEST_ASSERT_TRUE(s2.update(in2, 22500) == DataTrustReason::kDataFrozen);
 }
 
+// ============================================================
+// ★ 2026-09-25 新增：诊断页上的"跨重启累计"两行（本单要解决的痛点）
+//   —— 上面那一格 `guard …` 随重启归零，这两格**不归零**：`sum …` 是从这块板
+//      第一次跑本层固件起的累计，`n=`/`hb=` 是启动次数与心跳累计。
+// ============================================================
+void test_diag_guard_cumulative_lines(void) {
+  SysStatusInputs in = healthy();
+  in.guard_rd_ok = 42; in.guard_fix = 1; in.guard_bl = 0; in.guard_anomaly = 1;
+  in.guard_uptime_ms = 84000;                 // 本次：守护跑了 84s
+  in.guard_total_rd = 210; in.guard_total_fix = 3;
+  in.guard_total_bl = 1;   in.guard_total_anom = 4;
+  in.guard_tot_snaps = 7;                     // 累计值落盘过 7 次
+  in.boot_count = 33; in.boot_hb_n = 7;
+  const DiagView v = diagBuild(DiagPage::Sys, in);
+  char buf[1024];
+  diagRenderText(v, buf, sizeof(buf));
+  // 本次那一行**不许**被改动（车主已经认得的读数）
+  TEST_ASSERT_NOT_NULL(strstr(buf, "guard 84s rd=42 fix=1 bl=0 anom=1"));
+  // 累计那一行（★ 与本次那两个数不同 ⇒ 一眼能看出"这是跨重启的"）
+  TEST_ASSERT_NOT_NULL(strstr(buf, "sum rd=210 fix=3 bl=1 anom=4 k=7"));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "n=33 hb=7"));
+}
+
+// 没记录（预览/抓帧盒：那些构建里没有 NVS）⇒ 明确写 `-`，不许假装 0 次
+void test_diag_boot_count_unknown_is_dash(void) {
+  SysStatusInputs in = healthy();
+  in.boot_count = kBootCountUnknown;
+  in.boot_hb_n = 0;
+  const DiagView v = diagBuild(DiagPage::Sys, in);
+  char buf[1024];
+  diagRenderText(v, buf, sizeof(buf));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "n=- hb=0"));
+  TEST_ASSERT_NULL(strstr(buf, "n=4294967295"));
+}
+
 void register_system_status_tests(void) {
   RUN_TEST(test_sys_idle_by_default);
   RUN_TEST(test_sys_sim_fallback_debounce_and_recover);
@@ -596,6 +631,9 @@ void register_system_status_tests(void) {
   RUN_TEST(test_sys_thresholds);
   RUN_TEST(test_diag_page_sys_fields);
   RUN_TEST(test_diag_panel_guard_line);
+  // ★ 2026-09-25：跨重启累计那两行（上一格随重启归零，这两格不归零）
+  RUN_TEST(test_diag_guard_cumulative_lines);
+  RUN_TEST(test_diag_boot_count_unknown_is_dash);
   RUN_TEST(test_diag_missing_is_dash);
   RUN_TEST(test_diag_page_link_fields);
   RUN_TEST(test_diag_obd_not_connected_and_master_link);

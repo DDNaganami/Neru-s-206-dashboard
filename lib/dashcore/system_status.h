@@ -196,6 +196,25 @@ struct SysStatusInputs {
   uint32_t guard_anomaly = 0;     // 发现不一致的次数（含已修的）
   uint32_t guard_uptime_ms = 0;   // 守护上线多久（诊断页那一行要的是"它还在跑吗"）
 
+  // ---- ⑥.6 ★★ 跨重启留档（2026-09-25 新增，见 lib/dashcore/boot_persist.h）----
+  // ★ 为什么要有这一格：上面那四个数**一重启就归零** ⇒ "某次夜里守护救过几回"
+  //   正好在黑屏事故最需要它的时候丢掉。这里给的是**累计**（跨重启）+ 两个"新不新"的读数。
+  // ★ 口径（别读歪）：
+  //   · `guard_total_*` = **上一次开机为止的累计 + 本次**（开机时把本次的基数写进 NVS，
+  //     之后搭 10 分钟一次的心跳落盘）⇒ 它是"这块板历史上总共"的数；
+  //   · `guard_tot_snaps` = 累计值**落盘过几次**（跨重启单调 +1）：
+  //     它变了 ⇒ 从那一次起累计值里含了上一次运行的尾巴；
+  //   · `boot_count` = 第几次上电/复位（既有的 `bootn`）；`kBootCountUnknown` = 没记录；
+  //   · `boot_hb_n` = 心跳**累计**写过几次（0 且开机不到 10 分钟也是正常的）。
+  // ★ 设备端之外的构建（预览/抓帧盒）恒为 0 / `-` —— 那些构建里没有 NVS。
+  uint32_t guard_total_rd = 0;
+  uint32_t guard_total_fix = 0;
+  uint32_t guard_total_bl = 0;
+  uint32_t guard_total_anom = 0;
+  uint32_t guard_tot_snaps = 0;
+  uint32_t boot_hb_n = 0;
+  uint32_t boot_count = 0;
+
   // ---- ⑦ 告警 / 提示音状态（诊断页要显示"静音开关"）----
   bool     beep_muted = false;
   uint8_t  alert_active = 0;      // (uint8_t)AlertKind
@@ -207,6 +226,13 @@ struct SysStatusInputs {
 //   —— 与 lamp_view.h 把"亮不亮"与"怎么画"分开是同一条分层。行数上限 16：
 //   最长那一页 11 行，留出余量。
 static const uint8_t kDiagMaxLines = 16;
+
+// 诊断页那一格"第几次上电/复位"的**没有记录**哨兵（= `boot_persist.h` 的
+// `kBootUpUnknown` 同一个数）。★ 本文件刻意**不 include** `boot_persist.h`：
+// 那一份是设备侧的持久化层，而这一份是"屏上显示什么"的纯映射 —— 两者只有一个
+// 约定的常量相同，各自持有比互相拉依赖干净（数值由 `test_boot_persist.cpp` 与
+// `test_system_status.cpp` 两边各钉一次）。
+static const uint32_t kBootCountUnknown = UINT32_MAX;
 
 // 诊断页的两页。★ 为什么**只有两页**：内容要"平时不显示、进去才看"，
 //   页数多了就得设计翻页 UI（那本身就是新交互）；两页刚好一屏一页，
