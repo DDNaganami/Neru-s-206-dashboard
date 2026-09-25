@@ -106,6 +106,22 @@
 | `env:esp32s3-rgb`（**不带**链路 PHY） | **两个都发**：UART0（43/44 = CH343P = Type-C = `COMx`）**+** 原生 USB-CDC | Type-C 就在板上 | 插 Type-C，`pio device monitor` 直接看 —— 这是**今天已经在用**的那条 |
 | `env:esp32s3-rgb-master` / `-slave`（**带**链路 PHY） | ★ **只有原生 USB-CDC（GPIO19/20）** | ★ **只在 12PIN 排针上**（`D-`/`D+` / wiki 叫 `USB_DP`/`USB_DM`） | **要引线**，见下面两条办法 |
 
+> ★★ **2026-09-25 实测补记（第二块 2.8C，`COM8`）**：上面那张表**最后两列**那一步
+> （"只在 12PIN 上 ⇒ 台面上够不着"）在**本单的现场不成立** —— 这块板的 `COM8`
+> 枚举出来是 **`USB\VID_303A&PID_1001&MI_00`（USB-Serial-JTAG）+ 序列号 = 芯片 MAC**，
+> esptool 自己也报 `USB mode: USB-Serial-JTAG` ⇒ 那一路**就是芯片原生 USB**
+> （`dash_log.h` 说的"原生 USB-CDC（19/20）"），而它**就在同一个 COM 口上**：
+> `--after hard_reset` 之后从这个口**读到了角色镜像的全量开机日志**
+> （`boot: … | role=SLAVE`、`link: 从板侧就绪(§5, LINK_ROLE=0) …—— 真 PHY(UART0)`、
+> `mute: 0 (loaded from NVS)`、`image: 已加载 9 张图`），**一根 12PIN 引线都没用**。
+> ★ 这**不改**本节的结论：UART0（43/44）上**照样一个字节文本都没有** ——
+> `DASH_LOG_UART0=0` 守的就是这一条，本单采到的每一行都来自 USB 那一路。
+> ★ 至于"车主手里那根线插的是哪个口"（板载 Type-C，还是 §2① 那根自引的 19/20 线）
+> **本单未定论**，判据是"插着 Type-C 时 CH343P 会自己枚举成 CH34x 设备"
+> （当时 Windows 设备树里**一个 CH34x 都没有**，只有抓帧盒那颗 CH340 在 `COM7`）。
+> ★ 读日志的正确姿势见 §3.1 (4)：**复位与"打开端口"必须在几毫秒内接上**
+> （设备端 USB-CDC 没有主机侧缓冲，`main.cpp:1542-1546`），慢了头部几行必丢。
+
 ### ① 只想要日志：把 12PIN 的 19/20/5V/GND 引到一根废 USB 线
 
 原生 USB 是**芯片内部自带**的 USB 控制器（USB-Serial-JTAG），只要 `D+`/`D-` 两根数据线
@@ -166,6 +182,103 @@ python -m platformio run -e esp32s3-rgb-slave  -t upload --upload-port COM<n>
 * ★ **烧完的镜像里日志只走 19/20**（§2）⇒ **刷完串口上什么都不会出现**，那是正常的。
   想确认固件真的跑起来了，就用 `env:esp32s3-rgb`（不带链路 PHY 的那份）当"探针镜像"
   烧一次看开机那几行 —— 它和角色镜像**只差那两个 `-D`**（§5 的判据表）。
+
+### 3.1 ★★ 从板（**第二块板**）首烧 —— 本单实际用到的命令（2026-09-25，`COM8` 实测）
+
+> **什么时候用这一节**：手里那块 2.8C 是**新拆封**的（出厂跑的是**微雪 demo 固件**）。
+> 那种板子上**没有我们的分区表**（demo 是 OTA 布局：`app0/app1` 各 3 MB + 一个
+> 9.875 MB 的 `ffat`）⇒ **必须连 bootloader + 分区表 + boot_app0 + app 一起烧**
+> （`-t upload` 本来就会全烧），**然后再单独刷一次车主素材**。
+> 本单的原始输出（芯片/MAC、出厂分区表逐条、每一处 `Hash of data verified.`）
+> 全部记在 `ACCEPTANCE.md` 的「★★ 第二块 2.8C（COM8）首烧」那一节，这里只留命令。
+
+**(0) 先取证：把出厂分区表 dump 下来**（① 会把它整个覆盖掉 ⇒ **先留证据**）
+
+```powershell
+# esptool 5.3.0（★ 组合 core 的 penv 里就有；实测可用）
+$esp='C:\206dash-scratch\pio-core-mix\penv\Scripts\python.exe'
+& $esp -m esptool --chip esp32s3 --port COM8 read_flash 0x8000 0x1000 C:\206dash-scratch\<scratch>\stock-COM8-parttable.bin
+& $esp -m esptool --chip esp32s3 --port COM8 flash_id      # ← 芯片 / flash 大小 / MAC / USB 模式
+```
+
+（`read_flash` / `flash_id` / `write_flash` 这些**下划线**名字在 5.3.0 会打一行
+`Deprecated: … use read-flash` 的**警告**，行为不变 —— 本单就是照这个跑的。）
+
+**(1) 环境**（`docs/RGB-PANEL-2.8C.md` §14/§14.1：组合 core + ASCII 副本）
+
+```powershell
+$env:PLATFORMIO_CORE_DIR='C:\206dash-scratch\pio-core-mix'
+$env:PYTHONPATH='C:\Users\张九思\206Dash\.pio-pylibs'   # platformio 这个包在这里
+$env:PYTHONUTF8='1'; $env:PYTHONIOENCODING='utf-8'; chcp 65001 | Out-Null
+cd C:\206dash-scratch\<ASCII 副本>\Neru                 # ★ 中文路径下直接编会失败
+```
+
+★ **副本要新鲜**：本单踩过一次 —— 上一轮留下的 `C:\206dash-scratch\link2` 里
+`lib/dashcore/dash_log.h` 与 HEAD **不一致**（是旧版本）。最稳的做法是
+`git clone <仓库> <ASCII 路径>`，克隆完先 `git log -1` 核对，再看
+`Select-String platformio.ini 'esp32s3-rgb-slave'` 在不在。
+
+**(2) 烧从板镜像**（★ 两块板同时插着时**必须**显式 `--upload-port`）
+
+```powershell
+python -m platformio run -e esp32s3-rgb-slave -t upload --upload-port COM8
+```
+
+判据：`SUCCESS`、四个区（`0x0` / `0x8000` / `0xe000` / `0x10000`）**各自**
+`Hash of data verified.`、`Flash: 87.2% (used 914319 bytes)`（= 从板那份镜像的尺寸；
+主板那份是 916,859 B —— 两个数字**不一样**，可以拿来对账烧的是哪一份）。
+
+**(3) 烧车主素材（`theme` + `image`，**一个文件、一条命令**）**
+
+```powershell
+# 从**原件**重新打一份容器（不要拿旧的 assets.bin 凑）
+node tools/theme-editor/asset-package.js pack --theme <scratch>\theme.json `
+  --image <scratch>\image.bin --out <scratch>\assets.bin --table partitions-s3.csv
+# ★ sha256 必须等于已知 good 值；不等就**停下别刷**
+Get-FileHash <scratch>\assets.bin -Algorithm SHA256
+#   105BCDC074961EFB95A0BDFDDEB001DC9674732EBF1B120AFDF31B99386D3D2A   (2123148 字节)
+
+& $esp -m esptool --chip esp32s3 --port COM8 --after hard_reset write_flash 0x210000 <scratch>\assets.bin
+```
+
+判据：`Flash will be erased from 0x00210000 to 0x00416fff` ⇒ `Hash of data verified.`
+（`theme` 头 + `spiffs` 0 填充 + `image` 三段一次写完；擦除窗口整段落在我们这三个分区里）。
+
+**(4) ★★ 完了以后日志在哪 —— "Type-C 上什么都没有"是设计如此，但先看清这一条**
+
+> ★ **设计事实**：角色镜像（`-master` / `-slave`）里 `DASH_LOG_UART0=0`
+> ⇒ **UART0（43/44）上一个字节文本都没有**（那对脚整条让给链路），
+> 日志与文本回放只走**原生 USB-CDC**。所以：**插着 Type-C、却看不到任何东西，
+> 不是烧坏了，是设计如此。**
+> ★ **本单实测的补充**：第二块板的 `COM8` 就是**芯片原生 USB**（`VID_303A/PID_1001`）
+> ⇒ 在**这块板这套接线**上，角色镜像的日志**就在同一个 COM 口上读得到**，
+> 不必去够 12PIN（证据与边界见 §2 那条 2026-09-25 补记）。
+
+怎么读（★ **复位与"打开端口"要几毫秒内接上**：设备端 USB-CDC **没有主机侧缓冲**，
+所以"先复位、再慢慢开监视器"会让**头部那几行永远拿不到** —— 本单踩过）：
+
+```powershell
+# 一步复位 + 立刻开读（同一个进程 ⇒ 间隔只有几毫秒）。脚本在 scratch：
+#   C:\206dash-scratch\slave-com8\capture-boot.py
+& $esp C:\206dash-scratch\slave-com8\capture-boot.py 9 C:\206dash-scratch\<scratch>\boot.raw
+```
+
+应当看到的关键几行（从板）：
+
+```
+boot: reason=… n=… up=…ms | prev=… | hb=… | role=SLAVE
+link: 从板侧就绪(§5, LINK_ROLE=0) TX=GPIO43 RX=GPIO44 @115200 8N1 —— 真 PHY(UART0),等主板的 TICK/DATA
+mute: 0 (loaded from NVS)
+image: 已加载 9 张图 (1843200 字节数据)
+rgb: 板=微雪 ESP32-S3-LCD-2.8C(非触控) ST7701 RST=EXIO1 CS=EXIO3 BL=GPIO6/PWM20000 @50%
+boot anim done (收尾补一次 boot_apply: faceStage=1 → 表情 opa=COVER)
+```
+
+★ **复位只能靠 esptool**：这颗芯片的 USB-JTAG 上**纯 RTS 脉冲不复位**（实测零字节）；
+而 `--after hard_reset` 是有效的那个（`USBJTAGSerialReset` 那套是**进 bootloader** 的，
+用完芯片会停在 `waiting for download` —— 再跑一次 `--after hard_reset` 就回到 app）。
+★ 屏上那个 `SLAVE (LEFT)` 标签（§上面那张表）**只在开机动画那一秒多里**，
+所以"想让人看清"就得在**复位之后**马上看屏 —— 本条也是唯一需要**人眼**的判据。
 
 ---
 

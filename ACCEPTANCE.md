@@ -5238,3 +5238,301 @@ rgb: 脏区/s inv=49334px2(=一屏的 21.4%) flush=16/s(累计484) fmax=99x78(�
    `docs/LINK-TWO-BOARD.md` §7，车主拿着万用表或直接试都能做。
 7. ★ **第二块板到底是不是同一型号、有没有同一颗蜂鸣器** —— 仍未验证（L14 行里那条
    "等硬件到货"的话照旧成立）。
+
+---
+
+## ★★ 第二块 2.8C（**COM8**）首烧：出厂分区表取证 + 从板镜像 + 车主素材（2026-09-25，**上板 COM8**）
+
+> **本单的边界（红线）**：只动 **COM8**（新插上的那块 2.8C）。**COM7（抓帧盒 CH340）
+> 与 COM1（主板自带口）一次都没打开**；`tools/theme-editor/theme.json` 与
+> `tools/theme-editor/local/`（车主的本地产物、未跟踪）**全程未碰**；
+> `platformio.ini` / PCLK / bounce / num_fbs / 驱动时序 / 抓帧盒 env / 17-18 / GPIO15
+> **一个字节都没动**（本单**仓库代码零改动**，只有本文与 `docs/LINK-TWO-BOARD.md` 的追加）。
+> ★ 新板上是**微雪 demo 固件**（不是我们的），板子上**没有我们的分区表**
+> ⇒ 必须连 **bootloader + 分区表 + app** 一起烧（`-t upload` 就是全烧，见 ③）。
+> 仓库起点 `37f7604`；构建在 ASCII 副本 `C:\206dash-scratch\slave-com8\Neru`
+> （`git clone` 自本仓库 ⇒ 内容就是 HEAD，见 ⑧-7 那条"别用旧副本"的教训）。
+
+### ① 端口与芯片 / flash / MAC（esptool 5.3.0 原始行）
+
+`python -m esptool --chip esp32s3 --port COM8 flash_id`：
+
+```
+Connected to ESP32-S3 on COM8:
+Chip type:          ESP32-S3 (QFN56) (revision v0.2)
+Features:           Wi-Fi, BT 5 (LE), Dual Core + LP Core, 240MHz, Embedded PSRAM 8MB (AP_3v3)
+Crystal frequency:  40MHz
+USB mode:           USB-Serial/JTAG
+MAC:                90:70:69:ea:f6:b4
+
+Flash Memory Information:
+Manufacturer: 20
+Device: 4018
+Detected flash size: 16MB
+Flash type set in eFuse: quad (4 data lines)
+Flash voltage set by eFuse: 3.3V
+```
+
+| 口径 | 文档里写的 | 本机实测 | 对得上吗 |
+|---|---|---|---|
+| 芯片 | ESP32-S3（2.8C） | **ESP32-S3 (QFN56) rev v0.2**，双核+LP 240 MHz，**PSRAM 8MB** | ✓ |
+| flash | **16 MB**（`PINOUT.md`「必须是 16 MB」；报 4/8 MB 就不是 N16） | **Detected flash size: 16MB**（`Manuf 0x20 / Device 0x4018`） | ✓ |
+| 板子是不是 N16R8 | 八线(OPI) PSRAM 占 33-37 | 固件自检那行 `psram : 8189 KB 可用 / 8192 KB 总` | ✓（8 MB PSRAM 真的起来了） |
+| 晶振 / 分区表口径 | 40 MHz / 16 MB 那张表 | `Crystal frequency: 40MHz`；自检 `image : 分区 8192 KB @ 0x254000(编译期口径 8192 KB)` | ✓ |
+
+★ **`MAC: 90:70:69:ea:f6:b4`** —— 新板的 MAC（历次 COM6 那块的 MAC 不在这里，
+**不要**把两块板的读数混起来）。
+
+### ② 出厂（微雪 demo）分区表 —— **只作记录，不据此改我们的表**
+
+`python -m esptool --chip esp32s3 --port COM8 read_flash 0x8000 0x1000 stock-COM8-parttable.bin`
+（4096 B；解析脚本 `C:\206dash-scratch\slave-com8\parse-part.py`）。**原始条目**：
+
+| # | type | subtype | offset | size | label |
+|---|---|---|---|---|---|
+| 0 | `data(0x01)` | `nvs(0x02)` | `0x009000` | `0x005000`（20,480 B） | `nvs` |
+| 1 | `data(0x01)` | `ota(0x00)` | `0x00E000` | `0x002000`（8,192 B） | `otadata` |
+| 2 | `app(0x00)` | `ota_0(0x10)` | `0x010000` | `0x300000`（3,145,728 B = **3 MB**） | `app0` |
+| 3 | `app(0x00)` | `ota_1(0x11)` | `0x310000` | `0x300000`（3 MB） | `app1` |
+| 4 | `data(0x01)` | `fat(0x81)` | `0x610000` | `0x9E0000`（10,354,688 B ≈ 9.875 MB） | `ffat` |
+| 5 | `data(0x01)` | `coredump(0x03)` | `0xFF0000` | `0x010000`（65,536 B） | `coredump` |
+| 6 | — | — | — | — | **MD5 条目**（`magic=0xEBEB`，`md5=8ae5f0b0668329a7700282e34d3a2343`） |
+
+三条**有信息量**的差别（对我们只有记录价值）：demo 是 **OTA 布局**（两个 3 MB 的
+`app0/app1` + `otadata`）、**没有** `theme`/`spiffs`/`image` 任何一个分区、
+**没有** `0x254000` 这个偏移；而我们的 `partitions-s3.csv` 是
+`theme 0x210000/0x4000` + `spiffs 0x214000/0x40000` + `image 0x254000/0x800000`
+（app 槽只有 1 MB —— 见那张表文件头的理由）。
+⇒ 所以"先 dump 再全烧"这一步是**必须**的：demo 的分区表和我们的**不兼容**。
+
+### ③ 从板镜像烧写（`-t upload` 全烧：bootloader + 分区表 + boot_app0 + app）
+
+```powershell
+# 环境照 docs/RGB-PANEL-2.8C.md §14/§14.1（ASCII 副本 + 组合 core + PYTHONPATH）
+$env:PLATFORMIO_CORE_DIR='C:\206dash-scratch\pio-core-mix'
+$env:PYTHONPATH='C:\Users\张九思\206Dash\.pio-pylibs'   # platformio 这个包在这里
+$env:PYTHONUTF8='1'; $env:PYTHONIOENCODING='utf-8'; chcp 65001
+cd C:\206dash-scratch\slave-com8\Neru
+python -m platformio run -e esp32s3-rgb-slave -t upload --upload-port COM8
+```
+
+`C:\206dash-scratch\slave-com8\step2-build-upload.log` 原始行：
+
+```
+MAC:                90:70:69:ea:f6:b4
+Auto-detected flash size: 16MB
+Compressed 19984 bytes to 13023...
+Wrote 19984 bytes (13023 compressed) at 0x00000000 in 0.2 seconds (803.4 kbit/s).
+Hash of data verified.
+Wrote 3072 bytes (173 compressed) at 0x00008000 in 0.1 seconds (361.5 kbit/s).
+Hash of data verified.
+Wrote 8192 bytes (49 compressed) at 0x0000e000 in 0.1 seconds (963.8 kbit/s).
+Hash of data verified.
+Compressed 914720 bytes to 507258...
+Wrote 914720 bytes (507258 compressed) at 0x00010000 in 5.0 seconds (1452.8 kbit/s).
+Hash of data verified.
+======================== [SUCCESS] Took 115.52 seconds ========================
+esp32s3-rgb-slave  SUCCESS   00:01:55.516
+```
+
+| 判据 | 读数 |
+|---|---|
+| `SUCCESS` | **有**（`Took 115.52 seconds`；★ 本机"成功也可能返回非 0" ⇒ 看 `SUCCESS` 行，§14 那条纪律） |
+| 四个区 | `0x0`(19984→13023) / `0x8000`(3072→173) / `0xe000`(8192→49) / `0x10000`(914720→507258)，**各自 `Hash of data verified.`**（4/4） |
+| Flash | **`87.2% (used 914319 bytes from 1048576)`** = **914,319 B** ⇒ 与上一节 ⑥ 记的那份从板构建（`914,319 B / RAM 126,752 B`）**逐字节对上**（主板那份是 `916,859 B`，两者不同） |
+| RAM | `38.7% (used 126752 bytes from 327680)` = **126,752 B** ⇒ 同上，与记录的从板构建一致 |
+
+★ **"烧的确实是 `esp32s3-rgb-slave`，不是主板那份"** 有**两条**独立证据：
+**尺寸**（914,319 vs 916,859）与 ⑤ 的**运行期角色行**（见下）。
+
+### ④ 车主素材（`assets.bin`）：**从原件重新打**，sha256 对已知 good 值
+
+原件（`C:\Users\张九思\206Dash\.dsh-drop\session-49039670-…\`）**只读拷贝**到
+`C:\206dash-scratch\slave-com8\`（**没有往 `.dsh-drop` 里写任何东西**）：
+
+| 文件 | 字节 | 来源 |
+|---|---|---|
+| `image.bin` | **1,844,620** | `6fbe3b1a948c-image.bin` |
+| `theme.json` | **1,388** | `3ac5f92ee198-theme.json` |
+
+```powershell
+node tools/theme-editor/asset-package.js pack --theme <scratch>\theme.json `
+  --image <scratch>\image.bin --out <scratch>\assets.bin --table partitions-s3.csv
+```
+
+工具的回执（`step3-pack.log`）：`已生成 …assets.bin  (2123148 字节)`、
+容器基准 = `theme 分区偏移 0x210000`、`+0x0 theme.json(不足 16384 补 0)`、
+`+0x40000 …中间 262144 字节(spiffs,全 0 填充)`、
+`+0x44000 image.bin(最长 8388608 字节)`、
+`image 段 : 1844620 字节(包头 1420 + 数据 1843200,共 9 张图)`。
+
+```
+assets.bin sha256 = 105BCDC074961EFB95A0BDFDDEB001DC9674732EBF1B120AFDF31B99386D3D2A
+KNOWN-GOOD       = 105BCDC074961EFB95A0BDFDDEB001DC9674732EBF1B120AFDF31B99386D3D2A
+MATCH = True
+```
+
+⇒ **sha256 与已知 good 值逐位相同**（`2123148` 字节）。
+
+```powershell
+python -m esptool --chip esp32s3 --port COM8 --after hard_reset write_flash 0x210000 assets.bin
+```
+
+```
+Flash will be erased from 0x00210000 to 0x00416fff...
+Compressed 2123148 bytes to 392229...
+Wrote 2123148 bytes (392229 compressed) at 0x00210000 in 6.6 seconds (2590.0 kbit/s).
+Verifying written data...
+Hash of data verified.
+Hard resetting via RTS pin...
+```
+
+★ 擦除窗口 `0x210000…0x416fff` **整段落在** `theme`/`spiffs`/`image` 三个分区里
+（`image` 到 `0xA54000` 还有 6 MB 余量）⇒ 没有压到别人。
+★ 一个文件一条命令就同时喂了三块分区（theme 头 + spiffs 0 填充 + image），
+这正是"两个偏移在一张表里对齐"的用意（`partitions-s3.csv` 文件头第 8 行那段）。
+
+### ⑤ 上板实测：**完整开机日志**（COM8，从第 0 字节起；原始行）
+
+> 取法（**可复现**，脚本留在 `C:\206dash-scratch\slave-com8\capture-boot.py`）：
+> 让它先跑 `esptool … --after hard_reset read_mac`（**这个芯片上唯一有效的复位**
+> —— 纯 RTS 脉冲没用，见 ⑧-4），**esptool 一退出就在同一个进程里打开 COM8**。
+> ★ 为什么必须"同一个进程、几毫秒内接上"：设备端 USB-CDC **没有主机侧缓冲**
+> （`main.cpp:1542-1546` 那条已知事实：监视器没在开机前打开，那几行就永远看不到）
+> ⇒ 先复位、再慢慢开监视器，**头部那几行必丢**（本单先踩了一次，头三行没了）。
+
+```
+206 dash ok
+boot: reason=UNKNOWN n=4 (raw=11) up=218ms | prev=UNKNOWN (raw=11) prev_up=0min | hb=0 | role=SLAVE
+--- 自检(上电)---
+chip  : ESP32-S3 rev2, 2 核 @ 240 MHz
+flash : 16 MB
+psram : 8189 KB 可用 / 8192 KB 总
+heap  : 235 KB
+image : 分区 8192 KB @ 0x254000(编译期口径 8192 KB)
+obd: 未启用(-DOBD_SERIAL=0),只跑 Sim 假数据
+mute: 0 (loaded from NVS)
+alerts: 已就绪(超速 120 / 红区 5800 / 门 / 转向灯忘关 20s)
+van phy: gpio 就绪 RX=GPIO16(RO),空闲 70us 关帧,极性正常(VAN_RX_INVERT=0)
+link: 从板侧就绪(§5, LINK_ROLE=0) TX=GPIO43 RX=GPIO44 @115200 8N1 —— 真 PHY(UART0),等主板的 TICK/DATA
+theme: 已加载 (1388 字节, bg=0x141414, face=200)
+image: 已加载 9 张图 (1843200 字节数据)
+rgb: RGB565 480x480 pclk=15000000Hz 数据位=16 已就绪(第二块屏待接)
+rgb: 双framebuffer num_fbs=2 fb0=0x3c0d1b20 fb1=0x3c142340(各 450KB PSRAM) on_vsync=已注册
+rgb: 刷新档=局部刷新(每30ms整屏失效一次;自动交替=0ms)
+rgb: 板=微雪 ESP32-S3-LCD-2.8C(非触控) ST7701 RST=EXIO1 CS=EXIO3 BL=GPIO6/PWM20000 @50%
+206 dash boot
+image ok: 9 张,数据 1843200 字节,镜像 8388608 字节
+alert: none
+rgb: 整屏刷新 141.0ms(块=20 拷贝24.3ms 数据450KB) 换帧在下一个帧边界由驱动锁存(bb_fb_index)
+trust: none (episodes=0)
+206 dash ok  spd= 59% rpm= 70% coolant=85C face=high/sport
+BEACON  1  step=7(loop: 数据已更新)  uptime=1s heap=211KB psram=8192KB flash=16MB
+alert: overspeed
+buzz: exio 0x05 -> 0x85 (mask 0x80)
+buzz: 回读=0x85(影子=0x85)
+buzz: exio 0x85 -> 0x05 (mask 0x80)
+boot anim done (收尾补一次 boot_apply: faceStage=1 → 表情 opa=COVER)
+trust: sim-fallback  <-- 屏上出现数据不可信提示 beep (episodes=1)
+SRC speed=sim rpm=sim coolant=sim intake=sim | v=176.6km/h 6956rpm 87.0C 28.3C
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=overspeed beeps=2
+link: sim tick_age=5000ms seen=0 seq_gap=0 miss=0 offset=0ms
+```
+
+（连续 12 s 的完整流另存 `com8-head.raw` / `com8-full-boot.raw`：`BEACON` 每秒一行、
+`rgb: vsync=…(+54/s)`、`模式=局部刷新`、`timeout=0`、`fullrb=0/s`、`守护零动作` —— 
+与历次显示档的读数同一档，**没有黑屏/没有重启**。）
+
+| 判据 | 读数 | 它在证明什么 |
+|---|---|---|
+| **`role=SLAVE`** | 开机行尾 | ★ 刷进去的是**从板**那份镜像（标签三处里的串口那一处） |
+| 每秒那行 | **`link: sim tick_age=… seen=0 seq_gap=0 miss=0 offset=0ms`**，而**从不**出现主板那行 `link: tx=… rx_ok=… crc=… role=…` | ★★ 这两行在 `main.cpp` 里是 **`#if LINK_ROLE == 1` / `#else` 的互斥分支**（2030 / 2051）⇒ "打印的是从板那一支" = **运行期**证明这份镜像是 `LINK_ROLE != 1`（比尺寸证据更硬） |
+| `link: 从板侧就绪(§5, LINK_ROLE=0) TX=GPIO43 RX=GPIO44 @115200 8N1 —— 真 PHY(UART0),等主板的 TICK/DATA` | **一字不差** | 从板这一侧**真的编进了真 PHY**（本单上一节的核心改动，在真板上第一次落地） |
+| **`mute: 0 (loaded from NVS)`** | 开机行 | 出厂 NVS ⇒ **默认 `mute=0`＝有声**；且 ⑤ 里那三行 `buzz:` 真的按 `mute=0` 那一支走了 |
+| `theme: 已加载 (1388 字节, bg=0x141414, face=200)` | **1388 字节** | 车主那份 `theme.json`（原件就是 1,388 B）真的读出来了 |
+| `image: 已加载 9 张图 (1843200 字节数据)` / `image ok: 9 张,数据 1843200 字节,镜像 8388608 字节` | **9 张 / 1,843,200 B** | 车主那份 `image.bin`（打包回执：包头 1420 + 数据 1843200，共 9 张）**一个字节不差** |
+| `image : 分区 8192 KB @ 0x254000(编译期口径 8192 KB)` | 自检行 | ★ **我们的分区表真的生效了**（demo 那张表里没有 `0x254000` 这个分区） |
+| `boot anim done (收尾补一次 boot_apply: …)` | 出现 | 开机动画那一秒多**跑完了**（`SLAVE (LEFT)` 标签就活在那个窗口里、之后消失） |
+| `trust: sim-fallback  <-- 屏上出现数据不可信提示 beep (episodes=1)` | 出现 | 台上没接 VAN ⇒ 屏上那条"数据不可信"提示**出现了**（`SRC … =sim` 同一个口径），**不是**故障 |
+| `buzz: exio 0x05 -> 0x85 (mask 0x80)` + `buzz: 回读=0x85(影子=0x85)` | 出现（周期性，`alert: overspeed beeps=2/3…`） | ★ EXIO8 那一位**写进去又读回来** ⇒ 蜂鸣器**驱动路径**在这块新板上是通的（`ARCHITECTURE` §4.2 / L14 的另一半，**人耳那半见 ⑦**） |
+| `SRC speed=sim rpm=sim coolant=sim intake=sim` | 四个全 `sim` | 右侧那个 **`SIM` 角标**的出现条件成立（台上没接 VAN ⇒ 预期） |
+
+★ 一条**顺手拿到的**判据：`rgb: 刷新档=局部刷新` / `timeout=0` / `fullrb=0/s` /
+`守护零动作` —— **第二块屏的驱动健康读数与第一块同一档**（L14 那条"第二块板是不是
+同一型号"在**显示**这一半上有了正面读数）。
+
+### ⑥ ★★ 一条与文档口径**不同**的实测发现：`COM8` 是**芯片原生 USB**，不是板载 CH343P
+
+**证据（Windows 设备树原始行）**：
+
+```
+USB 串行设备 (COM8)          USB\VID_303A&PID_1001&MI_00\7&1B81892&0&0000
+USB JTAG/serial debug unit   USB\VID_303A&PID_1001&MI_02\7&1B81892&0&0002
+USB Composite Device         USB\VID_303A&PID_1001\90:70:69:EA:F6:B4      ← 序列号 = 芯片 MAC
+```
+
+`VID_303A` = Espressif、`PID_1001` = **USB-Serial-JTAG**；esptool 自己也报
+`USB mode: USB-Serial/JTAG`。⇒ COM8 是**芯片内部那个 USB 控制器（GPIO19/20 那一路）**，
+正是 `dash_log.h` 里"日志只走原生 USB-CDC"所指的那一个口 —— **不是**板载 CH343P
+（那会以 CH34x/`USB-Enhanced-SERIAL` 的名字出现，`VID_1A86`；本机设备树里
+**一个 CH34x 都没有**，只有抓帧盒那颗 CH340 在 COM7）。
+
+**后果（实用，值得写下来）**：在**当前这套接线**下，**角色镜像的日志在 COM8 上是读得到的**
+—— 不需要去够 12PIN。`docs/LINK-TWO-BOARD.md` §2 那张表"带链路 PHY 的构建只有原生
+USB-CDC，而它只在 12PIN 上 ⇒ 台面上够不着"**这一步前提在本单的现场不成立**。
+
+★ 这**不改**设计事实：UART0（43/44）上**确实一个字节文本都没有**（那才是
+`DASH_LOG_UART0=0` 要保证的事；本单采到的每一行都来自 USB 那一路）。
+★ 两种解释，**本单未定论**：ⓐ 车主手里那根线就是 `docs/LINK-TWO-BOARD.md` §2① 的
+"12PIN 的 19/20/5V/GND 引到一根废 USB 线"（那么 Type-C 上依旧没有日志，与文档一致）；
+ⓑ 这块板/这个口本来就是接在原生 USB 上的。**判据**：插着 Type-C 时 CH343P 会自己
+枚举出来（现在没有）；**请车主确认手里那根线插的是哪个口**。
+
+### ⑦ 需要车主**用眼睛**确认的两条（机上没有相机、没有麦克风 —— 只有他能答）
+
+1. ★ **开机那一秒多里，屏上的 `SLAVE (LEFT)` 能不能看清**（人眼证据）。
+   机器侧只有**像素证据**：`tools/theme-editor/check-role-label.js` 在预览落帧上是
+   `amber=1027 → 0`（`LABEL-OK`），而真机上"那一秒多够不够看清"没有第三方证据。
+   （运行期"这份镜像就是从板"已由 ⑤ 的 `role=SLAVE` + 互斥分支行证明 ⇒ 这一条**只**
+   问"字清不清楚"。）
+2. ★ **这块新板的蜂鸣器会不会响**（`ARCHITECTURE` §4.2 / L14 的另一半）。
+   机器侧只能证明**寄存器**：`buzz: exio 0x05 -> 0x85` + `回读=0x85(影子=0x85)`。
+   判据：台上 sim 数据在周期触发告警 ⇒ **它应该周期响**（本单 12 s 里
+   `alert: overspeed beeps=2/3…` 各响过）；或者复位后 **~2.4 s 的
+   `trust: sim-fallback` 那一拍**会响一声（单字符命令 `b` 也能按需响一声）。
+
+### ⑧ 没做 / 拿不准（**如实列**）
+
+1. ★★ **两块板仍然没有对打过** —— 本单只把**其中一块**（第二块，刷成从板）烧上了
+   目标固件，**没有**接 43/44 交叉线、没有共地、没有 5V 支路。
+   跨板那一半（`HELLO`/`STATUS` 真的过线、角色对账、主板那行 `role=`）**仍未实测**。
+2. ★ **⑦ 那两条肉眼结论还没有**（车主会直接回）—— 所以"新板蜂鸣器响不响"目前
+   只有寄存器级证据。
+3. ★ **⑥ 那个"哪根线"的问题未定论**（影响"台面上怎么同时拿到电和日志"的建议口径）。
+4. ★ **纯 RTS 脉冲在这颗芯片的 USB-JTAG 上不复位**（实测：`dtr=False` + `rts` 0.1 s
+   或 0.2 s 脉冲 ⇒ 端口零字节、芯片照旧跑）；**有效的是 esptool 那一套**
+   （`--after hard_reset`）。顺带踩到一次反面：`USBJTAGSerialReset` 那套是
+   **进 bootloader** 的序列 ⇒ 用完芯片会停在 `waiting for download`
+   （屏黑、串口打 `rst:0x15 (USB_UART_CHIP_RESET),boot:0x3 (DOWNLOAD(USB/UART0))`），
+   **再跑一次 `--after hard_reset` 就回到 app**（本单已回到 app，板子现在在表盘上）。
+5. ★ **本单没跑 native / pcpreview 回归**：仓库代码**零改动**（只追加了两份文档）
+   ⇒ 严格说没有可回归的东西；但也没有"跑了回归"这句话可说。
+6. ★ **出厂 demo 只 dump 了分区表那 4 KB，没有 dump 整片 demo 固件** ⇒ 想把这颗新板
+   还原成微雪 demo 的话**没有本地可复现的镜像**（demo 那 9.875 MB 的 `ffat` 也没备份）。
+   要还原得重新从微雪拿固件。
+7. ★ **别用旧的 ASCII 副本编**：`C:\206dash-scratch\link2`（上一轮留下的那个）里的
+   `lib/dashcore/dash_log.h` 与 HEAD **不一致**（5,583 B vs 5,473 B，是**旧版本**）
+   ⇒ 本单改成 `git clone` 本仓库到 `slave-com8\Neru`（克隆出来就是 `37f7604`，
+   且 `platformio.ini` 里两个角色 env 都在）。**判据**：克隆后先看
+   `git log -1` 与 `Select-String platformio.ini 'esp32s3-rgb-slave'`。
+8. ★ `boot: reason=UNKNOWN n=4 (raw=11)` 里的 `raw=11` = RTC 复位原因
+   **`USB_UART_CHIP_RESET`**（本单每次复位都走 esptool 的 USB 那一路）；
+   `prev_up=0min` / `hb=0` 是**新板**的表现（出厂 NVS 里没有我们的 `bootn`），
+   **不是**异常。
+
+**本单的原始件**（都在 `C:\206dash-scratch\slave-com8\`）：
+`stock-COM8-parttable.bin`(4096 B)、`step1-read-parttable.log`、`step1b-flash-id.log`、
+`step2-build-upload.log`、`step3-pack.log`、`step3b-write-assets.log`、
+`step4-restore-app.log`、`assets.bin`(2123148 B)、`com8-head.raw`(7868 B)、
+`com8-full-boot.raw`(9424 B)、`parse-part.py`、`read-com8.py`、`capture-boot.py`、
+`run-esptool.ps1`。
