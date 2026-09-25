@@ -8,6 +8,12 @@
 // ★ 开机时的角色标签（2026-09-25）要读 `LINK_ROLE` —— 那是"这块板是谁"的**唯一**出处
 //   （编译期唯一权威，§5）。本文件不新增任何角色判据，只是把它印到屏上。
 #include "link_role.h"
+// ★★ 角色 ↔ 屏幕的映射（2026-09-25）：**"哪块板显示哪一屏"的唯一出处**在这个头里
+//   （`lib/dashcore/dash_role_layout.h`，宿主机可测）。本文件里凡是"**这套表盘/这套表情/
+//   这套图片角色**该给第 s 屏用哪一个下标"的地方，一律走它的两个映射函数 ——
+//   本文件**不再**自己写 `s == 0 ? 左 : 右` 那种判据（两条判据迟早会分叉，
+//   而分叉的症状是"转速表的弧配速度表的表情"——不报错、只是看着不对）。
+#include "dash_role_layout.h"
 #include <lvgl.h>
 #include <Arduino.h>
 #include <math.h>
@@ -1005,13 +1011,16 @@ static void boot_apply(uint32_t now) {
     // 而层缓冲从显示缓冲里切(ARGB8888),装不下整屏 → 下半屏内容回绕到顶部。
     // 想要淡入效果时用一个不透明黑底覆盖件反向淡出,别动屏幕本身的透明度。
     ScreenUi& ui = g_ui[s];
+    // ★ 扫表用的那一条弧必须与建屏时**同一套**（本单 B）：这里也走角色映射，
+    //   否则从板的扫表会拿速度弧的几何去扫转速表的弧（槽位对不上 = 无动作/画错）。
+    const uint8_t ti = dashlayout::themeIndexForScreen(s);
     const float p = g_boot.arcProgress(now, s);
     for (uint8_t i = 0; i < ui.arc_count; ++i) {
       ui.arc_cur[i] = p;   // 扫表直接跟随,结束后的数据缓动从这里起步
-      arc_set_progress(ui.arcs[i], kScreens[s].arcs[i], p);
+      arc_set_progress(ui.arcs[i], kScreens[ti].arcs[i], p);
     }
 
-    if (kScreens[s].show_face && (ui.face_bg || g_face_img[s])) {
+    if (kScreens[ti].show_face && (ui.face_bg || g_face_img[s])) {
       // 表情出现:阶段 0 透明、之后全显。只在阶段切换时 set 一次,
       // 避免每 tick 重复 set opa 触发无谓重绘(曾导致层合成异常)。
       // (眨眼状态已删除,所以这里不再有"闭眼/睁眼"来回切,只剩一次显形。)
@@ -1095,10 +1104,15 @@ void dash_ui_init() {
   }
 
   for (uint8_t s = 0; s < 2; ++s) {
-    g_ui[s].idx = s;                 // 图片按屏取,index 必须先设
-    if (g_bg_ok[s]) {
+    // ★★ 这一行是**图片按屏取**的那个下标（`face_apply_image(ui.idx, …)` /
+    //   `faceResolve(screen, …)` 用它查 `g_face_ok[idx][slot]` / `g_face_dsc[idx][slot]`，
+    //   而槽位映射 `kFaceRoleId[screen][slot]` 就是按它索引的）⇒ 它必须与**表盘**
+    //   走同一个角色映射，否则"转速表的表情"会去速度表那一套里找图。
+    //   （`dash_role_layout.h` 的 `faceIndexForScreen()` 就是 `themeIndexForScreen()`。）
+    g_ui[s].idx = dashlayout::faceIndexForScreen(s);   // 图片按屏取,index 必须先设
+    if (g_bg_ok[g_ui[s].idx]) {
       g_bg_img[s] = lv_image_create(g_screens[s]);
-      lv_image_set_src(g_bg_img[s], &g_bg_dsc[s]);
+      lv_image_set_src(g_bg_img[s], &g_bg_dsc[g_ui[s].idx]);
       lv_obj_center(g_bg_img[s]);
     }
 
@@ -1108,7 +1122,14 @@ void dash_ui_init() {
     //   还不够 —— `g_face_img` 那一步原先是**后面另一个循环**里建的，
     //   于是"图片表情"仍然盖在弧上；落帧上表现为弧被切掉四个缺口，
     //   而那个现象在"改成从下面建"之后**一个像素都没变**，正是这条没做全）。
-    if (kScreens[s].show_face) build_face(g_screens[s], g_ui[s]);
+    // ★★ 这一行（`kScreens` = `g_theme.screens`）是**本单 B 的落点**：
+    //   "第 s 屏用哪一套表盘"现在由 `dash_role_layout.h` 说了算 ——
+    //   主板（`LINK_ROLE==1`）⇒ 末屏 = `screens[1]`（速度表 + 进气温度）；
+    //   从板（`LINK_ROLE==0`）⇒ 末屏 = `screens[0]`（转速表 + 水温）。
+    //   ★ 判据不是"哪块玻璃"（今天两块屏指向同一个 `lv_display_t`），而是
+    //     "**哪一屏是这一角色该显示的那一屏**" —— 理由与边界全在那个头文件里。
+    const uint8_t ti = dashlayout::themeIndexForScreen(s);
+    if (kScreens[ti].show_face) build_face(g_screens[s], g_ui[s]);
 
     // 用图片表情替换(或隐藏)程序化表情。
     // ★ 降级:没有表情图时**保留程序化形状表情** —— 这条路径是刻意留的,
@@ -1127,7 +1148,7 @@ void dash_ui_init() {
     }
 
     // ---- 第 3 层：表盘弧（**永远在表情之上**，车主定稿）----
-    build_arcs(g_screens[s], kScreens[s], g_ui[s]);
+    build_arcs(g_screens[s], kScreens[ti], g_ui[s]);
   }
 
   // 指示灯槽位(占位图形):建在**读数之前** —— 于是副表数字(水温/进气)
@@ -1141,7 +1162,7 @@ void dash_ui_init() {
   //   （车主 2026-09-24 定稿："读数应该是最高层的" ⇒ 弧被挪到表情之前之后，
   //     读数仍然是最后一个建的 —— 这一段的**位置**是层序约定的一部分，别动）。
   for (uint8_t s = 0; s < 2; ++s) {
-    build_readout(g_screens[s], kScreens[s], g_ui[s]);
+    build_readout(g_screens[s], kScreens[dashlayout::themeIndexForScreen(s)], g_ui[s]);
   }
 
   // ★ 2026-09-24 新增的两个整屏/压边元素，**建在读数之后**（= 图层最上）：
@@ -1158,6 +1179,18 @@ void dash_ui_init() {
     //   （诊断页建完是 HIDDEN，正常开机时它与本标签不共存。）
     build_role_label(g_screens[s], g_ui[s]);
   }
+
+  // ★★ 2026-09-25（本单 B）：把"**这块板显示哪一屏**"打出来 —— 这是"角色 ↔ 屏幕"
+  //   这条映射在串口上唯一能自证的一行（屏上什么样只能人眼看，而这一行说的是
+  //   "我们**要求**它显示哪一套"）。★ 纯 ASCII（本构建只使能 Montserrat）。
+  //   ★ `last` = 今天**唯一可见**的那一屏（RGB 单屏版本：`g_left`/`g_right` 指向同一个
+  //     `lv_display_t`，后建的压在前面 ⇒ 末屏就是车主看到的那一屏）。第二块屏到货后
+  //     这一行照旧成立（两屏各自的名字都在 `slots=` 里）。
+  dash_logf("layout: role=%s last=%s slots=[%s | %s]\n",
+            dashlayout::roleName(),
+            dashlayout::panelNameForScreen(dashlayout::kScreenTop),
+            dashlayout::panelNameForScreen(0u),
+            dashlayout::panelNameForScreen(1u));
 
   g_boot.start(millis());
   dash_logf("206 dash boot\n");
@@ -1217,9 +1250,14 @@ void dash_ui_render(const ArcDashView& v, const LampView& lamps, SystemStatus& s
     last_ok_ms = now;
     // face= 打的是**左/右两个**:两屏表情各看各的表,只打一个就分不清
     // 是"转速档没生效"还是"车速档没生效"。
-    dash_logf("206 dash ok  spd=%3.0f%% rpm=%3.0f%% coolant=%.0fC face=%s/%s\n",
+    // ★ 2026-09-25（本单 B）：后面再挂一格 `role=` + `last=` —— 屏上跑的是哪一套表盘，
+    //   这一行是**唯一**能在串口上看到它的地方（车主报的就是"从板刷成了速度表"，
+    //   而那件事在这一行加这两格之前**一个字都看不出来**）。
+    dash_logf("206 dash ok  spd=%3.0f%% rpm=%3.0f%% coolant=%.0fC face=%s/%s | role=%s last=%s\n",
                   v.speed_t * 100.0f, v.rpm_t * 100.0f, v.coolant_c,
-                  face_name(v.face_left), face_name(v.face_right));
+                  face_name(v.face_left), face_name(v.face_right),
+                  dashlayout::roleName(),
+                  dashlayout::panelNameForScreen(dashlayout::kScreenTop));
   }
 
   // ---- ① 数据不可信状态机：**每拍都推进**（即使屏上什么都不显示）----
@@ -1261,16 +1299,22 @@ void dash_ui_render(const ArcDashView& v, const LampView& lamps, SystemStatus& s
 
   for (uint8_t s = 0; s < 2; ++s) {
     ScreenUi& ui = g_ui[s];
+    // ★★ 本单 B 的第二处：这一屏的弧几何、表情来源都按**角色映射**取。
+    //   `ti` = 这一屏该用的主题下标（从板末屏 = 0 = 转速表 + 水温）。
+    const uint8_t ti = dashlayout::themeIndexForScreen(s);
     for (uint8_t i = 0; i < ui.arc_count; ++i) {
-      const ArcStyle& a = kScreens[s].arcs[i];
+      const ArcStyle& a = kScreens[ti].arcs[i];
       const float target = arc_progress(a, v);
       ui.arc_cur[i] += (target - ui.arc_cur[i]) * k;
       arc_set_progress(ui.arcs[i], a, ui.arc_cur[i]);
     }
-    if (kScreens[s].show_face && ui.face_bg) {
+    if (kScreens[ti].show_face && ui.face_bg) {
       // 表情的显隐/形变只在 face_apply 里按状态变化时改一次,这里不重复 set。
       // ★ 按屏取:**左屏用转速表的表情,右屏用速度表的表情**。
-      const Face f = (s == 0) ? v.face_left : v.face_right;
+      //   ★ 2026-09-25：这里的 `s` 换成了 `ti` —— 与建屏时那一套表盘**同一个下标**
+      //     （原来写死 `s == 0 ? 左 : 右`，那是"屏号 == 表盘号"的隐含假设，
+      //      本单把角色映射引进来之后那个假设不再成立）。
+      const Face f = (ti == 0u) ? v.face_left : v.face_right;
       face_apply(ui, f);
     }
     readout_apply(ui, v);

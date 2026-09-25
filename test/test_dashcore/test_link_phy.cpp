@@ -513,6 +513,172 @@ static void test_link_rx_poll_budget_bounds_work(void) {
   TEST_ASSERT_TRUE(rx.poll(phy, &f, 64u));
   TEST_ASSERT_EQUAL_HEX8((uint8_t)MsgType::Event, f.type);
   TEST_ASSERT_EQUAL_UINT8(kEventLen, f.len);
+
+  // ★★ 2026-09-25 补的一格：`bytes_read`（**从 PHY 真的读进来多少**）。
+  //   它与 `noise_bytes` 的差正是"主循环被输入堵住"要看的那个数 —— 见下面那两条。
+  TEST_ASSERT_EQUAL_UINT32(190u + 10u + n, rx.stats().bytes_read);
+}
+
+// ============================================================
+// ★★ `bytes_read` ≠ `noise_bytes`（2026-09-25 新增）—— 悬空 RX 脚的签名
+//
+// 起因（车主现场）："**现在会长鸣一会儿，画面也卡住了**"。那一单里主循环收帧的
+// 上界判据**只能**用 `bytes_read`，不能用 `noise_bytes` —— 但两者的差**不是**
+// "永远是 0 个噪声"（第一版这里就是这么写的，实跑当场红了：`5A 02 03` 那种垃圾
+// 会先被当成候选帧等载荷、超时/CRC 不过之后丢掉一个字节再从下一个 SYNC 起找，
+// 于是**中间那几个字节真的会进 noise 计数**）。
+// ⇒ 本用例钉的是**那条真正重要的关系**：
+//     `bytes_read` **恰好**等于"从 PHY 读出来的字节总数"，而 `noise_bytes`
+//     只是**它的一个子集**（猎手阶段丢掉的那些）⇒ 判"这一圈吃了多少"只能用它。
+//   ★ 判据：读进来的字节 = 剩下的（还在环里）+ 已经从环里取走的；而"取走的"
+//     必须一个不少地体现在 `bytes_read` 里（含半截帧、含后来被丢掉的候选帧）。
+// ============================================================
+static void test_link_rx_bytes_read_counts_every_phy_byte(void) {
+  FakeLinkPhy phy;
+  // 4 组"SYNC + 两个垃圾字节"：既不是有效的帧（载荷不够 ⇒ 等更多），
+  // 又会真的走一遍"候选 → 丢 → 从下一个 SYNC 重找"（所以 noise 会涨一点）。
+  const uint8_t junk[12] = {0x5Au, 0x02u, 0x03u, 0x5Au, 0x02u, 0x03u,
+                            0x5Au, 0x02u, 0x03u, 0x5Au, 0x02u, 0x03u};
+  phy.feed(junk, sizeof(junk));
+
+  LinkRx rx;
+  Frame f;
+  // 一次 poll 读满它自己的预算（64），这一小段字节应当被读光
+  TEST_ASSERT_FALSE(rx.poll(phy, &f, 64u));
+
+  const LinkRxStats& st = rx.stats();
+  // ★ 主判据：读进来的 == 环里少掉的（这一段全被读走了）
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)sizeof(junk), st.bytes_read);
+  TEST_ASSERT_EQUAL_UINT32(0u, (uint32_t)phy.rxBytes());
+  // ★ 而 noise 只是其中**一部分**（子集关系，不是相等关系）—— 这就是
+  //   "拿 noise 当工作量判据会漏"的可执行证据。
+  TEST_ASSERT_TRUE(st.noise_bytes <= st.bytes_read);
+  TEST_ASSERT_EQUAL_UINT32(0u, st.frames_ok);
+  TEST_ASSERT_EQUAL_UINT32(0u, st.crc_err);
+  // 解码器把那串字节留在缓冲里等更多（这正是"悬空脚上一帧都解不出来"的形态）
+  TEST_ASSERT_TRUE(rx.pendingBytes() > 0u);
+
+  // ★ 另外半条：**一个字节都不许漏计** —— 再喂一大段，差值必须逐字节对上。
+  uint8_t more[300];
+  memset(more, 0x11, sizeof(more));       // 非 SYNC：全进噪声
+  phy.feed(more, sizeof(more));
+  const uint32_t b0 = st.bytes_read;
+  TEST_ASSERT_FALSE(rx.poll(phy, &f, 200u));
+  TEST_ASSERT_EQUAL_UINT32(200u, (uint32_t)(st.bytes_read - b0));
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)sizeof(more) - 200u, (uint32_t)phy.rxBytes());
+}
+
+// ============================================================
+// ★★ poll() 的 false 有两种意思（2026-09-25 新增）—— **这条是本单实测出来的 bug**
+//
+// 这一条直接对着"差点写上板"的那个形状：
+//     if (!rx.poll(phy, &f)) break;      // ✗ 错
+// `poll()` 返回 false 有两种完全不同的原因：
+//     ① "PHY 现在没有字节了"（`phy.read() < 0` ⇒ 这一圈真的收完了）；
+//     ② "**这一次调用**的预算用完了"（默认 64 B ⇒ 一次只读这么多）。
+// 把 ② 当 ① 就地退出 = "每圈最多读 64 字节" ⇒ 在**连续字节流**（悬空 RX 脚上的伪
+// 字节流、或对端背靠背地发）里，环里永远排不干净：`rxLeft` 只增不减、`bytes_read`
+// 每圈只涨 64，而主循环 ~900 圈/秒也追不上更快的输入 ⇒ 症状是"链路看着像断了"
+// （tick 年龄一直涨），而**根因是一个 return 值被当成了另一种意思**。
+//
+// ⇒ 正确的形状（`main.cpp` 的 `link_poll_bounded_*()` 用的就是它）：
+//     false 之后再看 `pending()`（缓冲里还有没解完的字节）与 `phy.available()`
+//     （环里还有货）—— 有一个为真就继续；两个都空才是"这一圈收完了"。
+//   上界仍然由"每圈字节预算"那一行兜着 ⇒ 不会变成死循环。
+//
+// 本用例同时钉住那**两种 false 并存**的现场：800 字节噪声 + 一帧，
+// 前三趟 poll 全是"预算用完"（pending/avail 都还有货 ⇒ 必须继续），
+// 第四趟才把那一帧解出来。
+// ============================================================
+static void test_link_rx_poll_false_budget_is_not_empty(void) {
+  FakeLinkPhy phy;
+  uint8_t noise[800];
+  memset(noise, 0x22, sizeof(noise));     // 非 SYNC
+  uint8_t good[16];
+  const uint16_t gn = makeFrame((uint8_t)MsgType::Event, 0x33, kRoleMaster, good, sizeof(good));
+  phy.feed(noise, sizeof(noise));
+  phy.feed(good, gn);
+
+  LinkRx rx;
+  Frame f;
+  uint32_t budgetHits = 0;                // "预算用完"那一种 false 见了几次
+  bool got = false;
+  for (int i = 0; i < 6 && !got; ++i) {   // 上限 6 趟，防死循环
+    if (!rx.poll(phy, &f, 300u)) {        // 300 B/趟 ⇒ 800 字节噪声要三趟
+      // ★ 判据：**这一次的 false 是哪一种** —— 还有货就不是"收完了"
+      TEST_ASSERT_TRUE(rx.pending() || phy.available() > 0);
+      ++budgetHits;
+      continue;
+    }
+    if (f.type == (uint8_t)MsgType::Event) got = true;
+  }
+  TEST_ASSERT_TRUE(budgetHits >= 2u);     // ★ "预算用完"真的发生过（否则这条用例是空的）
+  TEST_ASSERT_TRUE(got);                  // ★ 而它**没有**把这一帧吃掉
+  TEST_ASSERT_EQUAL_UINT32(1u, rx.stats().frames_ok);
+  TEST_ASSERT_EQUAL_UINT32(0u, rx.stats().crc_err);
+  TEST_ASSERT_EQUAL_UINT32(0u, (uint32_t)phy.rxBytes());
+  // 一个字节都不许丢：读走的 == 喂进去的总数
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)sizeof(noise) + gn, rx.stats().bytes_read);
+}
+
+// ============================================================
+// ★★ 每圈上界（2026-09-25 新增）—— `main.cpp` 那条 `kLinkRxBytesPerLoop` 的宿主面
+//
+// 形状**逐字复刻** `main.cpp` 的 `link_poll_bounded_slave()` / `link_poll_inbound()`：
+// 预算在**每一趟的入口**查，false 之后靠 `pending()`/`available()` 分清"还有活干"
+// 还是"这一圈空了"（理由见上一条用例）。
+//
+// 断言两半：
+//   ① **预算生效**：一整圈吃掉的字节数有上界（≤ 预算 + 最后一次 poll 的单次预算）；
+//   ② ★ **有界不等于丢数据**：预算之外剩下的字节**留在 ring 里**，
+//      下一圈接着收 ⇒ 那一帧照样解出来（`frames_ok` 终究是 1，且 `crc_err` 为 0）。
+// ============================================================
+static void test_link_rx_per_loop_budget_leaves_rest_for_next_loop(void) {
+  FakeLinkPhy phy;
+  const uint32_t kBudget = 512u;          // 与 main.cpp 的 kLinkRxBytesPerLoop 同一个数
+
+  uint8_t noise[600];
+  memset(noise, 0x00, sizeof(noise));     // 非 SYNC ⇒ 全进噪声计数
+  uint8_t good[16];
+  const uint16_t gn = makeFrame((uint8_t)MsgType::Event, 0xF0, kRoleMaster, good, sizeof(good));
+  phy.feed(noise, sizeof(noise));
+  phy.feed(good, gn);                     // 那一帧在**预算之外**（600 > 512）
+
+  LinkRx rx;
+  Frame f;
+  bool got = false;
+  // ---- 第一圈（与主循环那一段逐字同形）----
+  const uint32_t bytes0 = rx.stats().bytes_read;
+  for (;;) {
+    if ((uint32_t)(rx.stats().bytes_read - bytes0) >= kBudget) break;
+    if (!rx.poll(phy, &f)) {
+      if (rx.pending() || phy.available() > 0) continue;   // ★ 这两种 false 不是一回事
+      break;
+    }
+    if (f.type == (uint8_t)MsgType::Event) got = true;
+  }
+  // ① 一整圈的字节数有上界：预算 + 最后一次 poll 的单次预算（64）
+  const uint32_t used = (uint32_t)(rx.stats().bytes_read - bytes0);
+  TEST_ASSERT_TRUE(used >= kBudget);
+  TEST_ASSERT_TRUE(used <= kBudget + 64u);
+  TEST_ASSERT_FALSE(got);                 // 那一帧在预算之外 ⇒ 这一圈还没轮到它
+  // ③ "有界"**不丢字节**：吃掉的 + 剩下的 = 喂进去的总数（一个字节都没被丢掉）
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)sizeof(noise) + gn - used, (uint32_t)phy.rxBytes());
+
+  // ---- 第二圈：剩下的接着来 ⇒ 那一帧**一帧不丢**（"有界"不等于"丢数据"的判据）----
+  const uint32_t bytes1 = rx.stats().bytes_read;
+  for (;;) {
+    if ((uint32_t)(rx.stats().bytes_read - bytes1) >= kBudget) break;
+    if (!rx.poll(phy, &f)) {
+      if (rx.pending() || phy.available() > 0) continue;
+      break;
+    }
+    if (f.type == (uint8_t)MsgType::Event) { got = true; break; }
+  }
+  TEST_ASSERT_TRUE(got);
+  TEST_ASSERT_EQUAL_UINT32(1u, rx.stats().frames_ok);
+  TEST_ASSERT_EQUAL_UINT32(0u, rx.stats().crc_err);
+  TEST_ASSERT_EQUAL_UINT32(0u, (uint32_t)phy.rxBytes());   // 收干净了
 }
 
 // ★★ 单板回环的**宿主机复现**（2026-09-23 上板实测踩到的那一次）：
@@ -647,6 +813,12 @@ void register_link_phy_tests(void) {
   RUN_TEST(test_link_rx_unknown_type_dropped);
   RUN_TEST(test_link_rx_role_conflict_drops_frame);
   RUN_TEST(test_link_rx_poll_budget_bounds_work);
+  // ★ 2026-09-25 补的两条（"屏卡死 + 蜂鸣器长鸣"那一单）：
+  //   ① `bytes_read` 与 `noise_bytes` **不是一回事**（悬空 RX 脚上 noise 可以是 0）；
+  //   ② 主循环那条"每圈字节上界"的形状（有界但**不丢**数据）。
+  RUN_TEST(test_link_rx_bytes_read_counts_every_phy_byte);
+  RUN_TEST(test_link_rx_poll_false_budget_is_not_empty);
+  RUN_TEST(test_link_rx_per_loop_budget_leaves_rest_for_next_loop);
   // ★ 单板回环的两条（2026-09-23 上板踩到"收了很多字节却 0 帧"之后补的）：
   //   背靠背连续流必须解出全部 200 帧；回环的收端角色必须与帧上的 ROLE 互补。
   RUN_TEST(test_link_rx_backtoback_stream_decodes_all_frames);

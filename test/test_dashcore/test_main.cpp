@@ -25,6 +25,7 @@ void register_buzzer_exio_tests(void);   // 真机蜂鸣器驱动:EXIO8 掩码/�
 void register_panel_guard_tests(void);   // 面板健康守护:回读对账/按影子重写/背光/2秒周期/自愈(2026-09-24)
 void register_boot_persist_tests(void);  // 跨重启留档:上一次 reason/上一次跑了多久/守护累计(2026-09-25)
 void register_serial_cmd_tests(void);    // 串口单字符命令的判据层:d/m/b/r + 别多吃回放字符(2026-09-24)
+void register_role_layout_tests(void);   // 角色 ↔ 屏幕的映射:哪块板显示哪一屏(2026-09-25)
 void register_face_stage_tests(void);
 void register_link_crc_coverage_tests(void);   // 双板链路 v1:CRC-15 检错覆盖枚举(§8 L4)
 void register_link_frame_tests(void);          // 双板链路 v1:帧层(§2)—— 布局/帧长/CRC 覆盖/拒绝路径
@@ -86,6 +87,12 @@ int main(void) {
   //   （见 `serial_cmd.h` 的文件头）；这一个口上同时跑日志与回放帧 ⇒
   //   "多认一个字符"会吃掉回放、"少认一个"会变成"按了没反应"，两个方向都要钉。
   register_serial_cmd_tests();
+  // ★ 2026-09-25 新增：**角色 ↔ 屏幕的映射**（`dash_role_layout.h`）。
+  //   起因是车主原话"副表怎么也给你刷成速度表了" —— 新板（从板镜像）上电显示的是
+  //   速度表，而它该显示转速表 + 水温。这条映射以前**只存在于开机标签的文案里**
+  //   （`MASTER (RIGHT)` / `SLAVE (LEFT)`），没有一行判据、也没有文档 ⇒ 本单把它
+  //   写成代码 + 文档，并在这里逐条钉住（含"两块板**不是**同一屏"这条反向判据）。
+  register_role_layout_tests();
   register_face_stage_tests();
   return UNITY_END();
 }
