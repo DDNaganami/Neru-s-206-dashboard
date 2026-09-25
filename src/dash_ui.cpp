@@ -5,6 +5,9 @@
 #include "image_load.h"     // 图片资源(背景图 / 表情图)
 #include "face_stages.h"    // 表情槽位 → 图片角色 / 缺图降级链
 #include "system_status.h"  // 数据不可信提示 + 诊断页（纯逻辑住在 lib/dashcore/）
+// ★ 开机时的角色标签（2026-09-25）要读 `LINK_ROLE` —— 那是"这块板是谁"的**唯一**出处
+//   （编译期唯一权威，§5）。本文件不新增任何角色判据，只是把它印到屏上。
+#include "link_role.h"
 #include <lvgl.h>
 #include <Arduino.h>
 #include <math.h>
@@ -62,6 +65,15 @@ struct ScreenUi {
   lv_obj_t* diag_title = nullptr;
   lv_obj_t* diag_body = nullptr;
   bool      diag_built = false;
+
+  // ---- ★★ 开机时的角色标签（2026-09-25）----
+  // ★ 为什么要有它：两块 2.8C **外观完全一样**，而角色是**编译期**定死的
+  //   （`LINK_ROLE`，§5）⇒ 手里这块板是哪一角色，只有刷进去的那份固件知道。
+  //   开机动画那一秒半里在屏上打一行大字，就是让人**一眼**分清主/从。
+  // ★ 它**只活到开机动画结束**（窗口一过就 HIDDEN）—— 表盘要保持干净，
+  //   常驻就是 bug（车主的原话）。
+  lv_obj_t* role_lbl = nullptr;
+  bool      role_visible = false;       // 当前该不该显示（只在**变了**的时候碰 LVGL）
 };
 
 static ScreenUi g_ui[2];
@@ -724,6 +736,67 @@ static void build_trust_badge(lv_obj_t* parent, ScreenUi& ui) {
   ui.trust_last = 0xFF;
 }
 
+// ============================================================
+// ★★ 开机时的**角色标签**（2026-09-25 新增）—— "这两块一模一样的板，我手里是谁？"
+// ============================================================
+// 车主的需求原话：「你烧的固件不能带标签吗，主片和副片的标签做区分。」
+//
+// 为什么**必须**是屏上的一行字（而不是"看串口/看诊断页"）：
+//   · 两块 2.8C **外观完全一样**（同型号、同屏、同壳），插上电之后屏上显示的东西
+//     也几乎一样 ⇒ 光看外观分不出主/从；
+//   · 角色是**编译期**定死的（§5：`LINK_ROLE` 是唯一权威、运行期没有任何代码能改它）
+//     ⇒ "这块板是谁"只存在于**刷进去的那份固件**里 ⇒ 那就让它自己说出来；
+//   · 而**最该看到它的时刻**恰恰是刚烧完、还没接线、插上电那一秒 —— 也就是开机动画
+//     那段时间（`BOOT_TOTAL_MS`，默认 ≈1.13 s）。
+//
+// ★★ 三条硬要求（都是车主点名的，别改）：
+//   ① **只在开机动画期间显示**，动画一结束就消失 ⇒ 表盘保持干净。
+//      实现上就是"可见性 = `g_boot.active(now)`"，改动只有**状态翻转的那一次**
+//      （不每帧碰 LVGL：本驱动上多余的 invalidate 会把队列刷爆，灯条那一段踩过）。
+//   ② **不许干扰既有的开机动画/表情逻辑**：本标签是一个**独立的顶层对象**，
+//      不挂在 `face_bg`/`g_face_img` 上、不改它们的 opa、不参与扫表缓动。
+//      ★ 特别是**不能**把 `face_apply()` 那条"表情显形"的路挡住 —— 2026-09-24
+//      踩过"整个动画窗口一次都没轮到 boot_apply ⇒ 表情永久透明"那个坑
+//      （见 `dash_ui_tick()` 里那段收尾补调的说明）；本标签**不碰**那条路径。
+//   ③ **纯 ASCII**：本构建**只使能了 Montserrat 系列**（`include/lv_conf.h` 的
+//      `LV_FONT_MONTSERRAT_*`）⇒ **没有 CJK 字形**。写成 "MASTER (RIGHT)" 是能画的，
+//      写成"主板/右"就是**一片黑**（一个字形都画不出来）—— ★ 以后谁想把这两行
+//      文案改成中文，先读这一条：那不是"看不清"，是**什么都没有**。
+//      要中文就得先引 CJK 字体（`source_han_sans_sc_16_cjk`，占 Flash），那是独立一单。
+//
+// ★ 字号取 `READOUT_UNIT_FONT`（既有 24 号，与读数单位同一个）而不是更大的 48 号：
+//   24 号在 480 档上已经足够醒目（一行 ≈ 200 px 宽），而 48 号会把这一行压到弧带上
+//   （弧带在 181..205，本标签落在 y≈56..96 那条留白里，两个都不碰）。
+static void build_role_label(lv_obj_t* parent, ScreenUi& ui) {
+  lv_obj_t* l = lv_label_create(parent);
+  lv_obj_remove_style_all(l);
+  // ★ 文字**居中**且整行宽度铺满：字号/文案变了也不用重算位置。
+  lv_obj_set_width(l, ts(480));
+  lv_obj_set_pos(l, ts(0), ts(56));
+  lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_font(l, READOUT_UNIT_FONT, 0);
+  lv_obj_set_style_text_color(l, lv_color_hex(0xFFB020), 0);   // 琥珀（与诊断页描边同一色）
+  // ★ 两行：第一行是**谁**，第二行是**它该装在哪一侧 + 跑哪份 env**。
+  //   把 env 名写上去是有意的：烧错镜像时它是**唯一**能在屏上说清"你烧的是哪一份"的东西。
+#if LINK_ROLE == 1
+  lv_label_set_text(l, "MASTER (RIGHT)\nesp32s3-rgb-master");
+#else
+  lv_label_set_text(l, "SLAVE (LEFT)\nesp32s3-rgb-slave");
+#endif
+  ui.role_lbl = l;
+  ui.role_visible = true;     // 建好就显示 —— 第一帧往往就落在开机动画里（见 role_apply）
+}
+
+// 把"这一拍该不该显示角色标签"落到像素上。**只在状态变了的时候碰 LVGL**（同 trust_apply）。
+// ★ 判据就是**开机动画还在不在** —— 没有第二个条件、没有计时器、没有"显示 N 秒"。
+static void role_apply(ScreenUi& ui, bool show) {
+  if (!ui.role_lbl) return;
+  if (show == ui.role_visible) return;
+  ui.role_visible = show;
+  if (show) lv_obj_remove_flag(ui.role_lbl, LV_OBJ_FLAG_HIDDEN);
+  else      lv_obj_add_flag(ui.role_lbl, LV_OBJ_FLAG_HIDDEN);
+}
+
 // 把"这一拍该不该提示"落到像素上。**只在真的变了的时候碰 LVGL**：
 //   角标是常态隐藏的，一旦显示就 5 Hz 在那儿 ⇒ 无脑每帧 set_text/set_style
 //   会把 invalid 队列刷爆（灯条那一段的注释里踩过同一个坑）。
@@ -1080,6 +1153,10 @@ void dash_ui_init() {
   for (uint8_t s = 0; s < 2; ++s) {
     build_trust_badge(g_screens[s], g_ui[s]);
     build_diag(g_screens[s], g_ui[s]);
+    // ★★ 角色标签**最后建**（= 压在上面）：它只在开机动画那一秒多里出现，
+    //   而那一秒里它是"这块板是谁"的唯一信息 ⇒ 不许被角标/诊断页的容器盖住。
+    //   （诊断页建完是 HIDDEN，正常开机时它与本标签不共存。）
+    build_role_label(g_screens[s], g_ui[s]);
   }
 
   g_boot.start(millis());
@@ -1089,6 +1166,19 @@ void dash_ui_init() {
 void dash_ui_tick(uint32_t now_ms) {
   if (last_tick_ms != 0) lv_tick_inc(now_ms - last_tick_ms);
   last_tick_ms = now_ms;
+
+  // ★★ 角色标签的可见性 = **开机动画还在不在**（2026-09-25）。
+  //   ★ 为什么放在最前面、而且**每拍都调**：它是"状态翻转的那一次才碰 LVGL"的
+  //     （见 `role_apply`），所以每拍调用零代价；而放在前面能保证"动画结束的那一拍"
+  //     就把它收掉，不必等渲染。
+  //   ★ 预览专用的"把开机窗口钉住"那条钩子只有 pcpreview 有定义 ⇒ 这里必须仍是
+  //     编译期的分叉：设备端那一行**一个符号都不引用**（与 `dash_display_preview_frames`
+  //     等既有预览接口同一条纪律）。判据的主体（`g_boot.active`）两边是同一个表达式。
+  bool boot_window = g_boot.active(now_ms);
+#if defined(DASH_DISPLAY_PREVIEW)
+  boot_window = boot_window || dash_display_preview_boot_hold();
+#endif
+  for (uint8_t s = 0; s < 2; ++s) role_apply(g_ui[s], boot_window);
 
   if (g_boot.active(now_ms)) {
     // 开机动画按 20ms(50Hz)档推进:扫表角度每档才 invalidate 一次。

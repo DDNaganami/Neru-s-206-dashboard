@@ -25,6 +25,25 @@ void dash_display_poll();
 uint32_t dash_display_preview_frames(void);
 void dash_display_preview_set_panel_mask(bool on);
 bool dash_display_preview_panel_mask(void);
+
+// ---- ★★ 只给"验开机角色标签"用的**钉住开机窗口**（2026-09-25 新增）----
+//
+// 要验的是两件**互相矛盾**的事，而它们都只发生在开机那一瞬间：
+//   ① 开机动画期间屏上**有** `MASTER (RIGHT)` / `SLAVE (LEFT)` 那一行；
+//   ② 动画一结束它**必须消失**（常驻就是 bug）。
+//
+// 麻烦在于：动画只有 `BOOT_TOTAL_MS`（默认 ≈1.13 s），而预览**每 200 ms 才落一帧**、
+// 帧号还从 0 开始 ⇒ "第几帧落在窗口里"这件事**取决于启动开销**（LVGL/主题/图片加载
+// 要多久），那就是一条**会随机器变**的判据 —— 拿它当交付判据不稳。
+//
+// ⇒ 预览专用的钩子：`hold=true` 时 `dash_ui_tick()` 认为"开机窗口还开着"
+//   （与真实动画那条判据**共用同一个表达式**），于是标签可预期地留在屏上；
+//   落几帧之后再 `hold=false`，标签应当**在下一拍**消失。
+//   ★ `preview_input.h` 的 `hold=` 键（默认 0 = 关）驱动它 ⇒ **默认行为一个字都没变**；
+//   ★ 设备端连声明都没有（`#if` 门就是既有的 `DASH_DISPLAY_PREVIEW`），
+//     真机上"标签活多久"永远只由 `BOOT_TOTAL_MS` 决定 —— 那个钩子在真机上**不存在**。
+void dash_display_preview_set_boot_hold(bool on);
+bool dash_display_preview_boot_hold(void);
 #endif
 
 // ---- 只给 `[env:esp32s3-rgb]`（真屏那一份构建）用的蜂鸣器出口

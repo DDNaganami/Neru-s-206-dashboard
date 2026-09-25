@@ -130,6 +130,14 @@ struct PreviewInput {
   // 键盘那一层只负责发"再翻一页"的请求 —— 于是"翻过最后一页就该关掉"
   // 这条判断只有一处（main.cpp），不会两边各写一份。
   uint8_t diag_page = 0;
+  // ★★ `hold`：把"开机窗口还开着"钉住（**只为验开机角色标签**，见 .cpp 的
+  //   `preview_apply_control_text` 里那条说明与 `src/dash_display.h`）。
+  //   ★ 与 `panel_mask` 同一条纪律：**默认值就是"不钉"**，而 `hold_set`
+  //     必须有 —— 控制文件是每帧重读的，没有旗标的话"文件里没写 hold"会每帧
+  //     把用户设的 1 覆盖回 0（看着就是"hold 没用"）。
+  //   ★ 它**不进** `any()`：它是"预览怎么画"而不是车辆状态（同 panel_mask）。
+  bool hold = false;
+  bool hold_set = false;
   bool any() const {
     return left_set || right_set || hazard_set || low_beam_set ||
            position_set || door_set || speed_set || rpm_set || sim_ok_set;
@@ -276,6 +284,15 @@ inline int preview_apply_control_text(PreviewInput& in, const char* text) {
     //   所以控制文件里一直写着 `diag=1` 也只会翻一页，不会每帧翻一页
     //   （那正是"把事件当绝对值"最容易踩的坑）。
     else if (eqIgnoreCase(key, "diag"))     { if (truthy(val)) { in.diag_toggle_req = true; n++; } }
+    // ★★ `hold=1/0`（2026-09-25 新增）：**只为验"开机角色标签"而存在的一条预览钩子** ——
+    //   把"开机窗口还开着"这件事钉住，好让标签稳定地留在落盘的那几帧上，
+    //   验完再置 0 ⇒ 标签应当当场消失。判据与理由见 `src/dash_display.h` 的
+    //   `dash_display_preview_set_boot_hold()` 那段；**设备端没有这个键**
+    //   （它整条住在 `#if defined(DASH_DISPLAY_PREVIEW)` 里）。
+    //   ★ 它**不是**注入、不进 `PreviewInput`、不影响 `any()`：它改的是
+    //     "预览这一层怎么画"，与 mask 同一类（所以 main.cpp 收到的是**返回值**，
+    //     而不是往快照上写字段）。节流/回执照旧只在 `in.any()` 变化时打。
+    else if (eqIgnoreCase(key, "hold"))     { in.hold = truthy(val); in.hold_set = true; n++; }
     else if (eqIgnoreCase(key, "speed"))    { in.speed_kmh = strtof(val, nullptr); in.speed_set = true; n++; }
     else if (eqIgnoreCase(key, "rpm"))      { in.rpm = strtof(val, nullptr);       in.rpm_set = true; n++; }
     else if (eqIgnoreCase(key, "clear"))    { if (truthy(val)) { in = PreviewInput{}; n++; } }

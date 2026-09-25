@@ -51,13 +51,25 @@
 #include "preview_input.h"
 #endif
 
-#if LINK_ROLE == 1
-// 链路物理层（真实 UART）只在**主板**这一侧编译：从板（LINK_ROLE==0）不发车数据、
-// 只收 —— 而"收"用的还是同一个 LinkPhyUart 类，但把类编进来会拉上 link_phy_uart.cpp
-// 那条"链路 UART 与日志 UART 不许是同一个"的编译期闸门（判据现在是 dash_log.h 的
-// DASH_LOG_UART0，见那个文件头）。本轮按 §5 的口径只把**主板**这一侧
-// 接上（编译期 env 是唯一权威）；从板的接收路径由 lib/link 的用例整条覆盖
-// （test/test_dashcore/test_link_app.cpp 的端到端那一条：发 → 收 → 喂进 data_service）。
+// ★★ 链路物理层（真实 UART）**两个角色都编**（2026-09-25 起）——
+//   v1 的契约要的是**双向**：A→B 是车数据（TICK/DATA），B→A 是状态上报
+//   （STATUS/EVENT，§0 那条"本节对「接线定案」的一处新增"）。所以"只有主板有 PHY"
+//   那种做法只能验下行，从板的上行一行都跑不到。
+//   契约 §0 的引脚口径本来就是**每块板都是"43 发、44 收"**（`link_phy_pins.h`），
+//   所以两侧用的是**同一个类、同一组脚、同一个 115200 8N1**，编译期不分叉。
+//
+//   门是**既有的** `LINK_PHY_UART`（platformio.ini 里链路固件才加的那个宏），
+//   不是 `LINK_ROLE`：
+//     · 有这个宏 ⇒ 真 `LinkPhyUart`（UART0 + 43/44）；`dash_log.h` 见到它就把
+//       `DASH_LOG_UART0` 置 0 ⇒ 日志只走原生 USB-CDC，43/44 上只有链路一个占用者
+//       —— 而且 `link_phy_uart.cpp` 里那道闸门会拦住任何"把日志又放回 UART0"的构建。
+//     · 没有这个宏 ⇒ `LinkPhyNull`（空壳）。今天落到这一档的是：pcpreview
+//       （宿主机预览，LINK_ROLE 默认 0）与 `[env:esp32dev]`（经典 ESP32，
+//       那边连 `Serial0` 都不存在）。空壳的行为 = 链路静默，不卡主循环（§1.2 ②）。
+//   ★ 角色仍旧是**编译期唯一权威**（`link_role.h` 的 `LINK_ROLE`）：它决定
+//     "发什么、收什么怎么消费"，**不**决定"有没有 PHY"。§5 的 ①②③ 三条判据一行没动。
+#include "link_phy_null.h"
+#if LINK_PHY_UART
 #include "link_phy_uart.h"
 #endif
 
@@ -379,7 +391,7 @@ static void boot_note() {
   //     ② 格式串加回 `tc=%.1fC`，参数加 `(double)tc`；
   //     ③ 重新量一次 flash（`pio run -e esp32s3-rgb` 的 `Flash:` 行）确认代价仍是 ~6 KB；
   //     ④ 想清楚要它回答的是什么问题 —— 若是"舱内温度"，**应该从 VAN 取**，不是加这个。
-  dash_logf("boot: reason=%s n=%lu%s (raw=%d) up=%ums | prev=%s prev_up=%s | hb=%lu\n",
+  dash_logf("boot: reason=%s n=%lu%s (raw=%d) up=%ums | prev=%s prev_up=%s | hb=%lu | role=%s\n",
             resetReasonName(r),
             (unsigned long)n,
             g_boot_info.nvs_ok ? "" : "(nvs-)",
@@ -387,7 +399,12 @@ static void boot_note() {
             (unsigned)millis(),
             prev_with_raw[0] != '\0' ? prev_with_raw : prev_name,
             prev_up,
-            (unsigned long)g_boot_hb_n);
+            (unsigned long)g_boot_hb_n,
+            // ★★ 2026-09-25：本机角色（**编译期**定死，§5）—— 两块 2.8C 外观一样，
+            //   而"这块板是谁"只存在于刷进去的那份固件里 ⇒ 开机那行必须自报家门。
+            //   取值与 `link_role.h` 的 `kRoleMaster/kRoleSlave` 同一口径（1=主板/右）。
+            //   ★ 纯 ASCII（日志这条路上中文会踩 GBK 控制台，见 README 那条纪律）。
+            LINK_ROLE == 1 ? "MASTER" : "SLAVE");
 }
 
 #else
@@ -650,50 +667,77 @@ static VanLogSink g_van_log;
 //    一个占用者（下面 `g_link_phy.begin(false)` 那一行）。
 //    ★ 这条关系在编译期还有一道闸门看着（link_phy_uart.cpp）：谁要显式
 //    `-DDASH_LOG_UART0=1` 把日志又放回 UART0，就与链路撞车、直接编不过。
+//    ★★ 同一条道理适用于**回放口**（2026-09-25 补）：`van_replay_poll()` 原来无条件
+//      从 `Serial0` 收文本回放行 —— 那在"43/44 是链路"的构建里就是**抢**：它会把
+//      链路帧的字节当文本吃掉。现在那一支由 **`DASH_LOG_UART0`** 这门一起看着
+//      （见 `van_replay_poll()` 里那行 `#if`）：UART0 归链路时它**一行都不存在**。
+//      ⇒ 带链路 PHY 的构建里，文本回放只走原生 USB-CDC（插 12PIN 的 19/20 即可），
+//        与日志同一个口、也同一套"这台机器上怎么看串口"的做法（见 docs/LINK-TWO-BOARD.md）。
+// ★★ 两个角色各自的链路对象（2026-09-25 起**两侧都有真 PHY**）
+//
+//   形态刻意保持不变（`g_link_phy` 这个名字两侧同一个、`LinkRx` 两侧共用一套
+//   解帧/重同步/角色自检），改的只有两处：
+//     · 从板的 PHY 从 `LinkPhyNull` 换成 `LinkPhyUart`（有 `LINK_PHY_UART` 时）
+//       —— 上行（B→A）这才真的跑得起来；
+//     · 从板多了一个 `pumpTx()`：`LinkTx` 那个环今天还空着（v1 的 **DATA/TICK
+//       只由主板发**，§3），但排水这一步两侧都要有 —— 将来从板要发 STATUS/EVENT
+//       时，缺的就是这一行（今天它是个空转：环里 0 字节 ⇒ 立刻返回 0）。
+//
+//   ★ 两侧的"谁发什么"仍旧由 `LINK_ROLE` 说了算，**没有**变成运行期判断（§5）。
 #if LINK_ROLE == 1
-static dashlink::LinkPhyUart g_link_phy;   // §0：115200 8N1，UART0，TX=GPIO43 / RX=GPIO44
 static dashlink::LinkTx      g_link_tx;    // §1.2 ②：自有环 ≥512 B，整帧进出
 static dashlink::LinkRx      g_link_rx;    // §2 的重同步 + §5 的角色冲突自检
 static dashlink::TickGen     g_link_tick;  // §3 的 TICK（50 Hz / 20 ms）
 static dashlink::DataSender  g_link_data;  // §3 的 DATA（跟随 0x824 到达，不另建定时器）
+#else
+static dashlink::LinkRx      g_link_rx;    // 收：§2 的重同步 + §5 的角色冲突自检
+static dashlink::LinkTime    g_link_time;  // §4：TICK 偏移估计 + 三级超时
+static dashlink::LinkTx      g_link_tx;    // ★ 从板今天不发帧（§3），但排水那一步
+                                           //   与主板同形 —— 见下面 loop() 里那两行
+#endif
 
+// 链路 PHY 本身：**一份定义、两个角色共用**（§0：谁都是 43 发、44 收）。
+// 有 `LINK_PHY_UART` ⇒ 真 UART0（115200 8N1 / GPIO43=TX、GPIO44=RX）；
+// 没有 ⇒ 空壳（pcpreview / esp32dev，见文件头）。
+#if LINK_PHY_UART
+static dashlink::LinkPhyUart g_link_phy;
+#else
+static dashlink::LinkPhyNull g_link_phy;
+#endif
+
+#if LINK_ROLE == 1
 // 主板自己的固件版本/构建标记（§3 的 HELLO：`fw_ver` 与协议 `VER` **分开**）。
 // 取值口径：仓库里没有既有编码（§3 也这么说），所以先定 0/0 并把出处写在这里 ——
 // 真要拿它判"两块板是不是同一份固件"，得在两块板各自刷同一份固件时才可比。
 static const uint16_t kLinkFwVer    = 0;
 static const uint16_t kLinkBuildTag = 0;
 
+// ★★ DATA 的**下限**（2026-09-25 上板实测补的一行）：**12 ms ⇒ ≤80 帧/s**。
+//
+// 为什么必须有它（这是实测出来的，不是防御性代码）：`DataSender::due()` 对
+// `snapshot_ms == 0`（= 本机到现在还没收到过任何一帧 0x824 —— 车睡着、台面上没接
+// VAN 收发器、或 VAN 那一路没启用）有一条**刻意的**"照发"口径，它把 `now_ms`
+// 当快照时刻 ⇒ **主循环每一圈都能发一帧**。而主循环在 2.8C 上是 ~900 圈/秒 ⇒
+// 实测（2026-09-25，COM6，直接把 UART0 上的字节流解出来）：
+//     **DATA 946 帧/秒 / 12288 B/s = 115200 8N1 的满线速**（3 秒 2839 帧、CRC 全过）。
+// 满线速意味着 `LinkPhyUart::pumpTx()` 每圈都在"FIFO 有位置"的边界上跑 ——
+// 那正是 §1.2 要说清的那种"把主循环拖住"的形态（当年 `Serial0.write` 阻塞就是这么
+// 毁掉 VAN 边沿采集的），而 §1.3 要求"链路发送单次很短、可随时被打断"。
+// ⇒ 用**既有**的那个旋钮（`setMinIntervalMs`，`link_app.h` 里本来就有、语义就是
+//   "别比这更快"）把速率压回契约给的那一档：§3 的 `DATA ≈ 79.7 Hz`（= 0x824 的周期
+//   ≈12.5 ms）⇒ 取 **12 ms**（80 Hz，比 79.7 略快一点，不丢掉真实的 0x824 节奏）。
+//
+// ★ 它**不影响有 VAN 的那条主路径**：那时 `snapshot_ms != 0`，`due()` 走的是
+//   "只有新的 0x824 才发"那一条，而 12 ms 的窗口对 80 Hz 的到达率是透明的。
+// ★ 它**也不改** `DataSender` 自身的默认值（默认仍是 0 = 不限）—— 那是给用例与
+//   "就想全速发"的场景留的口径；生产固件在两处显式设定：这里，以及
+//   `test_link_app.cpp` 的 `test_link_app_data_sender_min_interval`（同一条判据的宿主面）。
+static const uint32_t kLinkDataMinIntervalMs = 12u;
+
 static uint32_t g_link_hello_ms = 0;         // 上一次发 HELLO 的时刻（0 = 还没发过）
 static uint32_t g_link_peer_ms  = 0;         // 最近一次收到**对端任何一帧**的时刻
 static bool     g_link_hello_acked = false;  // 收到过对端 HELLO ⇒ 停止重发（§3）
 #endif  // LINK_ROLE == 1
-
-// ★ 一条"UART 还没接上"的桩 PHY —— **只在从板侧**用。
-//
-//   为什么从板侧本轮不接真 UART（这是**刻意的**，不是漏了）：
-//     · 从板的接收路径与主板共用同一套 `LinkRx`/`LinkTime`/`applyLinkData`，
-//       这套逻辑已经由 native 用例**整条**跑通（发一帧 → 过假 PHY → 收到 →
-//       喂进 VehicleDataService → 断言值变成 Link，见 test_link_app.cpp）；
-//     · 剩下没验的那一段是"这块板子上 43/44 的电平长什么样" —— 那是**最终 2.8"板**
-//       到手之后的事（§5：两个角色 env 要等它落地；§8 L1 还留着 ⓐⓑⓒ 三条要实测）；
-//     · 用真实 UART 的话，这块**裸 S3 devkit** 上从板会去读 GPIO44 —— 而那个脚接的是
-//       板载 CH343P 桥（§8 L1），拿它当输入到底干不干净正是待实测的 ⓑ。
-//   ⇒ 接真 UART 只需要把 g_link_phy_slave 换成 `LinkPhyUart`、在 setup 里 begin()
-//      （一行），并恢复 platformio.ini 里那条闸门。**本轮不猜、不预置**。
-class LinkPhyNull : public dashlink::LinkPhy {
- public:
-  int available() override { return 0; }
-  int read() override { return -1; }              // 非阻塞契约：没有就是 -1
-  int availableForWrite() override { return 0; }  // 0 ⇒ 上层一个字节都不写（§1.2 ②）
-  size_t write(const uint8_t*, size_t) override { return 0; }
-  bool online() const override { return false; }  // 没接线 ⇒ 不读不写
-};
-
-#if LINK_ROLE != 1
-static LinkPhyNull        g_link_phy_slave;  // ★ 见上面 LinkPhyNull 的说明（本轮刻意不接真 UART）
-static dashlink::LinkRx    g_link_rx;        // 收：§2 的重同步 + §5 的角色冲突自检
-static dashlink::LinkTime  g_link_time;      // §4：TICK 偏移估计 + 三级超时
-#endif
 
 static uint32_t last_ui_ms = 0;
 static uint32_t last_status_ms = 0;
@@ -745,6 +789,10 @@ static SysStatusInputs sys_inputs_build(uint32_t now_ms) {
   in.speed_kmh = st_state_cache.speed_kmh;
   in.rpm       = st_state_cache.rpm;
   // ---- ④ 双板链路（**仅从板**；主板没有 LinkTime）----
+  // ★ 角色这一格**两个角色都填**（2026-09-25）：诊断页第一行要写 `role=MASTER/SLAVE`
+  //   —— 两块 2.8C 外观一样，而角色是编译期定死的（§5）⇒ 打开诊断页第一眼就该
+  //   知道手里这块是谁。取值就是 `LINK_ROLE`（编译期唯一权威），没有第二处判据。
+  in.link_role = (uint8_t)LINK_ROLE;
 #if LINK_ROLE != 1
   in.link_known       = true;
   in.link_state       = (uint8_t)g_link_time.state();
@@ -1189,6 +1237,16 @@ static void van_replay_poll(uint32_t now) {
   }
 #if defined(ARDUINO) && defined(ARDUINO_USB_CDC_ON_BOOT) && (ARDUINO_USB_CDC_ON_BOOT == 1)
   // 只有 CDC_ON_BOOT 时 Serial0 才是"另一个口";经典 ESP32 上两者是同一个 UART0
+  // ★★ 2026-09-25：**UART0 归链路时这一整支不存在** —— 判据就是既有的
+  //   `DASH_LOG_UART0`（dash_log.h 里"UART0 上有没有日志"的唯一出处，带链路 PHY
+  //   的构建里它是 0）。为什么必须如此：`g_link_phy` 正把 UART0 当数据面用，
+  //   而下面的 `Serial0.read()` 会把**链路帧的字节**当文本回放行吃掉 ⇒ 从板
+  //   一边收帧一边把帧嚼碎（症状是 `crc_err`/噪声计数涨、`frames_ok` 不涨）。
+  //   · 这一支今天只为"UART0 还是日志口"的那些构建存在（esp32s3 / esp32s3-rgb
+  //     不带链路 PHY 的档、抓帧盒三个 env）—— 它们的字节流**一个字节都没变**；
+  //   · 带链路 PHY 的构建里，**文本回放改走原生 USB-CDC**（上面那一支照旧收
+  //     `Serial`）：插 12PIN 的 19/20 就能贴帧，见 docs/LINK-TWO-BOARD.md。
+#if DASH_LOG_UART0
   static char line_uart[80];
   static uint8_t len_uart = 0;
   while (Serial0.available()) {
@@ -1198,6 +1256,7 @@ static void van_replay_poll(uint32_t now) {
 #endif
     van_replay_feed(c, line_uart, len_uart, now);
   }
+#endif  // DASH_LOG_UART0
 #endif
 }
 
@@ -1314,7 +1373,7 @@ static bool link_poll_frames_slave(uint32_t now) {
   // ★ 注意 `LinkData` 是**全局作用域**的（它在 lib/dashcore/data_service.h 里，
   //   与 dashlink 命名空间无关）—— 写成 dashlink::LinkData 会编不过。
   ::LinkData ld;
-  while (g_link_rx.poll(g_link_phy_slave, &f)) {
+  while (g_link_rx.poll(g_link_phy, &f)) {
     if (dashlink::handleInbound(f, &g_link_time, now, &ld)) {
       // TICK / DATA：handleInbound 已经把 TICK 喂了时基、把 DATA 解成了 LinkData。
       if (f.type == (uint8_t)dashlink::MsgType::Data) {
@@ -1567,15 +1626,26 @@ void setup() {
   g_link_phy.begin(false);
   g_link_rx.setLocalRole(dashlink::kLocalRole);
   g_link_tick.reset(millis());   // §4：tick_ms 是主板**自己**的单调毫秒(从复位起算)
-  dash_logf("link: 主板侧就绪 TX=GPIO%d RX=GPIO%d @%u 8N1(§0/§1.1)\n",
-            (int)g_link_phy.txPin(), (int)g_link_phy.rxPin(), (unsigned)dashlink::kLinkBaud);
+  // ★★ DATA 的速率下限（见 `kLinkDataMinIntervalMs` 那一段的实测与理由）：
+  //   "没有 VAN 快照"那一条路会把主循环每一圈都当一份新快照 ⇒ 不设这一行就会
+  //   以满线速发（实测 946 帧/秒）。设成 12 ms = 契约 §3 给的那一档（≈80 Hz）。
+  g_link_data.setMinIntervalMs(kLinkDataMinIntervalMs);
+  dash_logf("link: 主板侧就绪 TX=GPIO%d RX=GPIO%d @%u 8N1(§0/§1.1)%s\n",
+            (int)g_link_phy.txPin(), (int)g_link_phy.rxPin(), (unsigned)dashlink::kLinkBaud,
+            g_link_phy.online() ? "" : "  <-- PHY 是空壳(这份固件没编 -DLINK_PHY_UART)");
 #else
-  // 从板侧：只需要"我知道我是谁"（§5 的角色自检）+ 时基状态机的初值。
-  // ★ 这里**不 begin 任何 UART**：本轮从板的 PHY 是 LinkPhyNull（见上面那段说明）。
+  // 从板侧（§5 的角色自检 + §4 时基状态机的初值）+ **真 PHY**（2026-09-25 起）。
+  // ★ 与主板那一侧**同一个 `LinkPhyUart`、同一组脚（43 发 / 44 收）、同一个 115200**
+  //   —— 契约 §0 的引脚口径本来就不分角色（link_phy_pins.h）。
+  //   ★ 没有 `LINK_PHY_UART` 的构建（pcpreview / esp32dev）走空壳 `LinkPhyNull`：
+  //     `online()` 报 false、`availableForWrite()` 报 0 ⇒ 链路静默，不卡主循环。
+  g_link_phy.begin(false);
   g_link_rx.setLocalRole(dashlink::kLocalRole);
   g_link_time.reset();
-  dash_logf("link: 从板侧就绪(§5, LINK_ROLE=0) —— 收帧路径已就位,PHY 本轮是桩"
-            "(真实 UART 等最终 2.8\" 板到手,见 main.cpp 里 LinkPhyNull 的说明)\n");
+  dash_logf("link: 从板侧就绪(§5, LINK_ROLE=0) TX=GPIO%d RX=GPIO%d @%u 8N1%s\n",
+            (int)g_link_phy.txPin(), (int)g_link_phy.rxPin(), (unsigned)dashlink::kLinkBaud,
+            g_link_phy.online() ? " —— 真 PHY(UART0),等主板的 TICK/DATA"
+                                : " —— PHY 是空壳(这份固件没编 -DLINK_PHY_UART)");
 #endif
   // 主题:先默认值(由 dash_ui_init 兜底),再尝试用 flash 里的主题文件覆盖。
   // 加载失败不影响启动 —— 降级到默认主题继续跑。
@@ -1626,10 +1696,15 @@ void loop() {
   // ---- 链路（从板侧）：**先收后合并** ----
   // ★ 顺序是硬要求：收到的 DATA 必须先 `applyLinkData()`、再 `g_data.update(now)`，
   //   这样这一圈收到的值当圈就进快照与上屏（晚一圈也行，但没必要）。
-  // ★ 本轮从板的 PHY 是 `LinkPhyNull`（见上面那段说明）：真实 UART 要等最终 2.8"
-  //   板到手、且 §8 L1 的 ⓐⓑⓒ 三条实测做完才接 —— 这套"收 → 喂数据层"的逻辑
-  //   已经由 native 用例整条跑通（test_link_app.cpp 的端到端那一条）。
+  // ★ 从板的 PHY 从 2026-09-25 起是**真 UART**（有 `LINK_PHY_UART` 时，见本文件上方
+  //   那段）—— 所以这一行现在真的会去读 GPIO44。
+  // ★ 排水那一行：v1 的 DATA/TICK **只由主板发**（§3），所以从板的 `LinkTx` 环今天
+  //   恒空、这一调用是空转（`pumpTx()` 见 `mTxCount == 0` 立刻返回 0，不碰 UART）。
+  //   留着它与主板同形：将来从板要发 STATUS/EVENT 时，改的是"谁 enqueue"，
+  //   不是"谁排水"。
   link_poll_frames_slave(now);
+  g_link_tx.pump(g_link_phy);
+  g_link_phy.pumpTx();
 #endif
 
   // ★ 2026-09-24：由 `const VehicleState st` 改成**可写**的 `st_mut` ——
@@ -1657,6 +1732,15 @@ void loop() {
   // 但它**不回流**进 data_service（不碰优先级、不产生协议行为）。
   if (preview_input_poll(g_preview)) {
     preview_apply(g_preview, st_mut);
+  }
+  // ★★ 开机窗口那条**预览专用**的钩子（2026-09-25）：控制文件里的 `hold=1`
+  //   把"开机窗口还开着"钉住，好让**开机角色标签**稳定地留在落盘的帧上；
+  //   置 0 之后标签应当在下一拍消失（判据见 src/dash_display.h 那段）。
+  //   ★ 与 `mask` 同一类（"预览这一层怎么画"），所以走"推给显示侧"这条路，
+  //     不往车状态快照上写任何字段 —— 设备端这一整段不存在（门是既有的
+  //     `DASH_DISPLAY_PREVIEW`）。
+  if (g_preview.hold_set) {
+    dash_display_preview_set_boot_hold(g_preview.hold);
   }
   // ★ 诊断页那一位（K）**不是注入**（见 preview_input.h 的说明）：它是一个
   //   **事件**（"按了一下"），所以这里按**边沿**处理 —— 一直按着不放 / 控制文件

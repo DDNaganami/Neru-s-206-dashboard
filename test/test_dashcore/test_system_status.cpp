@@ -397,14 +397,56 @@ void test_diag_obd_not_connected_and_master_link(void) {
   SysStatusInputs in = healthy();
   in.obd_enabled = false;        // 没插 ELM327
   in.link_known = false;         // 主板
+  in.link_role = 1;              // ★ 主板角色（2026-09-25：诊断页第一行自报家门）
   const DiagView v = diagBuild(DiagPage::Link, in);
   char buf[1024];
   diagRenderText(v, buf, sizeof(buf));
   TEST_ASSERT_NOT_NULL(strstr(buf, "obd n/a (no ELM327)"));
   // ★ 主板那一格**只写"链路这一档由主板的日志负责"**，不显示从板在不在线：
   //   §8 L11/L13 裁决的是"从板在线状态只进 STATUS 日志、不上屏"。
-  TEST_ASSERT_NOT_NULL(strstr(buf, "link - (master: log only)"));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "link - (MASTER: log only)"));
   TEST_ASSERT_NULL(strstr(buf, "离线"));
+  // ★ 角色那一行（2026-09-25）：两块 2.8C 外观一样 ⇒ 诊断页第一眼要能分清主/从。
+  TEST_ASSERT_NOT_NULL(strstr(buf, "role=MASTER (right/A)"));
+}
+
+// ============================================================
+// 十二之二、诊断页的**角色行**（2026-09-25 新增）
+// ============================================================
+// 这一行是本单"两块一模一样的板怎么区分"那件事在**屏上**的落点。判据三条：
+//   ① 两个角色各写各的（MASTER / SLAVE），**不许**写着 MASTER 而实际是从板；
+//   ② 它**纯 ASCII**（本构建只使能 Montserrat ⇒ 中文一个字形都画不出来）；
+//   ③ 它跟的是 `SysStatusInputs::link_role`（由 main.cpp 从**编译期**的
+//      `LINK_ROLE` 填进来，§5 的"编译期唯一权威"），不是别的什么运行期猜测。
+void test_diag_role_line_both_roles(void) {
+  char buf[1024];
+
+  // 从板（link_known=true 那一支也要有角色行 ← 容易漏：它原来第一行是 link state=…）
+  SysStatusInputs slave = healthy();
+  slave.link_known = true;
+  slave.link_role = 0;
+  const DiagView vs = diagBuild(DiagPage::Link, slave);
+  diagRenderText(vs, buf, sizeof(buf));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "role=SLAVE (left/B)"));
+  TEST_ASSERT_NULL(strstr(buf, "role=MASTER"));
+
+  // 主板
+  SysStatusInputs master = healthy();
+  master.link_known = false;
+  master.link_role = 1;
+  const DiagView vm = diagBuild(DiagPage::Link, master);
+  diagRenderText(vm, buf, sizeof(buf));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "role=MASTER (right/A)"));
+  TEST_ASSERT_NULL(strstr(buf, "role=SLAVE"));
+
+  // ★ 纯 ASCII：那一行里不许出现任何非 ASCII 字节（>0x7F）——
+  //   写中文的后果不是"看不清"，是**一个字形都画不出来**（见 dash_ui.cpp 的 build_diag 说明）。
+  diagRenderText(vm, buf, sizeof(buf));
+  bool ascii_only = true;
+  for (const char* p = buf; *p; ++p) {
+    if ((unsigned char)*p > 0x7Fu) { ascii_only = false; break; }
+  }
+  TEST_ASSERT_TRUE_MESSAGE(ascii_only, "诊断页正文里出现了非 ASCII 字节（本构建没有 CJK 字形）");
 }
 
 // ============================================================
@@ -637,6 +679,7 @@ void register_system_status_tests(void) {
   RUN_TEST(test_diag_missing_is_dash);
   RUN_TEST(test_diag_page_link_fields);
   RUN_TEST(test_diag_obd_not_connected_and_master_link);
+  RUN_TEST(test_diag_role_line_both_roles);
   RUN_TEST(test_diag_pages_and_bounds);
   RUN_TEST(test_sys_names);
   RUN_TEST(test_sys_preview_keys);

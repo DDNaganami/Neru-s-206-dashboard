@@ -250,6 +250,15 @@ void dash_display_preview_set_panel_mask(bool on) { g_panel_mask = on; }
 bool dash_display_preview_panel_mask() { return g_panel_mask; }
 uint32_t dash_display_preview_frames() { return g_frames_written; }
 
+// ---- ★★ 预览专用的"钉住开机窗口"（验开机角色标签用，见 dash_display.h 那段）----
+// ★ 默认 false ⇒ **不设 `hold=` 时行为与以前逐帧相同**（这条很重要：交付的预览
+//   回归跑的就是默认那一档）。
+// ★ 它只影响**标签的可见性判据**，不影响 `g_boot` 本身 —— 扫表/表情那套动画
+//   照旧按 `BOOT_TOTAL_MS` 走完，一趟都不多跑（"不许干扰既有的开机动画"那条）。
+static bool g_boot_hold = false;
+void dash_display_preview_set_boot_hold(bool on) { g_boot_hold = on; }
+bool dash_display_preview_boot_hold() { return g_boot_hold; }
+
 // 开机 banner：把"这块屏是圆的、可视圆是多少"打进日志。
 // ★ 一次性：它在报告里是可以直接引用的一行（"这轮跑的是 2.8C 档"）。
 // ★ 纯 ASCII：README 那条纪律（中文在 GBK 控制台上会抛 UnicodeEncodeError）。

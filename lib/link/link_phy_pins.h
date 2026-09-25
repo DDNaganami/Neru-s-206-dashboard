@@ -28,6 +28,37 @@
 #define LINK_UART_PORT 0
 #endif
 
+// ============================================================
+// ★★ `LINK_PHY_UART` —— "这份固件里到底有没有真实的链路 PHY"（**数值口径**）
+//
+// 取值：**1 = 有**（真 `LinkPhyUart`：UART0 + 43/44 + 115200）/ **0 = 没有**（空壳）。
+// 由 `platformio.ini` 的 env 给：`[env:esp32s3]` 及其抓帧盒/回环 env 是 1，
+// `[env:esp32s3-rgb]` 显式 0（它的 43/44 要留给 UART0 文本日志），
+// 两个角色镜像在继承来的那串之后各写一条 1 把它拿回来。
+//
+// ★★ 为什么这里要给**默认 0**，而且所有判据都写成 `#if LINK_PHY_UART`
+//    （**不是** `#if defined(LINK_PHY_UART)`）—— 2026-09-25 实测踩到的一课：
+//      · `platformio.ini` 里用 `-U` 撤销父 env 的 `-D` **不生效**：`-U` 与
+//        `-D` 挤在 `build_flags = ${env:<父>.build_flags}` 那一串里时，
+//        PlatformIO 解析 build_flags 会把 `-U` **丢掉**（`-D` 照收）
+//        ⇒ `[env:esp32s3-rgb]` 曾经"看起来撤掉了、其实一直是 1"。
+//      · 现在那条改成显式 `-DLINK_PHY_UART=0`（`-D` 的合并语义是**后者覆盖前者**，
+//        实测可靠）。而"定义了但为 0"必须与"根本没定义"**同义** ——
+//        否则一个 `defined()` 就又把 0 当成"有 PHY"了。
+//   ⇒ 于是本文件给出这个默认值，且**全仓库统一用 `#if LINK_PHY_UART`**：
+//     `lib/link/link_phy_uart.h` / `link_phy_uart.cpp` / `link_phy_null.h`、
+//     `lib/dashcore/dash_log.h`、`src/main.cpp`。
+//     `#if` 对"没定义"的宏按 0 处理 ⇒ 没定义也不会编错，语义与 =0 一致。
+// ============================================================
+#ifndef LINK_PHY_UART
+#define LINK_PHY_UART 0
+#endif
+
+// 数值口径的编译期收口：这个宏只认 0/1（写了别的值一定是 -D 写错了）。
+#if (LINK_PHY_UART != 0) && (LINK_PHY_UART != 1)
+#error "LINK_PHY_UART 只能是 0(没有真 PHY) 或 1(有真 PHY) —— 别的值一定是 -D 写错了"
+#endif
+
 #ifndef LINK_TX_PIN
 // 主板 GPIO43（UART 口 `TXD` / 12PIN `TXD`）→ 从板 RX
 #define LINK_TX_PIN 43

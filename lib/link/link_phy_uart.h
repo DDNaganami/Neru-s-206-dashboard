@@ -77,7 +77,7 @@
 
 #include "link_phy_pins.h"
 
-#if defined(LINK_PHY_UART)
+#if LINK_PHY_UART
 
 #include <Arduino.h>
 #include <stddef.h>

@@ -161,6 +161,14 @@ struct SysStatusInputs {
   uint16_t link_seq_gaps = 0;
   uint16_t link_seq_missing = 0;
   int32_t  link_offset_ms = 0;
+  // ★★ 本机角色（2026-09-25 新增）—— 0 = 从板（左）/ 1 = 主板（右），取值与
+  //   `lib/link/link_role.h` 的 `kRoleSlave`/`kRoleMaster` 一致（§2 的 ROLE 字段）。
+  //   ★ 为什么这一格要有：两块 2.8C **外观完全一样**，而角色是**编译期**定死的
+  //     （§5：编译期 env 是唯一权威、运行期没有任何代码能改它）⇒ 手里这块板到底是哪
+  //     一角色，只有"刷进去的那份固件"知道。把它写进诊断页，就是让这件事**看得见**。
+  //   ★ 数值用 `uint8_t` 而不是 `FieldSource` 那类枚举：本文件刻意不 include
+  //     `link_role.h`（同上面 ① 的理由，那会把 link_frame 一整串拖进来）。
+  uint8_t  link_role = 0;
 
   // ---- ⑤ OBD（未接就是"未连接"）----
   bool    obd_enabled = false;

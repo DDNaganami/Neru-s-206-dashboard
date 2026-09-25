@@ -7,7 +7,7 @@
 //   · read()       → 只从 mRxBuf 取；mRxBuf 由 UART 的 RX 任务填 ⇒ 主循环不碰驱动锁。
 #include "link_phy_uart.h"
 
-#if defined(LINK_PHY_UART)
+#if LINK_PHY_UART
 
 // ★ 只在 S3 上编。经典 ESP32 上 `Serial0` 这个对象**不存在**（`HardwareSerial.h`
 //   只在 `ARDUINO_USB_CDC_ON_BOOT == 1` 时声明它，而经典板没有 CDC）⇒ 本文件在那边

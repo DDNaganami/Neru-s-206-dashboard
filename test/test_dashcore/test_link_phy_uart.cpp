@@ -93,10 +93,57 @@ static void test_link_pins_compile_time_guard_has_runtime_twin(void) {
   TEST_ASSERT_TRUE(dashlink::kLoopbackWiringSane);
 }
 
+// ------------------------------------------------------------
+// ★★ 两个角色**都带真 PHY**之后的那条口径（2026-09-25 新增）
+// ------------------------------------------------------------
+// 背景：在"只有主板那一侧编真 UART"的那一版里，从板（LINK_ROLE=0）的 PHY 是空壳
+// （`LinkPhyNull`）⇒ 上面第一条用例测的那组常量**只对主板有意义**。2026-09-25 起
+// 两块板都接真 PHY（v1 要的是双向：B→A 的 STATUS/EVENT，见 §0 那条"本节对
+// 「接线定案」的一处新增"），于是"同一组脚、对两个角色都成立"这件事必须**被钉住**：
+//   · 它要是哪天被改成"按角色分叉"（主板 43/44、从板 44/43），两块板的接线表就会
+//     分家 —— 而 4 线线缆里只有**一对** TX/RX交叉，必有一端接反；
+//   · 这种错在编译期**没有任何信号**（脚号是宏，怎么写都编得过），在现场的表现
+//     只是"发出去没人收"，与"对端没上电"长得一模一样。
+static void test_link_phy_is_wired_for_both_roles(void) {
+  // ① 两个角色取的是**同一份** `link_phy_pins.h` 常量：谁都是"43 发、44 收"。
+  //    本翻译单元与 `link_role.h` 一起编译 ⇒ `LINK_ROLE` 取 0 或 1，
+  //    下面四个断言都得成立（它们**不**读 kLocalRole 去分支）。
+  TEST_ASSERT_EQUAL_INT(43, (int)dashlink::kLinkTxPin);
+  TEST_ASSERT_EQUAL_INT(44, (int)dashlink::kLinkRxPin);
+  TEST_ASSERT_EQUAL_INT(0, (int)dashlink::kLinkUartPort);
+  TEST_ASSERT_EQUAL_UINT32(115200u, dashlink::kLinkBaud);
+
+  // ② 真 PHY 用的**就是**这两个脚，而且与"日志 UART"那一对是同一对外设 ——
+  //    所以"日志不许也占 UART0"那条闸门（link_phy_uart.cpp 的 #error）判的
+  //    正是这份固件的生死线。这里把它的**前提**钉住：链路端口 = 0。
+  TEST_ASSERT_EQUAL_INT(0, (int)dashlink::kLinkUartPort);
+
+  // ③ 回环那一套脚**仍然**是另一组（17/18 + UART1），没有被"两个角色都带 PHY"
+  //    这件事牵连：回环还是回环，链路还是 43/44。两边混起来的话，
+  //    `env:esp32s3-linkloop` 会在 43/44 上做回环 —— 那正是编译期守卫拦的东西。
+  TEST_ASSERT_EQUAL_INT(1, (int)dashlink::kLoopbackUartPort);
+  TEST_ASSERT_NOT_EQUAL((int)dashlink::kLoopbackTxPinC, (int)dashlink::kLinkTxPin);
+  TEST_ASSERT_NOT_EQUAL((int)dashlink::kLoopbackRxPinC, (int)dashlink::kLinkRxPin);
+}
+
+// 从板镜像 == **默认角色**那一档：`link_role.h` 的 `LINK_ROLE` 默认值就是 0，
+// 所以 `[env:esp32s3-rgb-slave]` **故意不写** `-DLINK_ROLE=0`（见 platformio.ini
+// 那两个 env 的注释）。这条用例钉的是那个选择的**前提**：默认值确实是 0。
+//   ★ 哪天有人把默认值改成 1（比如想让"忘记 -D 的构建"变成主板），这条会当场红 ——
+//     而那正是"从板镜像会在下一次构建里静默变成主板镜像"这件事的唯一预警。
+static void test_link_default_role_is_slave(void) {
+  // native 构建不带 -DLINK_ROLE ⇒ 这里读到的就是"默认值"。
+  TEST_ASSERT_EQUAL_INT(0, (int)dashlink::kLocalRole);
+  TEST_ASSERT_EQUAL_UINT8(dashlink::kRoleSlave, dashlink::kLocalRole);
+  TEST_ASSERT_EQUAL_UINT8(dashlink::kRoleMaster, dashlink::peerRoleOf(dashlink::kLocalRole));
+}
+
 void register_link_phy_uart_tests(void) {
   RUN_TEST(test_link_pins_match_contract);
   RUN_TEST(test_link_pins_are_role_independent);
   RUN_TEST(test_link_loopback_wiring_is_sane_even_when_disabled);
   RUN_TEST(test_link_loopback_is_off_by_default);
   RUN_TEST(test_link_pins_compile_time_guard_has_runtime_twin);
+  RUN_TEST(test_link_phy_is_wired_for_both_roles);
+  RUN_TEST(test_link_default_role_is_slave);
 }

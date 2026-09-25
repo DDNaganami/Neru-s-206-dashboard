@@ -340,6 +340,11 @@ DiagView diagBuild(DiagPage page, const SysStatusInputs& in) {
                (unsigned long)in.boot_hb_n);
     }  } else {
     // ---- 第 2 页：**链路与告警**（"两台板之间那条线好不好"）----
+    // ★★ 第一行**永远**是本机角色（2026-09-25 新增）—— 两块 2.8C 外观一样，
+    //   而角色是编译期定死的（§5）⇒ 打开诊断页第一眼就该知道"手里这块是谁"。
+    //   ★ 纯 ASCII（本构建只使能 Montserrat，中文一个字形都画不出来，见 build_diag 那段）。
+    diagLine(v, "role=%s (%s)", in.link_role == 1u ? "MASTER" : "SLAVE",
+             in.link_role == 1u ? "right/A" : "left/B");
     if (in.link_known) {
       diagLine(v, "link state=%ld age=%lums", (long)(int32_t)in.link_state,
                (unsigned long)in.link_tick_age_ms);
@@ -351,7 +356,7 @@ DiagView diagBuild(DiagPage page, const SysStatusInputs& in) {
       // 主板（LINK_ROLE==1）：它没有 LinkTime（那是从板侧的时基）。
       // ★ 这一格刻意**不显示"从板在不在线"** —— 那件事照 §8 的 L11/L13
       //   只进日志（30 s 门限、只用于日志、不上屏）。诊断页不越过那条裁决。
-      diagLine(v, "link - (master: log only)");
+      diagLine(v, "link - (MASTER: log only)");
     }
     if (in.obd_enabled) {
       diagLine(v, "obd rpm=%.1f cool=%.1f", (double)in.obd_rpm_hz,

@@ -41,7 +41,7 @@
 //     `dash_log_begin()` / `dash_logf()`(它直接用 `Serial`,见 `src/link_loopback.cpp`)。
 // ============================================================
 #ifndef DASH_LOG_UART0
-#if defined(LINK_PHY_UART)
+#if LINK_PHY_UART
 #define DASH_LOG_UART0 0
 #else
 #define DASH_LOG_UART0 1

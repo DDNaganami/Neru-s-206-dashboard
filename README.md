@@ -46,7 +46,7 @@ python -m platformio run -e esp32s3-spi -t upload --upload-port COM4
 python tools/serial-capture/capture.py COM4         # 抓复位后的完整开机日志
 ```
 
-六个编译目标：
+八个编译目标：
 
 | 环境 | 用途 |
 |---|---|
@@ -54,8 +54,13 @@ python tools/serial-capture/capture.py COM4         # 抓复位后的完整开�
 | `pcpreview` | 本机渲双屏 BMP（**能手动喂输入**：键盘 `← → 空格 L P D O R M V K T X`，或 `preview/inject.txt` —— 见 `tools/theme-editor/README.md` 的「模拟页面上手动喂输入」与「系统状态这两条」） |
 | `esp32s3` | S3 桩显示，先把串口 / VAN 跑通 |
 | `esp32s3-spi` | 240 档验证用的真屏（GC9A01A 双 240×240）—— **该板 2026-09-22 已退货，现在手上没有这块硬件**（环境照旧保留、仍可编译） |
-| `esp32s3-rgb` | RGB 并口骨架（最终大屏备用） |
+| `esp32s3-rgb` | RGB 并口骨架（最终大屏备用）。★ 这份构建里**日志与文本回放走 UART0（43/44 = Type-C = `COMx`）**，链路一个字节都跑不了 |
+| `esp32s3-rgb-master` | ★ **双板链路的主板镜像**（2.8C 显示固件 + `-DLINK_ROLE=1`）—— 43/44 让给链路，**日志/回放改走原生 USB-CDC（GPIO19/20，只在 12PIN 上）** |
+| `esp32s3-rgb-slave` | ★ **双板链路的从板镜像**（同上一份显示固件 + `-DLINK_PHY_UART=1`，角色 = `LINK_ROLE` 默认值 0）—— 日志同样只走 19/20 |
 | `esp32dev` | 经典 ESP32，4MB，廉价回归 |
+
+★ 双板链路那两份镜像的**台面步骤**（接线 / 烧写顺序 / 判据 / 排查 / 它测不到什么）在 `docs/LINK-TWO-BOARD.md`；
+单板回环（一块裸 S3，另一件事）在 `docs/LINK-LOOPBACK.md`。
 
 `theme`（16KB @ `0x210000`）与 `image`（经典板 1MB、S3 8MB @ `0x254000`）两个分区是运行时可换的：换配色或换图不用重编固件，esptool 命令由 `tools/theme-editor/` 的两个页面按目标板打印（两份分区表的偏移刻意相同）。
 
