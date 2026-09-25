@@ -136,7 +136,14 @@ class LinkPhyEspNow : public LinkPhy {
   // 真正的"交给射频"：**只在主循环里调**（§1.2 ①）。
   // 返回本次交给驱动的**整帧字节数**（0 = 环空 / 没到点 / 在途满）。
   // 单次调用最多交 `kPumpPackets` 个包，不忙等、不 delay。
-  uint16_t pumpTx();
+  // ★★ `now_ms` 是**新增的参数**（2026-09-27 上板实测之后加的，默认值 0 = 不报时刻）：
+  //   两块板上实测到"开机 5~8 秒后两个方向同时停住，而 `tx=` 还在涨" ⇒
+  //   必须能回答"**第一次发送失败发生在第几毫秒**"。调用方把主循环的 `millis()`
+  //   传进来即可（`main.cpp` 两处调用点都拿得到 `now`）。
+  //   ★ 与 `LinkPhy` 接口的其余部分无关：`pumpTx()` 本来就不在基类接口上
+  //     （它是"形状补齐"那一组，见 link_phy_null.h 的说明），所以加一个有默认值的
+  //     参数对既有调用方**零影响**。
+  uint16_t pumpTx(uint32_t now_ms = 0u);
 
   // ---- dashlink::LinkPhy ----
   int    available() override;
@@ -279,8 +286,16 @@ class LinkPhyEspNow : public LinkPhy {
   uint32_t mNvsSaves = 0;
   // ★ 最近一次 `esp_now_send()` 的返回值（主循环读、主循环写 ⇒ 不需要 volatile）
   int8_t   mLastSendErr = 0;
-  // ★ "PHY 那行汇总已经打过一次"的标记（主循环上下文）
-  bool     mPhyLogged = false;
+  // ---- 下而三个是"上板实测跑几秒就停"那一单补的可观测性（2026-09-27）----
+  // ★ 计数器那一行从"开机一次"改成**周期性**（同 `link:` 那行的节拍，2 s）：
+  //   否则"发送从哪里开始失败"根本看不见（实测就是这么卡住的）。
+  uint32_t mPhyLogAtMs = 0;          // 上一次打那一行的时刻
+  // ★ **第一次发送失败**要立刻单独打一行，并带上当时的时刻/在途/环内字节数。
+  bool     mSendFailLogged = false;
+  uint32_t mFirstSendFailAtMs = 0;
+  int8_t   mFirstSendFailErr = 0;
+  // ★ 最近一次**收到包**的时刻（0 = 还没收到过）⇒ 汇总行能报"射频静默多久了"
+  volatile uint32_t mLastRxMs = 0;
 };
 
 }  // namespace dashlink

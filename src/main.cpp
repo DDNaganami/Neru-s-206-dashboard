@@ -1799,8 +1799,11 @@ static void link_slave_tick(uint32_t now, const ArcDashView& view) {
   }
 
   // ③ 排水：`LinkTx` 的环 → PHY 的环 → UART 的 FIFO。与主板那一支**同一形状**。
+  //   ★ 传 `now` 进去：ESP-NOW 那一档要用它打"**第一次发送失败发生在第几毫秒**"
+  //     以及周期性计数器（上板实测"跑几秒后停住"那一单补的可观测性）。
+  //     UART / 空壳那两档的 `pumpTx()` 参数有默认值 ⇒ 一个字都不受影响。
   g_link_tx.pump(g_link_phy);
-  g_link_phy.pumpTx();
+  g_link_phy.pumpTx(now);
 }
 #endif
 
@@ -1961,8 +1964,9 @@ static void link_master_tick(uint32_t now, const VehicleState& snapshot) {
   }
 
   // ④ 排水：`LinkTx` 的两级环 → PHY 的环 → UART 的 FIFO。两步都**只走能走的那些字节**。
+  //   ★ 同样把 `now` 传进去（理由见从板那一支同一处的说明）。
   g_link_tx.pump(g_link_phy);
-  g_link_phy.pumpTx();
+  g_link_phy.pumpTx(now);
 }
 #endif  // LINK_ROLE == 1
 

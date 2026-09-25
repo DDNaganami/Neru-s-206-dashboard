@@ -102,6 +102,10 @@ const uint8_t kMaxNvsSaves = 4u;
 //   而对**杂散设备**来说，"连送 8 帧结构正确的链路帧"已经不太可能是巧合。
 const uint32_t kPeerFramesBeforeNvs = 8u;
 
+// ★ 那一行计数器的**周期**（2000 ms）：与 `link:` 那行（每秒）同一个量级，
+//   但**故意慢一倍** —— 它的用途是"看趋势/看从哪一刻开始不动"，不是逐秒对账。
+const uint32_t kPhyLogPeriodMs = 2000u;
+
 }  // namespace
 
 // ============================================================
@@ -187,6 +191,10 @@ void LinkPhyEspNow::onRecv(const uint8_t* src, const uint8_t* data, int len) {
   mRxHead = (uint16_t)((mRxHead + n) % kRxRingBytes);
   mRxTotal += n;
   ++mRxFrames;
+  // ★ "距上一次收到包多久"这条判据的锚点（主循环那行汇总要报它）：
+  //   为什么需要它：上板实测"两个方向同时停住"时，**光看 rx_frames 冻住**分不清
+  //   "本来就没有包"与"射频已经静默"—— 有了这个数就一眼可见。
+  mLastRxMs = millis();
 }
 
 void LinkPhyEspNow::onSendDoneStatic(const esp_now_send_info_t* tx_info,
@@ -213,7 +221,11 @@ void LinkPhyEspNow::begin(bool loopback) {
   //   实测抓出来的 bug 的修法：回调原来转发给一个**跟 main 无关的**文件级实例）。
   g_active = this;
   mLastSendErr = ESP_OK;
-  mPhyLogged = false;
+  mPhyLogAtMs = millis();
+  mSendFailLogged = false;
+  mFirstSendFailAtMs = 0;
+  mFirstSendFailErr = 0;
+  mLastRxMs = 0;
   mOnline = false;
   mPeerKnown = false;
   mPending = 0;
@@ -468,27 +480,34 @@ size_t LinkPhyEspNow::write(const uint8_t* data, size_t n) {
   return n;
 }
 
-uint16_t LinkPhyEspNow::pumpTx() {
+uint16_t LinkPhyEspNow::pumpTx(uint32_t now_ms) {
   // ★ 学习日志的**唯一出口**：这里是主循环上下文（回调里一行日志都不打，
   //   见 .h 文件头 ②）。放在函数最前面 ⇒ 学到之后**下一圈**就能在串口上看到。
   flushPeerLog();
-  // ★★ **PHY 自己的计数器**（2026-09-27 追加，起因是一手实测的教训）：
-  //   上板时只看得见 `LinkTx` 的 `link: tx=`（那是"往 PHY 环里写了多少"），
-  //   **看不出射频到底发没发** ⇒ 在板上猜了半小时。
-  //   ⇒ 现在把 PHY 的账打出来，而且是**主循环上下文**（回调里不许打日志）：
-  //     `txFrames` = 真的交给过驱动的**包**数；`txSendFail` + `lastErr` = 交失败的次数
-  //     与**最近一次的真实 err 值**；`txDone` = 驱动回报"发成功"的包数
-  //     （★ 它不动 = 回调没回来 = 射频那一侧没成）；`rx*` 是收进来的。
-  //   ★ 只在"有动静"时打（有在途包、或收过包、或出过错）⇒ 空闲时不会刷屏。
-  if (mOnline && !mPhyLogged &&
-      (mPending > 0u || mRxFrames > 0u || mTxSendFail > 0u || mTxFrames > 0u)) {
-    mPhyLogged = true;
+
+  // ★★ **PHY 自己的计数器**（2026-09-27 追加；起因是一手实测的两轮教训）
+  //
+  //   第 1 轮：上板时只看得见 `LinkTx` 的 `link: tx=`（那是"往 PHY 环里写了多少"），
+  //           **看不出射频到底发没发** ⇒ 在板上猜了半小时 ⇒ 加了这一行。
+  //   第 2 轮：加了之后**只打一次**（开机那一下）⇒ 实测"跑几秒后两个方向同时停住"时，
+  //           仍然看不出"**发送是从哪一刻开始失败的**"（`tx_fail`/`last_err` 都冻在开机值）。
+  //   ⇒ 现在改成**周期性**（同 `link:` 那行的节拍：2 s），并且"**第一次发送失败**"
+  //     立刻单独打一行（见下面 `mSendFailLogged` 那一段）。
+  //   ★ 只在"这一窗口有动静"时打（有在途包、收过包、或出过错）—— 空闲不刷屏。
+  if (mOnline && (uint32_t)(now_ms - mPhyLogAtMs) >= kPhyLogPeriodMs &&
+      (mPending > 0u || mRxFrames > 0u || mTxSendFail > 0u || mTxFrames > 0u || mTxCount > 0u)) {
+    mPhyLogAtMs = now_ms;
+    const bool ever_rx = (mLastRxMs != 0u);
+    const uint32_t gap_rx = (ever_rx && now_ms >= mLastRxMs) ? (uint32_t)(now_ms - mLastRxMs) : 0u;
     dash_logf("espnow: tx_frames=%lu tx_bytes=%lu tx_fail=%lu last_err=%d done=%lu done_fail=%lu "
-              "pending=%u | rx_frames=%lu rx_bytes=%lu rx_foreign=%lu overflow=%lu\n",
+              "pending=%u txring=%u | rx_frames=%lu rx_bytes=%lu rx_foreign=%lu overflow=%lu "
+              "gap_rx=%lums\n",
               (unsigned long)mTxFrames, (unsigned long)mTxTotal, (unsigned long)mTxSendFail,
               (int)mLastSendErr, (unsigned long)mTxDone, (unsigned long)mTxStatusFail,
-              (unsigned)mPending, (unsigned long)mRxFrames, (unsigned long)mRxTotal,
-              (unsigned long)mRxForeign, (unsigned long)mRxOverflow);
+              (unsigned)mPending, (unsigned)mTxCount, (unsigned long)mRxFrames,
+              (unsigned long)mRxTotal, (unsigned long)mRxForeign, (unsigned long)mRxOverflow,
+              // ★ "射频静默多久了"：一条读数就把"本来就没包"与"射频停了"分开
+              ever_rx ? (unsigned long)gap_rx : (unsigned long)0xFFFFFFFFu);
   }
 
   if (!mOnline || mTxCount == 0u) return 0u;
@@ -516,6 +535,22 @@ uint16_t LinkPhyEspNow::pumpTx() {
     const esp_err_t e = esp_now_send(dst, mTxBuf + mTxHead, (size_t)chunk);
     mLastSendErr = (int8_t)e;                  // ★ 最近一次的真实返回值（日志里打）
     if (e != ESP_OK) {
+      // ★★ **第一次**失败立刻单独打一行（2026-09-27 上板实测之后追加）：
+      //   实测那两个方向的症状是"开机 5~8 秒后同时停住，而 `tx=`（LinkTx 的账）
+      //   还在涨" —— 那正是"环被排空、但包没真出去"的形态。
+      //   可当时的计数器**只在开机打一次** ⇒ 看不到"失败是从第几毫秒开始的"。
+      //   ⇒ 这一行就是那个答案：`at=` 是第一次失败的**时刻**，后面带当时的
+      //     err 码 + 在途包数 + PHY 环里还剩多少字节（这三个数一起才说明白
+      //     "是驱动队列满、还是 peer 没找到、还是环被灌住了"）。
+      //   ★ 只打一次（`mSendFailLogged`）：失败可能每圈都发生，刷屏会把日志环打爆。
+      if (!mSendFailLogged) {
+        mSendFailLogged = true;
+        mFirstSendFailAtMs = now_ms;
+        mFirstSendFailErr = (int8_t)e;
+        dash_logf("espnow: FIRST send fail err=%d pending=%u txcount=%u at=%lums (peer=%s)\n",
+                  (int)e, (unsigned)mPending, (unsigned)mTxCount, (unsigned long)now_ms,
+                  mPeerKnown ? macText(mPeer) : "broadcast");
+      }
       // ★★ 这里**不重试、不等待**：整帧丢掉并计数，下一圈再说。
       //   为什么不能"重试到成功"：主循环每多花一毫秒，VAN 边沿采集就多一分
       //   丢边沿的风险（§1.2 引的那次实测教训）。丢帧比拖住主循环轻。
