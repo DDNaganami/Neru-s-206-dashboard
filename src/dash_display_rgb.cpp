@@ -1640,6 +1640,9 @@ uint32_t dash_panel_guard_rd_ok(void)  { return g_panel_guard.rdOk(); }
 uint32_t dash_panel_guard_fix(void)    { return g_panel_guard.fixExio(); }
 uint32_t dash_panel_guard_bl(void)     { return g_panel_guard.fixBl(); }
 uint32_t dash_panel_guard_anomalies(void) { return g_panel_guard.anomalies(); }
+// ★ 2026-09-25：守护**自己触发**的自动重初始化次数（跨重启累计要用它，见 boot_persist.h）。
+//   ★ 命令 `r` 触发的那几次**不算**在这里（那是人的动作，见 panel_guard.h 的 noteReinit）。
+uint32_t dash_panel_guard_reinits(void) { return g_panel_guard.reinitCount(); }
 // ★ 给临时注入路径用的：注入要正好落在"下一次检查之前"（见 main.cpp 里那段说明）。
 uint32_t dash_panel_guard_next_check_ms(void) { return g_panel_guard.nextCheckMs(); }
 // ★ 同上：检查**次数**（注入那一侧用它保证"一次注入只喂给一次检查"——

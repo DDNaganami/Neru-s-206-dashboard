@@ -27,6 +27,10 @@
 //   只在 `DASH_DISPLAY_RGB`（= `[env:esp32s3-rgb]`）里编进固件 —— 抓帧盒那三个 env
 //   的编译单元里**一行都不存在**（门就是那个既有宏，没新增任何 -D）✓
 #include "buzzer_exio.h"  // L14 的落地：发声的是**这块 2.8C（右/主机板）**
+// ★ 2026-09-25:**跨重启留档**（上一次的复位原因 / 上一次运行了多久 / 守护累计计数）。
+//   判据层与 NVS 读写回调的分工见 `lib/dashcore/boot_persist.h` 的文件头；
+//   起因是本单那个悬案：累计启动次数 31→32，而上一次的 reason 没有留档 ⇒ 判不出死因。
+#include "boot_persist.h"
 #include "expression.h"   // Face（STATUS.left_face 要报"左屏当前档位"，§3）
 #include "image_load.h"
 #include "link_app.h"     // 双板链路 v1 的应用层接线（§1.2 ③ / §3 / §4 / §5）
@@ -218,6 +222,83 @@ static void mute_save(bool m) {
 //   这种情况下本行给不出结论，只能靠守护的读数（诊断页那一行）+ 现场 `r` 命令。
 static const char* kPrefsBootKey = "bootn";
 
+// ★★ 2026-09-25：**跨重启留档**（上一次的复位原因 / 上一次运行了多久 / 守护累计计数）。
+//   起因是本单的那个悬案（逐字记在案）：累计启动次数在夜里 `31 → 32`（多了一次），
+//   而串口上只看到**当前**这次开机的 `reason=POWERON` —— **上一次的 reason 没有留档**
+//   ⇒ "那次到底是 USB 被断电（POWERON）还是板子自己掉电（BROWNOUT）"**判不出来**。
+//
+//   ⇒ 判据层（读写回调、心跳、累计、边界）全部在 `lib/dashcore/boot_persist.{h,cpp}`
+//     （宿主机逐条钉着：`test/test_dashcore/test_boot_persist.cpp`）；**这里只接 NVS**。
+//     ★ 命名空间复用既有的 `dash`（`mute` / `bootn` 都在那里）—— 一块板上的持久化
+//       状态只有这一处有主，不新开命名空间。
+//     ★ 掉电不丢的那几样：`b_prevr`/`b_prevn`（上一次的复位原因，名字 + 原始值）、
+//       `b_up_ms`（上一次开机时的 uptime）、`b_hb_ms`/`b_hb_n`（心跳：上一次跑到哪）、
+//       `b_grd`/`b_gfix`/`b_gbl`/`b_ganm`/`b_gsnap`（守护四个计数的累计 + 落盘次数）、
+//       以及既有的 `bootn`（启动次数）。
+static bool bootNvsRead(BootKey k, uint32_t* out, void*) {
+  if (!g_prefs.begin(kPrefsNamespace, /*readOnly=*/true)) return false;
+  bool ok = false;
+  switch (k) {
+    case BootKey::BootCount:      ok = g_prefs.isKey(kPrefsBootKey);          if (ok) *out = g_prefs.getUInt(kPrefsBootKey, 0u); break;
+    case BootKey::PrevReasonRaw:  ok = g_prefs.isKey("b_prevn");              if (ok) *out = g_prefs.getUInt("b_prevn", 0u); break;
+    case BootKey::PrevUpMs:       ok = g_prefs.isKey("b_up_ms");              if (ok) *out = g_prefs.getUInt("b_up_ms", 0u); break;
+    case BootKey::GuardRd:        ok = g_prefs.isKey("b_grd");                if (ok) *out = g_prefs.getUInt("b_grd", 0u); break;
+    case BootKey::GuardFix:       ok = g_prefs.isKey("b_gfix");               if (ok) *out = g_prefs.getUInt("b_gfix", 0u); break;
+    case BootKey::GuardBl:        ok = g_prefs.isKey("b_gbl");                if (ok) *out = g_prefs.getUInt("b_gbl", 0u); break;
+    case BootKey::GuardAnom:      ok = g_prefs.isKey("b_ganm");               if (ok) *out = g_prefs.getUInt("b_ganm", 0u); break;
+    case BootKey::GuardSnaps:     ok = g_prefs.isKey("b_gsnap");              if (ok) *out = g_prefs.getUInt("b_gsnap", 0u); break;
+    case BootKey::HeartbeatMs:    ok = g_prefs.isKey("b_hb_ms");              if (ok) *out = g_prefs.getUInt("b_hb_ms", 0u); break;
+    case BootKey::HeartbeatN:     ok = g_prefs.isKey("b_hb_n");               if (ok) *out = g_prefs.getUInt("b_hb_n", 0u); break;
+    default: break;   // PrevReason（名字）走下面那条字符串回调
+  }
+  g_prefs.end();
+  return ok;
+}
+
+static bool bootNvsWrite(BootKey k, uint32_t v, void*) {
+  if (!g_prefs.begin(kPrefsNamespace, /*readOnly=*/false)) return false;
+  bool ok = true;
+  switch (k) {
+    case BootKey::BootCount:     ok = g_prefs.putUInt(kPrefsBootKey, v) > 0u; break;
+    case BootKey::PrevReasonRaw: ok = g_prefs.putUInt("b_prevn", v) > 0u; break;
+    case BootKey::PrevUpMs:      ok = g_prefs.putUInt("b_up_ms", v) > 0u; break;
+    case BootKey::GuardRd:       ok = g_prefs.putUInt("b_grd", v) > 0u; break;
+    case BootKey::GuardFix:      ok = g_prefs.putUInt("b_gfix", v) > 0u; break;
+    case BootKey::GuardBl:       ok = g_prefs.putUInt("b_gbl", v) > 0u; break;
+    case BootKey::GuardAnom:     ok = g_prefs.putUInt("b_ganm", v) > 0u; break;
+    case BootKey::GuardSnaps:    ok = g_prefs.putUInt("b_gsnap", v) > 0u; break;
+    case BootKey::HeartbeatMs:   ok = g_prefs.putUInt("b_hb_ms", v) > 0u; break;
+    case BootKey::HeartbeatN:    ok = g_prefs.putUInt("b_hb_n", v) > 0u; break;
+    default: ok = false; break;
+  }
+  g_prefs.end();
+  return ok;
+}
+
+static bool bootNvsReadStr(BootKey, char* out, uint32_t cap, void*) {
+  if (!g_prefs.begin(kPrefsNamespace, /*readOnly=*/true)) return false;
+  // ★ `getString` 在旧核心上会**截断**（copy 到固定缓冲）—— 传进去的 `cap` 就是
+  //   那个缓冲的大小，本层只用"上一次的 reason 名字"（最长 8 字符），够放。
+  const size_t n = g_prefs.getString("b_prevr", out, cap);
+  g_prefs.end();
+  return n > 0u;
+}
+
+static bool bootNvsWriteStr(BootKey, const char* s, void*) {
+  if (!g_prefs.begin(kPrefsNamespace, /*readOnly=*/false)) return false;
+  const size_t n = g_prefs.putString("b_prevr", s);
+  g_prefs.end();
+  return n > 0u;
+}
+
+static BootPersist g_boot_persist(bootNvsRead, bootNvsWrite, bootNvsReadStr,
+                                  bootNvsWriteStr, nullptr);
+// 开机那一行读到的"上一次"（诊断页与开机日志都要用，所以留在文件作用域里）。
+static BootInfo g_boot_info;
+// 最近一次心跳：落盘时打一行（平时一个字都不打）。
+static uint32_t g_boot_hb_n = 0;   // 心跳累计次数（上一次开机时读回来的 + 本次）
+
+
 static const char* resetReasonName(esp_reset_reason_t r) {
   switch (r) {
     case ESP_RST_POWERON:  return "POWERON";    // 上电（插线/上电）
@@ -234,19 +315,50 @@ static const char* resetReasonName(esp_reset_reason_t r) {
   }
 }
 
-// 打这一行 + 把次数 +1 存回 NVS。
-// ★ 顺序是**有意的**：先读旧值 → 打日志 → 再写回（写失败也不影响这一行已经出来了）。
+// 打这一行 + 把"本次"存回 NVS（上一次的 reason / 上一次的 uptime / 启动次数 +1）。
+// ★ 顺序是**有意的**（每一步都对着一个"掉电时刻"，实现在 `BootPersist::begin()`）：
+//     ① 先把 NVS 里"上一次"读出来 → ② 把本次的 reason 与 uptime 写下去（这一次写不能省）
+//     → ③ 启动次数 +1 → ④ 才算得出"上一次运行了多久" → ⑤ 最后才打日志。
 static void boot_note() {
   const esp_reset_reason_t r = esp_reset_reason();
-  uint32_t n = 0;
-  bool have = false;
-  if (g_prefs.begin(kPrefsNamespace, /*readOnly=*/false)) {
-    n = g_prefs.getUInt(kPrefsBootKey, 0u);
-    have = true;
-    n += 1u;
-    g_prefs.putUInt(kPrefsBootKey, n);
-    g_prefs.end();
+  g_boot_info = g_boot_persist.begin(millis(), (uint32_t)r, resetReasonName(r));
+  g_boot_hb_n = g_boot_persist.heartbeats();
+  const uint32_t n = g_boot_info.boot_count;
+  // `prev_up=`：拿不到就是 `-`（**不许**写 0 —— 0 会被读成"上一次刚起来就重启了"，
+  //   而那正好是我们要判的两种病之一）。
+  char prev_up[12];
+  if (g_boot_info.prev_up_ms == kBootUpUnknown) {
+    prev_up[0] = '-'; prev_up[1] = '\0';
+  } else {
+    snprintf(prev_up, sizeof(prev_up), "%lumin",
+             (unsigned long)boot_minutes(g_boot_info.prev_up_ms));
   }
+  // `prev=`：第一次跑带本层的固件时是 `-`（不是 `UNKNOWN` —— 那会被读成"上一次是
+  //   一种叫 UNKNOWN 的复位"，而事实是"**没有留档**"）。
+  const char* prev_name = "-";
+  char prev_with_raw[20];
+  prev_with_raw[0] = '\0';
+  if (g_boot_info.prev_valid) {
+    if (g_boot_info.prev_reason_name[0] != '\0') {
+      prev_name = g_boot_info.prev_reason_name;
+      snprintf(prev_with_raw, sizeof(prev_with_raw), "%s (raw=%lu)",
+               g_boot_info.prev_reason_name, (unsigned long)g_boot_info.prev_reason_raw);
+    } else {
+      // 只有原始值（名字那个键没存下来）⇒ 名字这一格写 `?`，原始值照给。
+      prev_name = "?";
+      snprintf(prev_with_raw, sizeof(prev_with_raw), "? (raw=%lu)",
+               (unsigned long)g_boot_info.prev_reason_raw);
+    }
+  }
+  // ★★ 一行打完（`dash_logf` 一行上限 320 字节；这行是 ASCII）。字段口径：
+  //   · `reason` / `raw` = **本次**为什么起来（既有）；`n` = 第几次上电/复位（既有）；
+  //   · `prev=` = **上一次**的 reason + 原始值 —— ★ 2026-09-25 新增，本单的核心：
+  //     `prev` 与 `reason` **不一样**时（例：`reason=POWERON prev=BROWNOUT`）说明
+  //     上一次不是人插拔电，而是**板子自己掉电**；
+  //   · `prev_up=` = **上一次运行了多久**（靠 10 分钟一次的心跳留档，见 boot_persist.h）；
+  //     `prev_up=27min` = 长跑后断电（正常），几分钟的读数 = 异常；
+  //   · `nvs-` = 这一次的计数/留档**没写进 NVS**（下一次开机看不到这一次）；
+  //     它与 `prev=-`（NVS 好用、只是**还没有**上一次）是**两件不同的事**，别读混。
   // ★★ 2026-09-24 深夜**撤回**：这里原来还有一项 `tc=%.1fC`（片上温度）。
   //   它被砍掉的理由是**代价与收益不成比例**（不是"没用"）：
   //     · 收益：车上"温度"那条风险（`ARCHITECTURE.md` §3.5.3）多一个随手读数；
@@ -267,15 +379,15 @@ static void boot_note() {
   //     ② 格式串加回 `tc=%.1fC`，参数加 `(double)tc`；
   //     ③ 重新量一次 flash（`pio run -e esp32s3-rgb` 的 `Flash:` 行）确认代价仍是 ~6 KB；
   //     ④ 想清楚要它回答的是什么问题 —— 若是"舱内温度"，**应该从 VAN 取**，不是加这个。
-  // ★ 一行打完（`dash_logf` 一行上限 320 字节，中文一个字 3 字节 —— 这行是 ASCII）。
-  //   `raw=` 是枚举的数值：万一这一版 IDF 的名字与这里对不上，原始值还能查表。
-  //   `nvs=` 说明次数到底有没有存下来（NVS 坏了就报 `-`，而不是假装 0 次）。
-  dash_logf("boot: reason=%s n=%lu%s (raw=%d) up=%ums\n",
+  dash_logf("boot: reason=%s n=%lu%s (raw=%d) up=%ums | prev=%s prev_up=%s | hb=%lu\n",
             resetReasonName(r),
-            (unsigned long)(have ? n : 0u),
-            have ? "" : "(nvs-)",
+            (unsigned long)n,
+            g_boot_info.nvs_ok ? "" : "(nvs-)",
             (int)r,
-            (unsigned)millis());
+            (unsigned)millis(),
+            prev_with_raw[0] != '\0' ? prev_with_raw : prev_name,
+            prev_up,
+            (unsigned long)g_boot_hb_n);
 }
 
 #else
@@ -693,6 +805,21 @@ static SysStatusInputs sys_inputs_build(uint32_t now_ms) {
   // 而那一步在 setup 里、离这里只有几百毫秒 ⇒ 用系统 uptime 当近似足够了
   // （这一格要回答的只是"守护还在跑吗"，不是精确的相位）。
   in.guard_uptime_ms = now_ms;
+  // ★★ 2026-09-25：**跨重启累计**（上面四个数随重启归零，这四个不归零）。
+  //   口径 = "上一次开机为止的累计（NVS 里的基线）+ 本次" —— 于是"某次夜里守护
+  //   救过几回"不会随重启丢失（见 lib/dashcore/boot_persist.h）。
+  //   ★ 累计取的是**开了机就写下去的基线**，所以"上一次运行结束时的累计"是完整的；
+  //     最容易丢的只是"最后一次心跳之后那不到 10 分钟"的增量。
+  {
+    const GuardTotals base = g_boot_persist.guardBase();
+    in.guard_total_rd    = boot_accum(base.rd,  in.guard_rd_ok);
+    in.guard_total_fix   = boot_accum(base.fix, in.guard_fix);
+    in.guard_total_bl    = boot_accum(base.bl,  in.guard_bl);
+    in.guard_total_anom  = boot_accum(base.anom, in.guard_anomaly);
+    in.guard_tot_snaps   = g_boot_persist.snapshots();
+    in.boot_hb_n         = g_boot_persist.heartbeats();
+    in.boot_count        = g_boot_info.boot_count;
+  }
 #endif
 
   // ---- ⑦ 告警 / 静音 ----
@@ -1633,6 +1760,33 @@ void loop() {
 #endif
   dash_display_poll(); // 设备上为空;pcpreview 落 BMP 帧
   BOOT_STAGE(8);
+
+  // ★★ 2026-09-25：**10 分钟一次的心跳**（把"当前 uptime + 守护累计"落进 NVS）。
+  //   起因：开机那行只能报**当前**这一次为什么起来，而"上一次运行了多久"在掉电那一刻
+  //   没有任何人来得及记 ⇒ 只能运行期不断地写（判据/边界在 `lib/dashcore/boot_persist.h`，
+  //   宿主机逐条钉着）。这一行**只在到点那一拍**真写 NVS，其余每一拍就是一次整数比较
+  //   ⇒ 不占显示时间线、也不磨损 flash（10 分钟一次 ≈ 5.3 万次/年，见那份文件头）。
+  //   ★ 它读的是**守护此刻的四个数**（只读，不改守护的任何状态）。
+#if defined(DASH_DISPLAY_RGB)
+  {
+    GuardTotals cur;
+    cur.rd   = dash_panel_guard_rd_ok();
+    cur.fix  = dash_panel_guard_fix();
+    cur.bl   = dash_panel_guard_bl();
+    cur.anom = dash_panel_guard_anomalies();
+    if (g_boot_persist.tick(now, cur)) {
+      g_boot_hb_n = g_boot_persist.heartbeats();
+      // ★ 心跳那一行（10 分钟一次）—— `k` 是累计值落盘次数（跨重启单调 +1）。
+      dash_logf("hb: up=%lus rd=%lu fix=%lu bl=%lu anom=%lu k=%lu\n",
+                (unsigned long)(now / 1000u),
+                (unsigned long)boot_accum(g_boot_persist.guardBase().rd, cur.rd),
+                (unsigned long)boot_accum(g_boot_persist.guardBase().fix, cur.fix),
+                (unsigned long)boot_accum(g_boot_persist.guardBase().bl, cur.bl),
+                (unsigned long)boot_accum(g_boot_persist.guardBase().anom, cur.anom),
+                (unsigned long)g_boot_persist.snapshots());
+    }
+  }
+#endif
 
   if (now - last_ui_ms >= 200) {
     last_ui_ms = now;

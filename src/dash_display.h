@@ -75,6 +75,8 @@ uint32_t dash_panel_guard_rd_ok(void);
 uint32_t dash_panel_guard_fix(void);
 uint32_t dash_panel_guard_bl(void);
 uint32_t dash_panel_guard_anomalies(void);
+// 守护**自动**重初始化的次数（跨重启累计的第二个来源；`r` 命令那几次不计）。
+uint32_t dash_panel_guard_reinits(void);
 // 守护**下一次检查**的到期时刻（ms，与 `millis()` 同一时基）。
 // ★ 临时注入路径要它：注入必须落在"守护下一次检查之前"，否则那一次检查读到的
 //   是**已经修好**的值（修复动作 = 按影子重写，一瞬间就完成）⇒ 攒不出"连续异常"。
