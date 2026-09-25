@@ -176,6 +176,47 @@ $env:IMAGE_BLOB = "C:\...\.pio\image-test\image.bin"   ; 或编辑器导出的 i
 python -m platformio run -e pcpreview -t exec
 ```
 
+> ★★ **预览的图片预算要按目标板给，否则会"一张图都不加载"**（2026-09-26 本单修 +
+> 写在这儿）：
+> 宿主机那份预算默认是**经典板的 1 MB**（`lib/themetool/image_blob.h` 的
+> `IMAGE_PARTITION_BYTES`），而 **S3 / 双 2.8C 的 image 分区是 8 MB**。
+> 车主的整套素材 **1,844,620 B** 就卡在这条线上 ⇒ 不加下面这一条时，预览里
+> **一张图都不加载**（表情退回程序化形状），看起来像"素材没做对/页面导出的 bin 坏了"。
+>
+> ```powershell
+> # 在**副本**里加一个临时 env（本单实测有效的做法；仓库那份 platformio.ini 一个字节都不动）
+> #   [env:pcpreview-8m]
+> #   extends = env:pcpreview
+> #   build_flags = ${env:pcpreview.build_flags}
+> #                 -DIMAGE_PARTITION_BYTES=(8u*1024u*1024u)
+> python -m platformio run -e pcpreview-8m -t exec
+> ```
+>
+> ★ 用 `--project-option` 直接改 `build_flags` **不行**：那会**替掉**原有的
+> `-I`/`-D`（`-I include`、`-DLV_CONF_INCLUDE_SIMPLE=1` …），编都编不过。
+>
+> 判据：`image ok: 9 张,数据 1843200 字节,镜像 1844620 字节`；
+> 预算不够时**现在会喊出来**（不再静默退回）：
+>
+> ```
+> image: ** 图片预算不够，一张都不加载 ** 文件 1844620 字节(1802 KB) > 预算 1048576 字节(1024 KB)
+>        ⇒ 表情会退回程序化形状（**不是素材/页面导出的问题**）。
+>        出路：编译时加 -DIMAGE_PARTITION_BYTES=(8u*1024u*1024u)（S3 那块板/双 2.8C 的 image 分区就是 8MB）…
+> ```
+>
+> 这条**只影响宿主机预览**：设备端读的是分区大小，与这个宏无关（刷写照旧）。
+
+> **想把一份 `image.bin` 拆开逐字段核对**（包头自洽 / 每张的角色号与尺寸 /
+> 左右组有没有互相冒充 / 缺哪几张，一句话结论"这份文件本身有没有问题"）：
+>
+> ```powershell
+> node tools/theme-editor/check-image-bin.js "C:\...\image.bin"        # 只读，不动一个字节
+> # 目标板口径可指定：--target s3|classic|s3_240；--strict 把 name 字段告警也算红
+> ```
+>
+> 它从 `image_blob.h` + `image-blob-build.js` + `face_stages.h` 的
+> `kFaceRoleId[2][7]` **解析**口径（不手抄），收尾是一行 `全部通过:N 项断言`。
+
 注意 `program.exe` 自己不会退出（`for(;;) loop()`），
 跑够了就 Ctrl+C —— 帧写在 `preview/frames/`，与退出方式无关。
 
@@ -654,6 +695,7 @@ python -m esptool --chip esp32s3 --port COM5 --baud 921600 write_flash 0x254000 
 | 现象 | 最可能的原因 | 怎么确认 |
 |---|---|---|
 | 屏上完全没变化，串口 `image none:` | 没刷进这个分区 / 偏移写错 | esptool 是否打了 `Hash of data verified.`；偏移是否 `0x254000` |
+| **预览里**表情是程序化形状、`image none:`，而串口上先有一行 `image: ** 图片预算不够…**` | 宿主机预览的图片预算还是经典板的 **1 MB**，素材比它大 | 按上面「不上设备也能看效果」那一节的 `-DIMAGE_PARTITION_BYTES=(8u*1024u*1024u)` 重编（**只影响预览**，不是素材/页面的问题） |
 | 串口 `image: 镜像无效或未刷入` | 分区里不是合法镜像（刷了别的文件、只写了一半） | 重新刷一次 `image.bin`；文件大小对不对 |
 | 图**被裁**、表情盖住副弧、背景只剩中间一块 | **目标板选错成 480 档**（按 300/480 做的图） | 页面上限应是 160/推荐 152/背景 240；重导一次 |
 | 脸的**档位对不上**（该变不变） | 角色选错（编号 → 屏/档位见表 2） | 页面阶段模拟里那行"用「左屏表情·X」"就是固件会用的角色 |
@@ -1482,6 +1524,7 @@ node tools/theme-editor/test-theme-json.js
 | `test-image-roundtrip.ps1` | JS ↔ 固件 的往返一致性测试（**改格式后必跑**） |
 | `make-test-blob.js` | 造"颜色可辨认"的测试镜像（底图**满屏 480×480**，否则够不到弧带），用于宿主机逐像素验证 |
 | `check-preview-frame.js` | 读 pcpreview 落的 BMP：图层顺序、**弧压在底图之上**、透明、数字读数、**表盘朝向** |
+| **`check-image-bin.js`** | **★ 把一份 `image.bin` 拆开逐字段核对（只读）**：包头自洽（12+32×44 + 数据 = 文件长）、每张的角色号/尺寸/颜色格式/字节数/偏移、偏移紧排无洞无重叠、左右两组有没有互相冒充、缺哪几张；口径从 `image_blob.h`/`image-blob-build.js`/`face_stages.h` **解析**得来。收尾 `全部通过:N 项断言` + 一句人话结论（"这份文件本身是好的/有问题，问题在第 N 张的哪个字段"） |
 | `theme-default.json` | 与固件默认值一致的参考主题（可直接当模板改） |
 
 相关（代码在仓库里，不在工具目录）：

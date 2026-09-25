@@ -6399,3 +6399,268 @@ node tools/theme-editor/check-face-image.js <image.bin> <r_0045.bmp> left
 
 
 
+
+
+---
+
+## 2026-09-26（第二单）车主的疑问："**是不是模拟页面那边导出的 bin 文件本来就有问题**"
+
+> 本单**没烧板、没开串口**（两块板正被别的线用着）：全部证据都来自
+> **文件字节 + 宿主机预览 + headless Edge**。
+> 起手确认：`git log -1` = **`a869b706b4be6a2201f4fa9697888ab5f34000dc`** ✓；
+> `tools/theme-editor/theme.json`（车主的本地产物，`.gitignore:30` 忽略）与其 sha256
+> 全程未变 ✓；`platformio.ini` sha256 前后相同（见 ③）。
+
+### ① 把那份 `image.bin` **拆开看**：新工具 `tools/theme-editor/check-image-bin.js`（只读）
+
+车主的原件（`.dsh-drop\session-49039670-…\6fbe3b1a948c-image.bin`，**1,844,620 B**，
+sha256 `6FBE3B1A948CFFCC0A36072AF0D92101D6D4518A60AEB2AEEEF72C54B4F16510`）：
+
+| # | 角色号 | 用途（权威名） | 尺寸 | 颜色格式 | 字节数 | 偏移 | 文件里的 name（原始字节） |
+|---|---|---|---|---|---|---|---|
+| 0 | 1 | 表盘背景 | 480×480 | RGB565 | 460800 | 0 | `"images"`（可读） |
+| 1 | 3 | 左屏表情·怠速 | 240×240 | RGB565A8 | 172800 | 460800 | `6c1f682d201f` |
+| 2 | 6 | 右屏表情·静止 | 240×240 | RGB565A8 | 172800 | 633600 | `1fa6682d201f` |
+| 3 | 18 | 右屏表情·高速 | 240×240 | RGB565A8 | 172800 | 806400 | `1fa6682dd81f` |
+| 4 | 12 | 左屏表情·巡航 | 240×240 | RGB565A8 | 172800 | 979200 | `6c1f682d2d1f` |
+| 5 | 22 | 右屏表情·市区 | 240×240 | RGB565A8 | 172800 | 1152000 | `1fa6682d2d1f` |
+| 6 | 8 | 右屏表情·超速 | 240×240 | RGB565A8 | 172800 | 1324800 | `1fa6682da23a` |
+| 7 | 21 | 左屏表情·高转 | 240×240 | RGB565A8 | 172800 | 1497600 | `6c1f682dd81f` |
+| 8 | 4 | 左屏表情·红区 | 240×240 | RGB565A8 | 172800 | 1670400 | `6c1f682da23a` |
+
+包头：`magic=0x44363032`（小端读作 `'206D'`）/ `version=1` / `count=9` / `data_bytes=1843200`；
+`HEADER_SIZE = 12 + 32×44 = 1420`，`1420 + 1843200 = 1844620` = 文件长度 ✓。
+
+**逐条判据（工具原文结论，`全部通过:76 项断言`）**：
+
+| 判据 | 结论 |
+|---|---|
+| ① 包头与实际长度自洽 | ✓ `data_bytes == 1844620−1420`、各图 size 之和 == `data_bytes`、尾部无多余/截断；`count` 之后 23 个索引项**全 0** |
+| ①' 每张图自身自洽 | ✓ 9/9 的 `size == (每像素bpp×w+pad)×h`；offset 依次紧排（无洞、无重叠）；末张末尾正好落在数据区末尾；9/9 的 name 都是 NUL 结束的 C 字符串 |
+| ② 角色号落在预期集合内 | ✓ 全部属于「背景 1 + 左 3/12/13/4/21 + 右 6/17/18/8/22」（左/右两组由 `face_stages.h` 的 `kFaceRoleId[2][7]` **解析**得来，不是手抄）；无用保留号；背景恰好 1 张 |
+| ③ 左右两组没有互相冒充 | ✓ 角色号无重复；**名字前缀与角色号分组同向**：左组 4 张的前 2 字节都是 `6c1f`、右组 4 张都是 `1fa6`（两组不同）；反向判据 0 例 |
+| ④ 尺寸与该目标板口径一致 | ✓ 背景 480×480 + RGB565；表情 8/8 都是 240×240 正方形 + RGB565A8，未超画布上限 320；镜像占 8 MB 分区的 **22.0%** |
+| ⑤ 缺口如实列出 | **缺 13（左屏表情·运动）与 17（右屏表情·快速路）** |
+| ⑥ 重复/越界/长度对不上 | ✓ 0 例 |
+
+★ **新事实（上一单只记了 13）**：这份素材其实缺**两张** —— 除了 `13`（左·运动），
+**`17`（右·快速路）也没导**。一整套是左 5 + 右 5 = 10 张，这份到了 8 张。
+缺图**不是缺陷**（板上会走 `kFaceFallback` 降级链），但"右屏·快速路"那一档在板上会是
+别的脸 —— 车主如果本来打算导 10 张，那是漏了一张。
+
+★ **另一个新事实：`name` 字段是坏的**（9 张里 8 张不是可读 ASCII）。证据是**生成端复现**：
+`image-blob-build.js` 的 `build()` 里写名字那一行是
+`blob[base + 18 + c] = e.name.charCodeAt(c) & 0xFF;` —— `& 0xFF` 把**任何非 ASCII 字符截成低字节**；
+而页面 `image-editor.html` 的 `safeName()` 明确允许中文（`\u4e00-\u9fa5`）并按 **UTF-8 字节数**限长
+（`byteLen()`），名字又来自车主的中文文件名 ⇒ 落到文件里就是"一个汉字一个字节"的残骸。
+把候选中文名喂给**同一个 `build()`**，得到的字节与文件里**逐字节相同**：
+
+| 文件里的 hex | 生成端对 `imageName` 写出的 hex | 文件名（车主原来的） |
+|---|---|---|
+| `6c1f682d201f` | `6c1f682d201f` | 转速表-怠速 |
+| `6c1f682d2d1f` | `6c1f682d2d1f` | 转速表-中速 |
+| `6c1f682dd81f` | `6c1f682dd81f` | 转速表-高速 |
+| `6c1f682da23a` | `6c1f682da23a` | 转速表-红区 |
+| `1fa6682d201f` | `1fa6682d201f` | 速度表-怠速 |
+| `1fa6682d2d1f` | `1fa6682d2d1f` | 速度表-中速 |
+| `1fa6682dd81f` | `1fa6682dd81f` | 速度表-高速 |
+| `1fa6682da23a` | `1fa6682da23a` | 速度表-红区 |
+
+**影响 = 只有名字**：固件按 **role** 找图（`imageBlobFindRole`），`imageBlobParse` 只要求
+名字以 NUL 结束（这一条仍满足）⇒ **取图/显示一个字节都不受影响**；受影响的是
+**日志/清单里印出来的名字**（页面读容器时列出的清单就是这样：`2) lh- 　用途 左屏表情·怠速…`）。
+⇒ 本单**只报不改**（改 `build()` 会改掉所有已导出文件的字节，属于格式可见的改动，见 ⑧）。
+
+**反面判据（证明这些判据不是恒真）**：把车主原件故意改坏 4 份，逐份跑同一个工具 ⇒ **4/4 红**：
+
+| 副本 | 工具结论 |
+|---|---|
+| magic 改 1 字节 | `失败 1 项 / 共 76 项`（`magic 实际 0x443630CD`） |
+| 截掉尾部 1 字节 | `失败 2 项`（`data_bytes` 与文件长不符、尾部对不上） |
+| 第 2 张 size 减 1 | `失败 5 项`（size 之和、size↔尺寸、紧排、越界、长度对不上） |
+| **把第 1 张（左/怠速）与第 3 张（右/高速）的角色号对调** | `失败 2 项`（名字前缀与角色号分组打架：`第 1 张角色 18（名字前缀 6c1f）`、`第 3 张角色 3（名字前缀 1fa6）`） |
+
+> ★ 第 4 条是**本单的收获之一**：第一版把"名字与角色号分组不一致"写成"跳过"，
+> 于是**角色号对调**这种错居然全绿；改成"名字有区分度却与角色号分组打架 = 红"之后才抓住。
+
+### ② 页面导出路径的**往返复核**（headless Edge 153.0.4234.48；页面本体一个字不改）
+
+方法（可复现，夹具在 scratch，**没有往仓库里塞任何测试页面**）：
+把 `image-editor.html` 与它的 5 个依赖**逐字节拷**到 scratch，
+`harness.html` = 该副本 + 末尾追加一段夹具（页面脚本一个字符没改；副本 sha256 前缀：
+`image-editor.html 5F20C0F8…`、`image-blob-build.js 3C156620…`、`asset-spec.js E2E679D7…`、
+`face-stages.js 8B8B7AAE…`、`theme-json.js DD13D18F…`、`asset-package-core.js 9A7B8B82…`）。
+夹具里**走页面自己的那条路**：`addFiles()` 喂图 → 摆好顺序与用途 → 点 `#btn-export`
+（真按钮）→ 读页面自己 `download()` 出来的 blob；导入走 `#file-theme` 的**真 `change` 事件**。
+`--allow-file-access-from-files` 下 `fetch()` 能取本地文件、`crypto.subtle` 可用（都实测过）。
+
+**先核实页面里的目标板口径（车主点名要核的那一条）**：
+
+```
+页面口径: DEFAULT_TARGET=s3  partitionBytesFor(DEFAULT_TARGET)=8388608 (8 MB)  旧常量 PARTITION_BYTES=1048576
+页面下拉框当前值 curTarget=s3  partBytes()=8388608 (8192 KB)  画布上限=320
+页面状态栏原文: 就绪。当前目标板：ESP32-S3 N16R8(16MB flash) + 双 2.8C 圆屏（最终板）
+```
+
+⇒ **页面的预算本来就是 8 MB（`DEFAULT_TARGET="s3"`），没有"按 1 MB 算"那个 bug** ✓。
+`ImageBlob.PARTITION_BYTES`（1 MB）是留给老代码的"经典板"常量，页面上一处都没用它算预算
+（页面只认 `partitionBytesFor(curTarget)`）。
+
+**逐字节比（页面自己的产物 vs CLI）**：
+
+| 项 | 字节 | sha256 |
+|---|---|---|
+| **页面**在浏览器里造的容器（用车主两份原件） | 2,123,148 | **`105BCDC074961EFB95A0BDFDDEB001DC9674732EBF1B120AFDF31B99386D3D2A`** |
+| **CLI**（`asset-package.js pack --table partitions-s3.csv`）对同样两份输入 | 2,123,148 | **`105BCDC074961EFB95A0BDFDDEB001DC9674732EBF1B120AFDF31B99386D3D2A`** |
+| KNOWN-GOOD（上一单记的） | — | 同上一行 |
+
+⇒ **页面产物 == CLI 产物 == `105BCDC0…3D2A`，逐字节相同** ✓（页面 `coreForTarget()` =
+`base 0x210000 / imageOffset 0x44000 / theme 段 16384 / 中间 262144 / image 上限 8388608`）。
+页面**读**容器这条也一并核了：读入 CLI 那份容器成功、清单**9 张逐条正确**
+（背景 480×480/460800、其余 8 张 240×240/172800，用途与角色号全对），
+点「把图片部分另存为」拿到的字节 sha256 = **`6FBE3B1A948CFFCC…F16510`** = 车主那份 `image.bin`
+（页面自己承诺的"逐字节相同"成立）。
+
+**像素路径（PNG 喂进去再导出）——如实记一处差异，并给出精确归因**：
+把车主那份 bin 的 9 张图还原成 PNG（无损；还原后再喂给**同一个 `build()`** 能逐字节复现原件
+`6FBE3B1A…`，说明还原器忠实）、按车主原来的中文文件名喂进页面 → 页面导出 `image.bin`
+（1,844,620 B，sha256 `94861D30C72F606D…`）与原件**有 4248 字节不同**。逐字节定位：
+
+| 区段 | 不同字节数 |
+|---|---|
+| 包头 + 索引区 `[0,1420)` | **0** |
+| 背景（角色 1） | **0** |
+| 8 张表情的 **alpha 平面** | **0** |
+| 8 张表情的**颜色平面** | 4248（3651 个像素） |
+
+且**差全落在 `0 < alpha < 255` 的像素上**（`alpha=0` 的 0 个、`alpha=255` 的 0 个），
+565 各通道差 **≤ 1 档**（满量程 31/63/31）⇒ 这是 **canvas 预乘 alpha 往返**的量化
+（`drawImage` 1:1 → `getImageData` 除回来），**肉眼不可见、不影响任何判据**。
+⇒ 结论：**页面导出路径没有"会让表情画错"的问题**；"页面产物 == CLI 产物"成立的前提是
+**同一份输入**（同一张 PNG / 同一段 image 段），**不是**"把 bin 喂回去再导出还逐字节相同"。
+
+### ③ ★ 把"静默退回"变成"**喊出来**"
+
+**最小复现（改之前，1 MB 口径）** —— 车主那份 1.84 MB 素材：
+
+```
+stdout: image none: 无图片资源,背景用主题纯色
+stderr: image: C:\206dash-scratch\imgbin-inspect\page\owner-image.bin 大小不合理 (1844620)
+```
+
+⇒ 读日志的人只会看到"**没有图片资源** + 大小不合理"：**没有**预算数、**没有**怎么办，
+而后果是"**一张图都不加载**"（表情退回程序化形状）。这正是会把人误导到"素材/页面坏了"的那条路。
+
+**加 `-DIMAGE_PARTITION_BYTES=(8u*1024u*1024u)` 之后（同一份素材）**：
+
+```
+stdout: image ok: 9 张,数据 1843200 字节,镜像 1844620 字节
+stdout: preview: 脏区/s(左右两屏合计) … fmax=240x240(单屏的 25.0%) …     ← ★ 屏上真的在画那 8 张 240×240
+```
+
+（1 MB 那一轮同一行的 `fmax` 是 `200x200` 那一档 = 程序化表情 ⇒ "用没用上真图"在这行上也看得见。）
+
+**修法（改动很小，不动任何驱动/时序/分区表）**：
+把"文件大小 vs 预算"的判定从 `imageBlobLoad()` 里挪成**纯函数**
+`imageBlobSizeVerdict(bytes, budget, msg, cap)`（`lib/themetool/image_blob.h`，宿主机专用），
+调用点把整句话打到 **stdout 主日志流**（`dash_logf`）+ 一份 `stderr`：
+
+```
+image: ** 图片预算不够，一张都不加载 ** 文件 1844620 字节(1802 KB) > 预算 1048576 字节(1024 KB)
+       ⇒ 表情会退回程序化形状（**不是素材/页面导出的问题**）。
+       出路：编译时加 -DIMAGE_PARTITION_BYTES=(8u*1024u*1024u)（S3 那块板/双 2.8C 的 image 分区就是 8MB），
+       或改用按目标板取预算的 env。见 docs/PREVIEW.md。
+```
+
+| | 改之前 | 改之后 |
+|---|---|---|
+| stdout 第一句 | `image none: 无图片资源,背景用主题纯色`（无因无果） | `image: ** 图片预算不够，一张都不加载 ** …（数字 + 出路）`，紧跟原来的 `image none:` |
+| stderr | `image: … 大小不合理 (1844620)` | 同一句完整的话（含 `-D` 式子） |
+| 文件打不开 | `image: 打不开 <path>` | `image: ** 打不开 <path> ** ⇒ 一张都不加载。通常是路径写错、或文件被移走/删掉了（这种情况加 -DIMAGE_PARTITION_BYTES 没用）。` |
+| 0 字节文件 | 归到"大小不合理" | 单独一句"文件是空的(0 字节)"（加 `-D` 也没用） |
+
+★ **诚实记一笔（本单自己的一个误判）**：排查时有一轮 `IMAGE_BLOB` 指向
+`C:\Users\张九思\…` 报 `打不开`，我一度归因成"**中文路径 fopen 会失败**"并照此写了注释。
+**那个归因是错的**：实测**中文路径能正常打开**（同一条中文路径的 `theme:` 行一直是成功的），
+当初失败是**我那个 PowerShell 夹具脚本自己**把中文默认值按 GBK 解坏了
+（无 BOM 的 `.ps1` 在 Windows PowerShell 5.1 下按 ANSI 读）——脚本已改成全 ASCII，
+代码注释里也把这条改写成正确的原因。**没有**任何关于"中文路径"的限制被写进仓库。
+
+**文档**：`docs/PREVIEW.md` 新增 §1.4（症状/原因/做法/前后判据/台词原文）+
+§1.1 前提表加一行；`tools/theme-editor/README.md` 的「不上设备也能看效果」补那条
+"素材 >1 MB 必须给 8 MB 口径"（含**不要**用 `--project-option build_flags=…` 的原因：
+那是**替换**，会把 `-I`/`-D` 一起干掉）+ 排查表加一行 + 文件表加 `check-image-bin.js`。
+
+**纪律**：仓库 `platformio.ini` **未动** —— sha256 前后都是
+`22BCCC803C29D6D00ACC951EEF706E4B731C86086889BBBB0443390F987E37BD` ✓；
+`-D` 那条只加在**纯 ASCII 副本** `C:\206dash-scratch\imgbin-pcp` 的临时 env
+`[env:pcpreview-8m]`（`extends = env:pcpreview`）里。`theme.json` / `local/` 全程未动。
+
+### ④ 页面侧"左右"口径重跑
+
+`node tools/theme-editor/test-role-orientation.js` ⇒ **`全部通过:59 项断言`**（与基线逐项相同），
+五节（固件角色→主题下标 / 主题两槽主表 / 编辑器的"左/右" ↔ 固件 `screens[0]/[1]` /
+表情角色号 ↔ `kFaceRoleId` / 图片用途标签）全绿 ⇒
+**页面导出的左右分组与固件、预览的口径同向**（没有反）。
+
+★ 本单还多了一条**独立佐证**：① 的工具直接从**文件自己的字节**里读出这个方向 ——
+车主的中文名 `转速表-…`（左/转速）与 `速度表-…`（右/速度）低字节不同，
+而 8 张图的名字前缀与 `kFaceRoleId[2][7]` 的分组**一一同向**（左 `6c1f`×4 / 右 `1fa6`×4）。
+
+### ⑤ 回归数字
+
+| 项 | 基线 | 本单 |
+|---|---|---|
+| native（`-e native`，挂 zig 桩） | **337 例（2 skipped / 335 succeeded）** | **340 例（2 skipped / 338 succeeded），0 失败** —— 净增 **+3**（`test_host_budget_rejects_oversize` / `test_host_budget_accepts_s3` / `test_host_budget_empty_and_null`，逐条 `[PASSED]`） |
+| JS 八套 | 95 / 105 / 261 / 429 / 71 / 372 / 259 + `test-role-orientation` 59 | **95 / 105 / 261 / 429 / 71 / 372 / 259 + 59**（逐项相同，没有降） |
+| `syntax-check-pages.js` | 42 项 | **42 项** |
+| ★ 新增检查器 | —— | `check-image-bin.js` **76 项断言**（默认 1 条字段告警；`--strict` 下才红） |
+| `pcpreview` | SUCCESS | **SUCCESS**（1 MB 档与 8 MB 档各一次，都编过） |
+
+### ⑥ 开过几次串口
+
+**0 次**（本单不需要板子：所有判据都是文件字节 + 宿主机预览 + 浏览器）。
+`COM1/COM6/COM8/COM9` 一个都没开，也没跑任何 esptool/烧写命令。
+
+### ⑦ 复现本单（一步不差）
+
+```powershell
+# ① 拆开看车主那份 bin（只读；收尾一行 全部通过:N 项断言 + 一句人话结论）
+node tools/theme-editor/check-image-bin.js "<...>\6fbe3b1a948c-image.bin"
+node tools/theme-editor/check-image-bin.js "<...>\6fbe3b1a948c-image.bin" --target s3 --strict
+
+# ② 页面往返：把 tools/theme-editor 的页面与依赖逐字节拷进 scratch，
+#    末尾追加夹具 → headless Edge（--allow-file-access-from-files + --virtual-time-budget）
+#    夹具要点：addFiles() 喂 PNG → 摆顺序/用途 → 点 #btn-export → 读 download() 的 blob；
+#              导入走 #file-theme 的真 change 事件；下载目录用 profile Preferences 指到 scratch
+& C:\206dash-scratch\imgbin-inspect\run-edge.ps1 -Tag run1 -Page "...\page\harness.html"
+& C:\206dash-scratch\imgbin-inspect\run-edge.ps1 -Tag run2 -Page "...\page\harness2.html"
+
+# ③ 预览前后对照（先在副本里加临时 env，见 docs/PREVIEW.md §1.4）
+$env:IMAGE_BLOB='C:\206dash-scratch\imgbin-inspect\page\owner-image.bin'
+python -m platformio run -e pcpreview      # 1MB 档：会喊"图片预算不够"
+python -m platformio run -e pcpreview-8m   # 8MB 档：image ok: 9 张,…
+```
+
+### ⑧ 没做 / 拿不准（如实列）
+
+1. ★ **`name` 字段的截断（`charCodeAt & 0xFF`）本单只报不改**：改它会让**所有已导出文件**
+   的 name 段字节变化（页面 `safeName` 是按 UTF-8 字节数限长的，真按 UTF-8 写还得处理
+   24 字节上限与截断边界），属于"格式可见的改动"，**该由车主拍板**（要改就先在
+   `test-image-blob-build.js` 里加"中文名要按 UTF-8 落盘且不越 24 字节"的用例）。
+   现状：**设备端完全不受影响**（按 role 找图），只有日志/清单里的名字是乱码。
+2. ★ **页面像素往返不是逐字节幂等的**（重新喂一份**已经 565 量化过**的 bin 进去，
+   半透明像素的颜色会差 ≤1 档，4248 字节）：本单**没有**去改 `renderToTarget()`
+   —— 差的是 1 LSB 且只在抗锯齿边上，改它要动的是"画布路径 vs 逐像素路径"这种大改。
+   若要"bin → 页面 → bin 逐字节相同"，得另设计一条不经 canvas 的路径。
+3. ★ **`17`（右屏·快速路）缺失**：本单只**如实列出**，没去猜车主是漏导还是故意不导
+   （上一单记的是"缺 13"，本单补齐为"缺 13 与 17"）。
+4. ★ 页面夹具用的是 **headless Edge + 夹具注入**（`file://` + `--allow-file-access-from-files`），
+   导入/导出走的是**页面自己的函数与真事件**，但**不是人在页面上点**；
+   上一单那次是 CDP + `http://127.0.0.1`。两条路的结论一致（容器 sha256 相同），
+   但"鼠标点"这一层两边都没有覆盖。
+5. ★ 本机的 PlatformIO 用的是 `C:\206dash-scratch\pio-core-mix`（同时带
+   `espressif32` 与 `espressif32@7.1.3`）；`C:\.platformio\penv\Scripts\python.exe`
+   仍然是残的（`No pyvenv.cfg file`），本单没去修它。
+6. ★ **预览那次"打不开"的误判**已在 ③ 里更正（根因是我夹具脚本的编码，不是仓库行为）——
+   这条留在文档里是为了避免下次有人照着"中文路径不能用"去做无用的规避。

@@ -25,6 +25,11 @@
 | **在纯 ASCII 路径的副本里跑** | 中文路径会让工具链/`ld` 写 map 失败 | 构建报路径相关错误（与代码无关） |
 | `C:\206dash-scratch\zigbin` 挂进 `PATH` | 那是一组 `gcc`/`g++` → zig 的**转发桩** | `'gcc' is not recognized as an internal or external command` |
 | `PYTHONPATH` / `PLATFORMIO_CORE_DIR` | 本机的 PlatformIO Core 与工作区依赖不在系统 python 里 | `No module named platformio` |
+| ★ **图片预算按目标板给**（素材 >1 MB 时必给） | 宿主机那份预算默认是**经典板的 1 MB**（`IMAGE_PARTITION_BYTES`），而 S3/双 2.8C 的 image 分区是 **8 MB** | `image: ** 图片预算不够，一张都不加载 ** …` ⇒ 表情退回程序化形状（**不再是静默的**，见 1.4） |
+
+★ 最后一条**与代码无关，但最容易误判**：2026-09-26 之前它是**静默**的
+（stdout 只有一句 `image none: 无图片资源,背景用主题纯色`），读日志的人会以为
+"是素材/页面导出的文件坏了"。现在会先喊一行完整的数字与出路。
 
 ### 1.2 命令（复制即用）
 
@@ -53,6 +58,64 @@ python -m platformio run -e pcpreview -t exec
 ```powershell
 python -m platformio run -e pcpreview      # SUCCESS 即可
 ```
+
+### 1.4 ★ 图片预算：素材大于 1 MB 时必须给 8 MB 口径（2026-09-26 修 + 记）
+
+**症状**（改之前是**静默**的，这是本单修掉的那一条）：`IMAGE_BLOB` 指向一份
+1.8 MB 的素材，屏上表情却是程序化形状，日志里只有
+
+```
+image none: 无图片资源,背景用主题纯色          ← 看上去像"素材里本来就没有图"
+image: C:\...\image.bin 大小不合理 (1844620)   ← 只有 stderr 上一句，没有预算数、没有出路
+```
+
+**原因**：宿主机那份预算默认按**经典 ESP32（4 MB flash）的 1 MB**
+（`lib/themetool/image_blob.h` 的 `IMAGE_PARTITION_BYTES`），
+而 **S3 N16R8 / 双 2.8C 的 image 分区是 8 MB**（`partitions-s3.csv`）。
+车主整套素材 **1,844,620 B** 正好卡在这条线上 ⇒ 一张图都不加载。
+
+**做法**（**不要**改仓库里 `platformio.ini` 的默认值：经典板那份必须留 1 MB）——
+在**副本**里加一个临时 env：
+
+```ini
+[env:pcpreview-8m]
+extends = env:pcpreview
+build_flags =
+  ${env:pcpreview.build_flags}
+  -DIMAGE_PARTITION_BYTES=(8u*1024u*1024u)
+```
+
+```powershell
+python -m platformio run -e pcpreview-8m -t exec
+```
+
+> ★ 不要用 `--project-option build_flags=…`：那是**替换**，会把
+> `-I include` / `-DLV_CONF_INCLUDE_SIMPLE=1` 一起干掉，直接编不过。
+
+**判据（前后对照，本单原文）**：
+
+| | 不加 `-D`（1 MB） | 加 `-D`（8 MB） |
+|---|---|---|
+| stdout | `image none: 无图片资源,背景用主题纯色`（且现在它上面先有一行喊话，见下） | `image ok: 9 张,数据 1843200 字节,镜像 1844620 字节` |
+| 脏区（用没用上真图） | `fmax=200x200` 那一档（程序化表情） | 出现 **`fmax=240x240`**（= 表情图的实际尺寸） |
+
+**现在预算不够时会喊出来**（`lib/themetool/image_blob.cpp` 的宿主机分支，
+打到 stdout 主日志流 + 一份 stderr）：
+
+```
+image: ** 图片预算不够，一张都不加载 ** 文件 1844620 字节(1802 KB) > 预算 1048576 字节(1024 KB)
+       ⇒ 表情会退回程序化形状（**不是素材/页面导出的问题**）。
+       出路：编译时加 -DIMAGE_PARTITION_BYTES=(8u*1024u*1024u)（S3 那块板/双 2.8C 的 image 分区就是 8MB），
+       或改用按目标板取预算的 env。见 docs/PREVIEW.md。
+```
+
+判定本身是纯函数 `imageBlobSizeVerdict(bytes, budget, msg, cap)`
+（`lib/themetool/image_blob.h`，宿主机专用），所以三条用例能直接钉住它
+（`test/test_dashcore/test_image_blob.cpp` 的 `test_host_budget_*`）。
+
+★ 顺带说清一件**容易混**的事：`image: ** 打不开 …**`（文件不存在/路径写错）与
+"预算不够"是**两件事** —— 前者加 `-DIMAGE_PARTITION_BYTES` 一点用都没有，
+所以两种情况的文案里都写明了各自该怎么办。
 
 ### 1.3 视频之外的两种"记录"
 

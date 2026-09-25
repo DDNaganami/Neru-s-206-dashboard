@@ -492,6 +492,56 @@ static void test_face_role_ids_match_stages(void) {
   }
 }
 
+// ============================================================
+// 宿主机预览的"图片预算"判定 —— **把静默退回变成喊出来**（2026-09-26 本单加）
+//
+// 这三条钉住的是"**被拒时必须说清三件事**"：文件多大、预算多大、怎么办。
+// 为什么值得单测:这段判定原先只往 stderr 打一句 `大小不合理 (N)`,而它的后果是
+// "一张图都不加载"（表情退回程序化形状）—— 读日志的人会误判成"素材/页面坏了"。
+// 判据用**ASCII 子串**查（数字与 `-DIMAGE_PARTITION_BYTES`），不锁中文文案的措辞。
+// ============================================================
+static void test_host_budget_rejects_oversize(void) {
+  char msg[512];
+  // 车主真素材：1,844,620 B 撞上经典板的 1MB 预算 ⇒ 必须拒，且话说全
+  const unsigned long kOwner = 1844620ul;
+  const unsigned long kClassic = 1024ul * 1024ul;
+  TEST_ASSERT_FALSE(imageBlobSizeVerdict(kOwner, kClassic, msg, sizeof(msg)));
+  TEST_ASSERT_NOT_NULL(strstr(msg, "1844620"));                 // 文件实际多大
+  TEST_ASSERT_NOT_NULL(strstr(msg, "1048576"));                 // 预算是多少
+  TEST_ASSERT_NOT_NULL(strstr(msg, "-DIMAGE_PARTITION_BYTES")); // 出路①：加 -D
+  TEST_ASSERT_NOT_NULL(strstr(msg, "8u*1024u*1024u"));          //      给到能照抄的式子
+  TEST_ASSERT_NOT_NULL(strstr(msg, "image:"));                  // 与其它 image: 行同一条流
+  // 通过时不许留话（否则每次启动都刷一屏噪声）
+  TEST_ASSERT_TRUE(imageBlobSizeVerdict(1024ul, kClassic, msg, sizeof(msg)));
+  TEST_ASSERT_EQUAL_STRING("", msg);
+  // 边界:正好等于预算 = 通过（分区能装下最后一个字节）
+  TEST_ASSERT_TRUE(imageBlobSizeVerdict(kClassic, kClassic, msg, sizeof(msg)));
+}
+
+static void test_host_budget_accepts_s3(void) {
+  char msg[512];
+  // 同一份素材换成 S3/双 2.8C 的 8MB 口径 ⇒ 通过、不打字
+  const unsigned long kB = 8ul * 1024ul * 1024ul;
+  TEST_ASSERT_TRUE(imageBlobSizeVerdict(1844620ul, kB, msg, sizeof(msg)));
+  TEST_ASSERT_EQUAL_STRING("", msg);
+  TEST_ASSERT_TRUE(imageBlobSizeVerdict(1ul, kB, msg, sizeof(msg)));
+  TEST_ASSERT_TRUE(imageBlobSizeVerdict(kB, kB, msg, sizeof(msg)));
+  // 超一个字节就拒（预算不是"差不多就行"）
+  TEST_ASSERT_FALSE(imageBlobSizeVerdict(kB + 1ul, kB, msg, sizeof(msg)));
+  TEST_ASSERT_NOT_NULL(strstr(msg, "8388609"));
+}
+
+static void test_host_budget_empty_and_null(void) {
+  char msg[512];
+  // 0 字节：拒，而且是"空文件"那句话（不是"超预算"）
+  TEST_ASSERT_FALSE(imageBlobSizeVerdict(0ul, 1024ul * 1024ul, msg, sizeof(msg)));
+  TEST_ASSERT_NOT_NULL(strstr(msg, "0 "));      // "0 字节"
+  TEST_ASSERT_NULL(strstr(msg, "-DIMAGE_PARTITION_BYTES"));  // 空文件加 -D 也没用
+  // msg=nullptr 不许崩（调用点允许不要那句话）
+  TEST_ASSERT_FALSE(imageBlobSizeVerdict(2048ul, 1024ul, nullptr, 0));
+  TEST_ASSERT_TRUE(imageBlobSizeVerdict(1024ul, 1024ul, nullptr, 0));
+}
+
 void register_image_blob_tests(void) {
   RUN_TEST(test_layout_sane);
   RUN_TEST(test_entry_field_offsets);
@@ -508,4 +558,8 @@ void register_image_blob_tests(void) {
   RUN_TEST(test_stride_padding);
   RUN_TEST(test_blank_partition_rejected);
   RUN_TEST(test_header_byte_layout);
+  // 宿主机预览的图片预算判定（2026-09-26：把"静默退回"变成"喊出来"）
+  RUN_TEST(test_host_budget_rejects_oversize);
+  RUN_TEST(test_host_budget_accepts_s3);
+  RUN_TEST(test_host_budget_empty_and_null);
 }

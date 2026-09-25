@@ -201,6 +201,44 @@ const uint8_t* imageBlobLoad(uint32_t* blob_len) {
 #include <stdio.h>
 #include <stdlib.h>
 
+// ============================================================
+// ★★ 2026-09-26：**把"静默退回"变成"喊出来"**（这一处是本单修的）
+//
+// 起因：车主问"是不是模拟页面导出的 bin 文件本来就有问题"，而排查时先踩到的
+//   其实是**预览侧**这条降级路径：
+//     · 宿主机预算默认按**经典板的 1MB**（image_blob.h 的 IMAGE_PARTITION_BYTES）；
+//     · 车主真素材 **1,844,620 B** ⇒ 超预算 ⇒ 一张图都不加载；
+//     · 而当时的日志只有一句 `image: … 大小不合理 (1844620)`（**没有**预算数、
+//       **没有**怎么办、还在 stderr），stdout 那行只说
+//       `image none: 无图片资源,背景用主题纯色`。
+//   ⇒ 谁读到这两行都会以为"是素材/页面导出的文件不对"，而实际上只要给预览
+//     加上 8MB 口径就一切正常（见 docs/PREVIEW.md）。这正是"静默退回"的害处。
+//
+// 所以判定挪成**纯函数**（宿主机可测，见 test_image_blob.cpp），并由调用点
+// 把整句话打到**主日志流**（dash_logf = stdout）上：数字齐全 + 出路齐全。
+// ============================================================
+bool imageBlobSizeVerdict(unsigned long bytes, unsigned long budget,
+                          char* msg, unsigned msg_cap) {
+  if (msg && msg_cap) msg[0] = '\0';
+  if (bytes > 0 && bytes <= budget) return true;
+  if (!msg || !msg_cap) return false;
+
+  if (bytes == 0) {
+    snprintf(msg, msg_cap, "image: 文件是空的(0 字节) ⇒ 一张都不加载");
+    return false;
+  }
+  // 一句人话，三个数 + 两条出路（数字一律给字节与 KB 两种口径，便于与页面/分区表对照）
+  snprintf(msg, msg_cap,
+           "image: ** 图片预算不够，一张都不加载 ** "
+           "文件 %lu 字节(%lu KB) > 预算 %lu 字节(%lu KB) ⇒ "
+           "表情会退回程序化形状（**不是素材/页面导出的问题**）。"
+           "出路：编译时加 -DIMAGE_PARTITION_BYTES=(8u*1024u*1024u) "
+           "（S3 那块板/双 2.8C 的 image 分区就是 8MB），"
+           "或改用按目标板取预算的 env。见 docs/PREVIEW.md。",
+           bytes, (bytes + 1023ul) / 1024ul, budget, (budget + 1023ul) / 1024ul);
+  return false;
+}
+
 const uint8_t* imageBlobLoad(uint32_t* blob_len) {
   if (blob_len) *blob_len = 0;
 
@@ -209,15 +247,31 @@ const uint8_t* imageBlobLoad(uint32_t* blob_len) {
 
   FILE* f = fopen(path, "rb");
   if (!f) {
+    // ★ 这条也**喊出来**（2026-09-26）：它与"预算不够"是**两件不同的事** ——
+    //   加 -DIMAGE_PARTITION_BYTES 对这种一点用都没有，所以必须说清是哪一种，
+    //   否则读日志的人会去改一个改了也没用的地方。
+    //   ★ 诚实记一笔：本单排查时我一度把这条归因成"路径里有中文 ⇒ fopen 失败"
+    //     （因为 IMAGE_BLOB 指到 `C:\Users\张九思\…` 时确实打不开）。**那个归因是错的** ——
+    //     实测中文路径能正常打开（`theme:` 那行一直是同一条中文路径且成功），
+    //     当初打不开是**我那个 PowerShell 夹具脚本自身**把中文默认值按 GBK 解坏了
+    //     （无 BOM 的 .ps1 在 Windows PowerShell 5.1 下按 ANSI 读）。脚本已改成全 ASCII。
+    dash_logf("image: ** 打不开 %s ** ⇒ 一张都不加载。"
+              "通常是路径写错、或文件被移走/删掉了"
+              "（这种情况加 -DIMAGE_PARTITION_BYTES 没用）。\n", path);
     fprintf(stderr, "image: 打不开 %s\n", path);
     return nullptr;
   }
   fseek(f, 0, SEEK_END);
   const long n = ftell(f);
   fseek(f, 0, SEEK_SET);
-  if (n <= 0 || (unsigned long)n > IMAGE_BLOB_MAX_BYTES) {
+
+  char verdict[512];
+  if (!imageBlobSizeVerdict((unsigned long)(n > 0 ? n : 0),
+                            (unsigned long)IMAGE_BLOB_MAX_BYTES,
+                            verdict, (unsigned)sizeof(verdict))) {
     fclose(f);
-    fprintf(stderr, "image: %s 大小不合理 (%ld)\n", path, n);
+    dash_logf("%s\n", verdict);       // ← 主日志流（stdout）：与其它 image: 行同一条流
+    fprintf(stderr, "%s\n", verdict); // ← 也留一份在 stderr：只看 stderr 的人也能看到
     return nullptr;
   }
 

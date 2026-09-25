@@ -284,6 +284,27 @@ const uint8_t* imageBlobLoad(uint32_t* blob_len);
 #endif
 #define IMAGE_BLOB_MAX_BYTES  IMAGE_PARTITION_BYTES
 
+#if !defined(ARDUINO)
+// ------------------------------------------------------------
+// 宿主机预览：**文件大小 vs 预算**的判定（纯函数，宿主机单测直接测它）
+//
+// ★ 为什么单独一个函数、而不是写在 imageBlobLoad() 里（2026-09-26 本单修的）：
+//   原来这段判定只会在 stderr 上打一句 `image: … 大小不合理 (1844620)` ——
+//   **没有**预算数、**没有**怎么办，而它的后果是"**一张图都不加载**"
+//   （表情退回程序化形状）。车主真素材 1,844,620 B 在默认 1MB 口径下就是这样
+//   静默退回的，读日志的人只会以为"是素材/页面导出的文件不对"。
+//   现在：判定挪到这里（可测），调用点把整句话打到**主日志流**上：
+//     数字（文件字节/KB、预算字节/KB）+ 出路（-DIMAGE_PARTITION_BYTES=(8u*1024u*1024u)）。
+//
+// 参数：bytes  = 文件字节数
+//       budget = 这一份构建的图片预算（= IMAGE_BLOB_MAX_BYTES）
+//       msg/msg_cap = 输出缓冲（可为 nullptr）；**被拒时**写入要喊的那句话，
+//                     通过时写入空串。
+// 返回：true = 可以加载；false = 拒绝加载（文件空、或超预算）。
+bool imageBlobSizeVerdict(unsigned long bytes, unsigned long budget,
+                          char* msg, unsigned msg_cap);
+#endif
+
 // ============================================================
 // 上层(dash_ui)怎么用这个镜像(已接上,别再照旧注释以为"还没接")
 // ------------------------------------------------------------
