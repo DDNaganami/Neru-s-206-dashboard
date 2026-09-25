@@ -761,6 +761,36 @@ static dashlink::LinkPhyUart g_link_phy;
 static dashlink::LinkPhyNull g_link_phy;
 #endif
 
+#if LINK_PHY_ESP_NOW
+// ★ 测速/测丢包的两个全局量**放在这里**（而不是 `meas_poll()` 旁边）：
+//   两处收帧函数（`link_poll_frames_slave` / `link_poll_bounded_slave`，在本文件更前面）
+//   里的"测量信封闸门"要用到 `g_meas_rx`，C++ 要求**先声明后使用**。
+static dashlink::MeasSender   g_meas_tx;
+static dashlink::MeasReceiver g_meas_rx;
+#endif
+
+// ★★ 一条走错过的路，留档（2026-09-27 上板实测）——**"让无线档只留一个读者"是错的**。
+//
+//   当时的推理：无线档下 PHY 的字节流有**两个读者**（`meas_poll()` 按帧分流 + 两处收帧
+//   里的 `g_link_rx.poll(g_link_phy, …)`），后者会把测量信封当字节流吃进数据层
+//   ⇒ 于是给 `LinkRx` 换了一个"永远不在线"的空壳 PHY（`LinkPhyNull`），想让
+//   `meas_poll()` 当唯一读者。
+//
+//   **结果：链路直接死了** —— 从板 `link: sim seen=0`，而它的 PHY 明明收了 9966 帧、
+//   `gap_rx=1ms`、`rx_foreign=0`（射频与分流都好好的）。
+//   原因在 `LinkRx::feed()` 的语义：**`feed() = push + advance`，凑齐的帧会通过
+//   `out` 直接交出来** —— 而 `meas_poll()` 里那个 `Frame f` 是局部变量，**帧被丢掉了**。
+//   也就是说：原先链路能通，靠的**正是**那个"第二个读者"自己读 PHY；把它去掉之后，
+//   `meas_poll()` 读到的帧既没被交出、也没留在缓冲里 ⇒ 一帧都到不了上层。
+//   （`LinkRxStats::frames_ok` 当时记的 7867 就是这些被丢掉的帧 —— 那个数不是"收下了"，
+//     而是"解出来了但没人接"。）
+//
+//   ⇒ 正确的修法是**把闸门加在消费端**：见两处 `handleInbound` 之前那段
+//     "测量信封的最后一道闸门"。谁读的 PHY 不重要，**测量帧不许进数据层**才重要。
+//   ★ 仍然存在的已知缺陷（下一步，不在本单）：`meas_poll()` 里 `feed()` 交出来的帧
+//     被丢掉 ⇒ 那部分帧是**真丢**（会算进测量丢包）。正确做法是给它们一个小队列、
+//     由收帧函数先取队列 —— 那时才真正是"单读者"，而且不丢帧。本单没做，如实留档。
+
 // 开机那一行要报"这一份固件用的是哪种链路 PHY"（两种 PHY 的形状不同：
 // UART 有引脚、无线没有，而 `txPin()` 在无线那一档报 -1 —— 直接打
 // "TX=GPIO-1" 是读不懂的）。★ 放在这里、**不**散进 setup() 的两个分支：
@@ -1631,6 +1661,26 @@ static bool link_poll_frames_slave(uint32_t now) {
   //   与 dashlink 命名空间无关）—— 写成 dashlink::LinkData 会编不过。
   ::LinkData ld;
   while (g_link_rx.poll(g_link_phy, &f)) {
+#if LINK_PHY_ESP_NOW
+    // ★★ 测量信封的**最后一道闸门**（2026-09-27 上板实测后加，这是当晚最后一个泄漏源）。
+    //
+    //   不管这一帧是从哪个读者出来的（`meas_poll()` 按帧分流那条路，还是本函数自己
+    //   `g_link_rx.poll(g_link_phy, …)` 读 PHY 那条路），**只要它是测量帧就只统计、
+    //   绝不进数据层**。
+    //   ★ 为什么需要两道闸门：`meas_poll()` 是第一道，但它一圈有字节预算（1536 B），
+    //     而 WiFi 任务会在两次调用之间继续往 PHY 环里填新包 ⇒ 本函数这个"第二个读者"
+    //     仍可能读到测量信封（实测：把预算调到大于环容量**挡不住**，因为环会被重新填上）。
+    //   ★ 为什么证据是硬的（不是猜的）：信封载荷 = `D` `S` `M` `1` + ver + seq + ms，
+    //     按 DataMsg 布局（rpm u16 BE / speed u8 / coolant u8 / intake u8 / flags u8）解出来
+    //       coolant_raw = 载荷[3] = `'1'` = 0x31 = 49  ⇒ 49 − 40 = **9.0 ℃**
+    //       intake_raw  = 载荷[4] = ver = 1            ⇒  1 − 40 = **−39.0 ℃**
+    //     —— 与屏上那两个**恒定不变**的"不可能读数"逐字节吻合（恒定正是因为
+    //     magic 与版本字节恒定）。所以不用再猜是哪个字段串了。
+    if (f.type == (uint8_t)dashlink::MsgType::Data &&
+        g_meas_rx.noteArrival(f.payload, f.len, now)) {
+      continue;   // 测量帧：只统计，不进数据层
+    }
+#endif
     if (dashlink::handleInbound(f, &g_link_time, now, &ld)) {
       // TICK / DATA：handleInbound 已经把 TICK 喂了时基、把 DATA 解成了 LinkData。
       if (f.type == (uint8_t)dashlink::MsgType::Data) {
@@ -1679,6 +1729,26 @@ static bool link_poll_bounded_slave(uint32_t now) {
       if (g_link_rx.pending() || g_link_phy.available() > 0) continue;
       break;
     }
+#if LINK_PHY_ESP_NOW
+    // ★★ 测量信封的**最后一道闸门**（2026-09-27 上板实测后加，这是当晚最后一个泄漏源）。
+    //
+    //   不管这一帧是从哪个读者出来的（`meas_poll()` 按帧分流那条路，还是本函数自己
+    //   `g_link_rx.poll(g_link_phy, …)` 读 PHY 那条路），**只要它是测量帧就只统计、
+    //   绝不进数据层**。
+    //   ★ 为什么需要两道闸门：`meas_poll()` 是第一道，但它一圈有字节预算（1536 B），
+    //     而 WiFi 任务会在两次调用之间继续往 PHY 环里填新包 ⇒ 本函数这个"第二个读者"
+    //     仍可能读到测量信封（实测：把预算调到大于环容量**挡不住**，因为环会被重新填上）。
+    //   ★ 为什么证据是硬的（不是猜的）：信封载荷 = `D` `S` `M` `1` + ver + seq + ms，
+    //     按 DataMsg 布局（rpm u16 BE / speed u8 / coolant u8 / intake u8 / flags u8）解出来
+    //       coolant_raw = 载荷[3] = `'1'` = 0x31 = 49  ⇒ 49 − 40 = **9.0 ℃**
+    //       intake_raw  = 载荷[4] = ver = 1            ⇒  1 − 40 = **−39.0 ℃**
+    //     —— 与屏上那两个**恒定不变**的"不可能读数"逐字节吻合（恒定正是因为
+    //     magic 与版本字节恒定）。所以不用再猜是哪个字段串了。
+    if (f.type == (uint8_t)dashlink::MsgType::Data &&
+        g_meas_rx.noteArrival(f.payload, f.len, now)) {
+      continue;   // 测量帧：只统计，不进数据层
+    }
+#endif
     if (dashlink::handleInbound(f, &g_link_time, now, &ld)) {
       if (f.type == (uint8_t)dashlink::MsgType::Data) {
         g_data.applyLinkData(ld);
@@ -1990,15 +2060,23 @@ static void link_master_tick(uint32_t now, const VehicleState& snapshot) {
 //     `link_poll_*()` 看到的是"有新字节再来"这一条正常路径。
 //
 // ★ 有界与不阻塞（与 `kLinkRxBytesPerLoop` 同一条口径）：
-//   · 一圈最多从 PHY 取走 512 B —— **这就是上界**（帧数由它天然封顶：最小帧 11 B
-//     ⇒ 最多约 46 帧）。★ 2026-09-27 上板实测之后**删掉了"最多解析 8 帧"那条**：
-//     它会把多出来的整帧推给 `LinkRx`，既漏统计又污染车辆数据（详见 `meas_poll()` 里那段）；
+//   · 一圈最多从 PHY 取走这么多字节 —— **这就是上界**（帧数由它天然封顶：最小帧
+//     11 B ⇒ 最多约 140 帧）。
+//   · ★★ 2026-09-27 上板实测：这个数**必须大于 PHY 接收环的容量**，否则无线档下
+//     会出现**两个读者**：`meas_poll()` 一圈只取走这么多，剩下的留在环里，
+//     紧接着 `link_poll_bounded_slave()` / `link_poll_inbound()` 里的
+//     `g_link_rx.poll(g_link_phy, …)` 会把它按**字节流**吃掉 —— 于是
+//      ① 被切开的测量帧不再算测量（白算一次丢包）；
+//      ② 它经 `LinkRx` 进了数据层（实测从板日志里还有 7 行 `coolant=9.0C`）。
+//     ⇒ 取 `1536 > 1024`（环容量，见 `LINK_ESPNOW_RX_RING`）：
+//       **每圈必然把环读空** ⇒ 无线档下事实上的唯一读者就是 `meas_poll()`，
+//       上面那条泄漏路径被结构性堵死（不靠"谁先跑"这种约定）。
 //   · 发送侧一拍最多 `MeasSender::kMaxPerPoll` 帧，且只往 PHY 的环里写（不碰射频）；
 //   · **不格式化、不打印**任何东西（真发/真收都在 PHY 与回调里，见它们的文件头）。
-static const uint16_t kMeasBytesPerLoop = 512u;
+static const uint16_t kMeasBytesPerLoop = 1536u;
 
-static dashlink::MeasSender   g_meas_tx;
-static dashlink::MeasReceiver g_meas_rx;
+// ★ `g_meas_tx` / `g_meas_rx` 的**声明在文件上方**（链路实例那一段之后）——
+//   两处收帧函数里的"测量信封闸门"要用到 `g_meas_rx`，C++ 要求先声明后使用。
 
 // 串口 `w`：开一次测量流（只在无线 PHY 的构建里真的有动作；其余构建里这个字符
 // 照旧是一个普通字符 ⇒ 串口行为逐字节不变，见 `lib/dashcore/serial_cmd.h`）。
@@ -2024,8 +2102,24 @@ static void meas_poll(uint32_t now) {
   }
 
   // ---- ② 收（把 PHY 的环读空，按帧长分流）----
-  uint8_t buf[kMeasBytesPerLoop] = {0};
+  //
+  // ★★ 跨圈携带（2026-09-27 上板实测后加）：512 B 窗口**可能正好切在一帧中间**。
+  //   老写法把这段"半截帧"当尾巴喂给 `LinkRx` ⇒ 下一圈续上的字节又会被当成
+  //   "不是帧头"逐字节跳过 ⇒ 那一整帧最终经 `LinkRx` **进了数据层**（实测偶发
+  //   `coolant=9.0C`、`intake=-39.0C`），而且它**没被计为测量帧** ⇒ 又白算一次丢包。
+  //   ⇒ 现在把没收全的部分**留在静态 carry 里**，下一圈接在开头继续拼，谁也不喂。
+  //   ★ 为什么是安全的：搬运时 `n` 仍受 `kMeasBytesPerLoop` 约束（buf 有 512 B），
+  //     而"没凑齐的尾巴"最多只可能是一帧（≤ `kFrameBytesMax`）。
+  static uint8_t  s_carry[dashlink::kFrameBytesMax];
+  static uint16_t s_carryLen = 0;
+
+  // ★ buf 用 `static`（.bss）而不是栈：预算已经抬到 1536 B，放在 loopTask 的栈上
+  //   太占（那块栈是 8 KB 量级，同一条路径上还有别的局部量）。本函数只在主循环里跑，
+  //   单线程 ⇒ 静态缓冲没有重入问题。
+  static uint8_t buf[kMeasBytesPerLoop];
   uint16_t n = 0;
+  for (uint16_t k = 0; k < s_carryLen && n < kMeasBytesPerLoop; ++k) buf[n++] = s_carry[k];
+  s_carryLen = 0;
   while (n < kMeasBytesPerLoop) {
     const int c = g_link_phy.read();
     if (c < 0) break;
@@ -2057,7 +2151,7 @@ static void meas_poll(uint32_t now) {
         continue;
       }
       const uint16_t need = (uint16_t)(dashlink::kOverhead + len);
-      if ((uint16_t)(i + need) > n) break;    // 这一帧还没收全：留给 LinkRx
+      if ((uint16_t)(i + need) > n) break;    // 没收全：留在 carry 里，下一圈接着拼
       if (type == (uint8_t)dashlink::MsgType::Data &&
           g_meas_rx.noteArrival(buf + i + dashlink::kOffPayload, len, now)) {
         // 测量信封：只统计，**不进数据层**
@@ -2071,12 +2165,15 @@ static void meas_poll(uint32_t now) {
       }
       i = (uint16_t)(i + need);
     }
-    // 尾巴（**只可能是半截帧** —— 整帧在上面那个 while 里已经全部处理完了）
-    // 交给 LinkRx：它本来就为"字节流分帧"而生（§2 的重同步）
+    // 尾巴：**只可能是半截帧**（整帧在上面那个 while 里已经全部处理完）。
+    // ★ 不再喂 `LinkRx` —— 存进 carry，下一圈接着拼（理由见上面那段实测记录）。
     {
-      dashlink::Frame f;
-      for (; i < n; ++i) {
-        g_link_rx.feed(buf[i], &f);
+      const uint16_t rest = (uint16_t)(n - i);
+      if (rest <= (uint16_t)dashlink::kFrameBytesMax) {
+        for (uint16_t k = 0; k < rest; ++k) s_carry[k] = buf[i + k];
+        s_carryLen = rest;
+      } else {
+        s_carryLen = 0;   // 防御：一帧最大就 kFrameBytesMax，走到这里说明帧长判据坏了
       }
     }
   }
