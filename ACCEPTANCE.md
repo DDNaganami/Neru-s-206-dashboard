@@ -6853,3 +6853,198 @@ python -m platformio run -e pcpreview-8m   # 8MB 档：image ok: 9 张,…
 6. ★ `docs/LINK-TWO-BOARD.md` 里 §4.2 那句从板开机行**跟着代码改了**
    （原来是 `… —— 真 PHY(UART0),等主板的 TICK/DATA`，现在是 `—— 真 PHY(UART0)` +
    一句"收…发…"）。★ 这是**判据文本**，代码与文档**两处一起改的**（只改一处会让判据对不上）。
+
+---
+
+## 2026-09-27 无线那一档：**ESP-NOW 的 LinkPhy** + 测速/测丢包（本单**未上真机、RF 未测**）
+
+**一句话**：给板间链路加了**第三个 PHY 实现**（ESP-NOW，`lib/link/link_phy_espnow.*`），
+外加一件**真机测速工具**（`lib/link/link_meas.*` + 串口 `w`），
+把下一单"能不能用无线"这件事压缩成 **10 分钟、敲一个字符**。
+★ **协议 / 消息表 / CRC / 既有用例一个字都没改**（换的只是"字节怎么过到对面去"）。
+
+### ① 本单做了什么（逐条）
+
+| # | 做了什么 | 落在哪 |
+|---|---|---|
+| 1 | **新 PHY 实现**：`LinkPhyEspNow`（与 `LinkPhyUart` **同形**：`begin/pumpTx/port/txPin/rxPin/loopback/started/baud` 一个不少） | `lib/link/link_phy_espnow.{h,cpp}` |
+| 2 | **信道/上限/静态配对**的唯一出处（含编译期守卫） | `lib/link/link_phy_espnow_cfg.h` |
+| 3 | **自配置寻址**：开机广播 `HELLO` → 收到**形态合法的 v1 帧**才学对端 MAC → 之后单播 → **确认可用之后**才写 NVS | 同上两个文件 |
+| 4 | **测速/测丢包**：测量信封（走**既有的** `MsgType::Data`，不新增消息类型）+ 发端/收端两个状态机 + 两行 ASCII 汇总 | `lib/link/link_meas.{h,cpp}` |
+| 5 | 串口 **`w`** 触发一次 burst（默认 2000 帧 / 10 ms 一格 ≈ 20 s） | `lib/dashcore/serial_cmd.h`（`SerialCmd::Wire`）+ `src/main.cpp` |
+| 6 | `main.cpp` 接线：三个 PHY 里选**一个**（`#if LINK_PHY_ESP_NOW / #elif LINK_PHY_UART / #else`）、两个 `meas_poll()` 调用点、开机那行按 PHY 分档 | `src/main.cpp` |
+| 7 | 两个新 env（`esp32s3-rgb-{master,slave}-now`）+ **一张新分区表**（见 ③） | `platformio.ini`、`partitions-s3-now.csv` |
+| 8 | 21 条宿主机用例（接口对齐/寻址/信道/上限/信封/丢包/间隔/抖动/三态判据/汇总行） | `test/test_dashcore/test_link_espnow_meas.cpp` |
+
+### ② ★★ 明确声明：**未上真机、RF 未测；有线仍未定论**
+
+* ★★ **本单没有烧过任何板、没有开过任何串口**（两块 2.8C 全程不在本单手里；
+  构建只到 `SUCCESS`，一次 `upload`/`monitor` 都没有）；
+* ★★ **RF 一条数都没量**：丢包率 / 连续最大间隔 / p99 抖动 / 显示带宽 / 功耗
+  **全部待下一单**（清单见 `docs/LINK-TWO-BOARD.md` §10.3）；
+* ★ **有线那条仍未定论**：§9「当前卡点」的三条实测与主假设原样保留，
+  本单**没有**做任何"证明或推翻"它的事（本单只是**另加了一条路**）；
+* ★ 因此**默认 env 这一轮一个字都没改**（`esp32s3-rgb-master/slave` 仍是 UART 档）——
+  "主用 ESP-NOW"是**车主拍板的档位**，而"翻默认 env"留给无线实测之后**单独一单**
+  （理由见 `ARCHITECTURE.md` §8.3.3）。
+
+### ③ 构建（**只编译、绝不 upload**）+ ★★ 一条容量事实
+
+| env | 结果 | Flash | 槽 | RAM |
+|---|---|---|---|---|
+| `esp32s3-rgb`（显示档） | **SUCCESS** | **903,719 B**（86.2 %） | 1 MB | 134,544 B（41.1 %） |
+| `esp32s3-rgb-master`（有线·主板） | **SUCCESS** | **918,735 B**（87.6 %） | 1 MB | 134,840 B（41.1 %） |
+| `esp32s3-rgb-slave`（有线·从板） | **SUCCESS** | **917,127 B**（87.5 %） | 1 MB | 135,104 B（41.2 %） |
+| **`esp32s3-rgb-master-now`**（无线·主板） | **SUCCESS** | **1,489,823 B** | **2 MB**（新表） | 158,720 B（48.4 %） |
+| **`esp32s3-rgb-slave-now`**（无线·从板） | **SUCCESS** | **1,488,135 B** | **2 MB**（新表） | 158,984 B（48.5 %） |
+
+★ **无线档比有线档多 ≈ 571 KB**（整套 WiFi 协议栈：`net80211`/`pp`/lwIP/`wpa_supplicant`）。
+★ 而 `partitions-s3.csv` 给 app 的槽**只有 1 MB**（`app0`/`app1` 两个 OTA 槽 + otadata），
+有线档已经用到 **87 %** ⇒ 只剩约 130 KB 余量 ⇒ **无线档塞不进去**。
+⇒ 新开 `partitions-s3-now.csv`：app 一个 **2 MB `factory` 单槽**，
+而 `nvs`@0x9000 / `theme`@0x210000 / `spiffs`@0x214000 / `image`@0x254000 /
+`coredump`@0xa54000 的偏移**一个都没动**（`0x10000 + 0x200000 = 0x210000` 正好顶到 theme）。
+★ **代价：无线档没有 OTA 槽**（单槽 factory）；刷写只能走 USB 线。
+★ **`partitions-s3.csv` 一个字都没改**（有线档与抓帧盒照旧用它、OTA 槽还在）。
+★ 与任务书给的基线对账：显示档 **902,747 → 903,719（+972 B）**、
+从板 **916,151 → 917,127（+976 B）**、主板 **918,631 → 918,735（+104 B）** ——
+涨的那点就是本单新加的代码（`w` 命令那一支在没无线 PHY 的构建里**不存在**，
+所以那一档只多了串口命令表里的一个 `case`）。★ 三份都 **SUCCESS**、无回归。
+
+### ④ 数字：native 与 JS
+
+* **native**（`pio test -e native`，本单自己干净复跑）：
+  基线 **340 例 / 2 skipped / 338 ok** ⇒ 本单 **369 例 / 2 skipped / 367 ok / 0 失败**
+  （+29：新组 21 条 + 并行的另一单带来的 8 条，见 ⑤）；
+  ★ **既有 link 相关用例一条都没改**（本单只**新增**文件与 `test_main.cpp` 的注册行）。
+* **JS 八套**（`node tools/theme-editor/<file>`）：**95 / 105 / 261 / 429 / 71 / 372 / 259 / 59**
+  全绿（外加 `syntax-check-pages.js` **42**）—— ★ **没有降**。
+  （`test-role-orientation.js` 是 **59** 而不是任务书里写的"45 左右"，以实测为准。）
+
+### ⑤ 与并行的另一单的关系（**同一工作区、两个 writer**）
+
+* 另一单（"从板也会发" + 写卡点简报）先落了 `be4d4a1`，本单**在它之后**改文件；
+* 两边**没有改同一个文件的同一处**：另一单动 `link_app.*`/`link_msg.h`/`main.cpp` 的
+  从板发送那一段，本单动 `main.cpp` 的 PHY 选择那一段 + 新增文件；
+  ★ `test/test_dashcore/test_link_slave_tx.cpp` 是**它**新增的，本单一个字没碰；
+* ★ 本单**没有用整文件 `write` 覆盖任何既有文件**（一律 `edit` + 最小锚点）——
+  这是这仓库以前丢过内容的那类事故的纪律。
+
+### ⑥ ★★ 一处"本该早发现"的缺陷：跨上下文的下标没标 `volatile`
+
+* **现象**：`lib/link/link_phy_espnow.h` 里 `mRxHead`/`mRxTail`（收环头/尾）**没标**
+  `volatile`，而注释却写着"这一组由 WiFi 任务写、主循环读 ⇒ volatile"——
+  真正标上的只有那几个**计数**。
+* **为什么这是真问题**（不是洁癖）：`available()`/`read()` 就是**只靠这两个下标**判断
+  "有没有数据"的，而写者在 **WiFi 任务**、读者在 **loopTask**，两者**不同核**；
+  非 volatile 的成员在单线程内存模型下可以被缓存/外提 ⇒ `read()` 一旦被内联进 `while`，
+  把 `mRxHead` 的读提出循环是**合法优化** ⇒ 症状恰好是"**`link rx bytes=0 frames=0`，
+  而对面在发**"（也就是本单现场那个卡点在软件侧最像的形态）。
+* **本单怎么改**：`mRxHead`/`mRxTail`（以及回调写的 `mPending`）**标上 `volatile`**，
+  并把"**哪几个是跨上下文、为什么**"逐条写进注释。
+  ★ 反向判据也写清了：`mPeer`/`mPeerKnown` **刻意不标**（它们只在函数调用之间传递，
+  两次读之间必然夹着 `esp_now_send()` 这个外部调用 ⇒ 没有可外提的余地，
+  标了只会带来"`volatile uint8_t*` 不能转成 `const uint8_t*`"那一类纯语法摩擦 ——
+  实测 6 处报错）。判据一句话：**只有当这个量被内联进紧密循环里当判据时**才必须 volatile。
+* ★★ **顺手核对了 UART 那一档**（`lib/link/link_phy_uart.h`，**同形、同上下文、同样没标**）：
+  **也标上了**（`mRxHead`/`mRxTail` → `volatile`，**只加限定符、行为一个字没改**）。
+  为什么这次一起改：那一档的 RX **从来没在硬件上被证实过**（副板一直 `rx bytes=0`，
+  根因已定位到排针/Type-C 那颗 `FSUSB42UMX`，见 §8.2）⇒
+  "硬件没通"与"这里有优化坑"这两件事在实测里**分不开**；加 `volatile` 只可能更安全。
+  ★ 代价与边界：三份有线/显示镜像的 Flash 各变了一点点（见 ③），**没有别的行为变化**。
+
+### ⑦ 没做 / 拿不准（如实列）
+
+1. ★★ **RF 一条数都没量**（丢包/间隔/抖动/显示带宽/功耗）—— 见 ②。**下一单**按
+   `docs/LINK-TWO-BOARD.md` §10.3 那 8 步跑；
+2. ★ **ESP-NOW 的"学到 = 落盘"收紧成"≥8 帧形态合法的帧之后才写"**：
+   阈值 8 是**拍出来的**（对端 50 Hz 下约 160 ms；对杂散设备要求连送 8 帧结构正确的帧）
+   ⇒ **没有实测依据**，上板后若发现"学到太慢"再调（判据常量在 `link_phy_espnow.cpp`）；
+3. ★ **`looksLikeV1Frame()` 不算 CRC**（只判 SYNC + 主版本 + LEN 合法 + `len == 7+LEN`）：
+   这是**刻意的**（回调里不做重活），代价是"理论上仍可能被一个结构凑巧合法的杂散包骗到"
+   —— 概率极低，但**未实测**；真要杜绝只有静态配对（§10.5）；
+4. ★ **静态配对（`-DLINK_ESPNOW_PEER_MAC`）本单只编译过、没有实跑**；
+   仓库里**没有**写死任何 MAC（也没有核实过任何一个 MAC 是既成事实）；
+5. ★ **与 BLE（将来的手机 OBD）共存没测**（还没有那一档代码）；
+   "分时会互相让"是 IDF 的既有机制，**不是**我们的实测；
+6. ★ **功耗是量级判断、不是读数**（没有电流表）；
+7. ★ **无线档没有 OTA 槽**（单槽 factory）：将来若要"无线 + OTA"，得重排整张分区表
+   （`image` 那 8 MB 是最大的那块）—— **本单没做**，只把事实记在 §10.6 / ARCHITECTURE §8.3.7；
+8. ★ **`esp32s3-rgb-master/slave` 仍是 UART 档**（没翻默认）—— 这是**刻意的**，
+   理由见 §② 与 `ARCHITECTURE.md` §8.3.3；翻默认要**单独一单**，并在那一单里写清"为什么现在才翻"；
+9. ★ **`docs/LINK-TWO-BOARD.md` 里 §1~§8 那套有线流程整体降级为"备选/排查档"**，
+   但**停用不是删除**：一行都没删，§9「当前卡点」原样保留。
+
+### ⑧ ★★ 上板实测（车主做的，本单**未参与**）抓出来的一个真 bug —— 回调转发到了另一个对象
+
+> ★ **声明**：这一节里的**上板数据全部来自车主**（两块板在车主手里、烧写与开串口都由车主做）；
+> **本单没有烧过板、没有开过任何串口**。本单做的是"读车主的数据 → 定位 → 改代码"。
+
+**实测（车主，2026-09-27）**：两块板都烧上本单的 `-now` 固件、屏都正常、射频都起来了
+（`espnow: sta_mac=80:45:6b:35:a3:c4 ch=6 … ps=off` / `90:70:69:ea:f6:b4 ch=6 …`），
+但：★ **两边都 `rx bytes=0 frames=0`**、从板 `sim tick_age=… seen=0`、
+**两边都没有 `espnow: peer=… learned`**，而主板 `link: tx=` **一直在涨**（约 1.6 KB/s）。
+★ 面板**没有回归**（WiFi 开着：`timeout=0 fullrb=0/s stall=0`、`copy_max=1333us`
+vs 基线 1303us、vsync 54/s、主循环 19–23k/s）⇒ "射频抢显示带宽"这条**当晚不成立**。
+
+**根因（本单在代码里定位到的一处真 bug）**：ESP-NOW 的回调只能注册**全局函数指针**
+（没有"用户数据"参数），而当时的回调转发目标是**文件级实例** `g_espnow`；
+`src/main.cpp` 用的却是它自己的 `static LinkPhyEspNow g_link_phy;`
+⇒ **回调打到了另一个对象上**：
+
+* 收到的字节进了 `g_espnow` 的环 ⇒ `main` 读的 `g_link_phy` 永远 `rx bytes=0`；
+* "学到对端"那一行由 `g_link_phy.pumpTx()` 里的 `flushPeerLog()` 打，而标记置在
+  `g_espnow` 上 ⇒ **那一行永远不打印**；
+* 发送完成回调减的是 `g_espnow.mPending` ⇒ `g_link_phy.mPending` 恒 0
+  ⇒ `availableForWrite()` 一直报"还有空间" ⇒ `LinkTx::pump()` 一直写
+  ⇒ ★ **`link: tx=` 一直涨、而射频一个包都没发出去**（这正是车主看到的那条矛盾）。
+
+**修法**：`begin()` 里把 `this` 绑进一个 `g_active` 指针，两条静态回调转发到 `g_active`
+（"一份固件只有一个链路 PHY"这条设计意图不变 —— 仍然只保存一个指针）。
+
+**同时补上的两处"下不为例"**（都是这次上板暴露出来的**盲点**）：
+
+1. ★★ **PHY 自己的计数器 + 最近一次 `esp_now_send()` 的真实返回值**（新增一行
+   `espnow: tx_frames=… tx_bytes=… tx_fail=… last_err=… done=… done_fail=… pending=… |
+   rx_frames=… rx_bytes=… rx_foreign=… overflow=…`）。原来只有 `LinkTx` 的 `link: tx=`
+   （那是"往 PHY 环里写了多少"），**看不出射频到底发没发** —— 车主在板上猜了半小时，
+   盲点就在这里。`last_err` 那几个错误码的**修法完全不同**
+   （`_NOT_FOUND` = peer 不在表里 / `_NO_MEM` = 驱动队列满 / `_IF` / `_CHAN`），
+   所以存的是**值**而不是只存计数。
+2. ★★ **`esp_now_send(NULL, …)` 改成显式广播地址**：`NULL` 的口径是"发给 peer 表里所有
+   peer"，而"广播 peer 到底在不在表里"**没法从 `addPeerBroadcast()` 的返回值看出来**
+   （重复添加本来就会返回 `ESP_ERR_ESPNOW_EXIST`，我们把它当成功了）。
+   ⇒ 现在显式用那 6 个 `0xFF`，并加一条开机自证
+   `espnow: bcast_peer=yes/no peers=N (add=ok/fail)`（`esp_now_is_peer_exist()` 直接问驱动）。
+   ★ 显式地址的另一个好处：**失败可见**（地址不在表里 ⇒ 立刻 `ESP_ERR_ESPNOW_NOT_FOUND`），
+   而 `NULL` 那条路失败时是**静默**的。
+
+★ **本单没有上板验证这个修法**（两块板在车主手里、且明确"不许烧板/开串口"）⇒
+"修好了没有"要等**下一次上板**：判据是**两端出现 `espnow: peer=… learned`**
+（且互为对方的 `sta_mac=`）**+ 从板 `link:` 从 `sim` 变 `locked`** + 那行新计数器里
+`tx_frames` 涨、`tx_fail` 不涨、`done` 跟着涨。
+
+### ⑨ ★★ 一条烧写教训：**不要 patch 镜像头**（一手实测，车主踩的）
+
+手工用 esptool 烧时加 `--flash_mode qio --flash_freq 80m --flash_size 16MB`
+（★ 这三个值**与 board JSON 逐字一致**，本该是对的）⇒ 从板进 **TG0WDT 复位循环**，
+ROM 只打到 `load:0x3fce2820` + `ets_loader.c 78` 就重启，**一个字节 app 日志都没有**；
+改成 **`--flash_mode keep --flash_freq keep --flash_size keep`** 立刻正常启动。
+
+★ 结论：**这两块板不要 patch 镜像头**（用 `keep`）；`platformio run -t upload`
+走的是它自己解析 board JSON 的那条路（不 patch 头）⇒ **推荐用它**。
+★ 为什么值得记进档：那三个参数**看起来是对的**，而症状看起来像"固件坏了/板子砖了"，
+与"烧写参数"之间**毫无关联感** ⇒ 只能靠留档避免重踩（命令示例见
+`docs/LINK-TWO-BOARD.md` §10.2.1）。
+
+### ⑩ MAC（如实记，别当成"既有事实"）
+
+| 板 | `sta_mac`（2026-09-27 车主实测） | 出处 |
+|---|---|---|
+| 主板（右，`COM9`） | **`80:45:6b:35:a3:c4`** | 车主贴回来的 `espnow: sta_mac=…` 那一行 |
+| 从板（左，`COM8`） | **`90:70:69:ea:f6:b4`** | 同上（★ 与外部评审给的那个数**逐字一致**） |
+
+★ 本单**没有**把任何 MAC 写死进代码或 env，也**没有**哪块板是"已知事实"这种说法 ——
+上面两个数来自**这一次**读数，将来换板/刷错固件都会变（判据永远是"开盘那行 `sta_mac=`"）。
+★ 真要静态配对（`-DLINK_ESPNOW_PEER_MAC=0x80,0x45,0x6b,0x35,0xa3,0xc4` 这种），
+**等修完 ⑧ 那一处、确认 `peer=` 能出来之后再写** —— 否则会把"没通的两种原因"叠在一起。
