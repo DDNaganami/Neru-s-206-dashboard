@@ -93,13 +93,31 @@ def value_identity_report(samples, frames, label, timing=None):
             kept.append(s)
         else:
             skipped += 1
-    print('  samples     : %d usable, %d skipped (source was still sim / stale)'
-          % (len(kept), skipped))
+    # ★★ 只有**自己解帧**（speed=van）的样本才能做"这个值在录像里"这条断言。
+    #   为什么：`link` 那一档走的是主板的 `DATA`，而 `DATA` 搬的是**主板合并后的视图** ——
+    #   主板在回放开始前/断流时用的是 **sim**，那个值（实测见到 `v=176.6km/h`）
+    #   **在录像里根本不存在**。第一版把 `link` 也算进判据，于是工具报出两条
+    #   "NO frame of the trip can produce this" —— 那不是解帧错，是**来源口径混了**：
+    #   **在录像里根本不存在**。第一版把 `link` 也算进判据，于是工具报出两条
+    #   "NO frame of the trip can produce this" —— 那不是解帧错，是**来源口径混了**：
+    #   从板的 `SRC` 写 `link` 的含义是"这个值是从链路上来的"，**不是**"它是录像里的值"。
+    #   ⇒ 现在把两类分开报：`van` 的进断言，`link` 的另计一行并说明它可能是主板的 sim。
+    attribution = [s for s in kept if s['src'][0] == 'van']
+    link_only = [s for s in kept if s['src'][0] != 'van']
+    print('  samples     : %d usable (%d self-decoded `van`, %d link-carried), '
+          '%d skipped (source was still sim / stale)'
+          % (len(kept), len(attribution), len(link_only), skipped))
+    if link_only:
+        print('  link-carried: %d sample(s) NOT used for the recording claim -- a `link`'
+              % len(link_only))
+        print('                value can be the MASTER\'s sim fallback, which is not in')
+        print('                the recording at all (seen: v=176.6km/h). They are')
+        print('                reported separately, never counted as evidence.')
     if not kept:
         print('  none of the SRC windows landed inside the replay')
         return 0, 0, 0
     unique, ambiguous, nomatch = [], 0, []
-    for s in kept:
+    for s in attribution:
         cand = candidates_for(s['v'], s['rpm'], frames)
         s['cand'] = cand
         if not cand:
@@ -108,8 +126,8 @@ def value_identity_report(samples, frames, label, timing=None):
             unique.append(s)
         else:
             ambiguous += 1
-    print('  value exists in the recording : %d/%d samples'
-          % (len(kept) - len(nomatch), len(kept)))
+    print('  value exists in the recording : %d/%d self-decoded samples'
+          % (len(attribution) - len(nomatch), len(attribution)))
     print('  uniquely identifying samples  : %d   (that value can only come from 1..3'
           % len(unique))
     print('                                  frames of the whole %d-frame trip)' % len(frames))
@@ -119,8 +137,9 @@ def value_identity_report(samples, frames, label, timing=None):
         tss = [frames[s['cand'][0]][0] for s in unique]
         print('  their frames sit at t=%0.1f..%0.1f s of the trip' % (min(tss), max(tss)))
     if nomatch:
-        print('  !! %d samples printed a value that NO frame of the trip can produce:'
+        print('  !! %d self-decoded samples printed a value that NO frame of the trip can'
               % len(nomatch))
+        print('     produce (that WOULD be a real decode error):')
         for s in nomatch[:5]:
             print('     v=%.1f rpm=%d  (%s)' % (s['v'], s['rpm'], s['src']))
     if unique and timing:
@@ -512,37 +531,48 @@ def main():
         if st['vanerr_lines']:
             print('          first VAN? line      : %s' % st['vanerr_lines'][0][:160])
     # 两块板"显示的是不是同一个数":**不能**按时间配对 —— 两块板的 `SRC` 各有自己的
-    # 5 秒节拍、相位互不相关(实测 74 条样本里重合 0 对)⇒ 那样只会打印一个
-    # 看起来像失败的 0。真正有力的证据是上面那条:两块板**各自**都和**同一份录像**
-    # 逐条对上了(且相当一部分样本在整趟 6561 帧里唯一)⇒ 转发链没有改动数值。
+    # 5 秒节拍、相位互不相关。真正有力的证据是上面那条:两块板**各自**都和**同一份录像**
+    # 逐条对上了 ⇒ 转发链没有改动数值。
+    #
+    # ★★ 2026-09-27 晚修的一处**判据错误**（第一版把"看起来像失败"打印了出来）：
+    #   第一版按"对齐帧号相差 ≤1"配对，然后**严格比较数值**。那两件事凑在一起必然是错的 ——
+    #   差 1 帧就是差 1 个车速计数（2.56 km/h）与 1~2 个转速计数（0.125 rpm 一个），
+    #   于是 52 对里报了 16 处 MISMATCH，而每一处的差值都正好落在"1 帧"的量级上
+    #   （实测：`master=(5.1,1713) slave=(2.6,1738)` = 1 个车速计数 + 2 个转速计数）。
+    #   那不是数据错，是**判据自相矛盾**。现在只对"**对齐到同一帧**"的样本对拍 ——
+    #   同一个帧号 ⇒ 两块板解的是同一串字节 ⇒ 数值必须**逐位相同**，差一个就是真问题。
     msamples = [s for s in state['samples'] if s.get('cand')]
     wsamples = [s for s in state_w['samples'] if s.get('cand')]
     if rd_watch and msamples and wsamples:
-        # 只有"两块板的样本恰好落在同一帧上"时才能直接对拍,这里如实报出有多少对。
         m = {s['aligned']: (s['v'], s['rpm']) for s in msamples if 'aligned' in s}
-        same = diff = 0
+        same = diff = near_miss = 0
         for s in wsamples:
             if 'aligned' not in s:
                 continue
-            near = [k for k in m if abs(k - s['aligned']) <= 1]
-            if not near:
+            if s['aligned'] not in m:
+                # 帧号相邻但不同 ⇒ 两条日志相隔 1 帧。**不算 mismatch**，单独计数，
+                # 因为"差 1 帧"在这一层是时间分辨率，不是数据差。
+                if any(abs(k - s['aligned']) <= 1 for k in m):
+                    near_miss += 1
                 continue
-            k = min(near, key=lambda x: abs(x - s['aligned']))
-            if m[k] == (s['v'], s['rpm']):
+            if m[s['aligned']] == (s['v'], s['rpm']):
                 same += 1
             else:
                 diff += 1
-                print('  MISMATCH frame#%d master=%s slave=%s'
-                      % (s['aligned'], m[k], (s['v'], s['rpm'])))
+                print('  MISMATCH on the SAME replay frame #%d: master=%s slave=%s'
+                      % (s['aligned'], m[s['aligned']], (s['v'], s['rpm'])))
+        print('  cross-board : %d pairs printed the SAME frame -> %d identical, %d differ'
+              % (same + diff, same, diff))
+        if near_miss:
+            print('                (%d more pairs were one frame apart -- that is the log'
+                  % near_miss)
+            print('                 timestamp resolution, not a data difference)')
         if same + diff == 0:
-            print('  cross-board: no sample instants coincide (independent 5 s cadences --')
-            print('               expected), so the two boards are compared to the SAME')
-            print('               recording instead: %d/%d master and %d/%d slave samples'
-                  % (len(msamples), len(msamples) + nomatch_m,
-                     len(wsamples), len(wsamples) + nomatch_w))
-            print('               carried a value found in the recording.')
-        else:
-            print('  master==slave on %d coincident samples, mismatches %d' % (same, diff))
+            print('                no pair landed on the same frame, so the two boards are')
+            print('                compared to the SAME recording instead: %d/%d master and'
+                  % (len(msamples), len(msamples) + nomatch_m))
+            print('                %d/%d slave self-decoded samples exist in it.'
+                  % (len(wsamples), len(wsamples) + nomatch_w))
     print('========================================')
     return 0
 
