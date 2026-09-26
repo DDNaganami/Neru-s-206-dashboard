@@ -144,6 +144,9 @@ python -m platformio run -e esp32s3-rgb-slave-now  -t upload --upload-port COM8 
 
 ## 下一步
 
+> ★ **上车试车照 `docs/DRIVE-TEST.md` 那份运行单走**（桌面预检 → 车上接线 → 判据 →
+> 抓真车录像 → ELM327 体检 → 红线清单）。它是 `PINOUT.md`「装车接线」一节的**执行版**。
+
 1. **真 VAN 抓帧**：2.8C 上已打开真接收（**主板 `GPIO44`** = SN65HVD230 的 `RO`，`VAN_RX_PIN=44`）。
    ★★ **2026-09-27 晚改定：旧的 `GPIO16` 作废** —— 车主这块 **2.8C 非触控版**只引出 **12PIN 排针**
    （`GP0 / GND / RXD / TXD / SDA / SCL / 3V3 / GND / D+ / D- / 5V / GND`），**16 不在排针上**
