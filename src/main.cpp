@@ -535,11 +535,18 @@ static ObdTransportBle g_obd_ble;
 // 返回该服务,setup() 里这样用:`g_data = attachObdSerial();`
 VehicleDataService& attachObdSerial() {
 #if OBD_BLE
-  // ★ 这里**不阻塞**：`start()` 只做初始化（建 client/scan、起 NimBLE），
-  //   "扫描 → 连接 → 掉线重连"由主循环里的 `g_obd_ble.tick(now)` 推进。
-  g_obd_ble.start();
+  // ★★ 2026-09-27 车上踩到（**屏幕全黑**的根因）：**只把指针接上，不要在这里 start()**。
+  //   `g_obd_ble.start()` 会调 `NimBLEDevice::init()` —— 而 NimBLE 协议栈要吃掉一大块
+  //   **内部 RAM**（实测 ~50KB：heap 从 98KB 掉到 49KB）。而这个函数跑在
+  //   `dash_ui_init()` **之前** ⇒ 等轮到 RGB 面板分配弹跳缓冲时已经没内存了：
+  //       E lcd_panel.rgb: lcd_rgb_panel_alloc_frame_buffers(190): no mem for bounce buffer
+  //       E lcd_panel.rgb: esp_lcd_new_rgb_panel(357): alloc frame buffers failed
+  //       rgb: 面板创建失败 err=257
+  //   ⇒ 现象是"主板上电后屏一直黑"（`rgb: vsync=0 flush=0 refresh=0/0/0us`），
+  //     但主循环、链路、VAN 全都正常 —— 极易误判成"屏坏了/线松了"。
+  //   ⇒ 真正的 start() 挪到显示初始化**之后**（见 setup() 里那一处 `obdBleStartLate()`）。
   g_data = VehicleDataService(&g_obd_ble);
-  dash_logf("obd: BLE 那条路已挂上(目标服务 FFF0 / 通知 FFF1 / 写 FFF2)\n");
+  dash_logf("obd: BLE 那条路已挂上(目标服务 FFF0 / 通知 FFF1 / 写 FFF2) —— start() 推迟到显示初始化之后\n");
 #elif OBD_SERIAL
   Serial1.begin(kObdBaud, SERIAL_8N1, OBD_RX_PIN, OBD_TX_PIN);
   // ★ 2026-09-27：`VehicleDataService` 的参数从 `HardwareSerial*` 换成了
@@ -2754,6 +2761,18 @@ void setup() {
   BOOT_STAGE(4);
   dash_ui_init();
   BOOT_STAGE(5);
+#if OBD_BLE
+  // ★★ BLE 的 `start()` **必须**放在这里 —— 显示初始化**之后**。
+  //   它内部会 `NimBLEDevice::init()`，而 NimBLE 协议栈要吃 ~50KB **内部 RAM**；
+  //   放到显示之前会让 RGB 面板的弹跳缓冲分配失败（实测：屏一直黑、
+  //   `rgb: 面板创建失败 err=257`，而主循环/链路/VAN 全都正常）。
+  //   放在这里之后，面板已经把它的内部 RAM 拿走了，剩下的才给 NimBLE。
+  {
+    const bool ok = g_obd_ble.start();
+    dash_logf("obd: BLE start() = %d  heap=%uKB(面板之后)\n",
+              (int)ok, (unsigned)(ESP.getFreeHeap() / 1024u));
+  }
+#endif
   // 一行汇总:有没有图片资源一眼可见(没刷图片是正常情况,不是错误)。
   {
     const ImageBlobHeader* ih = image_blob_header();
