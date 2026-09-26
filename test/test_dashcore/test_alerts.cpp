@@ -412,6 +412,114 @@ void test_buzzer_abstraction(void) {
   }
 }
 
+// ============================================================
+// 四、配置钳制（2026-09-27 新增）
+//
+// 为什么要有它：这份配置现在**能从主题文件来**（编辑器里拖控件改，见
+// lib/themetool/theme_store.cpp 的 theme_parse_alerts_json）⇒ 它从"编译期常量"
+// 变成了"外部输入"。下面每一条都对应一个"手滑写进去、屏上和日志上都看不出来"
+// 的坑 —— 所以每条都验**边界值本身**，而不是"随便钳一下"。
+// ============================================================
+void test_alerts_config_clamp_ranges(void) {
+  AlertsConfig c;
+  // 出厂默认值必须**原样穿过**钳制（否则默认配置自己就被改了，最坏的一种）
+  const AlertsConfig def{};
+  AlertsConfig same = def;
+  alerts_config_clamp(same);
+  TEST_ASSERT_EQUAL_FLOAT(def.overspeed_kmh, same.overspeed_kmh);
+  TEST_ASSERT_EQUAL_FLOAT(def.redline_rpm, same.redline_rpm);
+  TEST_ASSERT_EQUAL_UINT32(def.turn_signal_on_ms, same.turn_signal_on_ms);
+  TEST_ASSERT_EQUAL_UINT32(def.beep_ms, same.beep_ms);
+  TEST_ASSERT_EQUAL_UINT32(def.beep_min_interval_ms, same.beep_min_interval_ms);
+
+  // ① 超速：太大 ⇒ 永远不触发；负数 ⇒ 一开车就报。两边都要夹住
+  c = AlertsConfig{};
+  c.overspeed_kmh = 5000.0f;
+  alerts_config_clamp(c);
+  TEST_ASSERT_EQUAL_FLOAT(kAlertsOverspeedMaxKmh, c.overspeed_kmh);
+  c = AlertsConfig{};
+  c.overspeed_kmh = -10.0f;
+  alerts_config_clamp(c);
+  TEST_ASSERT_EQUAL_FLOAT(kAlertsOverspeedMinKmh, c.overspeed_kmh);
+
+  // ② 红区：上限 12000（表盘到 7000、断油 6300 —— 写 99999 等于永不报）
+  c = AlertsConfig{};
+  c.redline_rpm = 99999.0f;
+  alerts_config_clamp(c);
+  TEST_ASSERT_EQUAL_FLOAT(kAlertsRedlineMaxRpm, c.redline_rpm);
+
+  // ③ 转向忘关：★ 下限**不是 0** —— 0 就是"一打转向灯立刻报忘关"
+  c = AlertsConfig{};
+  c.turn_signal_on_ms = 0;
+  alerts_config_clamp(c);
+  TEST_ASSERT_EQUAL_UINT32(kAlertsTurnMinMs, c.turn_signal_on_ms);
+
+  // ④ 单次响的时长：★ 0 就是"响了 0 毫秒" = 永远听不见
+  c = AlertsConfig{};
+  c.beep_ms = 0;
+  alerts_config_clamp(c);
+  TEST_ASSERT_EQUAL_UINT32(kAlertsBeepMinMs, c.beep_ms);
+  c.beep_ms = 999999u;
+  alerts_config_clamp(c);
+  TEST_ASSERT_EQUAL_UINT32(kAlertsBeepMaxMs, c.beep_ms);
+
+  // ⑤ 最短重复间隔：**0 是合法的**（= 能连着响，很吵但由人定），上限夹住即可
+  c = AlertsConfig{};
+  c.beep_min_interval_ms = 0;
+  alerts_config_clamp(c);
+  TEST_ASSERT_EQUAL_UINT32(0u, c.beep_min_interval_ms);
+  c.beep_min_interval_ms = 999999u;
+  alerts_config_clamp(c);
+  TEST_ASSERT_EQUAL_UINT32(kAlertsBeepGapMaxMs, c.beep_min_interval_ms);
+
+  // ⑥ NaN：不特判的话它会**穿过**两边的比较，之后所有阈值判定都变 false
+  //    ⇒ 那条告警永远不触发。必须落回下限。
+  c = AlertsConfig{};
+  c.overspeed_kmh = 0.0f / 0.0f;   // NaN（不用 NAN 宏，免得依赖 <math.h>）
+  c.redline_rpm = 0.0f / 0.0f;
+  alerts_config_clamp(c);
+  TEST_ASSERT_EQUAL_FLOAT(kAlertsOverspeedMinKmh, c.overspeed_kmh);
+  TEST_ASSERT_EQUAL_FLOAT(kAlertsRedlineMinRpm, c.redline_rpm);
+  TEST_ASSERT_FALSE(c.overspeed_kmh != c.overspeed_kmh);   // 确实不是 NaN 了
+
+  // ⑦ 合法范围内的值**一个都不许动**（钳制不能变成"顺手改成默认值"）
+  c = AlertsConfig{};
+  c.overspeed_kmh = 90.0f;
+  c.redline_rpm = 6000.0f;
+  c.turn_signal_on_ms = 12000u;
+  c.beep_ms = 200u;
+  c.beep_min_interval_ms = 1000u;
+  c.only_highest = false;
+  alerts_config_clamp(c);
+  TEST_ASSERT_EQUAL_FLOAT(90.0f, c.overspeed_kmh);
+  TEST_ASSERT_EQUAL_FLOAT(6000.0f, c.redline_rpm);
+  TEST_ASSERT_EQUAL_UINT32(12000u, c.turn_signal_on_ms);
+  TEST_ASSERT_EQUAL_UINT32(200u, c.beep_ms);
+  TEST_ASSERT_EQUAL_UINT32(1000u, c.beep_min_interval_ms);
+  TEST_ASSERT_FALSE(c.only_highest);
+}
+
+// 钳制之后的那份配置**真的会被告警层用**（不是钳了个摆设）：
+// 把超速阈值设到 90，车速 95 就该报 —— 而同一个 95 在默认 120 下不该报。
+void test_alerts_clamped_config_is_actually_used(void) {
+  VehicleState s = clean();
+  s.speed_kmh = 95.0f;
+
+  Alerts a;                       // 默认阈值 120
+  uint32_t t = 1000;
+  for (; t <= 4000; t += 100) TEST_ASSERT_EQUAL((int)AlertKind::None, (int)a.update(s, t));
+
+  AlertsConfig c;
+  c.overspeed_kmh = 90.0f;
+  c.overspeed_hyst_kmh = 3.0f;
+  alerts_config_clamp(c);
+  Alerts b;
+  b.setConfig(c);
+  AlertKind got = AlertKind::None;
+  for (t = 1000; t <= 4000; t += 100) got = b.update(s, t);
+  TEST_ASSERT_EQUAL((int)AlertKind::Overspeed, (int)got);
+}
+
 void register_alerts_tests(void) {
   RUN_TEST(test_alerts_idle_by_default);
   RUN_TEST(test_alerts_overspeed_with_hysteresis);
@@ -424,4 +532,6 @@ void register_alerts_tests(void) {
   RUN_TEST(test_alerts_priority_and_single_output);
   RUN_TEST(test_alerts_reset_semantics);
   RUN_TEST(test_buzzer_abstraction);
+  RUN_TEST(test_alerts_config_clamp_ranges);
+  RUN_TEST(test_alerts_clamped_config_is_actually_used);
 }

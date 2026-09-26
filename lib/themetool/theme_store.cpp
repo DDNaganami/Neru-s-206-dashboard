@@ -1,6 +1,13 @@
 #include "theme_store.h"
 #include <string.h>
 
+// ★ 只为 `AlertsConfig` 的**定义**（theme_parse_alerts_json 要逐字段写它）。
+//   头文件里只有前向声明 ⇒ 依赖被关在这一个 .cpp 里：
+//   lib/themetool → lib/dashcore 的这**一个**方向，且只为"把文件里的那段读出来"。
+//   `alerts.h` 本身只依赖 `vehicle_state.h`（纯结构体，无 Arduino/LVGL），
+//   所以宿主机构建、pcpreview、设备构建三边都一样能编。
+#include "alerts.h"
+
 // ============================================================
 // 极简 JSON 扫描器（只为读本项目的主题文件,不是通用 JSON 库）
 //   - 支持:对象、数组、字符串、数字(十进制/0x 十六进制)
@@ -78,6 +85,21 @@ struct Scan {
     return true;
   }
 
+  // 布尔：**两种写法都收** —— `true`/`false`（人手写 JSON 的习惯）
+  // 与 `1`/`0`（本仓库编辑器导出的一贯写法，与 readout.show_units 那些一致）。
+  // ★ 为什么不只认数字：这一段是给人改的，"true 被静默忽略、字段保持默认"
+  //   会让人以为"改了没生效"（而日志上什么都不会说）。
+  bool boolean(bool* out) {
+    ws();
+    if (p >= end) return false;
+    if ((size_t)(end - p) >= 4 && strncmp(p, "true", 4) == 0) { p += 4; *out = true; return true; }
+    if ((size_t)(end - p) >= 5 && strncmp(p, "false", 5) == 0) { p += 5; *out = false; return true; }
+    uint32_t u = 0;
+    if (!uintVal(&u)) return false;
+    *out = (u != 0u);
+    return true;
+  }
+
   // 跳过任意一个值（用于忽略不认识的成员）
   void skipValue() {
     ws();
@@ -103,6 +125,19 @@ struct Scan {
 
   // 遍历对象成员:对每个成员调 fn(key 指针, key 长度)。
   // fn 返回 false 表示"不认识这个键",值会被跳过。
+  //
+  // ★★ 2026-09-27 修的一处**静默截断**（本文件里最容易踩、后果又最不像 bug 的一处）：
+  //   原来只有 `if (!fn(...)) skipValue();` —— 于是"**认识这个键、但值不是它期望的类型**"
+  //   这条路上，值**一个字节都没被消费**，扫描器就停在值中间；紧接着的
+  //   `eat(',')` / `eat('}')` 都失败 ⇒ **整个对象从这里停止解析**，
+  //   后面所有字段**静默按默认值处理**。
+  //   实测症状（用例 test_alerts_unknown_keys_and_wrong_types 第一次就红了）：
+  //     `{"alerts":{"overspeed_kmh":"ninety","redline_rpm":6500}}`
+  //     → `redline_rpm` 读成 5800（默认值），而日志上什么异常都没有。
+  //   人写的文件里这种错很常见（把颜色写成字符串、把数字加了引号），
+  //   表现却是"我改的主题只生效了一半" —— 所以在这里一次性堵住：
+  //   **fn 声称认识这个键、却一个字节都没读 ⇒ 当成不认识，把值跳过继续。**
+  //   ★ 这一处同时覆盖了子对象/数组那两处（`eat('{')`/`eat('[')` 失败时同样"没消费"）。
   template <typename Fn>
   void object(Fn fn) {
     if (!eat('{')) return;
@@ -116,7 +151,10 @@ struct Scan {
       const size_t klen = (size_t)(p - kbegin);
       if (p < end) ++p;
       if (!eat(':')) return;
-      if (!fn(kbegin, klen)) skipValue();
+      ws();
+      const char* vbegin = p;
+      const bool known = fn(kbegin, klen);
+      if (!known || p == vbegin) skipValue();
       if (eat(',')) continue;
       eat('}');
       return;
@@ -302,5 +340,48 @@ bool theme_parse_json(const char* json, uint32_t len, Theme& t) {
   // 钳制**传进来的这个对象**（不是全局槽位）—— 单测与调用方都靠这一步
   // 拿到"安全可用"的主题。派生字段也在这里重算。
   theme_clamp(t);
+  return true;
+}
+
+// ============================================================
+// 主题文件里的 `alerts` 段（告警 / 蜂鸣器参数）—— 2026-09-27 新增
+//
+// 与配色那一段**语义完全一致**：缺字段保持原值、越界钳制、未知字段忽略。
+// 定位方式见 theme_store.h 的说明（根上或 theme 里面都认）。
+// ============================================================
+bool theme_parse_alerts_json(const char* json, uint32_t len, AlertsConfig& cfg) {
+  if (!json || len < 2) return false;
+
+  // 找 `"alerts"` 这个**键**：先找字符串，再确认它后面跟的是冒号 ——
+  // 与 theme_parse_json 找 `"theme"` 用的是同一套办法（避免匹配到
+  // 名字里含 alerts 的其它键，或某个字符串值里出现的 alerts）。
+  const char* hit = strstr(json, "\"alerts\"");
+  if (!hit) return false;
+
+  Scan probe(hit, (uint32_t)(len - (uint32_t)(hit - json)));
+  probe.eat('"');
+  probe.p += 6;                      // 走过 alerts 这 6 个字母
+  if (!(probe.eat('"') && probe.eat(':'))) return false;
+
+  Scan s(probe.p, (uint32_t)(probe.end - probe.p));
+  if (s.peek() != '{') return false;  // 是别的类型（数组/字符串）⇒ 当没有这一段
+
+  s.object([&](const char* k, size_t klen) -> bool {
+    uint32_t u = 0; double d = 0; bool b = false;
+    if (keyIs(k, klen, "overspeed_kmh"))      { if (s.number(&d)) cfg.overspeed_kmh = (float)d; return true; }
+    if (keyIs(k, klen, "overspeed_hyst_kmh")) { if (s.number(&d)) cfg.overspeed_hyst_kmh = (float)d; return true; }
+    if (keyIs(k, klen, "redline_rpm"))        { if (s.number(&d)) cfg.redline_rpm = (float)d; return true; }
+    if (keyIs(k, klen, "redline_hyst_rpm"))   { if (s.number(&d)) cfg.redline_hyst_rpm = (float)d; return true; }
+    if (keyIs(k, klen, "door_debounce_ms"))   { if (s.uintVal(&u)) cfg.door_debounce_ms = u; return true; }
+    if (keyIs(k, klen, "turn_signal_on_ms"))  { if (s.uintVal(&u)) cfg.turn_signal_on_ms = u; return true; }
+    if (keyIs(k, klen, "debounce_ms"))        { if (s.uintVal(&u)) cfg.debounce_ms = u; return true; }
+    if (keyIs(k, klen, "beep_min_interval_ms")) { if (s.uintVal(&u)) cfg.beep_min_interval_ms = u; return true; }
+    if (keyIs(k, klen, "beep_ms"))            { if (s.uintVal(&u)) cfg.beep_ms = u; return true; }
+    if (keyIs(k, klen, "only_highest"))       { if (s.boolean(&b)) cfg.only_highest = b; return true; }
+    return false;                     // 不认识的键 ⇒ 扫描器跳过它的值（向前兼容）
+  });
+
+  // ★ 钳制与主题配色同一条纪律：**文件是外部输入**，越界值在这一处被挡下来。
+  alerts_config_clamp(cfg);
   return true;
 }

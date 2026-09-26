@@ -7,6 +7,7 @@
 #include <string.h>
 #include "ui_theme.h"
 #include "theme_store.h"
+#include "alerts.h"     // ★ 2026-09-27：主题文件里的 `alerts` 段（告警/蜂鸣器参数）
 
 // 每个用例前把主题恢复成默认值,避免用例间相互影响
 static void resetTheme() {
@@ -411,6 +412,154 @@ static void test_readout_font_scales_with_resolution(void) {
                                 "越界档位要拿到 0 档那张字体,不能是空指针");
 }
 
+// ============================================================
+// ★★ 2026-09-27：主题文件里的 `alerts` 段（告警 / 蜂鸣器参数）
+//
+// 与配色那一段**同一套规矩**：缺字段保持原值、未知字段忽略、越界钳制、坏文件不崩。
+// 加这一组的理由：这几个数以前是**编译期常量**，现在能由编辑器导出、人手改
+// ⇒ 它们成了启动路径上的外部输入（和主题配色一个性质）。
+// ============================================================
+
+// ① 编辑器导出的形式：`alerts` 在 `theme` 里面（编辑器把整份主题当一个对象存/传）
+static void test_alerts_inside_theme_object(void) {
+  const char* json = R"({"theme":{
+    "bg_color": 0x101820,
+    "alerts": {
+      "overspeed_kmh": 90,
+      "overspeed_hyst_kmh": 5,
+      "redline_rpm": 6000,
+      "redline_hyst_rpm": 150,
+      "door_debounce_ms": 300,
+      "turn_signal_on_ms": 12000,
+      "debounce_ms": 400,
+      "beep_min_interval_ms": 1000,
+      "beep_ms": 200,
+      "only_highest": 0
+    }
+  }})";
+  AlertsConfig c;                      // 从默认值出发（调用方就是这么用的）
+  TEST_ASSERT_TRUE(theme_parse_alerts_json(json, (uint32_t)strlen(json), c));
+  TEST_ASSERT_EQUAL_FLOAT(90.0f, c.overspeed_kmh);
+  TEST_ASSERT_EQUAL_FLOAT(5.0f, c.overspeed_hyst_kmh);
+  TEST_ASSERT_EQUAL_FLOAT(6000.0f, c.redline_rpm);
+  TEST_ASSERT_EQUAL_FLOAT(150.0f, c.redline_hyst_rpm);
+  TEST_ASSERT_EQUAL_UINT32(300u, c.door_debounce_ms);
+  TEST_ASSERT_EQUAL_UINT32(12000u, c.turn_signal_on_ms);
+  TEST_ASSERT_EQUAL_UINT32(400u, c.debounce_ms);
+  TEST_ASSERT_EQUAL_UINT32(1000u, c.beep_min_interval_ms);
+  TEST_ASSERT_EQUAL_UINT32(200u, c.beep_ms);
+  TEST_ASSERT_FALSE(c.only_highest);
+  // 配色那一段照样解析（两段互不干扰）
+  Theme t;
+  TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+  TEST_ASSERT_EQUAL_HEX32(0x101820u, t.bg_color);
+}
+
+// ② 根上也认（手写文件更省事），并且 `true`/`false` 与 1/0 两种写法都收
+static void test_alerts_at_root_and_boolean_literals(void) {
+  const char* json = R"({"alerts":{"overspeed_kmh": 130, "only_highest": true}})";
+  AlertsConfig c;
+  TEST_ASSERT_TRUE(theme_parse_alerts_json(json, (uint32_t)strlen(json), c));
+  TEST_ASSERT_EQUAL_FLOAT(130.0f, c.overspeed_kmh);
+  TEST_ASSERT_TRUE(c.only_highest);
+  // 没说到的字段**一个字都不许动**（这是"字段可缺失"那条规矩的落点）
+  TEST_ASSERT_EQUAL_FLOAT(5800.0f, c.redline_rpm);
+  TEST_ASSERT_EQUAL_UINT32(20000u, c.turn_signal_on_ms);
+  TEST_ASSERT_EQUAL_UINT32(120u, c.beep_ms);
+
+  const char* jf = R"({"alerts":{"only_highest": false}})";
+  AlertsConfig c2;
+  TEST_ASSERT_TRUE(theme_parse_alerts_json(jf, (uint32_t)strlen(jf), c2));
+  TEST_ASSERT_FALSE(c2.only_highest);
+}
+
+// ③ 没有这一段 ⇒ false 且**一个字都不改**（老主题文件的行为必须完全不变）
+static void test_alerts_absent_changes_nothing(void) {
+  const char* json = R"({"theme":{"bg_color": 0x222222}})";
+  AlertsConfig c;
+  c.overspeed_kmh = 111.0f;            // 故意放个非默认值：它必须活下来
+  c.beep_ms = 222u;
+  TEST_ASSERT_FALSE(theme_parse_alerts_json(json, (uint32_t)strlen(json), c));
+  TEST_ASSERT_EQUAL_FLOAT(111.0f, c.overspeed_kmh);
+  TEST_ASSERT_EQUAL_UINT32(222u, c.beep_ms);
+  // 空指针 / 空文本也不许崩
+  TEST_ASSERT_FALSE(theme_parse_alerts_json(nullptr, 0, c));
+  TEST_ASSERT_FALSE(theme_parse_alerts_json("", 0, c));
+  TEST_ASSERT_FALSE(theme_parse_alerts_json("{}", 2, c));
+}
+
+// ④ 越界与垃圾值：钳到安全范围，绝不"解出个荒唐门限还照用"
+static void test_alerts_clamped_from_file(void) {
+  const char* json = R"({"alerts":{
+    "overspeed_kmh": 99999,
+    "redline_rpm": -5,
+    "turn_signal_on_ms": 0,
+    "beep_ms": 0,
+    "beep_min_interval_ms": 99999999,
+    "door_debounce_ms": 123456
+  }})";
+  AlertsConfig c;
+  TEST_ASSERT_TRUE(theme_parse_alerts_json(json, (uint32_t)strlen(json), c));
+  TEST_ASSERT_EQUAL_FLOAT(kAlertsOverspeedMaxKmh, c.overspeed_kmh);
+  TEST_ASSERT_EQUAL_FLOAT(kAlertsRedlineMinRpm, c.redline_rpm);
+  TEST_ASSERT_EQUAL_UINT32(kAlertsTurnMinMs, c.turn_signal_on_ms);   // 不是 0
+  TEST_ASSERT_EQUAL_UINT32(kAlertsBeepMinMs, c.beep_ms);             // 不是 0
+  TEST_ASSERT_EQUAL_UINT32(kAlertsBeepGapMaxMs, c.beep_min_interval_ms);
+  TEST_ASSERT_EQUAL_UINT32(kAlertsDebounceMaxMs, c.door_debounce_ms);
+}
+
+// ⑤ 未知键 / 类型不对：跳过，不许把整段带崩（向前兼容）
+static void test_alerts_unknown_keys_and_wrong_types(void) {
+  const char* json = R"({"alerts":{
+    "beep_ms": 150,
+    "future_field": {"a": [1, 2, {"b": 3}]},
+    "overspeed_kmh": "ninety",
+    "redline_rpm": 6500
+  }})";
+  AlertsConfig c;
+  TEST_ASSERT_TRUE(theme_parse_alerts_json(json, (uint32_t)strlen(json), c));
+  TEST_ASSERT_EQUAL_UINT32(150u, c.beep_ms);
+  TEST_ASSERT_EQUAL_FLOAT(6500.0f, c.redline_rpm);
+  // 类型不对的那个字段保持默认（而不是被解析成 0 或垃圾）
+  TEST_ASSERT_EQUAL_FLOAT(120.0f, c.overspeed_kmh);
+  // `alerts` 不是对象时 ⇒ 当没有这一段
+  const char* arr = R"({"alerts":[1,2,3]})";
+  AlertsConfig c2;
+  TEST_ASSERT_FALSE(theme_parse_alerts_json(arr, (uint32_t)strlen(arr), c2));
+}
+
+// ★★ 2026-09-27：**类型写错一个字段，不许把后面的字段一起吃掉**
+//
+// 这是修 theme_store.cpp 的 `Scan::object()` 时补的回归用例（原来那条路会
+// **静默截断**：值没被消费 ⇒ `eat(',')`/`eat('}')` 都失败 ⇒ 从这里停止解析，
+// 后面的字段全部按默认值处理，而日志上一个字都没有）。
+// 手写文件里最常见的两种错就是下面这两条：颜色被引号括起来、数字被写进引号。
+static void test_parse_wrong_type_does_not_eat_the_rest(void) {
+  const char* json = R"({"theme":{
+    "bg_color": "0x101820",
+    "face_size": 210,
+    "face_ink": 0xAABBCC
+  }})";
+  Theme t;
+  TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+  // 类型不对的那个字段：保持默认（不是被解成 0，也不是让整份文件崩掉）
+  TEST_ASSERT_EQUAL_HEX32(theme_defaults().bg_color, t.bg_color);
+  // ★ 关键：**它后面的两个字段照常生效**
+  TEST_ASSERT_EQUAL_INT32(210, t.face_size);
+  TEST_ASSERT_EQUAL_HEX32(0xAABBCCu, t.face_ink);
+
+  // 子对象写成非对象（`face` 该是 {...} 却写成字符串）也不许吃掉后面的字段
+  const char* json2 = R"({"theme":{
+    "face": "oops",
+    "boot_fade_ms": 333,
+    "boot_stagger_ms": 444
+  }})";
+  Theme t2;
+  TEST_ASSERT_TRUE(theme_parse_json(json2, (uint32_t)strlen(json2), t2));
+  TEST_ASSERT_EQUAL_UINT32(333u, t2.boot_fade_ms);
+  TEST_ASSERT_EQUAL_UINT32(444u, t2.boot_stagger_ms);
+}
+
 void register_theme_store_tests(void) {
   RUN_TEST(test_parse_full_theme);
   RUN_TEST(test_parse_partial_keeps_defaults);
@@ -427,4 +576,9 @@ void register_theme_store_tests(void) {
   RUN_TEST(test_readout_font_scales_with_resolution);
   RUN_TEST(test_coolant_arc_is_mirrored);
   RUN_TEST(test_reverse_defaults_to_zero);
+  RUN_TEST(test_alerts_inside_theme_object);
+  RUN_TEST(test_alerts_at_root_and_boolean_literals);
+  RUN_TEST(test_alerts_absent_changes_nothing);
+  RUN_TEST(test_alerts_clamped_from_file);
+  RUN_TEST(test_alerts_unknown_keys_and_wrong_types);
 }

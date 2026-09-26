@@ -101,6 +101,40 @@ struct AlertsConfig {
   bool only_highest = true;
 };
 
+// ------------------------------------------------------------
+// ★★ 2026-09-27：这份配置现在**可以从主题文件来**（`theme.json` 的 `alerts` 段，
+//    在编辑器里拖控件改）⇒ 它就成了"外部生成、人会手改"的输入，
+//    和主题配色同一个性质。于是必须有一处**集中**回答"什么算越界"。
+//
+//    为什么非钳不可（三个例子，都是手滑就写出来的）：
+//      · `turn_signal_on_ms = 0` ⇒ **一打转向灯就报"忘关"**（下限取 1000 ms，
+//        因为一次转弯本来就是秒级的事）；
+//      · `beep_ms = 0` ⇒ 蜂鸣器"响"0 毫秒 = 永远听不见（这是最难查的一种：
+//        屏上照报、日志照打，就是不响）；
+//      · `overspeed_kmh = 5000` ⇒ 超速告警永远不会触发，而屏上什么都看不出来。
+//
+//    ★ 它**只**被解析器（`theme_parse_alerts_json`）调用；`setConfig()` 照旧信任
+//      调用方 —— 宿主机用例与预览注入要能故意设成怪值去验边界。
+//    ★ 返回钳制后的对象（引用入参，就地把越界值改回来）。
+void alerts_config_clamp(AlertsConfig& c);
+
+// 各字段的安全范围（**唯一出处**：钳制用它，编辑器/用例要报"允许范围"也从这里读；
+// 用例逐条钉住，见 test_alerts.cpp 的 `alerts_config_clamp` 那一组）。
+static const float    kAlertsOverspeedMinKmh  = 0.0f;
+static const float    kAlertsOverspeedMaxKmh  = 300.0f;
+static const float    kAlertsHystMaxKmh       = 50.0f;
+static const float    kAlertsRedlineMinRpm    = 0.0f;
+static const float    kAlertsRedlineMaxRpm    = 12000.0f;
+static const float    kAlertsRedlineHystMax   = 1000.0f;
+static const uint32_t kAlertsDebounceMinMs    = 0u;
+static const uint32_t kAlertsDebounceMaxMs    = 10000u;
+static const uint32_t kAlertsTurnMinMs        = 1000u;    // ★ 不是 0：见上面"一打灯就报"
+static const uint32_t kAlertsTurnMaxMs        = 600000u;  // 10 分钟
+static const uint32_t kAlertsBeepMinMs        = 1u;       // ★ 不是 0：0 = 听不见
+static const uint32_t kAlertsBeepMaxMs        = 5000u;
+static const uint32_t kAlertsBeepGapMinMs     = 0u;       // 0 合法（= 能连着响，很吵但由人定）
+static const uint32_t kAlertsBeepGapMaxMs     = 60000u;
+
 class Alerts {
 public:
   Alerts() = default;

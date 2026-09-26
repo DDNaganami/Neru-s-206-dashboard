@@ -1,5 +1,35 @@
 #include "alerts.h"
 
+// 钳制助手（文件内）：把 v 夹进 [lo, hi]。
+// ★ 先判 NaN：`v != v` 为真时任何比较都是 false ⇒ 不特判的话 NaN 会**穿过**
+//   两边的夹子活下来，之后所有阈值比较都变 false ⇒ 那条告警**永远不触发**
+//   （屏上、日志上都看不出来，是最难查的一种）。
+static float clampF(float v, float lo, float hi) {
+  if (v != v) return lo;                 // NaN
+  if (v < lo) return lo;
+  if (v > hi) return hi;
+  return v;
+}
+static uint32_t clampU(uint32_t v, uint32_t lo, uint32_t hi) {
+  if (v < lo) return lo;
+  if (v > hi) return hi;
+  return v;
+}
+
+// 见 alerts.h 里那道说明：这份配置现在能从主题文件来 ⇒ 越界值必须在**一处**被挡。
+void alerts_config_clamp(AlertsConfig& c) {
+  c.overspeed_kmh       = clampF(c.overspeed_kmh, kAlertsOverspeedMinKmh, kAlertsOverspeedMaxKmh);
+  c.overspeed_hyst_kmh  = clampF(c.overspeed_hyst_kmh, 0.0f, kAlertsHystMaxKmh);
+  c.redline_rpm         = clampF(c.redline_rpm, kAlertsRedlineMinRpm, kAlertsRedlineMaxRpm);
+  c.redline_hyst_rpm    = clampF(c.redline_hyst_rpm, 0.0f, kAlertsRedlineHystMax);
+  c.door_debounce_ms    = clampU(c.door_debounce_ms, kAlertsDebounceMinMs, kAlertsDebounceMaxMs);
+  c.turn_signal_on_ms   = clampU(c.turn_signal_on_ms, kAlertsTurnMinMs, kAlertsTurnMaxMs);
+  c.debounce_ms         = clampU(c.debounce_ms, kAlertsDebounceMinMs, kAlertsDebounceMaxMs);
+  c.beep_min_interval_ms = clampU(c.beep_min_interval_ms, kAlertsBeepGapMinMs, kAlertsBeepGapMaxMs);
+  c.beep_ms             = clampU(c.beep_ms, kAlertsBeepMinMs, kAlertsBeepMaxMs);
+  // only_highest 是 bool，没有"越界"这回事（JSON 那边 1/0 与 true/false 都收）
+}
+
 const char* alertName(AlertKind k) {
   switch (k) {
     case AlertKind::None:       return "none";

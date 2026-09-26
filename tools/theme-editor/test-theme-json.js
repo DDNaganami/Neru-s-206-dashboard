@@ -615,6 +615,94 @@ section("读数颜色:图片编辑器 vs ui_theme.h / dash_ui.cpp");
 }
 
 // ------------------------------------------------------------
+  section("告警 / 蜂鸣器默认值：alerts.h ↔ 编辑器 ↔ theme-default.json 三处一致");
+  {
+    const repo2 = path.resolve(__dirname, "..", "..");
+    // 本段自己读一遍（上面那一段的 idxSrc 是块作用域里的，出了那个块就没了）
+    const idxSrcA = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+    // 事实来源 = 固件：lib/dashcore/alerts.h 的 AlertsConfig 成员初始值。
+    // ★ 与上面 ui_theme.h 那一节同一套办法：**解析真源码**，不在这里抄数字 ——
+    //   抄一份就会在"改了固件忘了改这里"时静默分叉。
+    const aSrc = fs.readFileSync(path.join(repo2, "lib", "dashcore", "alerts.h"), "utf8");
+    const body = /struct AlertsConfig\s*\{([\s\S]*?)\n\};/.exec(aSrc);
+    ok(!!body, "在 alerts.h 里找到 struct AlertsConfig");
+    const FIELDS = ["overspeed_kmh", "overspeed_hyst_kmh", "redline_rpm", "redline_hyst_rpm",
+                    "door_debounce_ms", "turn_signal_on_ms", "debounce_ms",
+                    "beep_min_interval_ms", "beep_ms", "only_highest"];
+    const fw = {};
+    for (const f of FIELDS) {
+      // 三种写法都要认：`120.0f`（float 后缀）、`20000`（整数）、`true`（bool）。
+      // ★ 第一版正则把 `5800.0f` 整串丢给 Number() ⇒ NaN，用例报
+      //   "期望 null 得到 5800"（NaN 经 JSON.stringify 就是 null）—— 记在这儿。
+      const m = new RegExp("\\b" + f + "\\s*=\\s*([-0-9.]+f?|true|false)\\s*;").exec(body[1]);
+      ok(!!m, "alerts.h 里 " + f + " 有默认值");
+      let v = NaN;
+      if (m) {
+        if (m[1] === "true") v = 1;
+        else if (m[1] === "false") v = 0;
+        else v = Number(m[1].replace(/f$/i, ""));
+      }
+      fw[f] = v;
+    }
+
+    // ① 编辑器页面的 defaultTheme().alerts
+    const dz = /alerts:\s*\{([\s\S]*?)\n    \}/.exec(idxSrcA);
+    ok(!!dz, "index.html 的 defaultTheme() 里有 alerts 段");
+    const pageDef = new Function("return {" + dz[1].replace(/\/\/[^\n]*/g, "") + "};")();
+    for (const f of FIELDS) eq(pageDef[f], fw[f], "index.html 的 alerts." + f);
+
+    // ② theme-default.json（给人当模板、也当回归基线的那份）
+    const tplAlerts = TJ.themeObject(TJ.parseThemeJson(
+      fs.readFileSync(path.join(__dirname, "theme-default.json"), "utf8"))).alerts;
+    ok(!!tplAlerts, "theme-default.json 里有 alerts 段");
+    for (const f of FIELDS) eq(tplAlerts[f], fw[f], "theme-default.json 的 alerts." + f);
+    eq(Object.keys(tplAlerts).length, FIELDS.length,
+       "theme-default.json 的 alerts 段不多不少正好十个字段");
+
+    // ③ 默认值必须落在固件钳制的安全范围内（钳制常量也从 alerts.h 抠）
+    const rangeOf = (name) => {
+      // 常量声明带类型后缀：`static const uint32_t kAlertsTurnMinMs = 1000u;`
+      // ⇒ 后缀 `u`/`f`/`l` 都要吃掉（第一版没吃，两个边界都抠成 null）。
+      const m = new RegExp("kAlerts" + name + "\\s*=\\s*([-0-9.]+)[uUlLfF]*\\s*;").exec(aSrc);
+      return m ? Number(m[1]) : null;
+    };
+    const inRange = (v, lo, hi, what) => {
+      ok(lo !== null && hi !== null, what + " 的两个边界都抠到了");
+      ok(v >= lo && v <= hi, what + " 的默认值 " + v + " 落在 [" + lo + "," + hi + "] 内");
+    };
+    inRange(fw.overspeed_kmh, rangeOf("OverspeedMinKmh"), rangeOf("OverspeedMaxKmh"), "超速");
+    inRange(fw.redline_rpm, rangeOf("RedlineMinRpm"), rangeOf("RedlineMaxRpm"), "红区");
+    inRange(fw.turn_signal_on_ms, rangeOf("TurnMinMs"), rangeOf("TurnMaxMs"), "转向忘关");
+    inRange(fw.beep_ms, rangeOf("BeepMinMs"), rangeOf("BeepMaxMs"), "响一声");
+
+    // ④ 两个"下限不是 0"的滑块：页面能拖出来的最小值**不许低于固件的下限**
+    //    —— 否则"页面上设成 0、设备上被钳成 1"这种不一致迟早被人当 bug 报上来。
+    const turnSlider = /slider\(g6, "转向忘关 s"[\s\S]*?,\s*(\d+),\s*(\d+),\s*(\d+)\)\)/.exec(idxSrcA);
+    ok(!!turnSlider, "找到「转向忘关 s」滑块");
+    if (turnSlider) {
+      ok(Number(turnSlider[1]) * 1000 >= rangeOf("TurnMinMs"),
+         "转向忘关滑块下限(" + turnSlider[1] + " s)不低于固件下限");
+    }
+    const beepSlider = /slider\(g6, "响一声 ms"[\s\S]*?,\s*(\d+),\s*(\d+),\s*(\d+)\)\)/.exec(idxSrcA);
+    ok(!!beepSlider, "找到「响一声 ms」滑块");
+    if (beepSlider) {
+      ok(Number(beepSlider[1]) >= rangeOf("BeepMinMs"),
+         "响一声滑块下限(" + beepSlider[1] + " ms)不低于固件下限");
+    }
+
+    // ⑤ 固件那边真的会读这一段（不是"编辑器导出了但没人用"）
+    const tsSrc = fs.readFileSync(path.join(repo2, "lib", "themetool", "theme_store.cpp"), "utf8");
+    ok(tsSrc.indexOf("theme_parse_alerts_json") >= 0, "theme_store.cpp 实现了 alerts 解析");
+    for (const f of FIELDS) {
+      ok(tsSrc.indexOf('"' + f + '"') >= 0, "theme_store.cpp 认识字段 " + f);
+    }
+    ok(tsSrc.indexOf("alerts_config_clamp") >= 0, "解析后调用了 alerts_config_clamp()");
+    // 设备端启动路径上真的把它接上了（main.cpp 调 theme_load_alerts）
+    const mainSrc = fs.readFileSync(path.join(repo2, "src", "main.cpp"), "utf8");
+    ok(mainSrc.indexOf("theme_load_alerts(") >= 0, "main.cpp 在启动时应用 alerts 段");
+    ok(mainSrc.indexOf("g_alerts.setConfig(") >= 0, "main.cpp 把解析结果设进 g_alerts");
+  }
+
 console.log("\n" + "=".repeat(56));
 if (fail === 0) console.log("全部通过:" + pass + " 项断言");
 else {

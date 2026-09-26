@@ -108,6 +108,19 @@
     "boot_sweep_hold_ms": 140,
     "boot_sweep_fall_ms": 420,
     "boot_face_start_ms": 1000,
-    "boot_face_blink_ms": 130
+    "boot_face_blink_ms": 130,
+
+    "alerts": {
+      "overspeed_kmh": 120,
+      "overspeed_hyst_kmh": 3,
+      "redline_rpm": 5800,
+      "redline_hyst_rpm": 200,
+      "door_debounce_ms": 200,
+      "turn_signal_on_ms": 20000,
+      "debounce_ms": 250,
+      "beep_min_interval_ms": 3000,
+      "beep_ms": 120,
+      "only_highest": 1
+    }
   }
 }

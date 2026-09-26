@@ -2,6 +2,10 @@
 #include <stdint.h>
 #include "ui_theme.h"
 
+// 前向声明：告警配置住在数据层（lib/dashcore/alerts.h），本层只拿它的**引用**，
+// 不 include 那个头 —— 依赖方向见下面 theme_parse_alerts_json 的说明。
+struct AlertsConfig;
+
 // ============================================================
 // 主题的读取与解析（运行时主题）
 //
@@ -27,9 +31,36 @@
 // 失败时 g_theme 保持调用前的值（通常是默认值）。
 bool theme_load();
 
+// ★ 同上，但读的是**同一份文件里的 `alerts` 段**（见下面 theme_parse_alerts_json）。
+//   返回 false = 没有分区 / 没刷过 / 文件坏了 / 文件里没有这一段 ⇒ cfg 一个字都没动。
+//   ★ 与 `theme_load()` 各读一次分区（各 ≤4 KB，只在 setup 里跑一次）。
+bool theme_load_alerts(AlertsConfig& cfg);
+
 // 从内存里的 JSON 文本解析主题（不含 IO）——便于宿主机单测。
 // 成功时把解析结果写进 t，并调用 theme_after_load() 做派生与钳制。
 bool theme_parse_json(const char* json, uint32_t len, Theme& t);
+
+// ------------------------------------------------------------
+// ★★ 2026-09-27：主题文件里除配色之外还能带一段**告警/蜂鸣器参数**
+//    （`"alerts": { ... }`，在编辑器里拖控件改；见 alerts.h 的 AlertsConfig）。
+//
+//    为什么要单独一个入口、而不是塞进上面的 Theme：
+//      `Theme`（ui_theme.h）是**界面层**的数据模型，而告警阈值属于**数据层**
+//      （lib/dashcore/alerts.h）—— 让界面层的结构体去 include 数据层的头，
+//      是为了省一次解析而把两层的依赖方向拨反。这里只做"多扫一遍同一段文本"：
+//      文件 ≤4 KB，启动时多走一遍扫描器的代价可以忽略。
+//    ★ `AlertsConfig` 用**前向声明**，本头文件因此不依赖 lib/dashcore。
+//
+//    位置：`"alerts"` 既可以在根上（`{"alerts":{...}}`），也可以在
+//      `"theme"` 里面（`{"theme":{"alerts":{...}}}`）—— 编辑器的导出是后者
+//      （它把整份主题当一个对象存/传，见 tools/theme-editor/theme-json.js）。
+//      两种写法都认：扫描器按"第一个 `"alerts"` 键 + 冒号"定位，不关心它在第几层。
+//
+//    语义（与主题配色**完全一样**，这是"字段可缺失"那条规矩的延续）：
+//      · 文件里**没写**的字段 ⇒ cfg 里保持原值（调用方从固件默认值出发即可）；
+//      · 文件里写了但越界 ⇒ 由 `alerts_config_clamp()` 钳到安全范围（见 alerts.h）；
+//      · 返回 false = 文件里**没有**这一段（或这一段不是对象）⇒ cfg 一个字都没动。
+bool theme_parse_alerts_json(const char* json, uint32_t len, AlertsConfig& cfg);
 
 // 主题文件的预期存放位置（供文档/工具引用）
 //   ESP32: theme 分区（partitions.csv 里的 `theme`，subtype 0x40）

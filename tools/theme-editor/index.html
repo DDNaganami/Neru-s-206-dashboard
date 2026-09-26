@@ -270,7 +270,27 @@ function defaultTheme() {
     boot_sweep_hold_ms: 140,
     boot_sweep_fall_ms: 420,
     boot_face_start_ms: 1000,
-    boot_face_blink_ms: 130
+    boot_face_blink_ms: 130,
+    // ★★ 2026-09-27：告警 / 蜂鸣器参数（原来写死在 lib/dashcore/alerts.h 里）。
+    //   ★ 字段名必须与 theme_store.cpp 的 `alerts` 分支**逐字一致**
+    //     （那条分支由 lib/themetool/theme_store.cpp 的 theme_parse_alerts_json 实现）。
+    //   ★ 这几个数与 alerts.h 的 AlertsConfig **默认值必须相同** ——
+    //     tools/theme-editor/test-theme-json.js 会去解析那个 C++ 头逐项对账
+    //     （抄一份数字就会在"改了固件忘了改这里"时静默分叉）。
+    //   ★ 静音**故意不在这里**：它是运行时状态（`m` 键 / 预览页 `M`，存 NVS 跨上电记住）。
+    //     把它也写进文件会造出"两个真相"（文件说响、NVS 说静音），见 alerts.h 的说明。
+    alerts: {
+      overspeed_kmh: 120,
+      overspeed_hyst_kmh: 3,
+      redline_rpm: 5800,
+      redline_hyst_rpm: 200,
+      door_debounce_ms: 200,
+      turn_signal_on_ms: 20000,
+      debounce_ms: 250,
+      beep_min_interval_ms: 3000,
+      beep_ms: 120,
+      only_highest: 1
+    }
   };
 }
 
@@ -769,6 +789,41 @@ function buildControls() {
   syncers.push(slider(g4, "表情显形", () => T.boot_face_start_ms, v => T.boot_face_start_ms = v, 0, 5000, 50));
   // 字段名是历史遗留(JSON 键不能随便改):眨眼状态删掉后,它是"表情出现后的一拍收尾"
   syncers.push(slider(g4, "收尾时长", () => T.boot_face_blink_ms, v => T.boot_face_blink_ms = v, 1, 1000, 10));
+
+  // ---- 告警 / 蜂鸣器（2026-09-27 新增） ----
+  // ★ 为什么放在这一页：这几个数**跟着 theme.json 一起刷**（同一个分区、
+  //   同一条刷写路径、固件不用重编）—— 车主的要求是"蜂鸣器也能在编辑器里调"，
+  //   而拆成第二个文件/第二个页面只会多一条会走错的路径。
+  // ★ 它们**不进预览**：预览画的是弧和表情；蜂鸣器响不响由上面的
+  //   「阶段预览 + 注入」那套在**模拟页面**上验（按 M / 写 mute=1）。
+  const g6 = group("告警 / 蜂鸣器");
+  const al = T.alerts;
+  const alNote = document.createElement("div");
+  alNote.className = "note";
+  alNote.textContent =
+    "跟着 theme.json 一起刷进设备（同一个主题分区）。静音不在这里 —— " +
+    "按一下设备的 m（或模拟页面按 M），它记在本机、跨上电有效。";
+  g6.appendChild(alNote);
+  syncers.push(slider(g6, "超速 km/h", () => al.overspeed_kmh, v => al.overspeed_kmh = v, 0, 300, 1));
+  syncers.push(slider(g6, "超速迟滞", () => al.overspeed_hyst_kmh, v => al.overspeed_hyst_kmh = v, 0, 50, 1));
+  syncers.push(slider(g6, "红区 rpm", () => al.redline_rpm, v => al.redline_rpm = v, 1000, 12000, 50));
+  syncers.push(slider(g6, "红区迟滞", () => al.redline_hyst_rpm, v => al.redline_hyst_rpm = v, 0, 1000, 10));
+  // ★ 两条下限在固件里被钳着：转向 ≥1 s（0 = 一打灯就报）、响 ≥1 ms（0 = 听不见）。
+  //   滑块也就不给到 0 —— 页面能拖出来的值，设备一定要照做（钳制是给手改文件兜底的）。
+  syncers.push(slider(g6, "转向忘关 s", () => Math.round(al.turn_signal_on_ms / 1000),
+                      v => al.turn_signal_on_ms = v * 1000, 1, 600, 1));
+  syncers.push(slider(g6, "门去抖 ms", () => al.door_debounce_ms, v => al.door_debounce_ms = v, 0, 10000, 10));
+  syncers.push(slider(g6, "通用去抖 ms", () => al.debounce_ms, v => al.debounce_ms = v, 0, 10000, 10));
+  syncers.push(slider(g6, "响一声 ms", () => al.beep_ms, v => al.beep_ms = v, 1, 5000, 10));
+  syncers.push(slider(g6, "最短间隔 ms", () => al.beep_min_interval_ms, v => al.beep_min_interval_ms = v, 0, 60000, 100));
+  syncers.push(check(g6, "同时只报最高优先级", () => al.only_highest || 0, v => al.only_highest = v));
+  const alNote2 = document.createElement("div");
+  alNote2.className = "note";
+  alNote2.textContent =
+    "优先级：超速 > 红区 > 门 > 转向灯忘关。响应与钳制都在固件侧 " +
+    "（lib/dashcore/alerts.h 的 AlertsConfig + alerts_config_clamp），" +
+    "写进文件后由 theme_store.cpp 的 alerts 段读取。";
+  g6.appendChild(alNote2);
 }
 
 // ---------------- 开机动画的插值（与 boot_anim.cpp 同一套公式） ----------------

@@ -2691,6 +2691,34 @@ void setup() {
   // 主题:先默认值(由 dash_ui_init 兜底),再尝试用 flash 里的主题文件覆盖。
   // 加载失败不影响启动 —— 降级到默认主题继续跑。
   theme_load();
+  // ★★ 2026-09-27：同一份主题文件里的 `alerts` 段（告警阈值 / 蜂鸣器参数）。
+  //   为什么要紧挨着 theme_load()：**同一个文件、同一次启动、同一条刷写路径**
+  //   （刷主题分区即生效，固件不用重编）—— 两段分家会让人以为"刷了主题但告警没变"。
+  //   口径三条（都别改）：
+  //     ① 从**当前配置**出发（= alerts.h 的编译期默认值），文件只覆盖它写了的那几个
+  //        ⇒ 老主题文件（没有 alerts 段）行为**一个字节都不变**；
+  //     ② 越界值由 `alerts_config_clamp()` 挡（那份配置现在是外部输入）；
+  //     ③ **静音不在这个文件里** —— `muted` 是运行时状态（`m` 键 / 预览页 `M`，
+  //        存 NVS、跨上电记住，见下面 `g_beep_muted` 那一段）。把它也写进文件会
+  //        造出"两个真相"，所以刻意不写；要静音就是按一下 `m`（一次，之后一直记住）。
+  {
+    AlertsConfig ac = g_alerts.config();
+    if (theme_load_alerts(ac)) {
+      g_alerts.setConfig(ac);
+      // 这一行是**判据**：刷一份带 alerts 段的主题后，这里打出来的必须就是
+      // 文件里那几个数（编辑器导出的就是下面这些字段名，逐项对得上）。
+      dash_logf("alerts: 已应用主题里的 alerts 段 "
+                "(超速 %.0f/迟滞 %.0f, 红区 %.0f/迟滞 %.0f, 门去抖 %ums, "
+                "转向忘关 %us, 去抖 %ums, 响 %ums, 最短间隔 %ums, only_highest=%u)\n",
+                (double)ac.overspeed_kmh, (double)ac.overspeed_hyst_kmh,
+                (double)ac.redline_rpm, (double)ac.redline_hyst_rpm,
+                (unsigned)ac.door_debounce_ms,
+                (unsigned)(ac.turn_signal_on_ms / 1000u),
+                (unsigned)ac.debounce_ms, (unsigned)ac.beep_ms,
+                (unsigned)ac.beep_min_interval_ms,
+                ac.only_highest ? 1u : 0u);
+    }
+  }
   // 图片资源(背景/表情)也从 flash 分区加载,同样是失败即降级。
   // 加载结果在下面的 dash_ui_init() 里用:有图就 lv_image 画出来
   // (背景在最底层、表情在最上层),没有就退回程序化表情 + 主题纯色背景。
