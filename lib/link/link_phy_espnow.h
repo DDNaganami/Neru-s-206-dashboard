@@ -198,6 +198,20 @@ class LinkPhyEspNow : public LinkPhy {
   //   （`kRxRingBytes` 里一个包一段），所以 `read()` 逐字节给出去之后，
   //   调用方只要按帧长解就行 —— 与 UART 那一档完全同形（同一条 LinkRx 路径）。
   //   "包"这个概念只在两个计数上露头（rxFrames / txFrames），不改变字节流语义。
+  //
+  // ★★ 测量帧的"**到达钩子**"（2026-09-27 深夜，本单第二步）：
+  //   注册之后，接收回调会在**收到包的那一刻**（WiFi 任务上下文）把测量信封交给它，
+  //   由它打时间戳。为什么必须在这一刻打：若在主循环里打（收帧闸门那条路），
+  //   量到的"到达间隔"会混进**收端主循环被抢占**（实测 ~100ms），
+  //   那就不是在量链路，而是在量我们自己的调度 —— 实测 `gap_max` 113ms / p99 42ms
+  //   而同一轮的 `wire_gap_max` 只有 10ms（发端已经按节拍发了）。
+  //   · 返回 true ⇒ 这一包**已被消费**，不再进 RX 环（主循环那一趟也省了）；
+  //   · 回调里只做"形态判据 + 交给它"，**不格式化、不打日志**（同一贯纪律）；
+  //   · 没注册（nullptr）时行为与以前**逐字节相同**。
+  typedef bool (*MeasSinkFn)(const uint8_t* payload, uint8_t payload_len, uint32_t now_ms);
+  static void setMeasSink(MeasSinkFn fn) { g_meas_sink = fn; }
+  // 被到达钩子消费掉的**包数**（只增；用来证明测量帧没再走 RX 环）。
+  uint32_t rxMeasConsumed() const { return mRxMeasConsumed; }
 
  private:
   // 发送完成回调（WiFi 任务上下文）—— 只做计数，绝不做别的事。
@@ -210,6 +224,8 @@ class LinkPhyEspNow : public LinkPhy {
   //      两处一眼能对上；换 IDF 大版本时**只有这两处**要改，而且编译期会当场报出来。
   static void onSendDoneStatic(const esp_now_send_info_t* tx_info, esp_now_send_status_t status);
   static void onRecvStatic(const esp_now_recv_info_t* info, const uint8_t* data, int len);
+  // ★ 测量帧的到达钩子（nullptr = 没注册 ⇒ 行为与以前逐字节相同）。见上面那一段说明。
+  static MeasSinkFn g_meas_sink;
 
   void onSendDone(uint8_t status);
   void onRecv(const uint8_t* src, const uint8_t* data, int len);
@@ -275,6 +291,8 @@ class LinkPhyEspNow : public LinkPhy {
   volatile uint32_t mRxOverflow = 0;
   volatile uint32_t mRxFrames = 0;
   volatile uint32_t mRxForeign = 0;
+  // ★ 到达钩子消费掉的包数（只有接收回调写，主循环只读 ⇒ volatile）
+  volatile uint32_t mRxMeasConsumed = 0;
   volatile uint32_t mTxDone = 0;
   volatile uint32_t mTxStatusFail = 0;
 

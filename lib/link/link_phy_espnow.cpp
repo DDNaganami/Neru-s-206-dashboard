@@ -60,6 +60,18 @@ namespace {
 //   main 的 `g_link_phy` 一 `begin()`，回调就知道该找谁。
 LinkPhyEspNow* g_active = nullptr;
 
+// 这一包像不像"测量信封"的载体帧：v1 帧头 + `TYPE=DATA` + `LEN=9` + 载荷开头 `DSM1`。
+// ★ 只做几个字节比较：**回调里不许做重活**（不算 CRC、不格式化、不打日志）。
+//   真正的判据仍在 `MeasReceiver::noteArrival()` 里（magic + 版本），这里只是"要不要叫它"。
+bool looksLikeMeasCarrier(const uint8_t* d, int len) {
+  if (d == nullptr || len != (int)(kOverhead + 9u)) return false;
+  if (d[kOffSync] != kSync) return false;
+  if (d[kOffType] != (uint8_t)MsgType::Data) return false;
+  if (d[kOffLen] != 9u) return false;
+  const uint8_t* p = d + kOffPayload;
+  return p[0] == 'D' && p[1] == 'S' && p[2] == 'M' && p[3] == '1';
+}
+
 // 可读的 MAC 文本（`aa:bb:cc:dd:ee:ff`）。★ 静态缓冲：只在"刚学到/要打日志"
 // 那一刻有效，返回的指针**别存**（本类是单线程主循环用的，这一条够用）。
 const char* kHex = "0123456789abcdef";
@@ -107,6 +119,11 @@ const uint32_t kPeerFramesBeforeNvs = 8u;
 const uint32_t kPhyLogPeriodMs = 2000u;
 
 }  // namespace
+
+// ★ 测量帧的到达钩子（定义）。缺省 nullptr ⇒ 收帧路径与以前**逐字节相同**。
+//   ★ 必须写在**匿名 namespace 之外**：它是一个类静态成员，写在里面编译器会拒
+//     （definition is not in namespace enclosing ...）。
+LinkPhyEspNow::MeasSinkFn LinkPhyEspNow::g_meas_sink = nullptr;
 
 // ============================================================
 // 回调（★ WiFi 任务上下文：只拷字节 + 计数，别的什么都不做）
@@ -169,6 +186,20 @@ void LinkPhyEspNow::onRecv(const uint8_t* src, const uint8_t* data, int len) {
     return;
   }
   if (src != nullptr) ++mPeerFrames;    // ★ "这个对端确实带来了可用的帧"（NVS 只在这儿之后写）
+
+  // ---- ②b ★★ 测量帧的**到达钩子**（2026-09-27 深夜，本单第二步）----
+  //   在**收到包这一刻**（WiFi 任务上下文）把信封交给钩子去打时间戳，然后
+  //   **直接返回、不进 RX 环**。理由见 `link_phy_espnow.h` 里 `setMeasSink` 那段：
+  //   主循环里打时间戳会把"收端主循环被抢占 ~100ms"混进到达间隔里
+  //   （实测 `gap_max` 113ms / p99 42ms，而同一轮 `wire_gap_max` 只有 10ms）。
+  //   ★ 放在这里（学完对端、判过形态之后）而不是函数开头：这样"学到对端"这件事
+  //     不依赖有没有注册钩子；而 `plausible` 已经保证它是一条形态合法的 v1 帧。
+  if (g_meas_sink != nullptr && looksLikeMeasCarrier(data, len)) {
+    if (g_meas_sink(data + kOffPayload, (uint8_t)9u, (uint32_t)millis())) {
+      ++mRxMeasConsumed;
+      return;                            // 已被消费：不进环、也不再算 rx_frames
+    }
+  }
 
   // ---- ③ 整包进入环（**整包进出**：环里放不下这一包就不放，绝不分两段） ----
   //   ★ 为什么整包进出：`read()` 是逐字节给出去的（与 UART 那一档同形），

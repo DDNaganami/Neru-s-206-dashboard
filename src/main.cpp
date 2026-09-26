@@ -846,34 +846,79 @@ static inline void phy_tx_unlock() {
   if (g_phy_tx_mux != nullptr) xSemaphoreGive(g_phy_tx_mux);
 }
 
-#if LINK_ROLE == 1
-static const uint8_t  kLinkTxTaskPrio    = 15u;
-static const uint32_t kLinkTxTaskPeriodMs = 20u;   // = TICK 的 50 Hz
+#if LINK_PHY_ESP_NOW
+static const uint8_t  kLinkTxTaskPrio     = 15u;
+// ★ 5ms 一拍：够 50Hz 的 TICK（每 4 拍一次）与 100Hz 的测速 burst（每 2 拍一次）。
+static const uint32_t kLinkTxTaskPeriodMs = 5u;
+
+// ★★ 这个任务现在是**所有"按节拍发"的唯一出口**：TICK（主板）与测速 burst（两板都有）。
+//   为什么把 burst 也搬进来：burst 帧原来由主循环发（`meas_poll` 的 ①发），于是
+//   `wire_gap_max` 量到的是**主循环被抢占**（实测 98~108ms），而不是链路本身 ——
+//   工具就没在量它该量的东西。搬进来之后，发端节拍由本任务保证。
+//
+//   ★ 线程纪律（本次改动唯一的风险点）：**`g_meas_tx` 只被本任务碰**。
+//     主循环的 `w` 命令不再直接 `g_meas_tx.start()`，而是**置一个请求位**
+//     （`g_meas_start_req`），由本任务在下一拍真正开跑 ⇒ 无跨任务竞态、无需加锁。
+//     ★ 收端（`g_meas_rx`）**不进这个任务**：它由主循环的收帧闸门喂、也由主循环算摘要，
+//       那条路本来就是单线程的 —— 别顺手把它也搬进来。
+static volatile bool g_meas_start_req = false;
 
 static void link_tick_task(void*) {
   TickType_t last = xTaskGetTickCount();
+  uint8_t tick_div = 0;
   for (;;) {
-    // ★ 固定节拍（不是 delay(20)：那个会累积漂移）—— 这一条正是本任务存在的意义。
+    // ★ 固定节拍（不是 delay：那个会累积漂移）—— 这一条正是本任务存在的意义。
     vTaskDelayUntil(&last, pdMS_TO_TICKS(kLinkTxTaskPeriodMs));
     const uint32_t now = (uint32_t)millis();
-    dashlink::TickMsg tm;
-    if (!g_link_tick.due(now, &tm)) continue;      // 没到点（比如刚好被别的路径发过）
-    uint8_t payload[dashlink::kTickLen];
-    if (!dashlink::packTick(tm, payload)) continue;
-    uint8_t frame[dashlink::kFrameBytesMax];
-    const uint16_t n = dashlink::encodeFrame((uint8_t)dashlink::MsgType::Tick, payload,
-                                             dashlink::kTickLen, dashlink::kLocalRole,
-                                             frame, (uint16_t)sizeof(frame));
-    if (n == 0u) continue;
-    // ★ 拿锁有上界（5ms）：拿不到就放弃这一拍（丢的是**这一帧 TICK**，不是主循环的时间）。
-    if (!phy_tx_lock(5u)) continue;
-    if (g_link_phy.write(frame, (size_t)n) == (size_t)n) {
-      g_link_phy.pumpTx(now);
+
+    // ---- ① 测速 burst 的发送（`w` 的请求在这里真正开跑）----
+    if (g_meas_start_req) {
+      g_meas_start_req = false;
+      g_meas_tx.start(now, dashlink::kLocalRole);
+      dash_logf("meas: 开跑 count=%lu period=%ums -- 收端那行 `meas rx:` 会在 burst 结束后自动打出\n",
+                (unsigned long)g_meas_tx.planned(), (unsigned)g_meas_tx.periodMs());
     }
-    phy_tx_unlock();
+    if (g_meas_tx.active()) {
+      if (phy_tx_lock(5u)) {
+        g_meas_tx.poll(now, g_link_phy);   // 只往 PHY 的环里写（不碰射频）
+        g_link_phy.pumpTx(now);            // 真发在这里
+        phy_tx_unlock();
+      }
+      if (!g_meas_tx.active()) {
+        // 刚好发满：把发端那一行打出来（**发端判据**只有"真的按节奏发出去了"这一条；
+        // 丢包/间隔/抖动**只有收端量得到**，别拿"发出去了"当"收到了"）。
+        char line[256] = {0};
+        dashlink::measFormatTxSummary(g_meas_tx, now, line, (int)sizeof(line));
+        dash_logf("%s\n", line);
+      }
+    }
+
+#if LINK_ROLE == 1
+    // ---- ② TICK（50 Hz = 每 4 拍一次；只在主板）----
+    if (++tick_div >= (uint8_t)(20u / kLinkTxTaskPeriodMs)) {
+      tick_div = 0;
+      dashlink::TickMsg tm;
+      if (g_link_tick.due(now, &tm)) {              // 没到点就直接跳过这一拍
+        uint8_t payload[dashlink::kTickLen];
+        if (dashlink::packTick(tm, payload)) {
+          uint8_t frame[dashlink::kFrameBytesMax];
+          const uint16_t n = dashlink::encodeFrame((uint8_t)dashlink::MsgType::Tick, payload,
+                                                   dashlink::kTickLen, dashlink::kLocalRole,
+                                                   frame, (uint16_t)sizeof(frame));
+          // ★ 拿锁有上界（5ms）：拿不到就放弃这一拍（丢的是**这一帧**，不是主循环的时间）。
+          if (n != 0u && phy_tx_lock(5u)) {
+            if (g_link_phy.write(frame, (size_t)n) == (size_t)n) {
+              g_link_phy.pumpTx(now);
+            }
+            phy_tx_unlock();
+          }
+        }
+      }
+    }
+#endif  // LINK_ROLE == 1
   }
 }
-#endif  // LINK_ROLE == 1
+#endif  // LINK_PHY_ESP_NOW
 
 // 只在主循环里调一次（懒启动）：建互斥量 + （主板上）建 TICK 任务。
 static void link_tx_task_start_once() {
@@ -883,11 +928,11 @@ static void link_tx_task_start_once() {
   if (g_phy_tx_mux == nullptr) {
     g_phy_tx_mux = xSemaphoreCreateMutex();
   }
-#if LINK_ROLE == 1
+  // ★ 两个角色都建这个任务：主板上它发 TICK + burst；从板上它只发 burst
+  //   （从板没有时基节拍要保，但 `w` 也要能在从板上跑）。
   // 钉在 core 1（与 loopTask 同核：比它优先级高 ⇒ 到点就抢占它，这正是要的）。
-  xTaskCreatePinnedToCore(&link_tick_task, "lnk_tick", 3072, nullptr,
+  xTaskCreatePinnedToCore(&link_tick_task, "lnk_tick", 4096, nullptr,
                           (UBaseType_t)kLinkTxTaskPrio, nullptr, 1);
-#endif
 }
 #endif  // LINK_PHY_ESP_NOW
 
@@ -2286,24 +2331,39 @@ static const uint16_t kMeasBytesPerLoop = 1536u;
 // 照旧是一个普通字符 ⇒ 串口行为逐字节不变，见 `lib/dashcore/serial_cmd.h`）。
 // ★ 那一行日志刻意写成**纯 ASCII**（`--` 而不是破折号）：下一单要在串口上贴这一行
 //   回来对账，而"抄一行"这件事在中文标点上最容易出岔（同一仓库已有先例注释）。
-static void meas_start_from_serial() {
-  g_meas_tx.start(millis(), dashlink::kLocalRole);
-  dash_logf("meas: 开跑 count=%lu period=%ums -- 收端那行 `meas rx:` 会在 burst 结束后自动打出\n",
-            (unsigned long)g_meas_tx.planned(), (unsigned)g_meas_tx.periodMs());
+// ★★ 测量帧的**到达钩子**（2026-09-27 深夜，本单第二步）：在**射频回调里**
+//   （WiFi 任务上下文）给测量帧打时间戳。
+//   为什么必须在这一刻打：若在主循环里打（收帧闸门那条路），量到的"到达间隔"会混进
+//   **收端主循环被抢占**（实测 `gap_max` 113ms / p99 42ms）—— 而同一轮的
+//   `wire_gap_max` 只有 10ms（发端已经严格按 10ms 节拍发了）⇒ 那 100ms 是**我们自己**的，
+//   不是链路的。钩子把时间戳挪回射频收到包的那一刻，`gap_max`/p99 才开始代表链路。
+//   ★ 这里只做"入队 + 返回"：不格式化、不打日志、不碰 LinkRx（与回调纪律一致）。
+static bool meas_arrival_sink(const uint8_t* payload, uint8_t len, uint32_t now_ms) {
+  return g_meas_rx.noteArrival(payload, len, now_ms);
+}
+
+static void meas_sink_register_once() {
+  static bool done = false;
+  if (done) return;
+  done = true;
+  dashlink::LinkPhyEspNow::setMeasSink(&meas_arrival_sink);
+}
+
+static void meas_start_from_serial() {  // ★★ 不在这里直接 `g_meas_tx.start()`：`g_meas_tx` **只被链路 TX 任务碰**
+  //    （见 `link_tick_task` 的说明）。这里只**置请求位**，任务下一拍真正开跑
+  //    ⇒ 无跨任务竞态、也不需要加锁。打印用常量（真正的 planned/period 由任务打）。
+  g_meas_start_req = true;
+  dash_logf("meas: 已请求开跑（发端节拍由链路任务保证）count=%lu period=%ums\n",
+            (unsigned long)dashlink::MeasSender::kDefaultCount,
+            (unsigned)dashlink::MeasSender::kDefaultPeriodMs);
 }
 
 static void meas_poll(uint32_t now) {
-  // ---- ① 发（只往 PHY 的环里写；真发在下面的 pumpTx 里）----
-  if (g_meas_tx.active()) {
-    const uint8_t n = g_meas_tx.poll(now, g_link_phy);
-    if (n > 0u && !g_meas_tx.active()) {
-      // 刚好发满：把发端那一行打出来（**发端判据**只有"真的按节奏发出去了"这一条；
-      // 丢包/间隔/抖动**只有收端量得到**，别拿"发出去了"当"收到了"）。
-      char line[256] = {0};
-      dashlink::measFormatTxSummary(g_meas_tx, now, line, (int)sizeof(line));
-      dash_logf("%s\n", line);
-    }
-  }
+  // ---- ① 发：**已搬到 `link_tick_task`**（2026-09-27 深夜，本单第二步）----
+  //   原来这里调 `g_meas_tx.poll()`，于是 burst 帧由**主循环**发 ⇒ `wire_gap_max`
+  //   量到的是主循环被抢占（实测 98~108ms），而不是链路本身。现在发端节拍由那个
+  //   高优先级任务保证，`gap_max`/p99 才开始代表链路。
+  //   ★ 配套：`w` 命令不再直接 `start()`，只置 `g_meas_start_req`（线程纪律见任务说明）。
 
   // ---- ② 收：**已删除**（2026-09-27 深夜；由 (a) 那一步暴露出来的既有缺陷）----
   //
@@ -2573,6 +2633,7 @@ void loop() {
 #if LINK_PHY_ESP_NOW
   probe_start_once();    // ★ 选项(a) 可行性探针：20ms 定时器回调的实际节拍（见它的说明）
   link_tx_task_start_once();   // ★★ 选项(a)：建互斥量 +（主板上）建 TICK 发送任务
+  meas_sink_register_once();   // ★★ 测量帧的到达钩子：时间戳打在射频收到包那一刻
 #endif
   g_van_phy.tick(now);   // VAN 物理层解帧 → 喂给 data_service
                          // (桩 / GPIO 收帧两种实现共用这一个接口,见 van_phy.h:
