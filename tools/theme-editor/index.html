@@ -237,8 +237,8 @@ function defaultTheme() {
       unit_font: 1,
       digit_cy: 88,
       unit_cy: 110,
-      coolant_cy: 384,
-      intake_cy: 384,
+      coolant_cy: 446,
+      intake_cy: 446,
       show_units: 1,
       show_coolant: 1,
       show_intake: 1
@@ -769,13 +769,18 @@ function buildControls() {
   syncers.push(slider(g5, "数字中心 y", () => r.digit_cy, v => r.digit_cy = v, 10, 115, 1));
   syncers.push(slider(g5, "单位中心 y", () => r.unit_cy, v => r.unit_cy = v, 10, 119, 1));
   syncers.push(slider(g5, "水温中心 y", () => r.coolant_cy, v => r.coolant_cy = v, 200, 470, 1));
+  // ★ 2026-09-27 深夜补：进气那一格原来**没有滑块**（只能改文件），而它与水温必须同行
+  //   （`test_readout_defaults_fit_gap` 钉着两者相等）⇒ 补一个同范围的滑块。
+  syncers.push(slider(g5, "进气中心 y", () => r.intake_cy, v => r.intake_cy = v, 200, 470, 1));
   syncers.push(check(g5, "显示单位", () => r.show_units, v => r.show_units = v));
   syncers.push(check(g5, "显示水温数字", () => r.show_coolant, v => r.show_coolant = v));
   const note = document.createElement("div");
   note.className = "note";
   note.textContent =
-    "竖排可用区间是 47..120（上面是弧带、下面是表情图 240×240）。" +
-    "数字往 47 以下挪就会骑在弧上，单位超过 120 会被表情压住。";
+    "上面那两条（数字/单位）的竖排可用区间是 47..120（上面是弧带、下面是表情图）。" +
+    "★ 水温/进气那两格在**下半圆**那一侧，可用带子窄得多：表情图的不透明下沿到 389、" +
+    "灯条占 395..435、下半圆的副弧底部到 408 ⇒ 整条字必须落在 436..468 这一带" +
+    "（2026-09-27 实屏：384 那一版被下巴压掉了上半截）。";
   g5.appendChild(note);
 
   // ---- 开机动画 ----

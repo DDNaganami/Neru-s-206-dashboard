@@ -37,8 +37,8 @@
       "unit_font": 1,
       "digit_cy": 88,
       "unit_cy": 110,
-      "coolant_cy": 384,
-      "intake_cy": 384,
+      "coolant_cy": 446,
+      "intake_cy": 446,
       "show_units": 1,
       "show_coolant": 1,
       "show_intake": 1

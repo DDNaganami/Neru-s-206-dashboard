@@ -316,9 +316,19 @@ static void test_readout_defaults_fit_gap(void) {
   TEST_ASSERT_TRUE_MESSAGE(unit_bottom <= kFaceTopY, "单位会被表情图压住");
   TEST_ASSERT_TRUE_MESSAGE(digit_bottom < unit_top, "数字必须在单位上方");
   TEST_ASSERT_TRUE_MESSAGE(unit_top - digit_bottom <= 30, "数字和单位之间空太多");
-  // 水温读数在表盘底部:要在圆心以下,又不能跑到屏幕外
-  TEST_ASSERT_TRUE(d.readout.coolant_cy > 240);
-  TEST_ASSERT_TRUE(d.readout.coolant_cy < 430);
+  // 水温/进气读数在表盘**下半圆那一侧**,可用的竖直带子由三样东西夹出来
+  // (2026-09-27 深夜车主实屏报"字不见了",逐行量出来的数字,别凭感觉改):
+  //   · 表情图不透明下沿 = **389**(300×300 的表情图居中 ⇒ 下巴那一行还是不透明的);
+  //   · 灯条 = **395..435**(`lamp_view.h`:kLampCy=415、kLampSize=40 ⇒ 顶 395 底 435);
+  //   · 下半圆的副弧(radius 168/width 10)底部到 **408**。
+  // ⇒ 18 号墨迹(cy-3..cy+10)必须整条落在 **436 以下**,而且还得在 240 内切圆里:
+  //   读数居中、字宽约 60px ⇒ 最外侧 |dx|≈30 ⇒ 圆的许可 y ≤ 240+sqrt(240²-30²)=478
+  //   ⇒ 墨迹下沿(cy+10) ≤ 478 ⇒ cy ≤ 468(与 ui_theme.cpp 的解析夹取上限 470 同向)。
+  TEST_ASSERT_TRUE_MESSAGE(d.readout.coolant_cy >= 436,
+                           "水温读数会压到表情下巴/副弧/灯条(它们一直占到 435)");
+  TEST_ASSERT_TRUE_MESSAGE(d.readout.coolant_cy + kUnitBotOff <= 468,
+                           "水温读数跑到内切圆外了(±30px 处圆的许可只到 478)");
+  TEST_ASSERT_TRUE(d.readout.intake_cy == d.readout.coolant_cy);   // 两屏同一行
 }
 
 // ★ 涨幅方向(镜像):水温弧必须是从左端起涨,否则它(下方半圆)只会从右边开始亮。
