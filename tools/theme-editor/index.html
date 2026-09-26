@@ -7,6 +7,13 @@
   :root{
     --bg:#12141a; --panel:#1b1e26; --line:#2b3040; --text:#e6e9f0;
     --dim:#98a0b3; --accent:#39C5FF; --warn:#ffcc66; --ok:#7CFF6B;
+    /* ★★ 预览表盘的**显示**边长（2026-09-27 新增）。
+       ★ 它只改 CSS：画布内部仍然是 480×480（`<canvas width="480" height="480">`）
+         ⇒ 缩小显示**不会**让画面变糊，几何/角度那几套换算一个数都不用动。
+       ★ 为什么要有它：两块 480×480 并排 + 下面那条 960×480 的开机动画，
+         在笔记本屏上要滚很长；车主反馈"两个表盘太大"。默认给 300，
+         再由右上角那个「预览尺寸」下拉现调（选择记在 localStorage）。 */
+    --screen:300px;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);
@@ -37,11 +44,16 @@
   button.primary:hover{background:#246b91}
   .previews{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start}
   .screen{text-align:center}
-  .screen canvas{background:#000;border-radius:50%;display:block;
+  /* 显示尺寸走 --screen（见 :root 的说明）；不写死 480 是为了让"大/中/小"只在一个地方改。 */
+  .screen canvas{width:var(--screen);height:var(--screen);
+                 background:#000;border-radius:50%;display:block;
                  box-shadow:0 6px 26px rgba(0,0,0,.55)}
   .screen .cap{margin-top:8px;color:var(--dim);font-size:12px}
   .anim{margin-top:22px}
-  .anim canvas{background:#000;border-radius:10px;box-shadow:0 6px 26px rgba(0,0,0,.55)}
+  /* 开机动画那条画布本身就是**两块屏并排**（960×480）⇒ 宽 = 2×--screen，
+     这样它和上面两个表盘永远同一个比例，不会一个缩了一个没缩。 */
+  .anim canvas{width:calc(var(--screen) * 2);height:var(--screen);
+               background:#000;border-radius:10px;box-shadow:0 6px 26px rgba(0,0,0,.55)}
   .status{margin-top:14px;padding:10px 12px;border-radius:6px;background:#171a22;
           border:1px solid var(--line);color:var(--dim);font-size:12px;white-space:pre-wrap}
   .status.err{border-color:#7a3b3b;color:#ffb4b4}
@@ -108,6 +120,15 @@
     <div class="toolbar">
       <span class="hint" style="align-self:center">预览的是 480×480 基准画面（真屏若用 800×800 会等比放大）</span>
       <span class="grow" style="flex:1"></span>
+      <!-- ★ 预览尺寸（2026-09-27 新增）：只改**显示**大小，画布内部仍是 480×480。
+           放这里而不是放到左边控制栏，是因为它跟"配色"没关系、纯粹是看画面的方便程度。 -->
+      <span class="hint" style="align-self:center">预览尺寸</span>
+      <select id="zoom" style="background:#0e1016;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px">
+        <option value="240">小 · 240</option>
+        <option value="300" selected>中 · 300</option>
+        <option value="360">大 · 360</option>
+        <option value="480">原始 · 480</option>
+      </select>
       <span class="hint" style="align-self:center">阶段预览</span>
       <select id="stage" style="background:#0e1016;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px"></select>
     </div>
@@ -1051,12 +1072,44 @@ document.getElementById("btn-play").addEventListener("click", (e) => {
   renderAnim();
 });
 
+// ---------------- 预览尺寸（2026-09-27 新增） ----------------
+// ★ 它改的只是 `--screen` 这个 CSS 变量（显示多大），**画布内部分辨率一个字都不动**
+//   ⇒ 缩到 240 也不会糊，所有几何/角度换算与"480 基准"那句提示全都照旧成立。
+// ★ 两个画布的尺寸关系写在一处：`--screen` = 一个表盘的边长，
+//   开机动画那条 = 2×（它本来就是两块屏并排）。
+// ★ 选择记在 localStorage 的**另一个键**上，与配色那份 `THEME_KEY` 无关 ——
+//   别把"看着方便"混进"配色"里，否则导出的主题会带上这种本机偏好。
+const ZOOM_KEY = "206dash.previewZoom";
+const ZOOM_ALLOWED = [240, 300, 360, 480];
+
+function applyZoom(px) {
+  const v = ZOOM_ALLOWED.indexOf(+px) >= 0 ? +px : 300;
+  document.documentElement.style.setProperty("--screen", v + "px");
+  const sel = document.getElementById("zoom");
+  if (sel) sel.value = String(v);
+  return v;
+}
+
+function setupZoom() {
+  const sel = document.getElementById("zoom");
+  if (!sel) return;
+  let saved = null;
+  try { saved = localStorage.getItem(ZOOM_KEY); } catch (e) { saved = null; }
+  if (saved !== null) applyZoom(saved);
+  sel.addEventListener("change", () => {
+    const v = applyZoom(sel.value);
+    try { localStorage.setItem(ZOOM_KEY, String(v)); } catch (e) { /* 隐私模式下忽略 */ }
+    render();   // 显示尺寸变了就重画一遍（画布内容不会跟着 CSS 缩放自动重排）
+  });
+}
+
 // ---------------- 启动 ----------------
 // 先看本机有没有存过的配色(可能是本页上次改的,也可能是图片编辑器改的),
 // 没有才用编译期默认值
 const hadSaved = loadThemeFromLocal();
 buildControls();
 buildStageSelect();
+setupZoom();
 simFromStage(FaceStages.STAGES[0]);   // 默认停在"转速 · 低"(怠速常态)
 render();
 say("就绪。左栏调参、右侧实时预览。\n" +

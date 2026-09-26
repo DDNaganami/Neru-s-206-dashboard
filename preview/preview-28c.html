@@ -35,7 +35,18 @@
   h2 { font-size: 14px; margin: 22px 0 6px; color: #9cf; }
   .row { display: flex; gap: 40px; align-items: flex-start; flex-wrap: wrap; }
   figure { margin: 0; text-align: center; }
-  .screen { position: relative; width: 480px; height: 480px; background: #000; }
+  /* ★★ 显示缩放 `--k`（2026-09-27 新增，车主："两个表盘太大"）。
+     ★ 本页与另外两页**刻意不同**：它的整个价值是**几何参照**（下面那张
+       「画布 px ↔ 面板 mm」表按 1 像素 = 0.1461 mm 算），所以默认仍是 **1.0（100%）**，
+       要缩小得自己在下拉框里选 —— 而一旦缩了，下面那行 mm/px 会**跟着改**，
+       参照性不丢（缩小到 50% 后 1 显示像素 = 0.1461/0.5 = 0.2922 mm）。
+     ★ 做法：`.screen` 里那套绝对定位（圆环 / 十字线）全部按 480 画，
+       所以只对它整体 `transform:scale()`；外层 `.slot` 用同样的比例占位，
+       否则 flex 行还是按 480 排版、缩完右边会空一大块。 */
+  :root { --k: 1; }
+  .slot { width: calc(480px * var(--k)); height: calc(480px * var(--k)); }
+  .screen { position: relative; width: 480px; height: 480px; background: #000;
+            transform: scale(var(--k)); transform-origin: top left; }
   .screen img { width: 480px; height: 480px; display: block; }
   /* 内切圆：圆心 (240,240)、半径 240 ⇒ width/height = 480 - 1 的圆环。
      用 border-radius 画一个"只有边框"的圆，虚线表示"这是标注，不是画面"。 */
@@ -50,6 +61,11 @@
   .cross.h { left: 0; top: 239px; width: 480px; height: 1px; }
   .cross.v { left: 239px; top: 0; width: 1px; height: 480px; }
   figcaption { margin-top: 8px; color: #bbb; }
+  /* 显示缩放那个下拉框（2026-09-27）：样式与 preview.html 那一页保持一致 */
+  .zoom { margin: 0 0 14px; color: #888; font-size: 13px; }
+  .zoom select { background: #0e1016; color: #ddd; border: 1px solid #2b3040;
+                 border-radius: 4px; padding: 4px 6px; font-family: inherit; }
+  .zoom span { color: #7f8c9b; }
   table { border-collapse: collapse; margin: 6px 0 0; }
   th, td { border: 1px solid #333; padding: 3px 8px; text-align: left; }
   th { color: #9cf; font-weight: normal; }
@@ -107,21 +123,29 @@
   （<code>env:pcpreview</code>），页面上那圈青色虚线 = 真机能看见的边界。
 </p>
 
+<p class="zoom">显示缩放
+  <select id="zoom">
+    <option value="0.5">50%（看整体）</option>
+    <option value="0.75">75%</option>
+    <option value="1" selected>100%（1 像素 = 0.1461 mm，本页的基准）</option>
+  </select>
+  <span id="scale-note"></span>
+</p>
 <div class="row">
   <figure>
-    <div class="screen">
+    <div class="slot"><div class="screen">
       <img id="l" alt="左屏 2.8C">
       <div class="cross h"></div><div class="cross v"></div>
       <div class="circle"></div>
-    </div>
+    </div></div>
     <figcaption>左屏：转速弧 + 水温弧 + 表情（+ 底部六格指示灯）</figcaption>
   </figure>
   <figure>
-    <div class="screen">
+    <div class="slot"><div class="screen">
       <img id="r" alt="右屏 2.8C">
       <div class="cross h"></div><div class="cross v"></div>
       <div class="circle"></div>
-    </div>
+    </div></div>
     <figcaption>右屏：车速弧 + 进气温度弧 + 表情（+ 底部六格指示灯）</figcaption>
   </figure>
 </div>
@@ -200,6 +224,37 @@ python -m platformio run -e pcpreview -t exec             # 跑 30 秒（150 对
     setTimeout(tick, 200);
   }
   tick();
+
+  // 显示缩放（2026-09-27）：见上面 :root 里 --k 的说明。
+  // ★ 缩小之后**必须**把那行 mm/px 一起改掉 —— 否则"1 像素 = 0.1461 mm"
+  //   在 50% 下就是错的（那时候 1 个**显示**像素 = 0.2922 mm，而 1 个**画布**
+  //   像素仍画在半个显示像素里）。参照页最怕的就是这类静默失效。
+  const MM_PER_CANVAS_PX = 0.1461;   // 70.13 / 480，出处见下面那张表
+  const ZOOM_KEY = '206dash.previewZoom28c';
+  (function setupZoom() {
+    const sel = document.getElementById('zoom');
+    const note = document.getElementById('scale-note');
+    if (!sel) return;
+    function apply(k) {
+      const v = (+k > 0) ? +k : 1;
+      document.documentElement.style.setProperty('--k', String(v));
+      if (note) {
+        note.textContent = (v === 1)
+          ? '（本页基准：1 显示像素 = 1 画布像素 = ' + MM_PER_CANVAS_PX + ' mm）'
+          : '（已缩到 ' + Math.round(v * 100) + '%：1 显示像素 = ' +
+            (MM_PER_CANVAS_PX / v).toFixed(4) + ' mm，画布仍是 480×480）';
+      }
+      return v;
+    }
+    let saved = null;
+    try { saved = localStorage.getItem(ZOOM_KEY); } catch (e) { saved = null; }
+    if (saved !== null) { sel.value = saved; }
+    apply(sel.value);
+    sel.addEventListener('change', () => {
+      const v = apply(sel.value);
+      try { localStorage.setItem(ZOOM_KEY, String(v)); } catch (e) { /* 忽略 */ }
+    });
+  })();
 </script>
 </body>
 </html>

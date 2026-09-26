@@ -51,6 +51,10 @@ python -m platformio run -e pcpreview -t exec
 # ④ 看：浏览器打开两个页面里的任意一个（都是相对 preview/ 的静态页）
 #    老页面（纯帧播放）              preview/preview.html
 #    2.8C 档（带真机圆边标注）        preview/preview-28c.html
+#    ★ 两页都能调**显示大小**（2026-09-27 新增）：preview.html 是「小/中/大/原始」，
+#      默认中 300；preview-28c.html 是「50%/75%/100%」，默认 100%（它是几何参照页，
+#      基准是 1 像素 = 0.1461 mm，缩了之后那行 mm/px 会跟着改，参照性不丢）。
+#      两页都只改 CSS，帧/BMP 本身仍是 480×480。
 ```
 
 只编译不跑（只要"编得过"这个结论时）：

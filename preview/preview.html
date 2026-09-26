@@ -4,12 +4,19 @@
 <meta charset="utf-8">
 <title>206 dash 预览</title>
 <style>
+  /* ★ 两张帧的**显示**边长（2026-09-27 新增，与主题编辑器同一个做法）：
+     只改 CSS，不动 BMP 本身（帧永远是 480×480）⇒ 缩小显示不糊。
+     车主反馈"两个表盘太大"，默认给 300；右上角那个下拉现调、记在本机。 */
+  :root { --screen: 300px; }
   body { background: #111; color: #ddd; font-family: monospace; margin: 24px; }
-  .row { display: flex; gap: 32px; align-items: flex-start; }
+  .row { display: flex; gap: 32px; align-items: flex-start; flex-wrap: wrap; }
   figure { margin: 0; text-align: center; }
-  img { width: 480px; height: 480px; background: #000; }
+  img { width: var(--screen); height: var(--screen); background: #000; }
   figcaption { margin-top: 8px; }
   .hint { margin-top: 16px; color: #888; }
+  .zoom { margin: 0 0 14px; color: #888; font-size: 13px; }
+  .zoom select { background: #0e1016; color: #ddd; border: 1px solid #2b3040;
+                 border-radius: 4px; padding: 4px 6px; font-family: inherit; }
   /* 四页共用的导航条（纯 CSS，不引任何框架/外部资源）。
      结构见 <body> 里那段：.navstrip > .navstrip-in > a.navitem / span.navhint。
      相对路径按**本页所在目录**写：本页在 preview/ ⇒ 编辑器在 ../tools/theme-editor/。 */
@@ -49,6 +56,15 @@
 <a class="navitem" href="preview-28c.html">④ 圆屏（2.8C）</a>
 </div></div>
 <h2>206 dash 预览(帧由 LVGL 在宿主机渲染,与真屏同一套 UI 代码)</h2>
+<p class="zoom">预览尺寸
+  <select id="zoom">
+    <option value="240">小 · 240</option>
+    <option value="300" selected>中 · 300</option>
+    <option value="360">大 · 360</option>
+    <option value="480">原始 · 480</option>
+  </select>
+  <span>（只改显示大小，帧本身仍是 480×480）</span>
+</p>
 <div class="row">
   <figure><img id="l" alt="左屏"><figcaption>左屏:车速弧 + 水温弧 + 表情</figcaption></figure>
   <figure><img id="r" alt="右屏"><figcaption>右屏:转速弧 + 表情</figcaption></figure>
@@ -69,6 +85,28 @@
     setTimeout(tick, 200);
   }
   tick();
+
+  // 预览尺寸（2026-09-27）：与主题编辑器同一套做法与同一个键名 ——
+  // 两页各自记一次没意义，键名一样就"在一页调过，另一页跟着"。
+  const ZOOM_KEY = '206dash.previewZoom';
+  const ZOOM_ALLOWED = [240, 300, 360, 480];
+  (function setupZoom() {
+    const sel = document.getElementById('zoom');
+    if (!sel) return;
+    function apply(px) {
+      const v = ZOOM_ALLOWED.indexOf(+px) >= 0 ? +px : 300;
+      document.documentElement.style.setProperty('--screen', v + 'px');
+      sel.value = String(v);
+      return v;
+    }
+    let saved = null;
+    try { saved = localStorage.getItem(ZOOM_KEY); } catch (e) { saved = null; }
+    if (saved !== null) apply(saved);
+    sel.addEventListener('change', () => {
+      const v = apply(sel.value);
+      try { localStorage.setItem(ZOOM_KEY, String(v)); } catch (e) { /* 忽略 */ }
+    });
+  })();
 </script>
 </body>
 </html>
