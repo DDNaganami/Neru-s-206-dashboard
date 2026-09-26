@@ -211,11 +211,27 @@ python -m platformio run -e pcpreview -t exec             # 跑 30 秒（150 对
 
 <script>
   // 播放 preview/frames/ 里落下的帧（与 preview.html 同一批文件、同一个节奏：
-  // 200ms 一帧、150 对）。★ 不在这里画任何遮罩之外的东西 —— 帧里的像素就是
-  // 真机画面（圆外那层压暗是落盘时烧进去的，见 lib/dashcore/panel_view.h）。
+  // 200ms 一帧、对数由探帧逻辑数出来）。★ 不在这里画任何遮罩之外的东西 —— 帧里的
+  // 像素就是真机画面（圆外那层压暗是落盘时烧进去的，见 lib/dashcore/panel_view.h）。
   const l = document.getElementById('l'), r = document.getElementById('r');
-  const N = 150;
-  let i = 0;
+  let i = 0, N = 150;
+
+  // ★ 2026-09-27 补：**先探出 frames/ 里到底有多少对**再循环（与 preview.html
+  //   同一段逻辑、同一个理由）—— 写死 150 而落帧只有 121 对时，每轮末尾会闪空白。
+  function probe(n) {
+    if (n <= 0) return Promise.resolve(0);
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(n + 1);
+      img.onerror = () => resolve(null);
+      img.src = 'frames/l_' + String(n - 1).padStart(4, '0') + '.bmp';
+    }).then((v) => (v !== null ? v : probe(n - 1)));
+  }
+  probe(150).then((count) => {
+    if (count > 0) N = count;
+    tick();
+  });
+
   function tick() {
     const idx = String(i).padStart(4, '0');
     l.src = 'frames/l_' + idx + '.bmp';
@@ -223,7 +239,6 @@ python -m platformio run -e pcpreview -t exec             # 跑 30 秒（150 对
     i = (i + 1) % N;
     setTimeout(tick, 200);
   }
-  tick();
 
   // 显示缩放（2026-09-27）：见上面 :root 里 --k 的说明。
   // ★ 缩小之后**必须**把那行 mm/px 一起改掉 —— 否则"1 像素 = 0.1461 mm"

@@ -304,3 +304,66 @@ powershell -ExecutionPolicy Bypass -File tools\serial-capture\capture-van-nopy.p
   **A** 一路 USB 进主板 + 主板 12PIN 的 `5V`/`GND` 两根线到从板；
   **B** 一个车充两个口 + 两块板各一根 USB 线（板间零线）。
   两种都要遵守：车上**不插 UART Type-C**、要看日志先**关掉车电**、一块板**不要两个 5V 源**。
+
+---
+
+## 10. 明天（2026-09-28）上车清单 —— 三件必做 + 两件顺手
+
+> 起点：两块板已经是 `d2f5a08` 的固件 + 主题（`coolant_cy=444`、`sub_font=2`），
+> 都是**静音**状态，盘面读数（水温/进气 24 号字）车主已确认"看着舒服"。
+> 所以明天**不用再碰显示**，全部精力放在下面三件上。
+
+### ★ 必做 1：BLE 先连的那条 happy path（今天唯一没上板验的改动）
+
+给诊断头供电（OBD 座是常电）⇒ 主板供电 ⇒ 开机后盯这两行：
+
+| 行 | 好 | 坏 |
+|---|---|---|
+| `obd-ble: state=ready conn=1 connects=1` | BLE 连上了 | 一直 `scanning/connecting`、`conn=0` |
+| `link: 启动闸门开了 —— BLE 已连上(ready),等了 Nms` | **N < 15000**（不是兜底） | `N=15000` 且写着"没连上(到 15s 上限)" ⇒ **共存这招不够** |
+| `obd-ble: … radio=… win=/cap=` | `win` 在涨、`cap` 不一直涨 | `win` 涨而 `conn` 恒 0、`cap` 也涨 ⇒ 要上"让出 VANRAW / 拉长连接间隔"那几条 |
+
+★ 这一条**必须**在车上做：桌上没有 12V 给诊断头（今天桌面只能验到兜底分支，见 §6.7）。
+
+### ★ 必做 2：共存对链路质量的代价（今天没量）
+
+BLE 连着的同时，在链路那头跑一次正式测量：
+
+```powershell
+# 发 `w` 给主板。★ 命令必须在**行首** —— 裸发一个 w 会被当回放数据吃掉（今天踩过）
+#   用 capture 脚本或任何串口工具时，先发 "\r\n" 再发 w
+node tools/theme-editor/... （如用固件自证：从板会自己打 `meas rx:`）
+```
+判据（固件自己印在 `meas rx:` 那行末尾）：**loss < 0.1% / gap_max < 100ms / p99 < 20ms / n ≥ 300**。
+参考值：今天**没有 BLE** 时是 `lost=0 (0.00%) gap_max=12ms p99=12ms n=331`。
+⇒ 明天要回答的是：**BLE 活着的时候这四门槛还成不成立**（这才是"共存"的真判据）。
+
+### ★ 必做 3：VAN 收发器那一半（电气）
+
+接线照 §2/§3（`RO→GPIO44`、`VCC→3V3`、`GND→GND` **+ 车地一根**、`TX→3V3` 模块端短接、
+120Ω 已拆、`CANH/CANL → 仪表插头 5/10 脚`）。判据顺序：
+
+1. `van phy: gpio 就绪 RX=GPIO44(RO)` ⇒ 固件对；
+2. 手指磨模块 `CANL` ⇒ `edges` 跳（不跳按 §2 第 4 步那四条查）；
+3. `edges` 涨而 `frames=0` ⇒ **对调 CANH/CANL**（本车极性与标准 CAN 相反）；
+4. `frames` 涨且 `fcs_ok == frames` ⇒ `SRC speed=van rpm=van`。
+★ 水温/进气**不用**在 VAN 上找了：BLE OBD 的 `0105`/`010F` 今天已经读出真值。
+
+### 顺手 1：主板横纹复查
+
+`RGB_BOUNCE_LINES` 为了给 BLE 让内部 RAM 从 20 降到 10 ⇒ 看右屏在持续负载/怠速下有没有横纹回来。
+若回来了，走"给 BLE 让路"的其他办法（见提交说明），**不是**把 20 改回去。
+
+### 顺手 2：抓一份真车录像（最值钱的副产品）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\serial-capture\capture-van-nopy.ps1 `
+    -Port <主板那个口> -Seconds 900 -Out C:\206dash-scratch\drive-real-2.txt
+```
+★ **认 `role=MASTER` 那行，不认 COM 号**（笔记本上的口号和台式机不一样）。
+
+### 红线（照旧，别在车上试新花样）
+
+UART Type-C **绝不插**（切走 GPIO44 + 两个 5V 并联）；笔记本**只用电池**；
+模块 `GND` **必须接车地**（全系统只接一处）；模块 `TX` **不许悬空**；
+一块板**不许两个 5V 源**；车电与 USB 不同时接。

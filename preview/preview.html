@@ -66,17 +66,38 @@
   <span>（只改显示大小，帧本身仍是 480×480）</span>
 </p>
 <div class="row">
-  <figure><img id="l" alt="左屏"><figcaption>左屏:车速弧 + 水温弧 + 表情</figcaption></figure>
-  <figure><img id="r" alt="右屏"><figcaption>右屏:转速弧 + 表情</figcaption></figure>
+  <figure><img id="l" alt="左屏"><figcaption>左屏：转速弧 + 水温（副表在下） + 表情</figcaption></figure>
+  <figure><img id="r" alt="右屏"><figcaption>右屏：车速弧 + 进气温度（副表在下） + 表情</figcaption></figure>
 </div>
 <p class="hint">
   用法:先在项目里跑 python -m platformio run -e pcpreview -t exec,几秒后
-  Ctrl+C,再打开本页。frames/ 里最多 150 对帧(30 秒,5fps),循环播放。
+  Ctrl+C,再打开本页。frames/ 里有多少对就循环放多少对（本页会自己数，
+  见下面那段探帧逻辑——固定写 150 会在帧不够时闪出空白）。
 </p>
 <script>
   const l = document.getElementById('l'), r = document.getElementById('r');
-  const N = 150;
-  let i = 0;
+  let i = 0, N = 150;
+
+  // ★ 2026-09-27 补：**先探出 frames/ 里到底有多少对**再循环。
+  //   原来把 N 写死 150，而落帧多少取决于跑了几秒（实测 25 秒 → 121 对）
+  //   ⇒ 后半段每轮都会去取不存在的 l_0121..l_0149，页面上闪出空白。
+  //   探法：从 150 往下试加载 l_XXXX.bmp，第一个成功的 +1 就是实际对数。
+  function probe(n) {
+    if (n <= 0) return Promise.resolve(0);
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(n + 1);
+      img.onerror = () => resolve(null);
+      img.src = 'frames/l_' + String(n - 1).padStart(4, '0') + '.bmp';
+    }).then((v) => (v !== null ? v : probe(n - 1)));
+  }
+  probe(150).then((count) => {
+    if (count > 0) N = count;
+    const hint = document.querySelector('.hint');
+    if (hint) hint.insertAdjacentHTML('beforeend', '<br>当前 frames/：<b>' + N + '</b> 对。');
+    tick();
+  });
+
   function tick() {
     const idx = String(i).padStart(4, '0');
     l.src = 'frames/l_' + idx + '.bmp';
@@ -84,7 +105,6 @@
     i = (i + 1) % N;
     setTimeout(tick, 200);
   }
-  tick();
 
   // 预览尺寸（2026-09-27）：与主题编辑器同一套做法与同一个键名 ——
   // 两页各自记一次没意义，键名一样就"在一页调过，另一页跟着"。
