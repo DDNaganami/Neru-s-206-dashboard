@@ -177,7 +177,11 @@ python -m platformio run -e esp32s3-rgb-slave-now  -t upload --upload-port COM8 
    验过从板自己解出灯位（`turn=L-` / `LR(haz)`）。原始帧里 **VIN 那 17 字节搬不过去**
    （单帧上限 16），按设计整帧丢 + 计数（`long=`），**不截断**。
 3. 从板 SD 卡记录（1-bit SDMMC / GPIO 2·1·42，非阻塞写、开机对时）。
-4. OBD 那一路：**UART 版在 2.8C 上用不了**（`RX=17`/`TX=18` 与面板 `DATA15/DATA14` 冲突，见 `docs/RGB-PANEL-2.8C.md` §7）⇒ 只有两条路：① **BLE ELM327** + 主板加一条 BLE-OBD 通路（`SOC_BLE_SUPPORTED`，框架自带 `BLE` 库），② 继续用笔记本连蓝牙 ELM327 当真值源。两条都要在最前面确认**这颗 ECU 支不支持 `0105`/`010F`**（问 `0100` 位图）。
+4. OBD 那一路：**UART 版在 2.8C 上用不了**（`RX=17`/`TX=18` 与面板 `DATA15/DATA14` 冲突，见 `docs/RGB-PANEL-2.8C.md` §7）⇒ 走 **BLE ELM327**。★ **2026-09-27 已落地**：
+   - 头**是 BLE**（`OBDBLE`/`AABBCC122233`），GATT `FFF0`（通知 `FFF1` / 写 `FFF2`），实测读出真值 `010C`→978rpm、`0105`→87℃、`010F`→59℃；工具在 `tools/bt-obd/`（**收数据用 `ble-obd-client.py`**，PowerShell 收不到通知）；
+   - 板上：抽出 `ObdTransport` 层后接 **NimBLE-Arduino**（不是框架自带 `BLE`——Bluedroid 的 flash/RAM 代价大得多；`lib_deps` 是**覆盖**不是合并，所以 `lvgl` 要一起写）；
+   - ★★ **这台 206 的诊断口是 `ISO 14230-4 KWP FAST`（K 线）不是 CAN** ⇒ 超时给 10~12 秒、别指望高频轮询；`0105`/`010F` 都支持（当初那个"问 `0100` 位图"的疑问已答）；
+   - ★★ **ESP-NOW 与 BLE 抢射频**（车上实测：链路一跑 BLE 就永远 `status=13`；链路一关一次就连上）⇒ 已落地"**先让 BLE 建连再启链路**（上限 15s）+ 建连窗口内临时 `ESP_COEX_PREFER_BT`（≤8s，冷却 ≥30s）"，策略在 `lib/dashcore/radio_arbiter.h`、判读表在 `docs/BLE-OBD.md` §9 与 `docs/DRIVE-TEST.md` §6.7。**共存下的链路质量仍未量**。
 5. VAN 上找油量与门灯细项；表仓最终结构件（量表玻到表盘纸的间隙）。
 6. 声音告警：两块 2.8C 板载**有源蜂鸣器**已能响；自定义 WAV 那条等最终音频硬件定了再说。
 7. 素材还缺两张脸（role 13 左·运动 / role 17 右·快速路）—— 等车主补图。

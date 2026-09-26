@@ -6,6 +6,7 @@
 #if defined(ARDUINO) && defined(OBD_BLE)
 
 #include <NimBLEDevice.h>
+#include "radio_arbiter.h"   // ★★ 射频仲裁（BLE ↔ ESP-NOW 共存策略，见文件头那段）
 
 // ============================================================================
 // ObdTransportBle —— 把 `ObdTransport` 接到一个 BLE OBD 诊断头上
@@ -34,6 +35,14 @@
 //   板间链路走 **ESP-NOW**（同一个 2.4G 射频），而 BLE 中心也要用射频。
 //   两者能否稳当共存**没有实测过** —— 上车前要看链路侧那几行
 //   （主板的 `espnow: tx_fail/done_fail`、从板的 `rx_overflow` 与 `tick_age`）有没有变差。
+//
+// ★★ 射频共存（2026-09-27 车上实测：**这个头与 ESP-NOW 抢射频**，本层只做两件事，
+//   策略全在 `lib/dashcore/radio_arbiter.h` 里、由 native 用例钉住）：
+//     ① 运行期：BLE 建连窗口内把共存偏好临时切给 BT（一次 ≤8s，让出后冷却 ≥30s）；
+//     ② 开机顺序：主板**先让 BLE 建连、再启链路 PHY**（闸门在 `src/main.cpp`，
+//        用的是同一个头里的 `LinkStartGate`）。
+//   仍然没解决的（如实记着）：两者稳态共存时的**链路质量**没有被量化过 ——
+//   下一单上车要盯 `link:` / `meas rx:` 那几行有没有变差。
 //
 // ★ API 出处：NimBLE-Arduino **2.5.1**（`libdeps/.../NimBLE-Arduino/src/`）。
 //   这一版是 2.x 的**新回调风格**：`NimBLEScanCallbacks::onDiscovered/onResult/onScanEnd`，
@@ -69,6 +78,10 @@ public:
 
   // 诊断用（进日志）
   const char* stateName() const;
+  // ★ `start()` 成功了吗（NimBLE 起来了）。**启动闸门要用它**：如果 `start()` 失败
+  //   （协议栈没起来），那"等 BLE 连上"就是**白等** —— 闸门应当立刻开，
+  //   否则上电会平白多出 15 秒的"从板没数据"。
+  bool     started() const { return started_; }
   bool     ready() const { return conn_ && notify_ != nullptr && write_ != nullptr; }
   uint32_t dropped() const { return dropped_; }
   uint32_t connects() const { return connects_; }
@@ -76,6 +89,16 @@ public:
   uint32_t csAttempts() const { return cs_attempts; }
   uint32_t csCalls() const { return cs_calls; }
   const char* peerText() const { return peer_[0] ? peer_ : "-"; }
+
+  // ---- 射频仲裁（诊断用；体检行里打出来）----
+  // `radioHeld()` = **现在**射频优先权在 BLE 手上（真去调过 `esp_coex_preference_set`）。
+  bool     radioHeld() const { return arb_.holding(); }
+  uint32_t radioWindows() const { return arb_.windows(); }   // 抢过几次
+  uint32_t radioCapped() const { return arb_.capped(); }     // 被 8s 上限掐断几次
+  // "现在需要射频吗"：★ **扫到过对端** 且还没 ready。
+  //   为什么要 `peer_valid_`：台面上根本没有诊断头时（peer 从没扫到），
+  //   状态机也会一直在扫+退避重连 ⇒ 那种"忙"抢射频是**纯白抢**，会平白压低链路。
+  bool     wantsRadio() const { return peer_valid_ && !ready(); }
 
 private:
   friend class ObdBleScanCb;
@@ -85,6 +108,8 @@ private:
   void onDisconnected();                                // 回调 → 清句柄（掉线后它们就失效了）
   void pushBytes(const uint8_t* d, size_t n);           // 只在回调里调
   bool connectNow();
+  void applyRadioArbitration(uint32_t now_ms);          // 射频优先权的**过渡**处理
+  void setCoexPreference(bool ble_first);               // 真去调 IDF（过渡时才调）
 
   NimBLEScan*   scan_   = nullptr;
   NimBLEClient* client_ = nullptr;
@@ -111,6 +136,12 @@ private:
   NimBLEAddress peer_addr_{};
   bool          peer_valid_ = false;
   char     peer_[20] = {0};              // 仅供日志打印
+
+  // ★★ 射频仲裁状态机（策略见 radio_arbiter.h，这里只存实例与"上次有没有占用"）
+  dashcore::RadioArbiter arb_{};
+  bool     coex_hold_     = false;       // 上一次同步给 IDF 的偏好（只在过渡时改）
+  uint32_t coex_bt_err_   = 0;           // 第一次切 BT 的 `esp_err_t`（0 = 成功）
+  uint32_t coex_bal_err_  = 0;           // 第一次切回 BALANCE 的 `esp_err_t`
 
   static ObdTransportBle* s_self_;
 };

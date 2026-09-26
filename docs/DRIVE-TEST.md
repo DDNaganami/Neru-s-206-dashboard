@@ -157,26 +157,55 @@ powershell -ExecutionPolicy Bypass -File tools\serial-capture\capture-van-nopy.p
 
 ---
 
-## 6. ELM327 那一趟（车边 5 分钟，与本项目固件无关，纯体检）
+## 6. ELM327 那一趟 —— ★ 2026-09-27 已做完，结论在这里（不用再跑一遍）
 
-1. 插 OBD 座，看它在笔记本/手机上**怎么出现**：
-   ```powershell
-   Get-PnpDevice -Class Bluetooth | Format-Table FriendlyName, InstanceId -AutoSize
-   ```
-   **`BTHLE\…` = BLE** / **`BTHENUM\…` = 经典蓝牙（SPP）**；★ 纯 BLE **不会**多出 COM 口。
-2. **有 COM 口**（USB 或 SPP）⇒ 直接问 PID 位图：
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File tools\obd-log\live-obd.ps1 -Port COMx -Seconds 30
-   # 或： obd-log.ps1 -Port COMx -Seconds 60 -Pids '010C,010D,0105,010F'
-   ```
-3. **是 BLE** ⇒ 用手机 app（Car Scanner 之类）看能不能连、读不读得出水温；顺手记下有没有
-   `FFF0`/`FFF1`/`FFF2` 这类服务（Windows 的 *Bluetooth LE Explorer* 也能看 GATT）。
-4. ★ 回来要三个答案：**型号丝印**、**配对后的 InstanceId**、**有没有 COM 口**。
-5. ELM327 插在 OBD 座是**常电**，试完拔掉。
+**结论：这个头是 BLE（`OBDBLE` / `AABBCC122233`），能用，而且已经读出真值。**
+完整证据与 GATT 结构见 `docs/BLE-OBD.md`：`010C`→978rpm、`0105`→87℃、`010F`→59℃、
+`ATRV`→13.4V。工具在 `tools/bt-obd/`：
+`probe-ble-gatt.ps1`（判"是不是 BLE" + 摸 GATT）、
+**`ble-obd-client.py`（Python + bleak，收数据用这个）**、
+`ble-obd-client.ps1`（写入路径的参考实现 + 四处踩坑记录）。
 
-**为什么值得问 `0100`**：它决定这台 ECU 到底**支不支持 `0105`（水温）/`010F`（进气）** ——
-而 2.8C 上 UART 版 OBD **用不了**（`RX=17`/`TX=18` 正是 RGB 面板的 `DATA15/DATA14`），
-所以那两个副表有没有真值，只能靠 BLE 那条路（或继续用笔记本当真值源）。
+★ **三个反直觉的点**（下次别再踩）：
+1. **纯 BLE 不会多出 COM 口** ⇒ "配对后看有没有新 COM"这个判据对 BLE **无效**；
+   要判"是不是 BLE"就用 WinRT 的 BLE 枚举（`probe-ble-gatt.ps1` 直接跑）。
+2. **必须用 Windows PowerShell 5.1**（`powershell -File …`），**不能用 pwsh 7** ——
+   WinRT 的桥只在 .NET Framework 里；用错会得到"一个 BLE 设备都没有"的**假结论**。
+3. ★★ **这台 206 的诊断口是 `ISO 14230-4 KWP FAST`（K 线），不是 CAN**（`ATDP` 实测）
+   ⇒ `ATSP0` 自动搜协议**很慢**：`0100` 前几秒只回 `SEARCHING...`，之后才补
+   `BUS INIT: OK` + 数据 ⇒ **超时给 10~12 秒**，别把前几秒当失败；K 线本来就慢，
+   **别指望高频轮询**（`0105`/`010F` 这种慢量降频问是对的）。
+
+**当初为什么值得问 `0100`**：它决定这台 ECU 支不支持 `0105`（水温）/`010F`（进气）——
+2.8C 上 UART 版 OBD **用不了**（`RX=17`/`TX=18` 正是 RGB 面板的 `DATA15/DATA14`），
+所以那两个副表的真值只能靠 BLE 这条路（或继续用笔记本当真值源）。
+★ **答案：支持**（两个都读出来了）；而且**板上那条 BLE 通路也已经写完并编过**
+（`docs/BLE-OBD.md` §7.6）。ELM327 插在 OBD 座是**常电**，不用时拔掉。
+
+---
+
+## 6.7 ★ 板载 BLE OBD 与链路共存：下次上车就看这几行（2026-09-27 深夜）
+
+**背景一句话**：车上实测 **ESP-NOW 与 BLE 抢射频** —— 链路 PHY 一跑，BLE 就永远
+`status=13(BLE_HS_ETIMEOUT)`；把链路 PHY 关掉，BLE **一次就连上**。
+已落地两条策略（策略在 `lib/dashcore/radio_arbiter.h`，native 用例钉住）：
+**开机先让 BLE 建连、再启链路**（上限 **15s**，到点一律开闸，仪表优先）
+\+ 建连窗口内临时 `ESP_COEX_PREFER_BT`（一次 **≤8s**、让出后冷却 **≥30s**）。
+
+**刷之前**：`platformio.ini` 里那两个临时宏（`-DOBD_BLE_ONLY_TEST=1`、
+`-DCONFIG_NIMBLE_CPP_LOG_LEVEL=4`）**已经删掉** ⇒ 现在这一档编出来就是**可用固件**
+（链路 + VAN + BLE 都在）。★ 别再把那个诊断宏加回来：它会**同时**关掉链路 PHY 与 VAN。
+
+**开机头 20 秒盯这几行**：
+
+| 行 | 读法 |
+|---|---|
+| `link: 启动闸门开了 —— BLE 已连上(ready),等了 Nms` | 最好：BLE 先连上，链路随后起来 |
+| `… BLE 没连上(到 15s 上限:仪表优先,不再等 OBD)` | 兜底生效：从板恢复收数据，OBD 回头再试 |
+| `obd-ble: state=… conn=… radio=… win=… cap=…` | `win` 涨而 `conn` 恒 0、`cap` 也涨 ⇒ **共存这招不够**，要上"让出 VANRAW / 拉长连接间隔" |
+| 主板 `link:`/`meas rx:` + 从板 `tick_age`/`rx_overflow` | 共存对**链路质量**的代价（这次要量：0 丢帧 / gap_max <100ms / p99 <20ms） |
+
+★ 另外复看一眼**主板横纹**（`RGB_BOUNCE_LINES` 为了给 BLE 让内部 RAM 从 20 降到了 10）。
 
 ---
 

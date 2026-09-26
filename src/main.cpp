@@ -1053,6 +1053,74 @@ static const char* kLinkPhyTail() { return "—— 真 PHY(UART0)"; }
 static const char* kLinkPhyTail() { return "PHY 是空壳(这份固件没编 -DLINK_PHY_UART / -DLINK_PHY_ESP_NOW)"; }
 #endif
 
+// ============================================================================
+//  ★★ 链路 PHY 的**启动闸门**（2026-09-27 深夜，射频共存那一单）
+// ============================================================================
+//  背景（车上的硬证据，见 `docs/BLE-OBD.md` §7.5 与 `lib/dashcore/radio_arbiter.h`）：
+//    ESP32-S3 只有**一套 2.4G 射频**，ESP-NOW（Wi-Fi 那一套）与 BLE 由 IDF 的共存
+//    仲裁**分时**。实测：链路 PHY **不启动** ⇒ BLE 一次就连上（`connects=1`）；
+//    链路在跑 ⇒ 永远 `status=13(BLE_HS_ETIMEOUT)`（八项排查全排掉之后只剩它）。
+//  ⇒ 最便宜的修法是**改开机顺序**：先让 BLE 把连接建起来（那几秒里射频是空的），
+//    连上之后再启链路 PHY。策略与上限在 `radio_arbiter.h`（native 用例钉住）。
+//
+//  ★ 只在**主板 + `OBD_BLE`** 的构建里生效：
+//    · 从板没有 BLE（它的 OBD 字段走链路拿）⇒ 启链路那一行**一个字没变**；
+//    · 有线档 / pcpreview（没有 `OBD_BLE`）连这个函数都进不来。
+//  ★ 硬上限 15s（`LinkStartGate::kWaitMaxMs`）：到点一律开闸 —— 那条链路是仪表的
+//    **主命脉**，绝不允许"OBD 连不上 ⇒ 从板永远没数据"。代价如实记：这 15s 里从板
+//    是模拟数据状态（`tick_age > 3s` 回退 Sim + 挂"数据不可信"角标）。
+#if LINK_ROLE == 1
+// 开机那一行（`link: 主板侧就绪 …`）与 PHY 的启动**绑在一起**：它在 setup() 里本来
+// 就紧挨着 `begin()`，现在 PHY 挪进闸门，日志也跟着挪（否则会打出"就绪"而 PHY 还没起）。
+static void link_log_master_ready() {
+#if LINK_PHY_ESP_NOW
+  dash_logf("link: 主板侧就绪 %s ch=%u (no pins) @%u%s%s\n",
+            g_link_phy.phyName(), (unsigned)g_link_phy.channel(), g_link_phy.baud(),
+            g_link_phy.online() ? "" : "  <-- PHY 没起来(见上面 espnow: 那几行)",
+            kLinkPhyTail());
+#else
+  dash_logf("link: 主板侧就绪 TX=GPIO%d RX=GPIO%d @%u 8N1(§0/§1.1)%s\n",
+            (int)g_link_phy.txPin(), (int)g_link_phy.rxPin(), (unsigned)dashlink::kLinkBaud,
+            g_link_phy.online() ? "" : "  <-- PHY 是空壳(这份固件没编 -DLINK_PHY_UART)");
+#endif
+}
+#endif  // LINK_ROLE == 1
+
+// 主循环每圈调一次；**不是"主板 + OBD_BLE"的构建里它什么都不做**。
+static void link_start_gate_tick(uint32_t now) {
+#if LINK_ROLE == 1 && OBD_BLE
+  // 状态放在函数里（编译期不需要它时一个字节都不占）
+  static bool     inited       = false;
+  static bool     started      = false;
+  static uint32_t wait_boot_ms = 0;
+  if (!inited) { inited = true; wait_boot_ms = now; }   // 第一圈 = 闸门开始等
+  if (started) return;
+
+  const bool     obd_up    = g_obd_ble.started();   // BLE 这一路真的起来了吗
+  const bool     obd_ready = g_obd_ble.ready();
+  const uint32_t waited    = (uint32_t)(now - wait_boot_ms);
+  // ★ 第一个参数传 `obd_up`（不是恒 true）：`start()` 失败时"等 BLE 连上"是**白等**
+  //   ⇒ 立刻开闸，别让从板平白多等 15 秒。
+  if (!dashcore::LinkStartGate::open(obd_up, obd_ready, waited)) return;
+
+  g_link_phy.begin(false);
+#if LINK_PHY_ESP_NOW
+  // ★ TICK 的发送任务与 PHY **一起**启动：它一建起来就往 PHY 的 TX 环里写
+  //   （`write()` 只碰内存，但"环里有帧而 PHY 没起"会白丢帧、把 `tx_drop` 计数弄脏）。
+  link_tx_task_start_once();
+#endif
+  link_log_master_ready();
+  dash_logf("link: 启动闸门开了 —— %s,等了 %lums ⇒ 现在启链路 PHY(射频让出来了)\n",
+            !obd_up ? "BLE 那一路没起来(没得等,直接启链路)"
+                    : (obd_ready ? "BLE 已连上(ready)"
+                                 : "BLE 没连上(到 15s 上限:仪表优先,不再等 OBD)"),
+            (unsigned long)waited);
+  started = true;
+#else
+  (void)now;
+#endif
+}
+
 #if LINK_ROLE == 1
 // ★★ DATA 的**下限**（2026-09-25 上板实测补的一行）：**12 ms ⇒ ≤80 帧/s**。
 //
@@ -2652,11 +2720,13 @@ void setup() {
   // (抓帧时那行文本就是回放格式,见 VanLogSink 的说明)。
   // ★ 2026-09-27：原来这里还有一行 `g_van_log.setNext(&g_van_sink);` —— 那个
   //   "next 链"已经取消，改由 `van_frame_in()` 一处统一收口（理由见它的说明）。
-#if !OBD_BLE_ONLY_TEST
+  // ★★ 2026-09-27 深夜：这里原来有一道 `#if !OBD_BLE_ONLY_TEST`（车上那个诊断构建用它
+  //   把 VAN 与链路一起关掉，好让 BLE 独占射频）。**那个宏已经删掉**：共存改由
+  //   "启动闸门 + 临时优先权"解决（见 `link_start_gate_tick`），而 VAN 接收**根本不占
+  //   射频**（它是 GPIO44 上的边沿采集）⇒ 任何构建下都该照常开。
   g_van_phy.setSink(&g_van_log);
   g_van_phy.begin();
   BOOT_STAGE(3);
-#endif
 #if LINK_ROLE == 1
   // 链路物理层（主板侧）：§0 的 43 发 / 44 收、§1.1 的 115200 8N1。
   // ★ 顺序上的一个已知事实（不改行为，只记清楚）：`dash_log_begin()` 在**本构建**里
@@ -2665,11 +2735,18 @@ void setup() {
   //   ★ 而 VAN 采集那个构建（不带 `-DLINK_PHY_UART`）里没有这一段：那边
   //     `dash_log_begin()` 照旧开着 UART0 双通道日志 —— 行为一字未变。
   //
-  // ★★ 临时诊断构建（`-DOBD_BLE_ONLY_TEST=1`，2026-09-27 车上）：**不启动链路 PHY**，
-  //   让 BLE 独占 2.4G 射频。目的：判定 `status=13` 到底是不是"ESP-NOW 与 BLE 抢射频"
-  //   造成的。测完**必须去掉这个宏**（没有链路 = 从板没数据）。
-#if !OBD_BLE_ONLY_TEST
+  // ★★ 2026-09-27 深夜（射频共存那一单）：**链路 PHY 的启动从 setup() 挪到主循环的
+  //   闸门** `link_start_gate_tick()`（就在下面几行的 loop() 开头被调）。
+  //   起因是车上的硬证据：`-DOBD_BLE_ONLY_TEST=1` 把链路 PHY 关掉之后 BLE **一次就连上**，
+  //   带着链路就永远 `status=13` ⇒ 射频被 ESP-NOW 抢掉。改顺序是最便宜的修法：
+  //   开机先让 BLE 建连（那几秒射频是空的），连上（或到 15s 上限）再启链路。
+  //   ★ 没有 BLE 的构建在**同一位置**直接 begin()，日志逐字节与改之前相同 ⇒
+  //     有线档 / 从板 / pcpreview 的启动序列一个字都没变。
+#if OBD_BLE
+  // 这里**只打点**（闸门自己记第一圈的时刻），什么都不启。
+#else
   g_link_phy.begin(false);
+  link_log_master_ready();
 #endif
   g_link_rx.setLocalRole(dashlink::kLocalRole);
   g_link_tick.reset(millis());   // §4：tick_ms 是主板**自己**的单调毫秒(从复位起算)
@@ -2677,19 +2754,10 @@ void setup() {
   //   "没有 VAN 快照"那一条路会把主循环每一圈都当一份新快照 ⇒ 不设这一行就会
   //   以满线速发（实测 946 帧/秒）。设成 12 ms = 契约 §3 给的那一档（≈80 Hz）。
   g_link_data.setMinIntervalMs(kLinkDataMinIntervalMs);
-  // ★ 2026-09-27（另一单）：这一行按**编译进来的 PHY** 分两种说法 —— 无线那一档
-  //   没有引脚（`txPin()/rxPin()` 报 -1），打 "TX=GPIO-1" 是读不懂的；而 UART 那一档
-  //   的字符串**一个字都没改**（`#if` 把无线那一支整个排除在外 ⇒ 逐字节相同）。
-#if LINK_PHY_ESP_NOW
-  dash_logf("link: 主板侧就绪 %s ch=%u (no pins) @%u%s%s\n",
-            g_link_phy.phyName(), (unsigned)g_link_phy.channel(), g_link_phy.baud(),
-            g_link_phy.online() ? "" : "  <-- PHY 没起来(见上面 espnow: 那几行)",
-            kLinkPhyTail());
-#else
-  dash_logf("link: 主板侧就绪 TX=GPIO%d RX=GPIO%d @%u 8N1(§0/§1.1)%s\n",
-            (int)g_link_phy.txPin(), (int)g_link_phy.rxPin(), (unsigned)dashlink::kLinkBaud,
-            g_link_phy.online() ? "" : "  <-- PHY 是空壳(这份固件没编 -DLINK_PHY_UART)");
-#endif
+  // ★ 2026-09-27（另一单）：`link: 主板侧就绪 …` 那一行按**编译进来的 PHY** 分两种说法
+  //   （无线那一档没有引脚，`txPin()` 报 -1 ⇒ 打 "TX=GPIO-1" 读不懂）—— 现在它搬进
+  //   `link_log_master_ready()`，与 PHY 的启动绑在一起（见那个函数的说明）。
+  //   **两种说法的字符串一个字没改**；UART 那一档的启动序列也一个字没变。
 #else
   // 从板侧（§5 的角色自检 + §4 时基状态机的初值）+ **真 PHY**（2026-09-25 起）。
   // ★ 与主板那一侧**同一个 `LinkPhyUart`、同一组脚（43 发 / 44 收）、同一个 115200**
@@ -2815,9 +2883,16 @@ void loop() {
   loop_stage("van");     // ★ 步骤②归因：以下各阶段标记只为把长圈归因，不改变行为
 #if LINK_PHY_ESP_NOW
   probe_start_once();    // ★ 选项(a) 可行性探针：20ms 定时器回调的实际节拍（见它的说明）
+  // ★★ 主板上带 BLE 的构建里，这个任务与 PHY **一起**由启动闸门拉起（见它上面那段）；
+  //   其余构建（从板 / 有线档 / pcpreview）在这里照旧立刻建 ⇒ 行为一字未变。
+#if !(LINK_ROLE == 1 && OBD_BLE)
   link_tx_task_start_once();   // ★★ 选项(a)：建互斥量 +（主板上）建 TICK 发送任务
+#endif
   meas_sink_register_once();   // ★★ 测量帧的到达钩子：时间戳打在射频收到包那一刻
 #endif
+  // ★★ 启动闸门（只有"主板 + OBD_BLE"会在里面做事）：**必须早于本圈任何链路发送**
+  //   —— PHY 没起来之前发出去的东西只会在环里烂掉。它自己非阻塞、自己判时间。
+  link_start_gate_tick(now);
   g_van_phy.tick(now);   // VAN 物理层解帧 → 喂给 data_service
                          // (桩 / GPIO 收帧两种实现共用这一个接口,见 van_phy.h:
                          //  加 -DVAN_PHY_GPIO=1 时这里就是真的 GPIO 收帧)
@@ -3277,11 +3352,19 @@ void loop() {
     //     `a` = 进 connecting 分支几次、`b` = 真的发起 `client->connect()` 几次。
     //     它能不依赖日志就分清三种情况：`a=0` 进不去分支 / `a>0,b=0` 卡在等 600ms /
     //     `a=b` 说明连接请求真发出去了（那问题在对端或控制器）。
-    dash_logf("obd-ble: state=%s peer=%s conn=%u drop=%lu connects=%lu cs=%lu/%lu\n",
+    //   ★★ `radio=`/`win=`/`cap=` 是**射频仲裁**那三个数（2026-09-27 深夜加的）：
+    //     `radio=BT` = 此刻射频优先权在 BLE 手上（共存偏好刚被切过去）；
+    //     `win` = 一共抢过几次、`cap` = 其中被 8s 上限掐断几次（策略见 radio_arbiter.h）。
+    //     判据：`win` 涨而 `conn` 一直 0 + `cap` 也在涨 ⇒ BLE 反复抢、每次都被上限掐掉
+    //     ⇒ 共存这一招**没解决问题**，要上"让出 VANRAW / 拉长连接间隔"那几条（见提交说明）。
+    dash_logf("obd-ble: state=%s peer=%s conn=%u drop=%lu connects=%lu cs=%lu/%lu"
+              " radio=%s win=%lu cap=%lu\n",
               g_obd_ble.stateName(), g_obd_ble.peerText(),
               (unsigned)g_obd_ble.connected(), (unsigned long)g_obd_ble.dropped(),
               (unsigned long)g_obd_ble.connects(),
-              (unsigned long)g_obd_ble.csAttempts(), (unsigned long)g_obd_ble.csCalls());
+              (unsigned long)g_obd_ble.csAttempts(), (unsigned long)g_obd_ble.csCalls(),
+              g_obd_ble.radioHeld() ? "BT" : "balance",
+              (unsigned long)g_obd_ble.radioWindows(), (unsigned long)g_obd_ble.radioCapped());
 #endif
 #if VAN_SNIFF
     van_sniff_report(now);

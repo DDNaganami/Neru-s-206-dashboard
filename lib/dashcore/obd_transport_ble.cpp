@@ -132,14 +132,19 @@ bool ObdTransportBle::start() {
   NimBLEDevice::setSecurityAuth(true /*bonding*/, false /*mitm*/, true /*sc*/);
   NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
   NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
-  // ★★ 射频共存（2026-09-27，车上实测加）：这块板**同时**在跑 ESP-NOW（Wi-Fi 那一套）
-  //   和 BLE，两者共用同一个 2.4G 射频。扫描（被动收）能成，但**建连要主动发包**，
-  //   默认偏好下 BLE 可能拿不到时隙 ⇒ 表现成"扫得到、连不上"。
-  //   `ESP_COEX_PREFER_BALANCE` 让两边均衡；默认是 Wi-Fi 优先。
-  //   ★ 若这招仍不够，下一步是 `ESP_COEX_PREFER_BT`（但那会压 ESP-NOW 的链路质量，
-  //     而那条链路是仪表的主命脉 ⇒ 不到万不得已不用）。
+  // ★★ 射频共存（2026-09-27 车上实测之后改定 —— **上一版"一直 BALANCE"是不够的**）：
+  //   车上的硬证据：链路 PHY **不启动** ⇒ BLE 一次就连上（`connects=1`，`ready`）；
+  //   链路在跑 ⇒ 永远 `status=13(BLE_HS_ETIMEOUT)`。地址类型 / 客户端状态 / 扫描残留 /
+  //   连接参数 / 共存偏好 / 配对 / 内存(10KB 与 29KB 表现一致) / 发射功率八项全排掉
+  //   之后，只剩"**射频被 ESP-NOW 抢掉**"这一条。
+  //   ⇒ 现在不再是"开机设一次 BALANCE 就完事"，而是**按仲裁状态机在过渡时切**：
+  //        · 静止态 = `BALANCE`（两边均衡；链路是仪表的主命脉）；
+  //        · BLE 真要建连的那几秒 = `ESP_COEX_PREFER_BT`，**一次最多 8s**，
+  //          让出后**至少冷却 30s**（见 `radio_arbiter.h` 里那两个常量与理由）。
+  //   ★ 开机这里先落到静止态；真正的切换在 `tick()` 的 `applyRadioArbitration()`。
+  //   ★ 顺带把 `esp_err_t` 记下来（这个 API 可能返回"不支持"）——日志里能看到。
 #if defined(ARDUINO)
-  esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+  setCoexPreference(false);
 #endif
   client_ = NimBLEDevice::createClient();
   if (client_ == nullptr) return false;
@@ -184,11 +189,42 @@ void ObdTransportBle::write(char c) {
 }
 
 // ---------------------------------------------------------------------------
+//  射频仲裁：**执行点**（策略在 `lib/dashcore/radio_arbiter.h`，由 native 用例钉住）
+// ---------------------------------------------------------------------------
+void ObdTransportBle::setCoexPreference(bool ble_first) {
+#if defined(ARDUINO)
+  const esp_err_t e = esp_coex_preference_set(ble_first ? ESP_COEX_PREFER_BT
+                                                        : ESP_COEX_PREFER_BALANCE);
+#else
+  const int e = 0;
+#endif
+  if (ble_first) coex_bt_err_ = (uint32_t)e; else coex_bal_err_ = (uint32_t)e;
+  // ★ 只在**过渡**时打这一行（不是周期量）：抢/还各一行，
+  //   配合 1 Hz 体检行里的 `windows/capped` 就能看出"抢了几次、被上限掐了几次"。
+  dash_logf("obd-ble: 射频优先权 -> %s (esp_coex=%d)\n",
+            ble_first ? "BT(给建连让路,<=8s)" : "BALANCE(还给链路)",
+            (int)e);
+}
+
+void ObdTransportBle::applyRadioArbitration(uint32_t now_ms) {
+  const bool hold = arb_.update(now_ms, wantsRadio(), ready());
+  if (hold == coex_hold_) return;      // ★ 过渡才调 IDF；稳态一圈都不碰它
+  coex_hold_ = hold;
+  setCoexPreference(hold);
+}
+
+// ---------------------------------------------------------------------------
 // 主循环状态机（非阻塞）
 // ---------------------------------------------------------------------------
 void ObdTransportBle::tick(uint32_t now_ms) {
   if (!started_) return;
   if (boot_ms_ == 0) boot_ms_ = now_ms;
+
+  // ★★ 射频仲裁必须放在**最前面**，而且要在下面那个 `ready()` 早退**之前**：
+  //   "连上 + grace 到 ⇒ 把射频还给链路"这件事正好发生在 ready 之后，
+  //   放到早退后面就永远不执行（那就等于**连上之后还一直占着**）。
+  //   它是状态机（每圈推进：占用有 8s 上限、让出有 30s 冷却），所以每圈都要调。
+  applyRadioArbitration(now_ms);
 
   if (ready()) { backoff_ms_ = 0; return; }        // 好了，什么都不做
 

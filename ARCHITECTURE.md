@@ -1960,11 +1960,19 @@ ESP32-S3 的复位序列会读 `GPIO_STRAP_REG` 决定"从 flash 启动"还是"�
 
 **② 射频共存：手机 OBD（BLE）与"省电"这两件都会砸到判据上**
 
-* **与将来"手机 OBD（BLE）"共存**：BLE 与 WiFi 用的是**同一套 2.4 GHz 射频**，
+* **与"板载 BLE OBD"共存**：BLE 与 WiFi 用的是**同一套 2.4 GHz 射频**，
   由 ESP-IDF 的共存仲裁**分时**（S3 上只有一个天线开关，物理上不可能同时收）。
-  ⇒ 两件事必须知道：① 两者**可以共存**，但**吞吐/时延会互相让**；
-  ② 我们这条链路的判据（p99 < 20 ms）是**分时**之后的判据 —— 所以"将来加上 BLE OBD
-  之后要复测这一条"写在档上（本单**没测**，因为还没有 BLE OBD 那一档代码）。
+  ★★ **2026-09-27 车上实测：比这里原先写的更硬** —— 原话说"可以共存，只是吞吐/时延
+  互相让"，实测是**链路 PHY 在跑时 BLE 根本连不上**（永远 `status=13(BLE_HS_ETIMEOUT)`；
+  把链路 PHY 关掉就**一次连上**，并读到真值 `2666rpm / 93.0C / 62.0C`）
+  ⇒ 不是"让"，是"BLE 拿不到建连要的那几毫秒"。
+  ⇒ 已落地两条策略（`lib/dashcore/radio_arbiter.h`，native 用例钉住；执行点在
+  `src/main.cpp` 的 `link_start_gate_tick()` 与 `obd_transport_ble.cpp` 的
+  `applyRadioArbitration()`）：**先让 BLE 建连、再启链路**（上限 15s，到点开闸，
+  仪表优先）+ 建连窗口内临时 `ESP_COEX_PREFER_BT`（一次 ≤8s、让出后冷却 ≥30s）。
+  详见 `docs/BLE-OBD.md` §9。
+  ★ 我们这条链路的判据（p99 < 20 ms）是**分时**之后的判据 ⇒ **"共存下的链路质量"
+  仍然没量过**（留档在 `docs/BLE-OBD.md` §9.5）。
 * ★★ **省电模式必须显式关掉**（`esp_wifi_set_ps(WIFI_PS_NONE)`，`link_phy_espnow.cpp` 的
   `begin()`）：IDF 默认是 modem power-save，射频靠 DTIM 节拍打盹/唤醒，
   **唤醒抖动正好是几十毫秒量级**，而我们的门槛是 **p99 < 20 ms**

@@ -49,6 +49,16 @@ void register_link_slave_tx_tests(void);
 //   ③ 测量信封与判据（丢包率 / 连续最大间隔 / p50-p95-p99，以及"门槛达不到
 //   就报不适合"）。★ 它**不动协议**：测量帧走的是既有的 `MsgType::Data`。
 void register_link_espnow_meas_tests(void);
+// ★ 2026-09-27 深夜新增：**射频仲裁**（`lib/dashcore/radio_arbiter.h`）。
+//   起因：车上实测 **ESP-NOW 与 BLE 抢射频** —— 链路 PHY 不启动时 BLE 一次就连上
+//   （`connects=1`），链路一跑就永远 `status=13(BLE_HS_ETIMEOUT)`。
+//   这一组钉住两条策略（都是纯逻辑 + 假时钟）：
+//     ① `LinkStartGate`：开机**先让 BLE 建连、再启链路**，且到点（15s）必须开闸
+//        —— 主命脉是那条链路，不许被一个可选的 OBD 拖住；
+//     ② `RadioArbiter`：BLE 建连窗口内把共存偏好切给 BT，但**一次最多 8s、
+//        让出后至少冷却 30s**，连上 + grace(2s) 到就正常让出。
+//   同样排在 face_stages 之前（顺序纪律见上）。
+void register_radio_arbiter_tests(void);
 
 int main(void) {
   UNITY_BEGIN();
@@ -125,6 +135,9 @@ int main(void) {
   //   ①环满整行丢+计数 ②排空按预算、端口报满就立刻停手（不重试）
   //   ③丢弃/挡住都可观测。同样排在 face_stages 之前（顺序纪律见上）。
   register_log_ring_tests();
+  // ★ 2026-09-27 深夜：射频仲裁（BLE OBD ↔ ESP-NOW 链路）。排在 face_stages 之前
+  //   （顺序纪律见上：那一组历史上崩过一次，排在它后面的用例跑不到）。
+  register_radio_arbiter_tests();
   register_face_stage_tests();
   return UNITY_END();
 }
