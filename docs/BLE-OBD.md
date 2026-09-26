@@ -207,17 +207,43 @@ $res = Await $op ([Windows.Devices.Bluetooth.GenericAttributeProfile.GattWriteRe
 5. **数据接线**：主板 `data_service` 的 `intake` 来源变 `Obd`（右屏副表就是它）；
    `coolant` 也走 `Obd`，并通过链路发给从板（从板那格 `coolant=link` 已经在等）。
 
-### 前置待确认（动手前先看一眼，别写完了发现编不过）
+### ✅ 2026-09-27 深夜：**板上已经写完了**（这一节原先是"动手前的待确认"）
 
-- **NimBLE 在这套构建里能不能加**：现在是 **pioarduino / IDF 5.5**
-  （见 `platformio.ini` 的 `esp32s3-rgb`）。要么用 Arduino 自带的 `NimBLEDevice`
-  （`lib_deps` 加 `h2zero/NimBLE-Arduino`），要么直接用 IDF 那套 `esp_ble_*`。
-  **先在台式机上把 `lib_deps` 加上编一遍**，确认与 LVGL/ESP-NOW 不打架。
-- **flash/内存预算**：现在 app 区只用了 **17.7%**，NimBLE 加得下；
-  但 PSRAM 那 7.2 MB 是屏在吃（`psram=7282KB`），BLE 的缓冲走内部 RAM，
-  要留意 `heap=98KB` 这个数（主板当前空闲堆只有 98 KB）。
+| 项 | 状态 |
+|---|---|
+| `ObdTransport` 传输层 | ✅ 抽出来了（`lib/dashcore/obd_transport.h`）—— 问答/解析**一行没改** |
+| `ObdTransportBle` | ✅ 写好（`obd_transport_ble.h/.cpp`，NimBLE-Arduino **2.5.1**） |
+| 主板固件 `esp32s3-rgb-master-now` | ✅ **编译 SUCCESS**；对象文件 388,988 字节 |
+| NimBLE 与 IDF5.5 + LVGL + ESP-NOW 共存 | ✅ **能共存**（这是当初最大的未知） |
+| 固件容量 | **1,704,144 字节 = 2MB app 槽的 81.3%**（加 NimBLE 前 71.3%）⇒ 余量约 380KB |
+| native 单测 | ✅ 385 例 / 383 通过 / 2 跳过 / **0 失败** |
+
+★ **`lib_deps` 是覆盖不是合并**：只写 NimBLE 会把继承来的 `lvgl/lvgl@^9.3.0` 顶掉、
+整个 UI 编不过 ⇒ 两个都要写（已在 env 注释里写明）。
+
+★ 顺带被这轮测试抓出一个**会上车的真 bug**（`fe17c7f`）：`sendRequest` 里那句
+"PID < 0x10 就补个 `0`"是按 **Arduino `print(v, HEX)` 不补零**写的，而新抽的
+`writeHex()` **总是两位** ⇒ 叠加成 `0100C` / `01000` / `01005` / `0100F` ——
+**ECU 一个都不认**，而现象只是"OBD 一直没数据"，和"没插头"长得一样。
+⇒ 教训：**"测试跑不起来"本身就是风险**（这个 native 构建此前根本没编 `dashcore`，
+是 `lib/dashcore/library.json` 让它第一次真正跑起来）。
+
+### 仍未验（下一步就是它）
+
+- **射频共存**：板间链路走 ESP-NOW（同一个 2.4G 射频），BLE 中心也要用射频。
+  两者**能否稳当共存没有实测过** ⇒ 上车先盯主板 `espnow: tx_fail/done_fail`
+  与从板 `rx_overflow` / `tick_age` 有没有变差。
+- **真机连通**：`obd-ble: state=ready` + `SRC … intake=obd`。
+- 从 BLE 拿到的数据与**有线**那条（`Serial1`）是否一致。
+- 这个头在车上长期通电时的花样（点火瞬间掉线、ECU 睡眠后不应答）。
+
+### 其余前置（已解决，留档）
+
+- **NimBLE 在这套构建里能不能加**：✅ 能 —— `h2zero/NimBLE-Arduino@^2.1.0`，
+  实测与 LVGL/ESP-NOW/IDF5.5 不打架。
+- **flash 预算**：⚠️ 不再是"17.7% 随便加"了 —— 现在是 **81.3%**，加新东西前先看这个数。
 - **`0x1801` 那条判据**：板上枚举服务时，"只回 1 个服务"= 没真连上，
-  **不是**设备没有 OBD 服务 —— 别据此判定"这个头不支持"。
+  **不是**设备没有 OBD 服务。
 
 ### 车上还要定的一条：**这个头插着不拔，耗的是常电**
 
