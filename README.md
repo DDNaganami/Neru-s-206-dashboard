@@ -131,7 +131,13 @@ python -m platformio run -e esp32s3-rgb-slave-now  -t upload --upload-port COM8 
 
 ## 下一步
 
-1. 真 VAN 抓帧在 2.8C 上重做一次（`VAN_RX_PIN=42`，把抓帧盒退休）。
+1. **真 VAN 抓帧**：2.8C 上已打开真接收（**主板 `GPIO16`** = SN65HVD230 的 `RO`，`VAN_RX_PIN=16`，与代码默认值一致），
+   **解帧链已用回放验过** —— 贴 `VAN 824 18 F8 27 10 00 00 00` ⇒ 主板 `speed=van rpm=van`、`v=99.8km/h 799rpm`，
+   再经 ESP-NOW 到从板变成 `speed=link` 且**同一组数值** ⇒ **VAN → 主板 → 从板 → 左屏** 整条链通。
+   **还没验的只剩电气那一半**（那根线与收发器本身）：手上没有活的总线，要等车/台架。
+   ★ 接线：`RO → GPIO16`、`VCC → 3V3`、`GND → GND`；收发器板上的 **120Ω 终端必须拆掉**；
+   总线两路从组合仪表插头取（`PINOUT.md` 的 9004/9005）。
+   ★ 弃用旧口径：`VAN_RX_PIN=42` 与 ARCHITECTURE 里的 `15` 都不采用（15 是板载 I2C）。
 2. 链路上加"VAN 原始帧转发"（主板 → 从板），从板就可以不用自己接 VAN。
 3. 从板 SD 卡记录（1-bit SDMMC / GPIO 2·1·42，非阻塞写、开机对时）。
 4. 有线 ELM327 接到板上，量四个字段的 `SRC-Hz`，再定"车速优先给谁"。
