@@ -2652,9 +2652,11 @@ void setup() {
   // (抓帧时那行文本就是回放格式,见 VanLogSink 的说明)。
   // ★ 2026-09-27：原来这里还有一行 `g_van_log.setNext(&g_van_sink);` —— 那个
   //   "next 链"已经取消，改由 `van_frame_in()` 一处统一收口（理由见它的说明）。
+#if !OBD_BLE_ONLY_TEST
   g_van_phy.setSink(&g_van_log);
   g_van_phy.begin();
   BOOT_STAGE(3);
+#endif
 #if LINK_ROLE == 1
   // 链路物理层（主板侧）：§0 的 43 发 / 44 收、§1.1 的 115200 8N1。
   // ★ 顺序上的一个已知事实（不改行为，只记清楚）：`dash_log_begin()` 在**本构建**里
@@ -2662,7 +2664,13 @@ void setup() {
   //   下面这一行才是 UART0/43/44 上唯一的占用者。
   //   ★ 而 VAN 采集那个构建（不带 `-DLINK_PHY_UART`）里没有这一段：那边
   //     `dash_log_begin()` 照旧开着 UART0 双通道日志 —— 行为一字未变。
+  //
+  // ★★ 临时诊断构建（`-DOBD_BLE_ONLY_TEST=1`，2026-09-27 车上）：**不启动链路 PHY**，
+  //   让 BLE 独占 2.4G 射频。目的：判定 `status=13` 到底是不是"ESP-NOW 与 BLE 抢射频"
+  //   造成的。测完**必须去掉这个宏**（没有链路 = 从板没数据）。
+#if !OBD_BLE_ONLY_TEST
   g_link_phy.begin(false);
+#endif
   g_link_rx.setLocalRole(dashlink::kLocalRole);
   g_link_tick.reset(millis());   // §4：tick_ms 是主板**自己**的单调毫秒(从复位起算)
   // ★★ DATA 的速率下限（见 `kLinkDataMinIntervalMs` 那一段的实测与理由）：

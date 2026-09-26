@@ -106,6 +106,32 @@ bool ObdTransportBle::start() {
   s_self_ = this;
 
   NimBLEDevice::init("206dash");              // 只当中心：不建服务、不广播
+  // ★★ 发射功率拉满（2026-09-27 车上加）。线索：同一时刻**笔记本**（Intel AX210，
+  //   真正的天线）在 −81dBm 下还能一连就上；而 ESP32-S3 用的是**板载小天线**，
+  //   收发都弱一截。我们那个头也是小天线 ⇒ 双方都弱 ⇒ 表现成
+  //   "扫描收得到广播（最低速率的广播包收得到），但建连一直 `status=13` 超时"
+  //   （建连要双向可靠握手，对链路预算敏感得多）。
+  //   ★★ 这里踩过一个坑，写下来：**有两个同名很像的函数，参数口径完全不同** ——
+  //        `setPower(int8_t dbm, …)`        收的是 **dBm 数值**（9 就是 +9dBm）
+  //        `setPowerLevel(esp_power_level_t, …)` 收的才是**枚举**（`ESP_PWR_LVL_P9`）
+  //      我第一版把**枚举传给了收 dBm 的那个** ⇒ 9 被当成 dBm 去换算枚举、
+  //      越界 → **空指针崩溃**（`Guru Meditation: LoadProhibited`、`EXCVADDR: 0x38`、
+  //      25 秒里重启 23 次）。
+  //   ★ 放在 `init()` **之后**（控制器就绪了再设功率，顺序更稳）。
+  //   ★ 这只是把链路预算往好里推，不保证够；真正的解法是**让两块设备离近点**
+  //     （诊断头在 OBD 座、板子在别处的话，挪近 30cm 能换来 10dB 量级）。
+  NimBLEDevice::setPower(9);
+  // ★★ 允许**配对/绑定**（2026-09-27 车上加，验证"这个头只认配过的中心"这条假设）：
+  //   那个诊断头被 Windows 配对并使用过（笔记本侧实测连上过并读到了 FFF0/FFF1/FFF2），
+  //   而 BLE 从机常见两种脾气：
+  //     · **只接受已绑定中心的连接**（裸连会被忽略 ⇒ 表现正是我们看到的 `status=13` 超时）；
+  //     · 或者必须先加密链路才让访问特征。
+  //   两句都设上（`bonding=true` 允许绑定、`sc=true` 走 LE Secure Connections），
+  //   设备侧若要配对就会触发配对流程；不要就无副作用（`mitm=false` ⇒ Just Works，无 PIN）。
+  //   ★ 实测口径：若这次 `connects` 变成 1 → 就是这条；若仍 `status=13` → 再排它。
+  NimBLEDevice::setSecurityAuth(true /*bonding*/, false /*mitm*/, true /*sc*/);
+  NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
+  NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
   // ★★ 射频共存（2026-09-27，车上实测加）：这块板**同时**在跑 ESP-NOW（Wi-Fi 那一套）
   //   和 BLE，两者共用同一个 2.4G 射频。扫描（被动收）能成，但**建连要主动发包**，
   //   默认偏好下 BLE 可能拿不到时隙 ⇒ 表现成"扫得到、连不上"。
