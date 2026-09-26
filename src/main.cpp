@@ -808,7 +808,95 @@ static void probe_start_once() {
     esp_timer_start_periodic(t, 20000);   // 20ms = 与 TICK 同档
   }
 }
+
+// ============================================================================
+//  ★★ 选项 (a)：把 **TICK 的发送**搬离主循环
+//  （2026-09-27 深夜，车主拍板选 (a)；前提已用 `txprobe` 实测验证）
+// ============================================================================
+//  为什么做：实测 `wire_gap_max` = 92~99ms —— **发端自己**就有 ~95ms 的空档。它来自
+//  主循环被抢占（258 个窗口里 52% 超过 100ms），而且就是收端 `gap_max`(105~120ms) 与
+//  p99(39~47ms) 达不到契约的**下界**。
+//  可行性：`txprobe` 显示 20ms 周期的高优先级定时器在主循环被抢占 86~108ms 的同时，
+//  自己的节拍**稳在 20.16~20.50ms** ⇒ 这是"低优先级任务被饿着"，不是关中断/关 cache
+//  ⇒ **更高优先级的任务躲得开**。
+//
+//  设计（★ 刻意把改动**关在链路里**：不动主循环优先级、不碰显示/渲染路径）：
+//    · 这个任务**独占 TICK 的生成与发送**：每 20ms 直接往 PHY 的环里写一帧 TICK，
+//      然后 `pumpTx()` ⇒ TICK 的节拍不再受主循环抢占影响。
+//    · **DATA / HELLO / STATUS 仍走 `LinkTx`、仍由主循环排水** ⇒ `LinkTx` 依旧是
+//      **单线程**（它的环没有跨任务共享）⇒ 那一层一行都不用改。这是本设计的关键取舍：
+//      宁可让 TICK 绕过 `LinkTx`，也不去给 `LinkTx` 加锁。
+//    · 于是**只有 PHY 的 TX 环**变成两个写者（任务写 TICK、主循环写 DATA）
+//      ⇒ 用**互斥量**保护 `write()` + `pumpTx()` 这一小段。
+//      ★ 为什么必须是互斥量而不是自旋锁：`esp_now_send()` **绝不能在关中断的临界区里调**
+//        （它要拿驱动的锁）。互斥量允许阻塞，而 `esp_now_send()` 本身只把包拷进驱动的
+//        待发队列就返回 ⇒ 持锁时间很短。
+//      ★ 主循环那一侧用 **0 超时的 try-take**：拿不到就这一圈不排（帧留在环里，下一圈再走）
+//        ⇒ **主循环永远不会被这个锁阻塞**（与"日志不许阻塞主循环"同一条纪律）。
+//    · 任务优先级 `kLinkTxTaskPrio` = 15：远高于 loopTask 的 1，又低于 WiFi 的 23 与
+//      esp_timer 的 22 ⇒ 不会饿着射频协议栈，但足以躲开那个抢占者（它 < 22）。
+//    · 只在**主板**上建这个任务：从板发的是 HELLO(5s)+STATUS(2Hz)，没有时基节拍要保。
+static SemaphoreHandle_t g_phy_tx_mux = nullptr;   // 保护 PHY 的 TX 环
+
+static inline bool phy_tx_lock(uint32_t wait_ms) {
+  if (g_phy_tx_mux == nullptr) return true;        // 还没建（开机极早期）⇒ 退化成旧行为
+  return xSemaphoreTake(g_phy_tx_mux, pdMS_TO_TICKS(wait_ms)) == pdTRUE;
+}
+static inline void phy_tx_unlock() {
+  if (g_phy_tx_mux != nullptr) xSemaphoreGive(g_phy_tx_mux);
+}
+
+#if LINK_ROLE == 1
+static const uint8_t  kLinkTxTaskPrio    = 15u;
+static const uint32_t kLinkTxTaskPeriodMs = 20u;   // = TICK 的 50 Hz
+
+static void link_tick_task(void*) {
+  TickType_t last = xTaskGetTickCount();
+  for (;;) {
+    // ★ 固定节拍（不是 delay(20)：那个会累积漂移）—— 这一条正是本任务存在的意义。
+    vTaskDelayUntil(&last, pdMS_TO_TICKS(kLinkTxTaskPeriodMs));
+    const uint32_t now = (uint32_t)millis();
+    dashlink::TickMsg tm;
+    if (!g_link_tick.due(now, &tm)) continue;      // 没到点（比如刚好被别的路径发过）
+    uint8_t payload[dashlink::kTickLen];
+    if (!dashlink::packTick(tm, payload)) continue;
+    uint8_t frame[dashlink::kFrameBytesMax];
+    const uint16_t n = dashlink::encodeFrame((uint8_t)dashlink::MsgType::Tick, payload,
+                                             dashlink::kTickLen, dashlink::kLocalRole,
+                                             frame, (uint16_t)sizeof(frame));
+    if (n == 0u) continue;
+    // ★ 拿锁有上界（5ms）：拿不到就放弃这一拍（丢的是**这一帧 TICK**，不是主循环的时间）。
+    if (!phy_tx_lock(5u)) continue;
+    if (g_link_phy.write(frame, (size_t)n) == (size_t)n) {
+      g_link_phy.pumpTx(now);
+    }
+    phy_tx_unlock();
+  }
+}
+#endif  // LINK_ROLE == 1
+
+// 只在主循环里调一次（懒启动）：建互斥量 + （主板上）建 TICK 任务。
+static void link_tx_task_start_once() {
+  static bool started = false;
+  if (started) return;
+  started = true;
+  if (g_phy_tx_mux == nullptr) {
+    g_phy_tx_mux = xSemaphoreCreateMutex();
+  }
+#if LINK_ROLE == 1
+  // 钉在 core 1（与 loopTask 同核：比它优先级高 ⇒ 到点就抢占它，这正是要的）。
+  xTaskCreatePinnedToCore(&link_tick_task, "lnk_tick", 3072, nullptr,
+                          (UBaseType_t)kLinkTxTaskPrio, nullptr, 1);
+#endif
+}
 #endif  // LINK_PHY_ESP_NOW
+
+#if !LINK_PHY_ESP_NOW
+// 有线 / 空壳档：PHY 的 TX 环**只有一个写者**（主循环）⇒ 不需要锁。
+// 这两个空壳让下面两处排水点的代码两种档位**逐字相同**，且那两档行为与改之前一致。
+static inline bool phy_tx_lock(uint32_t) { return true; }
+static inline void phy_tx_unlock() {}
+#endif
 
 // ★★ 一条走错过的路，留档（2026-09-27 上板实测）——**"让无线档只留一个读者"是错的**。
 //
@@ -1977,8 +2065,15 @@ static void link_slave_tick(uint32_t now, const ArcDashView& view) {
   //   ★ 传 `now` 进去：ESP-NOW 那一档要用它打"**第一次发送失败发生在第几毫秒**"
   //     以及周期性计数器（上板实测"跑几秒后停住"那一单补的可观测性）。
   //     UART / 空壳那两档的 `pumpTx()` 参数有默认值 ⇒ 一个字都不受影响。
-  g_link_tx.pump(g_link_phy);
-  g_link_phy.pumpTx(now);
+  // ★★ 选项 (a)：PHY 的 TX 环现在有**两个写者**（TICK 任务 + 这里）⇒ 用互斥量护住这一小段。
+  //   **0 超时的 try-take**：拿不到锁就这一圈不排水（帧留在环里，下一圈再走）
+  //   ⇒ 主循环**永远不会**被这个锁阻塞（与"日志不许阻塞主循环"同一条纪律）。
+  //   拿到锁之后 `esp_now_send()` 只把包拷进驱动待发队列就返回 ⇒ 持锁时间很短。
+  if (phy_tx_lock(0u)) {
+    g_link_tx.pump(g_link_phy);
+    g_link_phy.pumpTx(now);
+    phy_tx_unlock();
+  }
 }
 #endif
 
@@ -2098,16 +2193,13 @@ static void link_poll_inbound(uint32_t now) {
 // ★ `snapshot` 必须由调用方传**刚刚 g_data.update(now) 的返回值**进来 ——
 //   这就是 §1.2 ③ 的"从快照发"。别在这个函数里自己再调一次 g_data.update()。
 static void link_master_tick(uint32_t now, const VehicleState& snapshot) {
-  // ① TICK：50 Hz（§3）。主循环被 LVGL 拖慢时**不补发突发**（见 TickGen::due）。
-  dashlink::TickMsg tm;
-  if (g_link_tick.due(now, &tm)) {
-    uint8_t payload[dashlink::kTickLen];
-    if (dashlink::packTick(tm, payload)) {
-      // 空间不够时 enqueueFrame 会**整帧丢**并计数（§1.2 ②）—— 这里不重试、不等待。
-      g_link_tx.enqueueFrame((uint8_t)dashlink::MsgType::Tick, payload, dashlink::kTickLen,
-                             dashlink::kLocalRole);
-    }
-  }
+  // ① TICK：★★ 2026-09-27 深夜**已搬到 `link_tick_task`**（选项 (a)，见那个任务的说明）。
+  //   原来这里是"每圈判 `g_link_tick.due()` 再入 `LinkTx`"，而排水也在主循环 ⇒
+  //   主循环被抢占 ~95ms 时，TICK 就跟着停 ~95ms（实测 `wire_gap_max` = 92~99ms，
+  //   它又是收端 `gap_max` 与 p99 达不到契约的下界）。
+  //   现在 TICK 由**高优先级任务**以固定 20ms 节拍**直接写进 PHY 的环**。
+  //   ★★ 注意：`g_link_tick` 从此**只被那个任务碰** —— 这里**不要**再调 `due()`，
+  //      否则两个上下文会同时推进同一个生成器（那正是一处竞态）。
 
   // ② HELLO：上电 1 次，之后每 5 s 重发，**直到收到对端 HELLO**（§3）。
   //    ★ 2026-09-27：判据搬进 `dashlink::helloDue()`（`lib/link/link_app.h`）——
@@ -2140,8 +2232,15 @@ static void link_master_tick(uint32_t now, const VehicleState& snapshot) {
 
   // ④ 排水：`LinkTx` 的两级环 → PHY 的环 → UART 的 FIFO。两步都**只走能走的那些字节**。
   //   ★ 同样把 `now` 传进去（理由见从板那一支同一处的说明）。
-  g_link_tx.pump(g_link_phy);
-  g_link_phy.pumpTx(now);
+  // ★★ 选项 (a)：PHY 的 TX 环现在有**两个写者**（TICK 任务 + 这里）⇒ 用互斥量护住这一小段。
+  //   **0 超时的 try-take**：拿不到锁就这一圈不排水（帧留在环里，下一圈再走）
+  //   ⇒ 主循环**永远不会**被这个锁阻塞（与"日志不许阻塞主循环"同一条纪律）。
+  //   拿到锁之后 `esp_now_send()` 只把包拷进驱动待发队列就返回 ⇒ 持锁时间很短。
+  if (phy_tx_lock(0u)) {
+    g_link_tx.pump(g_link_phy);
+    g_link_phy.pumpTx(now);
+    phy_tx_unlock();
+  }
 }
 #endif  // LINK_ROLE == 1
 
@@ -2206,82 +2305,31 @@ static void meas_poll(uint32_t now) {
     }
   }
 
-  // ---- ② 收（把 PHY 的环读空，按帧长分流）----
+  // ---- ② 收：**已删除**（2026-09-27 深夜；由 (a) 那一步暴露出来的既有缺陷）----
   //
-  // ★★ 跨圈携带（2026-09-27 上板实测后加）：512 B 窗口**可能正好切在一帧中间**。
-  //   老写法把这段"半截帧"当尾巴喂给 `LinkRx` ⇒ 下一圈续上的字节又会被当成
-  //   "不是帧头"逐字节跳过 ⇒ 那一整帧最终经 `LinkRx` **进了数据层**（实测偶发
-  //   `coolant=9.0C`、`intake=-39.0C`），而且它**没被计为测量帧** ⇒ 又白算一次丢包。
-  //   ⇒ 现在把没收全的部分**留在静态 carry 里**，下一圈接在开头继续拼，谁也不喂。
-  //   ★ 为什么是安全的：搬运时 `n` 仍受 `kMeasBytesPerLoop` 约束（buf 有 512 B），
-  //     而"没凑齐的尾巴"最多只可能是一帧（≤ `kFrameBytesMax`）。
-  static uint8_t  s_carry[dashlink::kFrameBytesMax];
-  static uint16_t s_carryLen = 0;
-
-  // ★ buf 用 `static`（.bss）而不是栈：预算已经抬到 1536 B，放在 loopTask 的栈上
-  //   太占（那块栈是 8 KB 量级，同一条路径上还有别的局部量）。本函数只在主循环里跑，
-  //   单线程 ⇒ 静态缓冲没有重入问题。
-  static uint8_t buf[kMeasBytesPerLoop];
-  uint16_t n = 0;
-  for (uint16_t k = 0; k < s_carryLen && n < kMeasBytesPerLoop; ++k) buf[n++] = s_carry[k];
-  s_carryLen = 0;
-  while (n < kMeasBytesPerLoop) {
-    const int c = g_link_phy.read();
-    if (c < 0) break;
-    buf[n++] = (uint8_t)c;
-  }
-  if (n > 0u) {
-    uint16_t i = 0;
-    // ★★ 2026-09-27 上板实测：这里**不要再限制"一次最多解析几帧"**。
-    //
-    //   老条件是 `&& frames < kMeasFramesPerLoop`（8 帧）。它造成的后果非常隐蔽：
-    //   这一圈只解析前 8 帧，**剩下的整帧会被下面那段"尾巴"逐字节喂给 `LinkRx`** ⇒
-    //     ① 那些**测量帧不再被计为测量帧** ⇒ 测量器把它们算成"丢了"；
-    //     ② 它们的 DSM1 载荷经 `LinkRx` 进了数据层 ⇒ 屏上出现
-    //        `coolant=9.0C intake=-39.0C` 这种不可能读数、`SRC …` 在 sim/link 之间跳。
-    //
-    //   实测对账（一包一帧修复之后、收环已放大到 1024 B）：从板主循环被刷屏拖住
-    //   约 95 ms 时会积压约 22 个包，一圈只放行 8 个 ⇒ 每次停顿漏掉约 14 帧；
-    //   20 秒里约 20 次停顿 ≈ 280 帧，而实测 `lost=298`（14.9%）—— 量级对得上。
-    //   放大收环只把 15.50% 变成 14.90% ⇒ **瓶颈不在环的大小，在这一行**。
-    //
-    //   ★ 为什么去掉上界仍然是"有界"的：**字节预算就是上界** —— 本函数一圈最多从
-    //     PHY 取 `kMeasBytesPerLoop`(512) B，而最小帧 11 B ⇒ 最多约 46 帧。
-    //     解析本身只是几次比较 + 一次入队（`noteArrival` 不格式化、不打日志）。
-    while (i + dashlink::kOverhead <= n) {
-      const uint8_t type = buf[i + dashlink::kOffType];
-      const uint8_t len = buf[i + dashlink::kOffLen];
-      if (buf[i + dashlink::kOffSync] != dashlink::kSync || !dashlink::lenInRange(len)) {
-        ++i;                       // 不是帧头：跳一个字节继续找（LinkRx 的同一策略）
-        continue;
-      }
-      const uint16_t need = (uint16_t)(dashlink::kOverhead + len);
-      if ((uint16_t)(i + need) > n) break;    // 没收全：留在 carry 里，下一圈接着拼
-      if (type == (uint8_t)dashlink::MsgType::Data &&
-          g_meas_rx.noteArrival(buf + i + dashlink::kOffPayload, len, now)) {
-        // 测量信封：只统计，**不进数据层**
-      } else {
-        // 不是测量信封的帧：交给既有的 `LinkRx`（收下并计数；它的计数就是
-        // `link rx bytes/frames` 那两个数 —— 与 UART 那一档**同一套**口径）。
-        dashlink::Frame f;
-        for (uint16_t k = 0; k < need; ++k) {
-          g_link_rx.feed(buf[i + k], &f);
-        }
-      }
-      i = (uint16_t)(i + need);
-    }
-    // 尾巴：**只可能是半截帧**（整帧在上面那个 while 里已经全部处理完）。
-    // ★ 不再喂 `LinkRx` —— 存进 carry，下一圈接着拼（理由见上面那段实测记录）。
-    {
-      const uint16_t rest = (uint16_t)(n - i);
-      if (rest <= (uint16_t)dashlink::kFrameBytesMax) {
-        for (uint16_t k = 0; k < rest; ++k) s_carry[k] = buf[i + k];
-        s_carryLen = rest;
-      } else {
-        s_carryLen = 0;   // 防御：一帧最大就 kFrameBytesMax，走到这里说明帧长判据坏了
-      }
-    }
-  }
+  // 这里原来自己把 PHY 的环读空、按帧长分流：测量信封交给 `MeasReceiver`，
+  // 其余"整帧"用 `g_link_rx.feed(byte, &f)` 逐字节喂给 `LinkRx`。
+  //
+  // ★★ 那条路是错的，而且错得很隐蔽：`LinkRx::feed() = push + advance`，
+  //    它会把**凑齐的帧通过 `out` 直接交出来** —— 而这里的 `f` 是**局部变量**
+  //    ⇒ **那一帧被丢掉了**；能活下来的只有"喂完还剩在缓冲里、下一圈由
+  //    `advance()` 解出来"的那部分残渣。
+  //    ⇒ 症状（实测）：**真帧（TICK/DATA）大量丢，而测量帧 0% 丢包** ——
+  //      因为测量帧走 `noteArrival`，不经过这条 feed 路。
+  //      主板射频实发 **199 帧/秒**、`tx_fail=0`、`pending=0`、`txring=0`（发送健康），
+  //      而从板只收到 **~6%** 的 TICK（`seen` 3.8/s，`miss` 每 60 秒涨 3531）
+  //      ⇒ **空中没问题，丢在"分发"这一步**。
+  //
+  // ★ 为什么现在可以整段删掉：稍早加的"**测量信封闸门**"已经把测量帧的识别搬到了
+  //   **消费端**（两处 `handleInbound` 之前），于是
+  //     · 真帧由 `link_poll_*()` 自己从 PHY 读出来正常处理（那条路一直是好的）；
+  //     · 测量帧在消费端被 `noteArrival` 认出来 —— 只统计、不进数据层。
+  //   ⇒ 本函数**不再需要接收半边**，只需要 ①发（`w` 的 burst）+ ③收端汇总。
+  //   ★ 顺带：`kMeasBytesPerLoop` 与那段"跨圈 carry"也随之不再被使用（常量定义保留，
+  //     免得动到别处的注释与编译期守卫；它现在只描述"曾经"的做法）。
+  //   ★★ 下面这一行**必须留在注释之外**：它把到达队列取出来算间隔/丢包，是收端唯一的
+  //      推进点。本单就把它并进过注释一次 —— 后果是 `mActive` 永不置位、`endedBy()`
+  //      永不触发、`meas rx:` 汇总行**静默消失**（而链路上一切正常，很难看出少了什么）。
   g_meas_rx.poll();
 
   // ---- ③ burst 结束 ⇒ 打收端那一行（只打一次）----
@@ -2524,6 +2572,7 @@ void loop() {
   loop_stage("van");     // ★ 步骤②归因：以下各阶段标记只为把长圈归因，不改变行为
 #if LINK_PHY_ESP_NOW
   probe_start_once();    // ★ 选项(a) 可行性探针：20ms 定时器回调的实际节拍（见它的说明）
+  link_tx_task_start_once();   // ★★ 选项(a)：建互斥量 +（主板上）建 TICK 发送任务
 #endif
   g_van_phy.tick(now);   // VAN 物理层解帧 → 喂给 data_service
                          // (桩 / GPIO 收帧两种实现共用这一个接口,见 van_phy.h:
