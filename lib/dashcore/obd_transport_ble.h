@@ -72,6 +72,9 @@ public:
   bool     ready() const { return conn_ && notify_ != nullptr && write_ != nullptr; }
   uint32_t dropped() const { return dropped_; }
   uint32_t connects() const { return connects_; }
+  // ★ 车上排查用:进 connecting 分支几次 / 真的发起 connect 几次
+  uint32_t csAttempts() const { return cs_attempts; }
+  uint32_t csCalls() const { return cs_calls; }
   const char* peerText() const { return peer_[0] ? peer_ : "-"; }
 
 private:
@@ -96,10 +99,18 @@ private:
   bool          want_peer_ = false;      // 扫到目标了，下一拍去连
   uint32_t dropped_  = 0;
   uint32_t connects_ = 0;
+  uint32_t cs_attempts = 0;
+  uint32_t cs_calls = 0;
   uint32_t boot_ms_  = 0;
   uint32_t last_try_ms_ = 0;
   uint32_t backoff_ms_  = 0;             // 退避：500ms → … → 8s
-  char     peer_[20] = {0};
+  // ★★ 存**整个 `NimBLEAddress`**（含地址类型），不是地址字符串 ——
+  //   实测：`aa:bb:cc:12:22:33` 这种是**随机静态地址**，拿字符串重建成
+  //   `BLE_ADDR_PUBLIC` 去连**永远连不上**，而日志里只会看到 `conn=0`，
+  //   看起来像"设备不在/被占着"。`getAddress()` 回来的对象类型是对的。
+  NimBLEAddress peer_addr_{};
+  bool          peer_valid_ = false;
+  char     peer_[20] = {0};              // 仅供日志打印
 
   static ObdTransportBle* s_self_;
 };

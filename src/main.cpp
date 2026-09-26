@@ -3246,10 +3246,15 @@ void loop() {
     //   怎么判"这一单成了"：`state=ready` + 上面的 `SRC … intake=obd`（或 rpm/coolant）。
     //   `drop>0` = 通知环满丢过字节 —— 那会让回答被截断、解出错的 PID 值，
     //   先看是不是主循环被抢占太久（同一行的 BEACON 里有 `loop: max=`）。
-    dash_logf("obd-ble: state=%s peer=%s conn=%u drop=%lu connects=%lu\n",
+    //   ★ 末尾那两个 `cs=a/b` 是**车上排查用的计数器**（2026-09-27）：
+    //     `a` = 进 connecting 分支几次、`b` = 真的发起 `client->connect()` 几次。
+    //     它能不依赖日志就分清三种情况：`a=0` 进不去分支 / `a>0,b=0` 卡在等 600ms /
+    //     `a=b` 说明连接请求真发出去了（那问题在对端或控制器）。
+    dash_logf("obd-ble: state=%s peer=%s conn=%u drop=%lu connects=%lu cs=%lu/%lu\n",
               g_obd_ble.stateName(), g_obd_ble.peerText(),
               (unsigned)g_obd_ble.connected(), (unsigned long)g_obd_ble.dropped(),
-              (unsigned long)g_obd_ble.connects());
+              (unsigned long)g_obd_ble.connects(),
+              (unsigned long)g_obd_ble.csAttempts(), (unsigned long)g_obd_ble.csCalls());
 #endif
 #if VAN_SNIFF
     van_sniff_report(now);

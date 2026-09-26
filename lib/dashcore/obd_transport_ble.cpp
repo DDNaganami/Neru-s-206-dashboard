@@ -3,6 +3,13 @@
 #if defined(ARDUINO) && defined(OBD_BLE)
 
 #include "dash_log.h"
+// ★ 射频共存那两行要用 IDF 的 API。**头文件叫 `esp_coexist.h`**（不是 `esp_coex.h`）
+//   —— 实测写错名字直接 `fatal error: esp_coex.h: No such file or directory`。
+//   真实路径：`framework-arduinoespressif32-libs/esp32/include/esp_coex/include/esp_coexist.h`
+//   （函数 `esp_coex_preference_set(esp_coex_prefer_t)`、枚举 `ESP_COEX_PREFER_BALANCE`）。
+#if defined(ARDUINO)
+#include <esp_coexist.h>
+#endif
 
 ObdTransportBle* ObdTransportBle::s_self_ = nullptr;
 
@@ -29,10 +36,23 @@ public:
     (void)c;
     if (ObdTransportBle::s_self_) ObdTransportBle::s_self_->conn_ = true;
   }
-  // ★ 这个头**空闲会自己掉线**（笔记本侧实测）⇒ 掉线时要把两个特征句柄清掉，
-  //   否则 `connected()` 会撒谎、而句柄已经失效（写进去石沉大海）。
+  // ★★ 连接**失败的原因码**只有这里能拿到（`connect()` 只回 bool）。
+  //   2026-09-27 实测：板子在车上扫描能看到诊断头（`peer=` 有了），但 `connect()`
+  //   **立刻**失败（重试间隔 ~1s，而连接超时设的是 8s ⇒ 不是超时，是对端拒绝）。
+  //   把原因码打出来才能区分这几种：
+  //     · `BLE_ERR_CONN_ESTABLISHMENT`(0x3E) → 对端没应/不在
+  //     · `BLE_ERR_UNK_CONN_ID`(0x02)        → 连接已不存在（时序问题）
+  //     · `BLE_ERR_AUTH_FAIL`(0x05)          → 要配对/绑定（**本头可能就是这种**：
+  //        它被 Windows 配对过 ⇒ 可能要求加密链路，而我们是"裸连"）
+  //   ⇒ 这就是当初"为什么必须把错误码打出来"的原因。
+  void onConnectFail(NimBLEClient* c, int reason) override {
+    (void)c;
+    dash_logf("obd-ble: onConnectFail reason=0x%02X\n", (unsigned)reason);
+  }
+  // 掉线原因同样有用（空闲掉线 vs 远端主动断）
   void onDisconnect(NimBLEClient* c, int reason) override {
-    (void)c; (void)reason;
+    (void)c;
+    dash_logf("obd-ble: onDisconnect reason=0x%02X\n", (unsigned)reason);
     if (ObdTransportBle::s_self_) ObdTransportBle::s_self_->onDisconnected();
   }
 };
@@ -70,7 +90,12 @@ void ObdTransportBle::onDiscovered(const NimBLEAdvertisedDevice* d) {
   if (d == nullptr || want_peer_) return;
   if (!d->haveServiceUUID()) return;
   if (!d->isAdvertisingService(NimBLEUUID(kServiceUuid))) return;
-  snprintf(peer_, sizeof(peer_), "%s", d->getAddress().toString().c_str());
+  // ★★ 存**整个地址对象**（含地址类型）。实测教训：`aa:bb:cc:12:22:33` 是
+  //   随机静态地址，若存成字符串再按 `BLE_ADDR_PUBLIC` 重建 ⇒ 连接永远失败，
+  //   而日志只有 `conn=0`（看起来像"设备不在/被手机占着"），极易误判。
+  peer_addr_  = d->getAddress();
+  peer_valid_ = true;
+  snprintf(peer_, sizeof(peer_), "%s", peer_addr_.toString().c_str());
   want_peer_ = true;
   if (scan_) scan_->stop();     // 找到就停，别再占射频
 }
@@ -81,10 +106,30 @@ bool ObdTransportBle::start() {
   s_self_ = this;
 
   NimBLEDevice::init("206dash");              // 只当中心：不建服务、不广播
+  // ★★ 射频共存（2026-09-27，车上实测加）：这块板**同时**在跑 ESP-NOW（Wi-Fi 那一套）
+  //   和 BLE，两者共用同一个 2.4G 射频。扫描（被动收）能成，但**建连要主动发包**，
+  //   默认偏好下 BLE 可能拿不到时隙 ⇒ 表现成"扫得到、连不上"。
+  //   `ESP_COEX_PREFER_BALANCE` 让两边均衡；默认是 Wi-Fi 优先。
+  //   ★ 若这招仍不够，下一步是 `ESP_COEX_PREFER_BT`（但那会压 ESP-NOW 的链路质量，
+  //     而那条链路是仪表的主命脉 ⇒ 不到万不得已不用）。
+#if defined(ARDUINO)
+  esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+#endif
   client_ = NimBLEDevice::createClient();
   if (client_ == nullptr) return false;
   client_->setClientCallbacks(new ObdBleClientCb(), true);
-  client_->setConnectTimeout(8);              // 秒
+  client_->setConnectTimeout(15);             // 秒（8 → 15：读数头慢，别过早放弃）
+  // ★★ 连接参数**显式给全 6 个**（2026-09-27 车上：`status=13` = `BLE_HS_ETIMEOUT`
+  //   ⇒ "连接请求发出去了、但对端没在超时内被连上"）。
+  //   后两个参数是**发起连接时用的扫描间隔/窗口** —— 它们才是关键：
+  //   NimBLE 默认拿主扫描的那组（100ms 间隔 / 80ms 窗口）去连，节奏偏密；
+  //   给一组"窗口=间隔"的快速扫描（40ms/40ms）+ 标准连接间隔（30~50ms）+
+  //   监督超时 4 秒，这对一个慢速 K 线适配器的射频前端友好得多。
+  //   ★ 单位：`itvl`/`scan*` 是 1.25ms？—— 不：NimBLE 这里 **minInterval/maxInterval
+  //     是 1.25ms 单位**、`timeout` 是 10ms 单位，而 `scanInterval/scanWindow` 也是
+  //     1.25ms 单位；下面 24/40 = 30/50ms、400 = 4s、32/32 = 40ms/40ms。
+  client_->setConnectionParams(24, 40, 0, 400, 32, 32);
+  client_->setConnectRetries(3);
 
   scan_ = NimBLEDevice::getScan();
   if (scan_ == nullptr) return false;
@@ -132,6 +177,29 @@ void ObdTransportBle::tick(uint32_t now_ms) {
   }
 
   if (want_peer_ && !conn_) {                       // 有地址了 ⇒ 连
+    // ★★ 2026-09-27 车上实测（这条最花时间，写清楚）：**扫描看得到、连接却失败**，
+    //   而且连 `onConnectFail` 都不打 ⇒ 连接请求**压根没发出去**。
+    //   同一时刻用笔记本（bleak）连同一个头：**一连连妥**（FFF0/FFF1/FFF2 全读到）
+    //   ⇒ 头没问题、地址类型没问题、也不是"被占着"。问题在板子这一侧的**时序**：
+    //   `scan_->stop()` 之后控制器还在收尾，此时发起连接会被控制器直接拒掉
+    //   （而我们看不到任何回调）。修法：**停扫之后真的等够**再连。
+    //
+    // ★ 计数（`cs_attempts` / `cs_calls`）是**为了不依赖日志**：
+    //   日志环有每秒预算、可能把这种低频行丢掉；而这两个数直接进状态行，
+    //   一眼就能分清"没进这个分支"与"进了但 connect 没返回"。
+    if (scan_) {
+      if (scan_->isScanning()) scan_->stop();
+    }
+    ++cs_attempts;
+    // ★★ 这里**不要**再放"停扫后等 N ms"的闸门 —— 2026-09-27 车上踩到：
+    //   函数开头（退避那一段）已经做过 `last_try_ms_ = now_ms`，
+    //   此处的 `now_ms - last_try_ms_` **恒为 0**，于是 `< 600` 永远成立、
+    //   每次都 return ⇒ **connect() 一次都发不出去**。
+    //   现象极具误导性：state 停在 `connecting`、一个回调都没有，
+    //   看起来像"对端不理我们"。真正的判据是计数器 `cs=a/b`：
+    //   `a` 在涨而 `b` 恒为 0 ⇒ 卡在这儿，不是链路问题。
+    //   ★ 节奏由函数开头那个**退避闸门**负责，这里不必再来一道。
+    ++cs_calls;
     if (connectNow()) { ++connects_; backoff_ms_ = 0; return; }
     backoff_ms_ = (backoff_ms_ < 8000u) ? (backoff_ms_ * 2u) : 8000u;
     return;
@@ -145,9 +213,28 @@ void ObdTransportBle::tick(uint32_t now_ms) {
 }
 
 bool ObdTransportBle::connectNow() {
-  if (client_ == nullptr || peer_[0] == 0) return false;
-  NimBLEAddress addr{std::string(peer_), BLE_ADDR_PUBLIC};
-  if (!client_->connect(addr)) return false;
+  if (client_ == nullptr || !peer_valid_) return false;
+  // ★★ 每一步都留痕（2026-09-27 车上排查）：现象是"`state=connecting` 卡住、
+  //   一个回调都不来"，必须分清是
+  //     (a) 压根没进这个函数、(b) `connect()` 阻塞住没返回、
+  //     (c) `connect()` 返回 false 但库里不回调、(d) 连上了但特征没拿到。
+  //   ⇒ 分别对应下面四条日志；日志只在这里打（进函数一次），不刷屏。
+  dash_logf("obd-ble: → connectNow begin (peer=%s type=%u)\n", peer_, (unsigned)peer_addr_.getType());
+  // ★★ `NimBLEClient::connect()` 里有**三条会立刻返回失败、且不回调 onConnectFail**
+  //   的前置检查（见 `NimBLEClient.cpp` 开头）—— 这正是"卡在 connecting、一个回调
+  //   都没有"的形状：
+  //     · `!NimBLEDevice::m_synced`        → 主机还没和控制器同步
+  //     · `m_connStatus != DISCONNECTED`   → **上一次连接的状态没清干净**（最像这个：
+  //       失败路径若没把状态复位，之后每次调用都会当场被拒，永远自愈不了）
+  //     · `address.isNull()`               → 地址无效
+  //   把状态打出来，一眼就能归因。
+  dash_logf("obd-ble:   pre: isConnected=%d connHandle=0x%04X\n",
+            (int)client_->isConnected(), (unsigned)client_->getConnInfo().getConnHandle());
+  // ★ 用**存下来的地址对象**（类型正确），别拿字符串重建 —— 见 onDiscovered 里的实测教训。
+  const bool ok = client_->connect(peer_addr_);
+  dash_logf("obd-ble: ← client->connect() = %d  isConnected=%d\n",
+            (int)ok, (int)client_->isConnected());
+  if (!ok) return false;
 
   NimBLERemoteService* svc = client_->getService(NimBLEUUID(kServiceUuid));
   if (svc == nullptr) return false;
