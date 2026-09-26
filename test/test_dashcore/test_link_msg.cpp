@@ -446,6 +446,131 @@ static void test_link_msg_source_bits_match_field_source(void) {
   TEST_ASSERT_EQUAL_UINT8((uint8_t)FieldSource::Sim, (uint8_t)dataFlagsGet(m.flags, kFieldIntake));
 }
 
+// ------------------------------------------------------------
+// VANRAW 0x21（2026-09-27）：**变长**载荷的逐字节布局
+// ------------------------------------------------------------
+// 这一族与其它五个 TYPE 的**根本区别**：长度不固定（= 4 + 那一帧自己的数据长度）。
+// 所以用例要钉住的不是"某一串字节"，而是**边界与自洽**：
+//   · 头 4 字节的布局（iden 大端 / dlen / hdr 的三段位）；
+//   · **能装下 0x4FC 的 11 字节**（灯位帧 —— 这是 `kVanRawMaxData` 取 12 的理由）；
+//   · 装不下 VIN 的 17 字节（**设计限制**，要显式钉住它不静默截断）；
+//   · unpack 必须拒绝"dlen 与 len 对不上"的载荷（半截帧 / 多尾巴）。
+static void fillVanRaw(VanRawMsg* m, uint8_t dlen) {
+  m->iden = 0x824u;
+  m->cmd = 0x8u;
+  m->ack = false;
+  m->fcs_ok = true;
+  m->len = dlen;
+  for (uint8_t i = 0; i < dlen; ++i) m->data[i] = (uint8_t)(0xA0u + i);
+}
+
+static void test_link_msg_vanraw_byte_layout(void) {
+  VanRawMsg m;
+  fillVanRaw(&m, 7u);                       // 车速帧的真实长度（van_source.h）
+  m.data[0] = 0x18; m.data[1] = 0xF8;       // 转速 0x18F8 = 6392 ⇒ 799.0 rpm
+  m.data[2] = 0x27;                         // 车速 39 计数 ⇒ 99.84 km/h
+  uint8_t p[kLenMax];
+  memset(p, 0xEE, sizeof(p));
+  const uint8_t n = packVanRaw(m, p);
+  TEST_ASSERT_EQUAL_UINT8(11u, n);          // 4 + 7
+  TEST_ASSERT_EQUAL_HEX8(0x08u, p[0]);      // iden 高字节（大端）
+  TEST_ASSERT_EQUAL_HEX8(0x24u, p[1]);      // iden 低字节
+  TEST_ASSERT_EQUAL_HEX8(7u, p[2]);         // dlen
+  TEST_ASSERT_EQUAL_HEX8(0x28u, p[3]);      // cmd=8 | fcs_ok=1(fcs 位 0x20)
+  TEST_ASSERT_EQUAL_HEX8(0x18u, p[4]);
+  TEST_ASSERT_EQUAL_HEX8(0xF8u, p[5]);
+  TEST_ASSERT_EQUAL_HEX8(0x27u, p[6]);
+  // 只写 n 个字节 —— 尾巴不许被碰
+  TEST_ASSERT_EQUAL_HEX8(0xEEu, p[n]);
+  // ack 位单独一位（与 fcs 分开）
+  m.ack = true;
+  TEST_ASSERT_EQUAL_UINT8(11u, packVanRaw(m, p));
+  TEST_ASSERT_EQUAL_HEX8(0x38u, p[3]);      // cmd=8 | ack=0x10 | fcs=0x20
+}
+
+static void test_link_msg_vanraw_roundtrip_and_limits(void) {
+  uint8_t p[kLenMax];
+  // ① 装得下 0x4FC 的 11 字节（**这就是 kVanRawMaxData 取 12 的理由**）
+  VanRawMsg m;
+  fillVanRaw(&m, 11u);
+  const uint8_t n11 = packVanRaw(m, p);
+  TEST_ASSERT_EQUAL_UINT8(15u, n11);                // 4 + 11 = 15（≤ kLenMax 16 ✓）
+  TEST_ASSERT_TRUE(n11 <= kLenMax);
+  VanRawMsg back;
+  TEST_ASSERT_TRUE(unpackVanRaw(p, n11, &back));
+  TEST_ASSERT_EQUAL_HEX16(m.iden, back.iden);
+  TEST_ASSERT_EQUAL_HEX8(11u, back.len);
+  TEST_ASSERT_EQUAL_HEX8(m.cmd, back.cmd);
+  TEST_ASSERT_TRUE(back.fcs_ok);
+  for (uint8_t i = 0; i < 11u; ++i) TEST_ASSERT_EQUAL_HEX8(m.data[i], back.data[i]);
+
+  // ② 满格（12 字节数据 ⇒ 载荷正好 16 = kLenMax）
+  fillVanRaw(&m, kVanRawMaxData);
+  TEST_ASSERT_EQUAL_UINT8(kLenMax, packVanRaw(m, p));
+  TEST_ASSERT_TRUE(unpackVanRaw(p, kLenMax, &back));
+  TEST_ASSERT_EQUAL_HEX8(kVanRawMaxData, back.len);
+
+  // ③ 装不下 VIN 的 17 字节：**一个字节都不写**（绝不截断）
+  fillVanRaw(&m, 17u);
+  memset(p, 0xEE, sizeof(p));
+  TEST_ASSERT_EQUAL_UINT8(0u, packVanRaw(m, p));
+  TEST_ASSERT_EQUAL_HEX8(0xEEu, p[0]);
+  TEST_ASSERT_EQUAL_UINT8(0u, packVanRaw(m, nullptr));
+
+  // ④ 空数据（dlen = 0 ⇒ 载荷 4 字节，正好是帧层 LEN 下限）
+  fillVanRaw(&m, 0u);
+  TEST_ASSERT_EQUAL_UINT8(kVanRawHdrLen, packVanRaw(m, p));
+  TEST_ASSERT_EQUAL_UINT8(kLenMin, packVanRaw(m, p));
+  TEST_ASSERT_TRUE(unpackVanRaw(p, kVanRawHdrLen, &back));
+  TEST_ASSERT_EQUAL_HEX8(0u, back.len);
+}
+
+// unpack 的判据是"**载荷里写的** dlen 必须与给进来的 len 对得上"：
+// 半截载荷（len 小于 dlen+4）与多尾巴（len 大于 dlen+4）都必须是 false ——
+// 前者会解出一个数据不全的帧（VanSource 会据此算出错误的转速/车速），
+// 后者会把尾巴静默当成数据。
+static void test_link_msg_vanraw_unpack_rejects_mismatched_len(void) {
+  VanRawMsg m;
+  fillVanRaw(&m, 7u);
+  uint8_t p[kLenMax];
+  const uint8_t n = packVanRaw(m, p);
+  VanRawMsg back;
+  TEST_ASSERT_TRUE(unpackVanRaw(p, n, &back));
+  TEST_ASSERT_FALSE(unpackVanRaw(p, (uint8_t)(n - 1u), &back));   // 半截
+  TEST_ASSERT_FALSE(unpackVanRaw(p, (uint8_t)(n + 1u), &back));   // 多一个尾巴
+  TEST_ASSERT_FALSE(unpackVanRaw(p, kLenMax, &back));             // 多更多
+  TEST_ASSERT_FALSE(unpackVanRaw(p, kVanRawHdrLen - 1u, &back));  // 连头都不全
+  TEST_ASSERT_FALSE(unpackVanRaw(p, n, nullptr));
+  TEST_ASSERT_FALSE(unpackVanRaw(nullptr, n, &back));
+  // dlen 越界（> kVanRawMaxData）即使 len 对得上也必须拒绝
+  uint8_t bad[kLenMax];
+  memset(bad, 0, sizeof(bad));
+  bad[2] = (uint8_t)(kVanRawMaxData + 1u);
+  TEST_ASSERT_FALSE(unpackVanRaw(bad, (uint8_t)(kVanRawHdrLen + kVanRawMaxData + 1u), &back));
+  // 载荷头 3 字节的位掩码：cmd 只有低 4 位有效（高位是 ack/fcs）
+  uint8_t hdr[kVanRawHdrLen];
+  memset(hdr, 0, sizeof(hdr));
+  hdr[2] = 0u;
+  hdr[3] = 0xFFu;
+  TEST_ASSERT_TRUE(unpackVanRaw(hdr, kVanRawHdrLen, &back));
+  TEST_ASSERT_EQUAL_HEX8(kVanRawCmdMask, back.cmd);   // 0x0F，不是 0xFF
+  TEST_ASSERT_TRUE(back.ack);
+  TEST_ASSERT_TRUE(back.fcs_ok);
+}
+
+// TYPE 号段的账：`0x21` 是 VANRAW，`0x50` 仍然是 §3 留给 v2 的保留段（**不许占**）。
+static void test_link_msg_vanraw_type_number(void) {
+  TEST_ASSERT_EQUAL_HEX8(0x21u, (uint8_t)MsgType::VanRaw);
+  TEST_ASSERT_EQUAL_HEX8(0x20u, (uint8_t)MsgType::Data);   // 与 DATA 相邻（同一生产者）
+  TEST_ASSERT_TRUE(typeKnown((uint8_t)MsgType::VanRaw));
+  TEST_ASSERT_TRUE(typeKnown((uint8_t)MsgType::Data));
+  TEST_ASSERT_FALSE(typeKnown(0x50u));    // v2 保留段：本层仍然不认
+  TEST_ASSERT_FALSE(typeKnown(0x22u));    // 空号
+  TEST_ASSERT_EQUAL_STRING("VANRAW", msgTypeName((uint8_t)MsgType::VanRaw));
+  // 变长 TYPE 在 payloadLenForType() 里报 0（= 变长或不存在，**不是**"期望 0 字节"）
+  TEST_ASSERT_EQUAL_UINT8(0u, payloadLenForType((uint8_t)MsgType::VanRaw));
+}
+
 void register_link_msg_tests(void) {
   RUN_TEST(test_link_msg_byte_layout_and_endianness);
   RUN_TEST(test_link_msg_roundtrip_all);
@@ -458,4 +583,8 @@ void register_link_msg_tests(void) {
   RUN_TEST(test_link_msg_prefix_compat_with_tail);
   RUN_TEST(test_link_msg_unpack_rejects_short_and_null);
   RUN_TEST(test_link_msg_source_bits_match_field_source);
+  RUN_TEST(test_link_msg_vanraw_byte_layout);
+  RUN_TEST(test_link_msg_vanraw_roundtrip_and_limits);
+  RUN_TEST(test_link_msg_vanraw_unpack_rejects_mismatched_len);
+  RUN_TEST(test_link_msg_vanraw_type_number);
 }

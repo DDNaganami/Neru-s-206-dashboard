@@ -28,6 +28,7 @@ const char* msgTypeName(uint8_t type) {
     case (uint8_t)MsgType::Hello:  return "HELLO";
     case (uint8_t)MsgType::Tick:   return "TICK";
     case (uint8_t)MsgType::Data:   return "DATA";
+    case (uint8_t)MsgType::VanRaw: return "VANRAW";
     case (uint8_t)MsgType::Status: return "STATUS";
     case (uint8_t)MsgType::Event:  return "EVENT";
     default:                       return "unknown";

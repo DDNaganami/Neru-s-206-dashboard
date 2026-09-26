@@ -94,6 +94,15 @@ enum class MsgType : uint8_t {
   Hello  = 0x01u,   // 双向：版本协商 + 角色对账 + "是不是同一份固件"
   Tick   = 0x10u,   // A→B：时基 + 心跳（车睡着、VAN 没帧时也照发）
   Data   = 0x20u,   // A→B：驱动左盘的四个标量
+  // ★★ 2026-09-27（另一单）：`0x21` VANRAW —— A→B，**把 VAN 原始帧搬给从板**。
+  //   为什么紧挨着 `0x20` 取号：它与 DATA 是**同一个生产者、同一份来源、同一个节拍**
+  //   （都跟随 VAN 帧到达，不另建定时器），只是搬的东西不同 ——
+  //   DATA 搬"合并后的四个标量"，VANRAW 搬"线上原始字节"。
+  //   为什么不是 DATA 的子字段：VANRAW 是**变长**的（载荷长度跟着 VAN 帧的数据长度走），
+  //   而 DATA 是定长 6 B；混在一个 TYPE 里就没法用"载荷只许加尾巴"那条次版本规矩了。
+  //   ★ 号段选择的约束：`0x50` 已经被 §3 留给 v2 的"从板文本日志转发"，**不能占**；
+  //     `0x02..0x0F` / `0x21..0x2F` 等是空的，取 `0x21` 是为了与 `0x20` 成对好记。
+  VanRaw = 0x21u,   // A→B：VAN 原始帧转发（变长载荷，见 link_msg.h 的 VanRawMsg）
   Status = 0x30u,   // B→A：单一日志出口的基础 + 链路质量
   Event  = 0x40u,   // 双向（v1 实际只用 B→A）：告警与档位变化，不重传
   // 0x50（从板文本日志转发）与 0x06 事件号是 v2 候选 / 保留段（§3 / §6），
@@ -105,6 +114,7 @@ inline bool typeKnown(uint8_t type) {
     case (uint8_t)MsgType::Hello:
     case (uint8_t)MsgType::Tick:
     case (uint8_t)MsgType::Data:
+    case (uint8_t)MsgType::VanRaw:
     case (uint8_t)MsgType::Status:
     case (uint8_t)MsgType::Event:
       return true;

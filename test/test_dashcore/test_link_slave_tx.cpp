@@ -263,19 +263,40 @@ static void test_link_send_budget_matches_contract_duty_cycle(void) {
   TEST_ASSERT_TRUE((double)slave >= expect_ms(kStatusLen, 2u) - 1.0);
   TEST_ASSERT_TRUE((double)slave <= expect_ms(kStatusLen, 2u) + 1.0);
 
-  // 两侧合计（默认参数 = 契约频率：DATA 80 Hz / TICK 50 Hz / STATUS 2 Hz）
+  // 两侧合计（默认参数 = 契约频率：DATA 80 Hz / VANRAW 80 Hz / TICK 50 Hz / STATUS 2 Hz）
+  // ★★ 2026-09-27：**契约 §1.1 那张占空比表里没有 VANRAW**（它是本单新加的
+  //   `0x21`）⇒ 这里的目标值从"§1.1 的 ≈15%"变成"§1.1 + 新加的那一项"。
+  //   ★ 数字是**算出来的**（不是估的，`lineMsPerSecondForFrame` 的口径：
+  //     整帧 = 7 + 载荷、一字节 10 bit、115200 8N1）：
+  //     DATA   80 Hz × 13 B（6 B 载荷）  =  90 ms/s
+  //     VANRAW 80 Hz × 18 B（11 B 载荷） = 125 ms/s   ← 新加
+  //     TICK   50 Hz × 12 B（5 B 载荷）  =  52 ms/s
+  //     STATUS  2 Hz × 23 B（16 B 载荷） =   4 ms/s
+  //   ⇒ A→B **267** ms/s（原来是 142）、两侧合计 **271** ms/s ≈ 27%
+  //     （§1.1 原文的 14% / 15% 是**没有 VANRAW 时**的数 —— 用例最后一条把它验回来）。
+  //   **这条用例就是"加了 VANRAW 之后还有多少余量"的唯一可查询处** ——
+  //   谁再把频率翻倍、或者把载荷加长，这里会红。
   const uint32_t total = linkBudgetMsPerSecond();
   const uint32_t master = lineMsPerSecondForFrame(kDataLen, 80u) +
+                          lineMsPerSecondForFrame((uint8_t)(kVanRawHdrLen + 7u), 80u) +
                           lineMsPerSecondForFrame(kTickLen, 50u);
   TEST_ASSERT_EQUAL_UINT32(master + slave, total);
-  // 契约 §1.1 原话："≈15%（A→B ≈14%，B→A ≈0.4%）" ⇒ 合计 100~160 ms/s 之间
-  TEST_ASSERT_TRUE(total >= 100u && total <= 160u);
-  // ★ 从板那一半**必须**远小于主板那一半（§1.1 那张表：0.4% vs 14%）
+  TEST_ASSERT_TRUE(total >= 255u && total <= 285u);
+  // ★ 从板那一半**仍然**远小于主板那一半（§1.1 那张表：0.4% vs 14% ⇒ 现在是 vs 23%）
   TEST_ASSERT_TRUE(slave * 10u < master);
-  // 主板那一半 ≈14%（DATA 80 Hz×13 B + TICK 50 Hz×12 B ≈ 140 ms/s）
-  TEST_ASSERT_TRUE(master >= 130u && master <= 150u);
-  TEST_ASSERT_TRUE((double)master >= expect_ms(kDataLen, 80u) + expect_ms(kTickLen, 50u) - 2.0);
-  TEST_ASSERT_TRUE((double)master <= expect_ms(kDataLen, 80u) + expect_ms(kTickLen, 50u) + 2.0);
+  // 主板那一半 = 267 ms/s（DAA 90 + VANRAW 125 + TICK 52）
+  TEST_ASSERT_TRUE(master >= 250u && master <= 285u);
+  TEST_ASSERT_TRUE((double)master >= expect_ms(kDataLen, 80u) +
+                                       expect_ms((uint8_t)(kVanRawHdrLen + 7u), 80u) +
+                                       expect_ms(kTickLen, 50u) - 3.0);
+  TEST_ASSERT_TRUE((double)master <= expect_ms(kDataLen, 80u) +
+                                       expect_ms((uint8_t)(kVanRawHdrLen + 7u), 80u) +
+                                       expect_ms(kTickLen, 50u) + 3.0);
+  // ★ 把 VANRAW 关掉（传 0）必须回到契约 §1.1 那一版的数字（142 ms/s ≈ 14%）
+  //   ⇒ 这一项是**可以单独摘掉的**，而且摘掉之后 §1.1 那张表仍然成立。
+  const uint32_t without = linkBudgetMsPerSecond(80u, 50u, 2u, 0u, 0u);
+  TEST_ASSERT_TRUE(without >= 130u && without <= 150u);
+  TEST_ASSERT_TRUE(total - without >= 120u && total - without <= 135u);
 
   // 反例（把 STATUS 提到 10 Hz 会怎样）：仍然塞得进，但已经不是"看不出来"的量级了
   const uint32_t hot = linkBudgetMsPerSecond(80u, 50u, 10u, 0u);

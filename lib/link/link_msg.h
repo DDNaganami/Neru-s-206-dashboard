@@ -79,6 +79,57 @@ struct DataMsg {
   uint8_t  flags       = 0;   // 每字段 2 位来源，见 dataFlagsPack()
 };
 
+// ---- 0x21 VANRAW（A→B，跟随母线上每一帧 VAN 的到达，不另建定时器） ----
+// 目的（README「下一步」第 2 条）：**从板不用自己再接一套 VAN 收发器** ——
+//   主板把线上解出来的**原始帧**原样搬过来，从板拿它喂自己的 `VanSource`，
+//   于是"车速/转速"之外那些**只有 VAN 有**的字段（灯位/门/VIN，见 van_source.h）
+//   在从板上也能解出来，而且将来往 VanSource 里加新字段时**链路层一个字都不用改**。
+//
+// 载荷布局（**变长**，长度 = 4 + dlen）：
+//   | 0..1 | iden  u16 BE（12 位有效，与 VanPacket::iden 同一口径）
+//   | 2    | dlen  u8 = 数据字节数（0..kVanRawMaxData）
+//   | 3    | hdr   u8 = (cmd & 0x0F) | ack?0x10 | fcs_ok?0x20
+//   | 4..  | data[dlen]
+//
+// ★ 为什么把 cmd/ack/fcs_ok 挤进**一个字节**（而不是各占一个）：
+//   帧层的 LEN 上限是 **16**（link_frame.h 的 kLenMax），而
+//   `dlen` 最大要放得下 **`0x4FC` 的 11 字节**（灯位那一帧，van_source.h 的
+//   `kVanLightLen`）⇒ 4 字节头 + 11 = 15 ≤ 16 ✓。若 cmd/ack/fcs 各占一字节，
+//   头就是 6 字节 ⇒ 只剩 10 字节可用，**灯位帧就搬不过去了**。
+//   `cmd` 本来就是 4 位（van_source.h 的字段宽度说明），ack / fcs_ok 各 1 位 ⇒ 一个字节够。
+//
+// ★ **搬不过去的帧**（如实标注，别当成 bug）：VIN 那一帧 `0xE24` 是 **17 字节**
+//   （`kVanVinLen`）⇒ 载荷要 21 B > 16 ⇒ 本 TYPE 搬不了。发送侧逐帧判 `dlen`，
+//   放不下的**丢这一帧并单独计数**（`VanRawQueue::tooLong()`），不截断 ——
+//   截断的帧在从板会被当成"另一个帧"解，比丢掉危险得多。
+static const uint8_t kVanRawHdrLen  = 4u;
+static const uint8_t kVanRawMaxData = (uint8_t)(kLenMax - kVanRawHdrLen);   // = 12
+
+// 第 3 字节（hdr）的位（唯一读写入口是下面的 pack/unpack，别手写移位）
+static const uint8_t kVanRawCmdMask = 0x0Fu;
+static const uint8_t kVanRawAckBit  = 0x10u;
+static const uint8_t kVanRawFcsBit  = 0x20u;
+
+struct VanRawMsg {
+  uint16_t iden   = 0;      // 12 位有效
+  uint8_t  len    = 0;      // data 里的有效字节数
+  uint8_t  cmd    = 0;      // 4 位
+  bool     ack    = false;  // 总线上有接收方应答
+  bool     fcs_ok = false;  // 线上 FCS 校验通过（**原样搬**，不在从板重算）
+  uint8_t  data[kVanRawMaxData] = {0};
+};
+
+// pack：写 `kVanRawHdrLen + m.len` 个字节，返回写入长度；**0 = 参数非法**
+//   （out 为空 / m.len > kVanRawMaxData ⇒ *一个字节都不写*）。
+// ★ 与定长那几个 `bool packX()` 不同，本函数**返回长度** —— 调用方要靠它填 LEN。
+uint8_t packVanRaw(const VanRawMsg& m, uint8_t* out);
+
+// unpack：len **≥** kVanRawHdrLen + 载荷里那个 dlen 时成功。
+//   ★ 判据是"**载荷里写的** dlen 与调用方给的 len 对得上"（`dlen == len - 4`），
+//     不是"len 够不够大"：否则尾巴上多出来的字节会被静默当成数据
+//     （帧层只保证 LEN 是 4..16，它不知道 VANRAW 自己的长度规矩）。
+bool unpackVanRaw(const uint8_t* p, uint8_t len, VanRawMsg* out);
+
 // ---- 0x30 STATUS（B→A，2 Hz / 500 ms） ----
 // ★ 2026-09-27：从板那一支真的开始发了（`link_app.h` 的 `StatusSender`）——
 //   之前 v1 只有 A→B 那一半在跑，这个结构体只有主板在**解**、没有人在**填**。

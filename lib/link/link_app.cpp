@@ -69,6 +69,94 @@ DataMsg packLinkData(const VehicleState& st, const DataSourceStatus& src) {
 }
 
 // ------------------------------------------------------------
+// ②' VAN 原始帧 ↔ VanPacket（`0x21 VANRAW`）
+// ------------------------------------------------------------
+VanRawMsg vanRawFromPacket(const VanPacket& pkt) {
+  VanRawMsg m;
+  m.iden = (uint16_t)(pkt.iden & 0x0FFFu);   // 12 位有效（VanPacket 的口径）
+  m.cmd = (uint8_t)(pkt.cmd & 0x0Fu);        // 4 位（同上）
+  m.ack = pkt.ack != 0u;
+  m.fcs_ok = pkt.fcs_ok != 0u;
+  // ★ 超长**不在这里截断**：截断的帧在从板会被当成"另一个帧"解出错误的字段值。
+  //   这里照实把 len 填成原值（可能 > kVanRawMaxData），由 `VanRawQueue::push()`
+  //   判"放不下 ⇒ 整帧丢掉 + 计数"。`data` 只拷得下多少拷多少 —— 反正
+  //   `push()` 不会把它发出去（`packVanRaw()` 见到 len 越界就返回 0）。
+  m.len = pkt.len;
+  const uint8_t n = (pkt.len > kVanRawMaxData) ? kVanRawMaxData : pkt.len;
+  for (uint8_t i = 0; i < n; ++i) m.data[i] = pkt.data[i];
+  return m;
+}
+
+VanPacket unpackVanRawToVanPacket(const VanRawMsg& m, uint32_t rx_ms) {
+  VanPacket p{};
+  p.iden = (uint16_t)(m.iden & 0x0FFFu);
+  p.cmd = (uint8_t)(m.cmd & 0x0Fu);
+  p.ack = m.ack ? 1u : 0u;
+  // ★ `fcs_ok` **原样搬**，不在从板重算：链路的 CRC 保证的是"这 16 字节没被改过"，
+  //   而 VAN 帧自己的 FCS 是**主板**在线上算的 —— 从板既没有那串位流、也不该
+  //   假装自己验过。丢掉这一位会让从板把主板已经判坏的帧当好的用。
+  p.fcs_ok = m.fcs_ok ? 1u : 0u;
+  p.len = m.len;
+  for (uint8_t i = 0; i < m.len; ++i) p.data[i] = m.data[i];
+  p.rx_ms = rx_ms;
+  return p;
+}
+
+// ------------------------------------------------------------
+// ②'' 原始帧转发队列
+// ------------------------------------------------------------
+void VanRawQueue::reset() {
+  mTail = 0;
+  mCount = 0;
+  mPushed = 0;
+  mDropped = 0;
+  mTooLong = 0;
+}
+
+bool VanRawQueue::push(const VanRawMsg& m) {
+  if (m.len > kVanRawMaxData) {   // 装不下（例如 VIN 的 17 字节）⇒ 丢这一帧
+    ++mTooLong;
+    return false;
+  }
+  uint8_t rec[kLenMax];
+  const uint8_t n = packVanRaw(m, rec);
+  if (n == 0u) {                  // 参数非法（理论上到不了这里，兜一层）
+    ++mTooLong;
+    return false;
+  }
+  if ((uint16_t)(mCount + n) > kRingBytes) {   // 放不下整帧 ⇒ 丢这一帧（绝不写半帧）
+    ++mDropped;
+    return false;
+  }
+  uint16_t w = (uint16_t)((mTail + mCount) % kRingBytes);
+  for (uint8_t i = 0; i < n; ++i) {
+    mBuf[w] = rec[i];
+    w = (uint16_t)((w + 1u) % kRingBytes);
+  }
+  mCount = (uint16_t)(mCount + n);
+  ++mPushed;
+  return true;
+}
+
+uint8_t VanRawQueue::pop(uint8_t* out, uint8_t cap) {
+  if (out == nullptr || cap < kLenMax) return 0u;   // 容量不够：不动环
+  if (mCount < kVanRawHdrLen) return 0u;            // 空（或残了一段不可能存在的尾巴）
+  // 记录长度写在**载荷第 3 个字节**（dlen）里 ⇒ 先把它读出来（可能跨环尾）。
+  const uint8_t dlen = mBuf[(uint16_t)((mTail + 2u) % kRingBytes)];
+  if (dlen > kVanRawMaxData) return 0u;             // 环里不该出现这种记录
+  const uint8_t n = (uint8_t)(kVanRawHdrLen + dlen);
+  if (mCount < n) return 0u;
+  uint16_t r = mTail;
+  for (uint8_t i = 0; i < n; ++i) {
+    out[i] = mBuf[r];
+    r = (uint16_t)((r + 1u) % kRingBytes);
+  }
+  mTail = r;
+  mCount = (uint16_t)(mCount - n);
+  return n;
+}
+
+// ------------------------------------------------------------
 // ③ DATA 的发送节奏
 // ------------------------------------------------------------
 void DataSender::reset() {
@@ -183,8 +271,16 @@ uint32_t lineMsPerSecondForFrame(uint8_t payload_len, uint32_t frames_per_second
 }
 
 uint32_t linkBudgetMsPerSecond(uint32_t master_data_hz, uint32_t master_tick_hz,
-                               uint32_t slave_status_hz, uint32_t slave_hello_hz) {
+                               uint32_t slave_status_hz, uint32_t slave_hello_hz,
+                               uint32_t master_vanraw_hz) {
+  // ★ VANRAW 这一项（2026-09-27 新增）用的是**车速帧那种长度**的载荷
+  //   （`kVanRawHdrLen + 7` = 11 B，与 `kDataLen` 一样），因为总线上
+  //   ≈80 Hz 的那一帧就是它；最长的可搬帧（灯位，15 B 载荷）只有 4.7 Hz，
+  //   对预算的贡献可以忽略。**别把这一项当成"最坏情况"** ——
+  //   真正的上界是 `kVanRawHdrLen + kVanRawMaxData` = 16 B，若要按上界算，
+  //   在这里显式改用那个常量（用例会跟着变）。
   return lineMsPerSecondForFrame(kDataLen, master_data_hz) +
+         lineMsPerSecondForFrame((uint8_t)(kVanRawHdrLen + 7u), master_vanraw_hz) +
          lineMsPerSecondForFrame(kTickLen, master_tick_hz) +
          lineMsPerSecondForFrame(kStatusLen, slave_status_hz) +
          lineMsPerSecondForFrame(kHelloLen, slave_hello_hz);

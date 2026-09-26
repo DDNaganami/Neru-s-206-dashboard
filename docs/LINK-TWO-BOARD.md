@@ -411,11 +411,13 @@ link: 首次收到从板帧(HELLO, role=0)                             ← ★ H
 link: B HELLO fw=0 build=0 boot=0                               ← 从板报的版本/构建标记
 link: B uptime=…ms rx_ok=… dropped=… crc=… gap=… face=… flags=0x00   ← 每 2 s 一行的 STATUS
 link: tx=…B rx_ok=… crc=0 bad_len=0 unk=0 role=0   B 在线(对端已 …ms 没动静)   ← ★ 每秒那行
+vanraw: pushed=… drop=0 long=0 queued=0B                                      ← ★ 原始帧转发（2026-09-27 新增）
 ```
 
 | 行 | 期望 | 它在证明什么 |
 |---|---|---|
 | `link: 主板侧就绪 TX=GPIO43 RX=GPIO44 @115200 8N1` | 一字不差 | §0/§1.1 的引脚与波特率**编译期**就对（没有"PHY 空壳"那句尾巴） |
+| `vanraw: pushed=… drop=0 long=0 queued=0B`（2026-09-27 新增，5 s 一行） | `pushed` 单调涨；**`drop=0`**；`long=` 见的次数应当极少（见下） | ★ **原始帧转发的发送侧**：`pushed` 只说明"进了队列"，真的到了没有要看从板那行 `ok`。`drop>0` ⇒ 队列/`LinkTx` 满而丢帧（VAN 到达率与主循环排水能力不匹配，先看 `loop: max=` 有没有被抢占）；`long>0` 是**设计限制**不是故障 —— VIN 那一帧（`0xE24`，17 字节数据）单帧装不下 `LEN` 上限 16，会被**整帧丢掉并计数**（绝不截断） |
 | `link: 首次收到从板帧(HELLO, role=0)` | 出现 | ★ **B→A 上行真的通了**（v1 双向的那一半）—— 只接一根线时这一行**永远不会出现** |
 | `link: B HELLO fw=… build=…` | 出现，且无"与本机 fw/build 不同"的尾巴 | 两块板是**同一份固件**（§3 的 HELLO 就是用来对账这个的） |
 | `link: B uptime=…` 每 **0.5 s** 一行（2 Hz） | `uptime` **单调涨** | ★★ `STATUS` 的 2 Hz 节奏（§3 表 `0x30` 行）。**这一行是"从板真的活了"在主板上的唯一证据** —— 2026-09-27 之前从板**一条 STATUS 都不发**，所以这个 `case` **一次都没被执行过**（那正是现场"线接好了、两板都在跑、主板上那些 B 行没有"的机制）。`uptime` **反复归零** ⇒ 从板在反复重启（§7 失败模式 7：5V 带不动） |
@@ -428,7 +430,8 @@ link: tx=…B rx_ok=… crc=0 bad_len=0 unk=0 role=0   B 在线(对端已 …ms 
 ```
 link: 从板侧就绪(§5, LINK_ROLE=0) TX=GPIO43 RX=GPIO44 @115200 8N1 —— 真 PHY(UART0) —— 收主板的 TICK/DATA，发 HELLO(每 5s 直到收到对端)+STATUS(2Hz,§3)
 link: Locked tick_age=20ms seen=… seq_gap=0 miss=0 offset=…ms      ← ★ 每秒那行
-SRC rpm=link speed=link coolant=link intake=link                    ← ★ 四个来源全变 Link
+SRC speed=van rpm=van coolant=link intake=link                     ← ★ 见下（2026-09-27 起不再是四个 link）
+vanraw: ok=… bad=0 age=…ms                                         ← ★ 原始帧转发（2026-09-27 新增）
 ```
 
 | 行 | 期望 | 它在证明什么 |
@@ -439,7 +442,8 @@ SRC rpm=link speed=link coolant=link intake=link                    ← ★ 四�
 | 每秒那行那个**状态词**（§4 的**三档**） | **`Locked`** | `>100 ms` ⇒ 变 `Lost`(失基准) / `>500 ms` ⇒ 降级 / `>3 s` ⇒ 回退 Sim —— 三档的名字就是判据 |
 | 每秒那行 **`seq_gap=0 miss=0`** | **0** | `TICK.seq` 一帧没丢（丢帧 ⇒ 主循环被拖住或环溢出） |
 | 每秒那行 **`offset=…ms`** | 一个**稳定**的负数/正数（不来回大跳） | §4 的偏移估计在工作（它只用于两屏相位对齐） |
-| **`SRC … =link`** 四个字段 | 全部 `link` | ★ **数据走的是既有 `data_service` 的 `FieldSource::Link` 通道**（不是新造的通路）；`3 s` 收不到 `DATA` 会自然回退成 `sim`（§3 的 DATA 行） |
+| **`SRC … =link`** 那行 | ★ **2026-09-27 起是 `speed=van rpm=van coolant=link intake=link`** —— 前两格不再是 `link` | ★★ 这是 `0x21 VANRAW` 生效的**直接证据**：主板把**原始 VAN 帧**搬过来，从板用**自己**的 `VanSource` 解出车速/转速 ⇒ 来源是 `van`（不是"主板算好送来的" `link`）。水温/进气仍然只能是 `link` —— 那两项**不是 VAN 字段**（206 的 VAN 上没有），只有主板那条 `DATA` 搬得动。★ 旧期望"四个全 `link`"是 2026-09-27 之前的形态，**已作废**；4.4 那笔账（`FieldSource::Link` 通道 + 3 s 回退 `sim`）本身没变，只是现在**只在 VAN 帧断流时才轮到它** |
+| **`vanraw: ok=… bad=0 age=…ms`**（2026-09-27 新增，5 s 一行） | `ok` **单调涨**、`bad=0`、`age` 在几十 ms 量级 | 原始帧转发在跑。`ok` 与主板那行 `vanraw: pushed=…` **同量级**（差值 = 链路丢的帧）；`bad>0` 说明有帧长度对不上（协议/版本不一致，**不是噪声**）；`age` 一路涨 ⇒ 转发断了（此时 `SRC` 那两格会退回 `link`，再 3 s 退回 `sim`） |
 | 屏上左盘（转速 + 水温） | 跟着主板那台车的模拟数据动 | 端到端通了（**这是最终判据**：协议对不对，屏说了算） |
 
 ### 4.3 ★ 角色冲突（§5 ①）长什么样 —— 别去怀疑线

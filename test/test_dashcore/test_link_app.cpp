@@ -722,6 +722,244 @@ static void test_link_app_end_to_end_role_conflict_master_side_drops(void) {
   TEST_ASSERT_TRUE(rx.roleConflictSeen());
 }
 
+// ------------------------------------------------------------
+// ⑦ VAN 原始帧转发（2026-09-27，`0x21 VANRAW`）—— 主板发、从板自己解
+// ------------------------------------------------------------
+// 这一组的判据分三层（每层都能单独失败，所以分开写）：
+//   ① **搬运无损**：`VanPacket` → `VanRawMsg` → 打包 → 解包 → `VanPacket`，
+//      逐字节相等（含 cmd/ack/fcs_ok 三段与 iden 的 12 位）；
+//   ② **队列的边界**：整帧进出、满了丢整帧、超长（VIN）单独计数且**绝不截断**，
+//      以及**跨环回绕**后取出来的记录仍然完整（这是环形缓冲最经典的错法）；
+//   ③ **端到端**：主板把原始帧发出去 → 假 PHY → 从板解回来 → 喂进**从板的**
+//      `VanSource` ⇒ 从板自己解出了车速/转速（在真板上表现为 `SRC speed=van`
+//      而不是 `link`），而链路上**一个 DATA 帧都不需要**。
+static VanPacket sampleSpeedPacket(uint16_t iden = 0x824u, uint8_t len = 7u) {
+  VanPacket p{};
+  p.iden = iden;
+  p.cmd = 0x8u;
+  p.ack = 0u;
+  p.fcs_ok = 1u;
+  p.len = len;
+  p.data[0] = 0x18;   // 转速 0x18F8 = 6392 ⇒ 799.0 rpm
+  p.data[1] = 0xF8;
+  p.data[2] = 0x27;   // 车速 39 计数 ⇒ 99.84 km/h
+  p.data[3] = 0x10;
+  p.data[4] = 0x00;
+  p.data[5] = 0x00;
+  p.data[6] = 0x4Cu;
+  p.rx_ms = 12345u;
+  return p;
+}
+
+static void test_link_vanraw_packet_roundtrip_is_lossless(void) {
+  const VanPacket src = sampleSpeedPacket();
+  const VanRawMsg m = vanRawFromPacket(src);
+  TEST_ASSERT_EQUAL_HEX16(0x824u, m.iden);
+  TEST_ASSERT_EQUAL_HEX8(0x8u, m.cmd);
+  TEST_ASSERT_FALSE(m.ack);
+  TEST_ASSERT_TRUE(m.fcs_ok);
+  TEST_ASSERT_EQUAL_HEX8(7u, m.len);
+  uint8_t p[kLenMax];
+  const uint8_t n = packVanRaw(m, p);
+  TEST_ASSERT_EQUAL_UINT8(11u, n);
+  VanRawMsg back;
+  TEST_ASSERT_TRUE(unpackVanRaw(p, n, &back));
+  const VanPacket dst = unpackVanRawToVanPacket(back, 999u);
+  TEST_ASSERT_EQUAL_HEX16(src.iden, dst.iden);
+  TEST_ASSERT_EQUAL_HEX8(src.cmd, dst.cmd);
+  TEST_ASSERT_EQUAL_HEX8(src.ack, dst.ack);
+  TEST_ASSERT_EQUAL_HEX8(src.fcs_ok, dst.fcs_ok);
+  TEST_ASSERT_EQUAL_HEX8(src.len, dst.len);
+  for (uint8_t i = 0; i < src.len; ++i) TEST_ASSERT_EQUAL_HEX8(src.data[i], dst.data[i]);
+  // rx_ms 用的是**接收侧**给的时刻（从板没有主板的 T0，见 link_app.h）
+  TEST_ASSERT_EQUAL_UINT32(999u, dst.rx_ms);
+
+  // 坏帧的 `fcs_ok` 也要**原样搬**（丢掉它 => 从板会把主板已判坏的帧当好的用）
+  VanPacket bad = src;
+  bad.fcs_ok = 0u;
+  const VanRawMsg bm = vanRawFromPacket(bad);
+  TEST_ASSERT_FALSE(bm.fcs_ok);
+  uint8_t bp[kLenMax];
+  const uint8_t bn = packVanRaw(bm, bp);
+  VanRawMsg bb;
+  TEST_ASSERT_TRUE(unpackVanRaw(bp, bn, &bb));
+  TEST_ASSERT_FALSE(bb.fcs_ok);
+  TEST_ASSERT_EQUAL_HEX8(0u, unpackVanRawToVanPacket(bb, 1u).fcs_ok);
+}
+
+// 装不下的一帧（VIN 的 17 字节）：`vanRawFromPacket()` 照实填 len（**不截断**），
+// 由队列判"放不下 ⇒ 丢 + 计数"。
+static void test_link_vanraw_too_long_is_rejected_not_truncated(void) {
+  VanPacket vin{};
+  vin.iden = 0xE24u;
+  vin.cmd = 0x8u;
+  vin.fcs_ok = 1u;
+  vin.len = 17u;                 // van_source.h 的 kVanVinLen
+  for (uint8_t i = 0; i < 17u; ++i) vin.data[i] = (uint8_t)('A' + i);
+  const VanRawMsg m = vanRawFromPacket(vin);
+  TEST_ASSERT_EQUAL_HEX8(17u, m.len);            // 原样，不截断
+  uint8_t buf[kLenMax];
+  memset(buf, 0xEE, sizeof(buf));
+  TEST_ASSERT_EQUAL_UINT8(0u, packVanRaw(m, buf));   // 装不下 ⇒ 一个字节都不写
+  TEST_ASSERT_EQUAL_HEX8(0xEEu, buf[0]);
+  VanRawQueue q;
+  TEST_ASSERT_FALSE(q.push(m));
+  TEST_ASSERT_EQUAL_UINT32(1u, q.tooLong());
+  TEST_ASSERT_EQUAL_UINT32(0u, q.dropped());
+  TEST_ASSERT_EQUAL_UINT32(0u, q.pushed());
+  TEST_ASSERT_EQUAL_UINT16(0u, q.queuedBytes());
+  uint8_t out[kLenMax];
+  TEST_ASSERT_EQUAL_UINT8(0u, q.pop(out, kLenMax));   // 环是空的
+}
+
+static void test_link_vanraw_queue_order_and_drop_on_full(void) {
+  VanRawQueue q;
+  // ① 顺序：先进先出，取出来的载荷与 push 进去的逐字节一致
+  const uint8_t lens[3] = {7u, 11u, 0u};
+  for (uint8_t k = 0; k < 3u; ++k) {
+    VanPacket p = sampleSpeedPacket((uint16_t)(0x800u + k), lens[k]);
+    p.len = lens[k];
+    TEST_ASSERT_TRUE(q.push(vanRawFromPacket(p)));
+  }
+  TEST_ASSERT_EQUAL_UINT32(3u, q.pushed());
+  for (uint8_t k = 0; k < 3u; ++k) {
+    uint8_t out[kLenMax];
+    const uint8_t n = q.pop(out, kLenMax);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)(kVanRawHdrLen + lens[k]), n);
+    VanRawMsg m;
+    TEST_ASSERT_TRUE(unpackVanRaw(out, n, &m));
+    TEST_ASSERT_EQUAL_HEX16((uint16_t)(0x800u + k), m.iden);
+  }
+  TEST_ASSERT_EQUAL_UINT16(0u, q.queuedBytes());
+
+  // ② 满了丢**整帧**：一条条塞到塞不下为止，被拒的那一帧不许留半截在环里
+  VanRawQueue q2;
+  uint32_t ok = 0;
+  VanPacket p = sampleSpeedPacket();      // 每帧 11 B 载荷
+  while (q2.push(vanRawFromPacket(p))) ++ok;
+  TEST_ASSERT_EQUAL_UINT32(ok, q2.pushed());
+  TEST_ASSERT_EQUAL_UINT32(1u, q2.dropped());
+  TEST_ASSERT_TRUE(q2.queuedBytes() <= VanRawQueue::kRingBytes);
+  TEST_ASSERT_TRUE((uint32_t)q2.queuedBytes() + 11u > (uint32_t)VanRawQueue::kRingBytes);
+  // 环里剩下的那些必须**每一帧都完整**（丢的是最后那一帧，不是把别人截断了）
+  uint8_t out[kLenMax];
+  uint8_t n;
+  uint32_t drained = 0;
+  while ((n = q2.pop(out, kLenMax)) != 0u) {
+    VanRawMsg m;
+    TEST_ASSERT_TRUE(unpackVanRaw(out, n, &m));
+    TEST_ASSERT_EQUAL_HEX8(7u, m.len);
+    ++drained;
+  }
+  TEST_ASSERT_EQUAL_UINT32(ok, drained);
+  TEST_ASSERT_EQUAL_UINT16(0u, q2.queuedBytes());
+}
+
+// ★ 环形缓冲最经典的错法：**跨环尾的那一条记录**。push/pop 各写一遍 head/tail
+//   取模，只要有一处算错，前几十条都对、偏偏在绕回那一圈读出乱码 ——
+//   而真机上那表现为"偶尔一帧车速乱跳"，几乎不可能定位。
+//   本条用"**填到快满、再全排空**"的循环强制读写指针各绕很多圈：
+//     · 每轮先填到再也放不下一条（但**一条都不许丢**：填之前先问容量）；
+//     · 再整环排空，逐条验"先进先出 + 内容完整"。
+//   ★ 第一版写的是"每轮 push 3 / pop 2"（想让它慢慢积压），结果环在 ~40 轮就满了、
+//     push 开始返回 false —— 那是**队列的正确行为**，但用例把它当成了失败。
+//     教训：这类用例必须自己保证"不越界"，不能指望容量够大。
+static void test_link_vanraw_queue_wraps_correctly(void) {
+  VanRawQueue q;
+  VanPacket p = sampleSpeedPacket();
+  uint32_t seq = 0;      // 已 push 的条数
+  uint32_t expect = 0;   // 环里**最老**那一条的标记（= 已 pop 的条数）
+  const uint8_t rec_max = (uint8_t)(kVanRawHdrLen + kVanRawMaxData);   // 最长记录 16 B
+  for (uint32_t round = 0; round < 64u; ++round) {
+    while ((uint32_t)q.queuedBytes() + (uint32_t)rec_max <= (uint32_t)VanRawQueue::kRingBytes) {
+      p.data[6] = (uint8_t)seq;                // 每条记录带一个不同的标记字节
+      p.len = (uint8_t)(7u + (round % 5u));    // 长度也在变（7..11）
+      for (uint8_t i = 7u; i < p.len; ++i) p.data[i] = (uint8_t)(0x30u + i);
+      TEST_ASSERT_TRUE(q.push(vanRawFromPacket(p)));
+      ++seq;
+    }
+    uint8_t out[kLenMax];
+    uint8_t n;
+    while ((n = q.pop(out, kLenMax)) != 0u) {
+      VanRawMsg m;
+      TEST_ASSERT_TRUE(unpackVanRaw(out, n, &m));
+      // ★ 先进先出：这一条必须是"环里最老的那一条"，而不是"刚 push 的那一条"
+      TEST_ASSERT_EQUAL_HEX8((uint8_t)expect, m.data[6]);
+      ++expect;
+    }
+    TEST_ASSERT_EQUAL_UINT16(0u, q.queuedBytes());   // 排空后一条不剩
+  }
+  TEST_ASSERT_EQUAL_UINT32(seq, expect);        // 一条不多、一条不少
+  TEST_ASSERT_EQUAL_UINT32(seq, q.pushed());
+  TEST_ASSERT_EQUAL_UINT32(0u, q.dropped());    // 全程一次都没丢
+  TEST_ASSERT_EQUAL_UINT32(0u, q.tooLong());
+}
+
+// 端到端：**只用 VANRAW**（一个 DATA 帧都不发）驱动从板的数据层。
+// 这正是真板上"从板不接收发器也能有车速/转速/灯位"的那条路。
+static void test_link_vanraw_end_to_end_slave_decodes_van_itself(void) {
+  FakeLinkPhy phy_a, phy_b;
+  phy_a.connect(&phy_b);
+  LinkTx tx;
+  VanRawQueue q;
+
+  // 主板侧：VAN 来的原始帧 → 队列 → 链路
+  VanPacket src = sampleSpeedPacket();
+  TEST_ASSERT_TRUE(q.push(vanRawFromPacket(src)));
+  uint8_t payload[kLenMax];
+  const uint8_t n = q.pop(payload, kLenMax);
+  TEST_ASSERT_TRUE(n != 0u);
+  TEST_ASSERT_TRUE(tx.enqueueFrame((uint8_t)MsgType::VanRaw, payload, n, kRoleMaster));
+  while (tx.queued() > 0u) tx.pump(phy_a);
+
+  // 从板侧：解帧 → 还原 VanPacket → 喂**从板自己的** VanSource
+  LinkRx rx;
+  rx.setLocalRole(kRoleSlave);
+  Frame f;
+  TEST_ASSERT_TRUE(rx.poll(phy_b, &f));
+  TEST_ASSERT_EQUAL_HEX8((uint8_t)MsgType::VanRaw, f.type);
+  VanRawMsg vm;
+  TEST_ASSERT_TRUE(unpackVanRaw(f.payload, f.len, &vm));
+  VehicleDataService svc;
+  svc.onVanPacket(unpackVanRawToVanPacket(vm, 1000u));
+  TEST_ASSERT_TRUE(svc.vanSource().hasSpeed());
+  TEST_ASSERT_TRUE(svc.vanSource().hasRpm());
+  TEST_ASSERT_EQUAL_FLOAT(99.84f, svc.vanSource().speedKmh());
+  TEST_ASSERT_EQUAL_FLOAT(799.0f, svc.vanSource().rpm());
+  // 合并进快照之后，这两格的来源是 **Van**（从板自己解出来的），不是 Link
+  const VehicleState st = svc.update(1000u);
+  TEST_ASSERT_EQUAL_FLOAT(99.84f, st.speed_kmh);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)FieldSource::Van, (uint8_t)svc.status().speed);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)FieldSource::Van, (uint8_t)svc.status().rpm);
+
+  // 灯位那一帧（0x4FC，11 字节数据）是**最长的能搬的一帧** —— 走到数据层之后，
+  // 从板的"只有 VAN 才有"的那几格（转向灯/近光/位置灯）也应当跟着有值。
+  VanPacket lights{};
+  lights.iden = 0x4FCu;
+  lights.cmd = 0xCu;
+  lights.fcs_ok = 1u;
+  lights.len = 11u;
+  lights.data[5] = (uint8_t)(0x04u | 0x40u);   // 左转向 + 近光
+  lights.rx_ms = 1100u;
+  VanRawQueue q2;
+  TEST_ASSERT_TRUE(q2.push(vanRawFromPacket(lights)));
+  LinkTx tx2;
+  const uint8_t n2 = q2.pop(payload, kLenMax);
+  TEST_ASSERT_TRUE(n2 != 0u);
+  TEST_ASSERT_TRUE(tx2.enqueueFrame((uint8_t)MsgType::VanRaw, payload, n2, kRoleMaster));
+  while (tx2.queued() > 0u) tx2.pump(phy_a);
+  Frame f2;
+  TEST_ASSERT_TRUE(rx.poll(phy_b, &f2));
+  VanRawMsg vm2;
+  TEST_ASSERT_TRUE(unpackVanRaw(f2.payload, f2.len, &vm2));
+  svc.onVanPacket(unpackVanRawToVanPacket(vm2, 1100u));
+  const VehicleState st2 = svc.update(1100u);
+  TEST_ASSERT_TRUE(st2.indicator_left);
+  TEST_ASSERT_FALSE(st2.indicator_right);
+  TEST_ASSERT_TRUE(st2.low_beam);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)FieldSource::Van, (uint8_t)svc.status().indicator_left);
+}
+
 void register_link_app_tests(void) {
   RUN_TEST(test_link_app_src_matches_field_source);
   RUN_TEST(test_link_app_data_pack_unpack_roundtrip);
@@ -739,4 +977,9 @@ void register_link_app_tests(void) {
   RUN_TEST(test_link_app_end_to_end_role_conflict_drops);
   RUN_TEST(test_link_app_end_to_end_role_conflict_master_side_drops);
   RUN_TEST(test_link_slave_side_real_phy_wiring_and_data_channel);
+  RUN_TEST(test_link_vanraw_packet_roundtrip_is_lossless);
+  RUN_TEST(test_link_vanraw_too_long_is_rejected_not_truncated);
+  RUN_TEST(test_link_vanraw_queue_order_and_drop_on_full);
+  RUN_TEST(test_link_vanraw_queue_wraps_correctly);
+  RUN_TEST(test_link_vanraw_end_to_end_slave_decodes_van_itself);
 }

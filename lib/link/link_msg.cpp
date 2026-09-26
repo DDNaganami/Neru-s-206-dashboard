@@ -33,10 +33,47 @@ uint8_t payloadLenForType(uint8_t type) {
     case (uint8_t)MsgType::Hello:  return kHelloLen;
     case (uint8_t)MsgType::Tick:   return kTickLen;
     case (uint8_t)MsgType::Data:   return kDataLen;
+    // ★ VANRAW **没有**单个定长值可报（长度 = 4 + 那一帧自己的数据长度，随帧变）
+    //   ⇒ 落进 default 的 0。这个 0 的含义是"**变长**或此 TYPE 不存在"，
+    //   调用方（日志/长度自检）**不能**把它读成"期望 0 字节"。
     case (uint8_t)MsgType::Status: return kStatusLen;
     case (uint8_t)MsgType::Event:  return kEventLen;
     default:                       return 0u;
   }
+}
+
+// ------------------------------------------------------------
+// VANRAW 0x21：iden u16 | dlen u8 | hdr u8 | data[dlen]   （变长，见 link_msg.h）
+// ------------------------------------------------------------
+uint8_t packVanRaw(const VanRawMsg& m, uint8_t* out) {
+  if (out == nullptr) return 0u;
+  if (m.len > kVanRawMaxData) return 0u;          // 放不下 ⇒ 一个字节都不写
+  putU16(out + 0, m.iden);
+  out[2] = m.len;
+  out[3] = (uint8_t)((m.cmd & kVanRawCmdMask) |
+                     (m.ack ? kVanRawAckBit : 0u) |
+                     (m.fcs_ok ? kVanRawFcsBit : 0u));
+  for (uint8_t i = 0; i < m.len; ++i) out[kVanRawHdrLen + i] = m.data[i];
+  return (uint8_t)(kVanRawHdrLen + m.len);
+}
+
+bool unpackVanRaw(const uint8_t* p, uint8_t len, VanRawMsg* out) {
+  if (p == nullptr || out == nullptr) return false;
+  if (len < kVanRawHdrLen) return false;
+  const uint8_t dlen = p[2];
+  // ★ 这一条是"**载荷里写的** dlen 必须与给进来的 len 对得上"（见头文件）：
+  //   只判 `len >= 4 + dlen` 会让"多出来的尾巴"被静默吃掉；只判 `dlen <= 12`
+  //   会让一个半截载荷（len < 4 + dlen）解出一个**数据不全**的帧 ——
+  //   那种帧喂进 VanSource 会解出错误的转速/车速，比丢帧糟得多。
+  if (dlen > kVanRawMaxData) return false;
+  if ((uint8_t)(kVanRawHdrLen + dlen) != len) return false;
+  out->iden   = getU16(p + 0);
+  out->len    = dlen;
+  out->cmd    = (uint8_t)(p[3] & kVanRawCmdMask);
+  out->ack    = (p[3] & kVanRawAckBit) != 0u;
+  out->fcs_ok = (p[3] & kVanRawFcsBit) != 0u;
+  for (uint8_t i = 0; i < dlen; ++i) out->data[i] = p[kVanRawHdrLen + i];
+  return true;
 }
 
 // ------------------------------------------------------------

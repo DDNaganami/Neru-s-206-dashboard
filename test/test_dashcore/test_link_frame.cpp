@@ -317,9 +317,13 @@ static void test_link_frame_reject_len_out_of_range(void) {
 static void test_link_frame_reject_unknown_type(void) {
   uint8_t payload[kHelloLen];
   fillPayload(payload, kHelloLen, 0x63);
-  // 0x00/0x05/0x0F/0x11/0x21/0x31/0x41 是"表里没有的号"；
+  // 0x00/0x05/0x0F/0x11/0x22/0x31/0x41 是"表里没有的号"；
   // 0x50 是从板文本日志转发（§6 的 v2 候选）、0x06 是保留的事件号（不是 TYPE）
-  const uint8_t unknown[] = {0x00u, 0x05u, 0x06u, 0x0Fu, 0x11u, 0x21u, 0x31u, 0x41u, 0x50u, 0xFFu};
+  // ★ 2026-09-27：这个数组里原来有 **0x21** —— 那一号已经被 `MsgType::VanRaw`
+  //   （原始帧转发）占用 ⇒ 它不再是"表里没有的号"，用例当场就会失败。
+  //   换成仍然空着的 **0x22**：**号码被别人占了就要改这一行**，而这条注释就是
+  //   留给人找的地方（下一次再占号时它会同样炸一次，这是有意的）。
+  const uint8_t unknown[] = {0x00u, 0x05u, 0x06u, 0x0Fu, 0x11u, 0x22u, 0x31u, 0x41u, 0x50u, 0xFFu};
   for (uint8_t i = 0; i < sizeof(unknown); ++i) {
     uint8_t buf[kParseBufBytes];
     const uint16_t n = encodeFrame(unknown[i], payload, kHelloLen, kRoleMaster, buf, sizeof(buf));
@@ -330,10 +334,10 @@ static void test_link_frame_reject_unknown_type(void) {
     TEST_ASSERT_FALSE(typeKnown(unknown[i]));
     TEST_ASSERT_EQUAL_UINT8(0u, payloadLenForType(unknown[i]));
   }
-  // 表里的五个 TYPE 一个都不能被误杀
+  // 表里的**六个** TYPE 一个都不能被误杀（2026-09-27 起含 VANRAW 0x21）
   const uint8_t known[] = {(uint8_t)MsgType::Hello, (uint8_t)MsgType::Tick,
-                           (uint8_t)MsgType::Data, (uint8_t)MsgType::Status,
-                           (uint8_t)MsgType::Event};
+                           (uint8_t)MsgType::Data, (uint8_t)MsgType::VanRaw,
+                           (uint8_t)MsgType::Status, (uint8_t)MsgType::Event};
   for (uint8_t i = 0; i < sizeof(known); ++i) {
     uint8_t buf[kParseBufBytes];
     const uint16_t n = encodeFrame(known[i], payload, kHelloLen, kRoleMaster, buf, sizeof(buf));

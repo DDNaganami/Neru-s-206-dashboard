@@ -152,12 +152,96 @@ uint32_t lineMsPerSecondForFrame(uint8_t payload_len, uint32_t frames_per_second
 // 本仓库那两个发送方**按契约频率全速跑**时的合计线时（毫秒/秒）。
 //   master_data_hz / master_tick_hz —— 主板那一侧（§3：DATA ≈79.7、TICK 50）
 //   slave_status_hz  / slave_hello_hz —— 从板那一侧（§3：STATUS 2、HELLO ≤0.2）
+//   master_vanraw_hz —— ★ 2026-09-27 新增的 `0x21 VANRAW`（跟随母线上每一帧 VAN，
+//     所以取与 DATA 同一个量级：总线上 ≈80 Hz 的那一帧就是车速帧）
 // ★ 默认参数**就是契约值**，调用方（`main.cpp` 的注释、用例、将来的诊断页）
 //   不必各抄一遍数字；要算"提高频率会怎样"时显式传别的值。
+// ★★ 加 VANRAW 之后**契约 §1.1 那张占空比表就不完整了**（它写的是 A→B ≈14%）：
+//   算出来的口径（115200 8N1，整帧 = 7 + 载荷）——
+//     DATA   80 Hz × 13 B =  90 ms/s
+//     VANRAW 80 Hz × 18 B = 125 ms/s   ← 本单新加
+//     TICK   50 Hz × 12 B =  52 ms/s
+//     STATUS  2 Hz × 23 B =   4 ms/s
+//   ⇒ A→B **267 ms/s**（原 142）、两侧合计 **271 ms/s ≈ 27%**。
+//   ★ 无线档（ESP-NOW）不受这条约束，实测 0 丢包（见 ACCEPTANCE 的 2026-09-27 条）；
+//     这条算术管的是**有线那一档**（UART0 @115200，已退役但仍能编）。
 uint32_t linkBudgetMsPerSecond(uint32_t master_data_hz  = 80u,
                                uint32_t master_tick_hz  = 50u,
                                uint32_t slave_status_hz = 2u,
-                               uint32_t slave_hello_hz  = 0u);
+                               uint32_t slave_hello_hz  = 0u,
+                               uint32_t master_vanraw_hz = 80u);
+
+// ------------------------------------------------------------
+// ②' VAN 原始帧转发（`0x21 VANRAW`）—— 主板发、从板解
+// ------------------------------------------------------------
+// 用途：让从板**不用自己再接一套 VAN 收发器**也能拿到"只有 VAN 才有"的字段
+//   （灯位 / 门 / VIN，见 van_source.h）；将来往 `VanSource` 里加新字段时，
+//   链路层**一个字都不用改** —— 这正是"搬原始帧"相对"再扩几个 DATA 字段"的好处。
+//
+// ★ 分工（与 `unpackDataToLinkData` 逐字同形）：
+//   · 主板侧：`VanRawMsg` 从 `VanPacket` 来（`vanRawFromPacket()`），
+//     打包用 `packVanRaw()`（link_msg.h），**本层不碰字节序**；
+//   · 从板侧：`unpackVanRaw()` 解出 `VanRawMsg`，再用 `unpackVanRawToVanPacket()`
+//     还原成 `VanPacket`，喂给**从板自己的** `VanSource`。
+// ★ 为什么还原成 `VanPacket`（而不是让 VanSource 认识 VanRawMsg）：
+//   `VanSource` 是数据层（lib/dashcore），它只认 `VanPacket`；
+//   让数据层 include 协议头会倒过来依赖 —— 与 `LinkData` 那条同一理由
+//   （见 data_service.h 的 `LinkData` 注释）。
+// ★ `rx_ms` 由调用方给：从板要用**自己**的毫秒（它没有主板的 T0），
+//   否则 `VanSource` 的 3 秒新鲜度判据在从板上没有意义。
+// ★ 注意 `VanPacket` 是**全局作用域**的（在 lib/dashcore/van_source.h 里，
+//   由上面 include 的 data_service.h 带进来）—— 这里**不要**写 `struct VanPacket;`
+//   当"前向声明"：本文件整段在 `namespace dashlink` 里，那一行会声明出一个
+//   **另一个** `dashlink::VanPacket`（不完整类型）⇒ 链接期报
+//   "incomplete result type 'VanPacket'"（实测踩到，就这么写的）。
+VanPacket unpackVanRawToVanPacket(const VanRawMsg& m, uint32_t rx_ms);
+VanRawMsg vanRawFromPacket(const VanPacket& pkt);
+
+// ------------------------------------------------------------
+// ②'' 原始帧的**转发队列**（主板侧，`0x21` 的发送侧）
+// ------------------------------------------------------------
+// 为什么需要一个队列（而不是"收到一帧就顺手发一帧"）：
+//   · §1.2 ①：**不在回调里发**。VAN 的收帧回调只往这里拷字节（纯内存），
+//     真的编码/入 `LinkTx` 由主循环做 —— 与 DATA"从快照发"同一条纪律；
+//   · 一次 `g_van_phy.tick()` 可能一口气交付好几帧（被 LVGL 拖慢过之后尤其如此），
+//     而主循环的发送点在后面 ⇒ 中间必须有缓冲，否则要么丢帧、要么在回调里发。
+// 形状与 `LinkTx` **刻意同形**（整帧进出、满了丢**整帧**、单生产者+单消费者）：
+//   · 生产者 = VAN 收帧那一路（`g_van_phy.tick()` / 串口回放），
+//   · 消费者 = 主循环里的 `link_master_tick()`。
+//   ★ 两者**都在主循环上下文**（`VanPhyGpio` 的 ISR 只入队边沿，解帧发生在
+//     `tick()` 里）⇒ 这里没有中断并发，head/count 两个索引就够。
+//     **将来若有谁把 push 挪进 ISR，这个类必须先加临界区** —— 写在这里当路标。
+// 容量 512 B 的来历：一帧最多 16 B 载荷 ⇒ 至少能装 32 帧；
+//   按 VAN 车速帧 ≈80 Hz、主循环 ≈9k 圈/秒算，正常一圈最多积压 1~2 帧，
+//   512 B 给的是"主循环被抢占 ~100 ms"（实测最长 187 ms）时的余量。
+class VanRawQueue {
+ public:
+  static const uint16_t kRingBytes = 512u;
+
+  void reset();
+
+  // 放进一帧（**整帧进出**）。返回 false 的两种情形都**只丢这一帧并计数**：
+  //   · 这一帧的数据太长（`kVanRawMaxData` 装不下，例如 VIN 那 17 字节）⇒ tooLong()++
+  //   · 环里放不下整帧                                                   ⇒ dropped()++
+  bool push(const VanRawMsg& m);
+
+  // 取出一帧：写入 out（容量 cap），返回**写入的载荷字节数**（0 = 环空或 cap 不够）。
+  // `cap < kLenMax` 时**不动环**、返回 0（调用方给够就行）。
+  uint8_t pop(uint8_t* out, uint8_t cap);
+
+  uint32_t pushed()  const { return mPushed; }
+  uint32_t dropped() const { return mDropped; }
+  uint32_t tooLong() const { return mTooLong; }
+  uint16_t queuedBytes() const { return mCount; }
+
+ private:
+  uint8_t  mBuf[kRingBytes] = {0};
+  uint16_t mTail  = 0;      // 读位置
+  uint16_t mCount = 0;      // 环里现有字节数
+  uint32_t mPushed  = 0;
+  uint32_t mDropped = 0;
+  uint32_t mTooLong = 0;
+};
 
 // ------------------------------------------------------------
 // ③ 主板侧：DATA 的发送节奏（§3 的 DATA 行）

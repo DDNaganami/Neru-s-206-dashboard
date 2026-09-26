@@ -209,6 +209,20 @@ static SystemStatus g_sys;
 static uint32_t g_van_frames_seen = 0;
 static uint32_t g_van_frames_fcs_ok = 0;
 static uint32_t g_van_last_rx_ms = 0;
+
+// ---- 原始帧转发（`0x21 VANRAW`，2026-09-27）的两个方向各自计数 ----
+// 为什么两个方向各计一套：它们回答的是**完全不同**的问题 ——
+//   · 主板：我**搬出去**了多少帧、有没有搬不动/搬丢的（发送侧的健康度）；
+//   · 从板：我**收下并解出**了多少帧、有几帧解不开（接收侧的健康度）。
+// 判据（回放时对数用）：主板的 `push` 数 ≈ 从板的 `ok` 数（链路丢包由它们的差可见），
+//   而两者都应当与"设备自己解出的 VAN 帧数"（`g_van_frames_seen`）同量级。
+#if LINK_ROLE == 1
+// 主板侧没有额外计数器：发送侧那几个数直接读 `g_van_raw` 自己的（见打印处）。
+#else
+static uint32_t g_vanraw_ok = 0;
+static uint32_t g_vanraw_bad = 0;           // 载荷长度对不上 ⇒ 丢帧并计数
+static uint32_t g_vanraw_last_ms = 0;       // 最近一帧成功解出的时刻（0 = 还没有过）
+#endif
 // 渲染帧率的 EMA（×10 定点，0.1 fps 分辨率）。为什么在 main 里算：
 //   渲染是主循环按 200 ms 节流调的，帧率就是"这条节流有没有被卡住"的直接证据
 //   （RGB 那条路上第一次整屏刷新要 ≈1 秒 ⇒ 那一秒 fps 会掉下来）。
@@ -550,6 +564,43 @@ VehicleDataService& attachObdSerial() {
 // 所以在中间再插一层 VanLogSink(见下)。
 static VanSourceSink g_van_sink(&g_data.vanSource());
 
+#if LINK_ROLE == 1
+// 原始帧的转发队列（只有主板发这一路）。★ 类型与用法见 `lib/link/link_app.h`
+// 的 `VanRawQueue`；其余链路对象（`g_link_tx` 等）在下面"双板链路 v1 的接线"
+// 那一节，这里单独放是因为 `van_frame_in()` 要用它 —— **只有主板**有生产者。
+static dashlink::VanRawQueue g_van_raw;
+// 主循环一圈最多往 `LinkTx` 搬几帧（封顶，剩下的下一圈再走）。
+static const uint8_t kVanRawFramesPerLoop = 8u;
+#endif
+
+// ============================================================================
+//  VAN 帧的**唯一入口**（2026-09-27 新增：原始帧转发那一单）
+// ============================================================================
+// 为什么要有这一个函数：这条链路上原来有**两个入口**，而且口径不一样 ——
+//   · 物理层那条：`g_van_phy.tick()` → `VanLogSink`（打印 + 数帧）→ `g_van_sink`；
+//   · 串口回放那条（`van_replay_feed`）：直接 `g_data.onVanPacket()` ——
+//     **绕过了 VanLogSink**。
+//   ★ 于是 `VanLogSink` 上那句"它两条路径都覆盖：GPIO 物理层收帧、以及串口离线
+//     回放"**是错的**，而且实测可见：整趟实车录像回放（6561 帧）期间，
+//     主板日志里 `VAN 824` 一行都没有、`g_van_frames_seen` 也**一帧都没涨**
+//     （用它做诊断页的"本机解出的帧数"会显示 0）。
+//   ⇒ 本单要加"原始帧转发"时这件事就变成了硬约束：**两条入口必须汇到同一处**，
+//     否则回放**永远验不了转发**（那正是手上唯一能做的验证手段）。
+// 本函数就是那一处：数帧 → （主板）入转发队列 → 喂数据层。
+//   ★ 打印**不在这里**：80 Hz × 一行 46 B ≈ 3.7 KB/s 的日志负担只有物理层那条
+//     路径才付（它本来就在付），回放那条继续不打印 —— 回放的证据是 `SRC` 那几行
+//     与 `vanraw` 计数，不是逐帧行。
+static void van_frame_in(const VanPacket& pkt) {
+  ++g_van_frames_seen;
+  if (pkt.fcs_ok) ++g_van_frames_fcs_ok;
+  g_van_last_rx_ms = pkt.rx_ms;
+#if LINK_ROLE == 1
+  // 只往队列里拷字节（纯内存、不碰 PHY）—— **不在回调里发**，见 link_app.h。
+  g_van_raw.push(dashlink::vanRawFromPacket(pkt));
+#endif
+  g_van_sink.onPacket(pkt);
+}
+
 #if defined(VAN_PHY_GPIO)
 #include "van_phy_gpio.h"
 static VanPhyGpio g_van_phy;
@@ -646,12 +697,6 @@ class VanLogSink : public VanSink {
 public:
   // 只要 824(车速/转速)这一帧?先全打 —— 反查协议时缺的就是"别的帧长什么样"。
   void onPacket(const VanPacket& pkt) override {
-    // ★ 诊断页要的两个数（2026-09-24）：本机解出的帧数 + 最近一帧的时刻。
-    //   在这里数（而不是读物理层的 Stats）的理由见 `g_van_frames_seen` 的说明。
-    //   它两条路径都覆盖：GPIO 物理层收帧、以及串口离线回放。
-    ++g_van_frames_seen;
-    if (pkt.fcs_ok) ++g_van_frames_fcs_ok;
-    g_van_last_rx_ms = pkt.rx_ms;
 #if VAN_SNIFF
     van_sniff_note(pkt.iden);   // ★ 计数不依赖任何字符串格式化,绕开"帧行不打印"
 #endif
@@ -662,12 +707,12 @@ public:
       for (uint8_t i = 0; i < pkt.len; ++i) dash_logf(" %02X", (unsigned)pkt.data[i]);
       dash_logf("   # cmd=%u ack=%u\n", (unsigned)pkt.cmd, (unsigned)pkt.ack);
     }
-    if (next_) next_->onPacket(pkt);   // 转发给数据源:打印归打印,数据照收
+    // ★★ 数帧与喂数据层**都不在这里**了（2026-09-27）：统一走 `van_frame_in()`
+    //   —— 回放那条入口原来绕过本 sink，导致"诊断页的帧数"在回放时恒为 0、
+    //   而原始帧转发在回放里**根本不会发生**（回放是手上唯一的验证手段）。
+    //   本类的职责从此只剩"把这一帧打成一行日志"，见 `van_frame_in()` 的说明。
+    van_frame_in(pkt);
   }
-  void setNext(VanSink* n) { next_ = n; }
-
-private:
-  VanSink* next_ = nullptr;
 };
 
 static VanLogSink g_van_log;
@@ -1518,7 +1563,11 @@ static void van_replay_feed(const char c, char* line, uint8_t& len, uint32_t now
       line[len] = '\0';
       VanPacket p{};
       if (parseVanReplayLine(line, &p, now)) {
-        g_data.onVanPacket(p);
+        // ★★ 2026-09-27：这里原来调的是 `g_data.onVanPacket(p)` —— 它**绕过**
+        //   `VanLogSink`，于是"回放进来的帧"既不计数、也不进原始帧转发队列
+        //   （后果见 `van_frame_in()` 那段说明：回放是手上唯一能验证转发的手段）。
+        //   现在与物理层那条**走同一个入口**。
+        van_frame_in(p);
       } else {
         dash_logf("VAN? %s\n", line);   // 解析失败回显,方便排错
       }
@@ -1927,6 +1976,25 @@ static bool link_poll_frames_slave(uint32_t now) {
       }
       continue;
     }
+    // ★★ VANRAW（`0x21`，2026-09-27）：主板把**原始 VAN 帧**搬过来了 ⇒ 从板用
+    //   **自己**的 `VanSource` 解一遍，于是"只有 VAN 才有"的那些字段（灯位/门/VIN）
+    //   在从板上也有了，而它**不用再接一套收发器**。
+    //   ★ 走 `van_frame_in()`（与主板物理层、串口回放**同一个入口**）⇒
+    //     数帧、3 秒新鲜度、以及各字段自己的 age 判据全部沿用既有那一套，
+    //     本单在数据层**一行都没改**（见 data_service.h 的合并顺序）。
+    //   ★ 解不出来的载荷（长度对不上）**只计数、不喂**：半个 VAN 帧喂进 VanSource
+    //     会解出错误的转速/车速，比丢帧糟得多（理由同 link_msg.cpp 的 unpackVanRaw）。
+    if (f.type == (uint8_t)dashlink::MsgType::VanRaw) {
+      dashlink::VanRawMsg vm;
+      if (dashlink::unpackVanRaw(f.payload, f.len, &vm)) {
+        van_frame_in(dashlink::unpackVanRawToVanPacket(vm, now));
+        ++g_vanraw_ok;
+        g_vanraw_last_ms = now;
+      } else {
+        ++g_vanraw_bad;
+      }
+      continue;
+    }
     // HELLO / STATUS / EVENT：v1 实际只用 B→A（§3），A→B 收到只说明"对端在说话"，
     // 不参与数据面 —— 从板这一侧本轮不打日志（它自己的 USB-C 上要看的是数据层那几行）。
   }
@@ -1991,6 +2059,19 @@ static bool link_poll_bounded_slave(uint32_t now) {
       if (f.type == (uint8_t)dashlink::MsgType::Data) {
         g_data.applyLinkData(ld);
         got_data = true;
+      }
+      continue;
+    }
+    // ★★ VANRAW（`0x21`）：与上面 `link_poll_frames_slave()` 里那一段**逐字同形**
+    //   （两个收帧函数刻意保持同一形状，见它们头顶的说明）。理由与判据见那一段。
+    if (f.type == (uint8_t)dashlink::MsgType::VanRaw) {
+      dashlink::VanRawMsg vm;
+      if (dashlink::unpackVanRaw(f.payload, f.len, &vm)) {
+        van_frame_in(dashlink::unpackVanRawToVanPacket(vm, now));
+        ++g_vanraw_ok;
+        g_vanraw_last_ms = now;
+      } else {
+        ++g_vanraw_bad;
       }
       continue;
     }
@@ -2275,6 +2356,27 @@ static void link_master_tick(uint32_t now, const VehicleState& snapshot) {
     }
   }
 
+  // ③' VANRAW：把队列里积压的**原始 VAN 帧**搬进 `LinkTx`（2026-09-27 新增）。
+  //    为什么放在 DATA 之后、排水之前：与 DATA 同一个生产者侧、同一个排水点，
+  //    顺序本身不影响正确性（两种消息各自独立、都有 CRC），只是让"这一圈要发的东西"
+  //    在同一个地方看得全。
+  //    ★ 一圈封顶 `kVanRawFramesPerLoop` 帧（§1.3：单次很短、可随时被打断）——
+  //      剩下的下一圈再走。**圈数**远多于帧数（主循环 ≈9k 圈/秒、VAN ≈80~100 帧/秒），
+  //      所以常态下这个队列是空的；它存在只是为了吸收"主循环被抢占"的那几帧。
+  //    ★ 满了会**丢整帧并计数**（`VanRawQueue::dropped()` / `tooLong()`），
+  //      计数在下面那条 `vanraw:` 日志行里可见 —— 绝不写半帧、绝不等待。
+  {
+    uint8_t rp[dashlink::kLenMax];
+    for (uint8_t i = 0; i < kVanRawFramesPerLoop; ++i) {
+      const uint8_t n = g_van_raw.pop(rp, (uint8_t)sizeof(rp));
+      if (n == 0u) break;
+      if (!g_link_tx.enqueueFrame((uint8_t)dashlink::MsgType::VanRaw, rp, n,
+                                  dashlink::kLocalRole)) {
+        break;   // LinkTx 满了：这一帧已由 enqueueFrame 计数丢掉，剩下的下一圈再来
+      }
+    }
+  }
+
   // ④ 排水：`LinkTx` 的两级环 → PHY 的环 → UART 的 FIFO。两步都**只走能走的那些字节**。
   //   ★ 同样把 `now` 传进去（理由见从板那一支同一处的说明）。
   // ★★ 选项 (a)：PHY 的 TX 环现在有**两个写者**（TICK 任务 + 这里）⇒ 用互斥量护住这一小段。
@@ -2514,9 +2616,11 @@ void setup() {
   // 免得盖住 banner）。
   dash_display_preview_set_panel_mask(g_preview.panel_mask);
 #endif
-  // 物理层 → 打印层 → 数据源。打印层只旁观,不影响数据流
+  // 物理层 → 打印层 → （`van_frame_in()`：数帧 + 入转发队列 + 数据源）。
+  // 打印层只旁观,不影响数据流
   // (抓帧时那行文本就是回放格式,见 VanLogSink 的说明)。
-  g_van_log.setNext(&g_van_sink);
+  // ★ 2026-09-27：原来这里还有一行 `g_van_log.setNext(&g_van_sink);` —— 那个
+  //   "next 链"已经取消，改由 `van_frame_in()` 一处统一收口（理由见它的说明）。
   g_van_phy.setSink(&g_van_log);
   g_van_phy.begin();
   BOOT_STAGE(3);
@@ -3054,6 +3158,15 @@ void loop() {
                 (unsigned long)rs.unknown_type, (unsigned long)rs.role_conflict,
                 alive ? "B 在线" : "从板无响应",
                 (unsigned long)(g_link_peer_ms == 0u ? now : (now - g_link_peer_ms)));
+      // ★★ 原始帧转发（`0x21`）的发送侧读数（2026-09-27）。
+      //   三个数的含义**别混**：pushed 只说明"进了队列"，真的有没有发出去要看
+      //   从板那一行的 ok（链路丢包由两者之差可见 —— 与 DATA 同一条口径）。
+      //   · `long=` = 数据太长搬不过去（VIN 那 17 字节）——**这是设计限制，不是故障**；
+      //   · `drop=` = 环满/`LinkTx` 满丢掉的整帧 —— **这个必须是 0**，非 0 说明
+      //     "VAN 的到达率 + 主循环的排水能力"不匹配，先看 `loop: max=` 有没有被抢占。
+      dash_logf("vanraw: pushed=%lu drop=%lu long=%lu queued=%uB\n",
+                (unsigned long)g_van_raw.pushed(), (unsigned long)g_van_raw.dropped(),
+                (unsigned long)g_van_raw.tooLong(), (unsigned)g_van_raw.queuedBytes());
     }
 #else
     // 从板侧：§4 的三级超时状态就是它唯一要看的链路指标。
@@ -3067,6 +3180,14 @@ void loop() {
               (unsigned)g_link_time.tickAgeMs(), (unsigned)g_link_time.ticksSeen(),
               (unsigned)g_link_time.seqGaps(), (unsigned)g_link_time.seqMissing(),
               (long)g_link_time.offsetMs());
+    // ★★ 原始帧转发（`0x21`）的**接收侧**读数（2026-09-27）。
+    //   怎么判"这一单成了"：`ok` 与主板那行的 `pushed` 同量级（差值 = 链路丢的），
+    //   而且从板的 `SRC speed=` 应当从 `link` 变成 **`van`** —— 那说明这些速度/转速
+    //   是**从板自己**从原始帧里解出来的，不再是主板算好送过来的。
+    //   `bad>0` 说明有帧长度对不上（那是协议/版本不一致的信号，不是噪声）。
+    dash_logf("vanraw: ok=%lu bad=%lu age=%lums\n",
+              (unsigned long)g_vanraw_ok, (unsigned long)g_vanraw_bad,
+              (unsigned long)(g_vanraw_last_ms == 0u ? 0u : (now - g_vanraw_last_ms)));
 #endif
 #if VAN_SNIFF
     van_sniff_report(now);
