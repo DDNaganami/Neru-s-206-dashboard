@@ -176,6 +176,55 @@ $res = Await $op ([Windows.Devices.Bluetooth.GenericAttributeProfile.GattWriteRe
    之后才补 `BUS INIT: OK` + 数据 ⇒ **10~12 秒**，别当失败。
 5. **重连**：这个头空闲会自己掉线，且掉线后的签名是「服务只回 1 个 `0x1801`」⇒ 必须重试。
 
+---
+
+## 7.6 ★ 怎么和板子接（方案 + 落地清单，2026-09-27 定方向）
+
+### 为什么非得是 BLE：UART 那条路在这块板上**物理上没了**
+
+2.8C 的 RGB 并口把 GPIO 吃掉了：`PCLK=41 / DE=40 / VSYNC=39 / HSYNC=38 / BL=6`
+加 DATA 那 16 根（**含 GPIO17/18**）。而 `ObdSource` 的默认口正是
+`OBD_RX_PIN=17 / OBD_TX_PIN=18` ⇒ **冲突**，所以现在这份固件是 `-DOBD_SERIAL=0`。
+⇒ **2.8C 上 OBD 只有两条路：BLE，或继续让笔记本当真值源。**（见 README 里同一条）
+
+### 挂在哪块板：**主板（右屏）**
+
+理由：① 主板上**本来就有** `ObdSource` 的接线（`g_data = VehicleDataService(&Serial1)`）；
+② 进气温度是**右屏**的副表，就近；③ 水温从板已经有 `link` 这一档
+（实测 `coolant=link intake=link` 都在用），主板拿到 OBD 后会顺着既有的
+**ESP-NOW/链路 `DATA` 帧**送过去（`link_msg.h` 的 `flags` 里
+`bit3..2 = coolant、bit1..0 = intake` 两格**现成**），**不用新加协议**。
+
+### 板上要写的东西（按顺序）
+
+1. **NimBLE central**：扫描 → 按名字 `OBDBLE` 或地址 `AABBCC122233` 连上 → 拿到
+   `FFF0` 服务 → `FFF1` 订阅通知、`FFF2` 记住写句柄。
+2. **传输层抽一层**：把 `ObdSource` 现在对 `Serial1` 的读写换成"能喂字节"的接口，
+   **BLE 收通知 → 喂进 `ObdSource` 的同一个解析器**。解析那半（`Parse-Obd`、
+   PID 轮询表、`0105`/`010F` 的 `℃ = A − 40`）**一行都不用改** —— 这是本方案最大的便宜。
+3. **问答状态机**：一次挂一个 PID；写完等 `>`；超时 10~12 秒（KWP FAST）。
+4. **重连**：掉线签名是「服务只回 1 个 `0x1801`」，重试 2~3 秒一次。
+5. **数据接线**：主板 `data_service` 的 `intake` 来源变 `Obd`（右屏副表就是它）；
+   `coolant` 也走 `Obd`，并通过链路发给从板（从板那格 `coolant=link` 已经在等）。
+
+### 前置待确认（动手前先看一眼，别写完了发现编不过）
+
+- **NimBLE 在这套构建里能不能加**：现在是 **pioarduino / IDF 5.5**
+  （见 `platformio.ini` 的 `esp32s3-rgb`）。要么用 Arduino 自带的 `NimBLEDevice`
+  （`lib_deps` 加 `h2zero/NimBLE-Arduino`），要么直接用 IDF 那套 `esp_ble_*`。
+  **先在台式机上把 `lib_deps` 加上编一遍**，确认与 LVGL/ESP-NOW 不打架。
+- **flash/内存预算**：现在 app 区只用了 **17.7%**，NimBLE 加得下；
+  但 PSRAM 那 7.2 MB 是屏在吃（`psram=7282KB`），BLE 的缓冲走内部 RAM，
+  要留意 `heap=98KB` 这个数（主板当前空闲堆只有 98 KB）。
+- **`0x1801` 那条判据**：板上枚举服务时，"只回 1 个服务"= 没真连上，
+  **不是**设备没有 OBD 服务 —— 别据此判定"这个头不支持"。
+
+### 车上还要定的一条：**这个头插着不拔，耗的是常电**
+
+OBD 座 16 脚是常电，诊断头自己会一直吃电（还会一直广播/等连接）。
+两条路：① 主板走 ACC 取电 ⇒ 熄火后主板不跑、BLE 自然不连（推荐）；
+② 头一直插着不拔 ⇒ 长期停车要留意电瓶（这与之前给板子定的"别用常电"是同一条纪律）。
+
 ## 8. 仍未验
 
 - 从 BLE 拿到的数据与**有线**那条（`Serial1`）是否一致（两边都是同一颗 ECU，理论上应一致）；
