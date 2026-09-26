@@ -98,8 +98,19 @@ void ObdSource::sendCmd(const char* cmd) {
 }
 
 void ObdSource::sendRequest(uint8_t pid) {
+  // ★★ 2026-09-27 修：**不要再补那个 '0'**。
+  //   原来这三行是：`write("01"); if (pid < 0x10) write('0'); print(pid, HEX);`
+  //   —— 那个 `if` 是按 **Arduino 的 `print(v, HEX)` 不补零** 写的
+  //   （`print(0x0C, HEX)` 给的是 `"C"` 而不是 `"0C"`）。
+  //   抽传输层时 `ObdTransport::writeHex()` 被我写成**总是两位**（%02X 语义），
+  //   于是这两者叠加，PID < 0x10 时发出来的是：
+  //       pid=0x0C ⇒ "01" + "0" + "0C" = **"0100C"**  ← 畸形命令，ECU 不认
+  //       pid=0x00 ⇒ "01" + "0" + "00" = **"01000"**（问支持位图那一条也中招）
+  //   ★ 实测证据（native 用例把 TX 打成十六进制）：
+  //       `30 31 30 30 43 0D` = "0100C\r"
+  //   ⇒ 语义统一成"**两位由 `writeHex` 负责**"，这里只管 `01` 前缀。
+  //   PID ≥ 0x10 的那些**一字未变**（原来走的就是 writeHex 那两位）。
   s_->write("01");
-  if (pid < 0x10) s_->write('0');
   s_->writeHex(pid);
   s_->write('\r');
 }
