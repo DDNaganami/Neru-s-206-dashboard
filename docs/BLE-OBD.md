@@ -318,3 +318,38 @@ OBD 座 16 脚是常电，诊断头自己会一直吃电（还会一直广播/�
 - **共存下的链路质量**：0 丢帧 / `gap_max < 100ms` / `p99 < 20ms` 这套指标有没有被吃掉；
 - **上车后 BLE 到底连上没有**：本单只写了策略、编过，**没上过板**；
 - 主板 `RGB_BOUNCE_LINES` 20→10 之后**横纹有没有回来**（那 10 行是给 BLE 让内部 RAM 的）。
+
+### 9.6 ★ 桌面首次上板实测（2026-09-27 深夜，两块板都在电脑上）
+
+**这一趟验的是"兜底分支"**（桌上没有诊断头 ⇒ BLE 扫不到对端），日志逐行如下：
+
+| 行 | 读数 |
+|---|---|
+| `obd: BLE start() = 1  heap=82KB(面板之后)` | BLE 协议栈起来了 |
+| `obd-ble: 射频优先权 -> BALANCE(还给链路) (esp_coex=0)` | ★ 共存 API **真的生效且返回 0**（不是 `ESP_ERR_NOT_SUPPORTED`） |
+| `obd-ble: state=scanning peer=- conn=0 … radio=balance win=0 cap=0` | ★★ **没扫到对端就一次都不抢**（`win=0`）—— 设计里的"防白抢"在真机上成立 |
+| `link: 启动闸门开了 —— BLE 没连上(到 15s 上限:仪表优先,不再等 OBD),等了 15000ms ⇒ 现在启链路 PHY` | ★ 闸门**正好 15.000s** 开（`waited=15000`），随后 `espnow: sta_mac=… ch=6 ps=off` + `link: 主板侧就绪 ESP-NOW` |
+| 从板 `link: locked tick_age=2ms seen=4078 seq_gap=0 miss=0 offset=2046ms` / `espnow: rx_frames=10522 gap_rx=0~29ms overflow=0` | 链路恢复，无序号缺口、无溢出 |
+
+**链路正式指标（同一晚，闸门 + 仲裁都在跑的固件上重测）**：
+
+```
+meas tx: sent=2000/2000 period=10ms span=19990ms
+meas rx: frames=332 seq=0..331 expected=332 lost=0 (0.00%) gap_max=12ms
+         p50=10ms p95=11ms p99=12ms over95=0 n=331 wire_gap_max=10ms
+         -> loss<0.1% / gap_max<100ms / p99<20ms / n>=300  **全过**
+```
+⇒ 与改动前的记录（0 丢帧 / `gap_max` 13~20ms / p99 13~14ms）**同档** ⇒ 这次改动
+没有把链路指标弄坏。
+★ 两个如实记下、**尚未解释**的观察：① 同一行末尾 `link rx … crc=2`（21,218 帧里 2 帧
+CRC 错，0.009%）；② 收端汇总窗口只覆盖 332 帧 / 3.31s（发端发了 2000 帧 / 20s，
+`coalesced=426` 可能与它有关）—— 判据里的 `n>=300` 就是照这个口径定的，但这一格下次要弄清楚。
+
+**仍然没验的**（差异要说清）：上表全是**兜底分支**（BLE 没连上）。**"BLE 先连上 ⇒ 闸门
+提前开"这条 happy path 一次都没在真机上走过** —— 桌上诊断头不在广播范围（`peer=-`）。
+要验它：把诊断头供电（车上，或桌面给它 12V：OBD 16 脚 + 4/5 脚地），预期看到
+`obd-ble: state=ready conn=1` → `link: 启动闸门开了 —— BLE 已连上(ready),等了 Nms`（**N < 15000**）。
+
+★ 顺带一个工具 bug（不是固件）：`rf-measure.ps1` 原来**裸发一个 `w`**，而单字符命令要求
+**行首**（`serial_cmd.h`）⇒ 那个 `w` 落进日志流中间被当回放数据吃掉，**发端不打 `meas: 开跑`、
+收端也没有 `meas rx:`，脚本却看起来跑完了**。已补前导 `\r\n`（脚本不在仓库里，在 scratch 目录）。
