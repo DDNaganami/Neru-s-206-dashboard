@@ -40,7 +40,16 @@ class LinkPhyNull : public LinkPhy {
  public:
   // 与 LinkPhyUart 同名同义的空操作（见文件头那段"为什么还要有这五个"）。
   void begin(bool = false) {}
-  uint16_t pumpTx() { return 0u; }
+  // ★★ 2026-09-27 晚修：这里原来写的是 `pumpTx()`（**没有参数**），而 `main.cpp`
+  //   在 ESP-NOW 那一档改成 `pumpTx(now)` 之后，**所有非 ESP-NOW 的构建都编不过**：
+  //     src/main.cpp:2200: error: too many arguments to function call, expected 0, have 1
+  //   受影响的正是"没有无线"的那几档：`pcpreview`（宿主机预览）、`esp32s3-rgb`
+  //   （显示档，`LINK_PHY_UART=0` ⇒ 空壳）、以及抓帧盒/回环那几档里的空壳分支。
+  //   ⇒ 参数补上并给默认值，**形状与 `LinkPhyEspNow::pumpTx(uint32_t now_ms = 0u)`
+  //     一致**（注释里原来就写着"UART / 空壳那两档的 pumpTx() 参数有默认值"——
+  //     那句话当时是**愿望**，不是事实；现在它才是事实）。
+  //   ★ 空壳不需要知道时刻（它没有射频计数器），参数只为同形。
+  uint16_t pumpTx(uint32_t now_ms = 0u) { (void)now_ms; return 0u; }
 
   int8_t txPin() const { return kLinkTxPin; }      // 43（契约 §0 的编译期常量）
   int8_t rxPin() const { return kLinkRxPin; }      // 44

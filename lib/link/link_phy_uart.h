@@ -124,7 +124,13 @@ class LinkPhyUart : public LinkPhy {
 
   // 真正的写 UART：**只在主循环里调**（§1.2 ①）。返回本次搬进 UART 的字节数。
   // 单次调用有上界（≤ kTxFifoHeadroom + 硬件可写量），不忙等、不 delay。
-  uint16_t pumpTx();
+  // ★★ 2026-09-27 晚修：参数 `now_ms` 是**为了让两个角色/两种 PHY 同形**——
+  //   `main.cpp` 两个角色共用一份调用（`g_link_phy.pumpTx(now)`），而 ESP-NOW
+  //   那一档真的要用这个时刻打"第一次发送失败发生在第几毫秒"那类计数器。
+  //   原来这里是**无参**的 ⇒ 有线档（`LINK_PHY_UART=1`：抓帧盒 `[env:esp32s3]`
+  //   与回环固件）**编不过**（`too many arguments to function call`）。
+  //   本档不需要它（UART 的 FIFO 状态是现问现得），所以显式忽略。
+  uint16_t pumpTx(uint32_t now_ms = 0u);
 
   // ---- dashlink::LinkPhy ----
   int    available() override;

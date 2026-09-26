@@ -206,7 +206,10 @@ size_t LinkPhyUart::write(const uint8_t* data, size_t n) {
   return accepted;
 }
 
-uint16_t LinkPhyUart::pumpTx() {
+uint16_t LinkPhyUart::pumpTx(uint32_t now_ms) {
+  // 本档不需要时刻（FIFO 余量是现问现得的），参数只为与 ESP-NOW 那一档同形 ——
+  // 见 link_phy_uart.h 里那条修的说明。
+  (void)now_ms;
   if (!mOnline || mSerial == nullptr || mTxCount == 0u) return 0u;
   int room = hwTxRoom();
   if (room > (int)kTxFifoHeadroom) room -= (int)kTxFifoHeadroom;
