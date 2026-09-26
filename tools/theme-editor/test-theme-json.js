@@ -65,7 +65,7 @@ section("真实的 theme-default.json 必须能被导入");
   const t = TJ.themeObject(TJ.parseThemeJson(text));
   eq(t.bg_color, 0x141414, "背景色");
   eq(t.readout.digit_cy, 88, "读数位置");
-  eq(t.readout.coolant_cy, 446, "水温读数位置(实屏那一单:384 会被表情下巴压掉)");
+  eq(t.readout.coolant_cy, 440, "水温读数位置(实屏那一单:384 会被表情下巴压掉)");
   eq(t.screens.length, 2, "两屏");
   eq(t.screens[0].arcs.length, 2, "左屏两条弧");
   eq(t.screens[0].arcs[0].kind, 1, "左屏外弧 = 转速(法系车左=转速表)");

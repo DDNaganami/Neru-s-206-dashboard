@@ -326,6 +326,8 @@ static void test_readout_defaults_fit_gap(void) {
   //   ⇒ 墨迹下沿(cy+10) ≤ 478 ⇒ cy ≤ 468(与 ui_theme.cpp 的解析夹取上限 470 同向)。
   TEST_ASSERT_TRUE_MESSAGE(d.readout.coolant_cy >= 436,
                            "水温读数会压到表情下巴/副弧/灯条(它们一直占到 435)");
+  // ★ 下界是硬的、量过:436 还压 183px、438 压 61px、440 起 0 ⇒ 默认取 440
+  //   (车主 2026-09-27 在 436..468 之间选的),但判据只钉几何下界,不钉那个偏好值。
   TEST_ASSERT_TRUE_MESSAGE(d.readout.coolant_cy + kUnitBotOff <= 468,
                            "水温读数跑到内切圆外了(±30px 处圆的许可只到 478)");
   TEST_ASSERT_TRUE(d.readout.intake_cy == d.readout.coolant_cy);   // 两屏同一行
