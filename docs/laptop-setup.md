@@ -78,19 +78,62 @@ python -m platformio run -e esp32s3-rgb
 ```
 
 拉代码：`git -C C:\Users\张九思\206Dash\Neru-s-206-dashboard pull --ff-only`
-（origin 是 SSH over 443，见 §10。⚠ **在一条 SSH 会话里派生 `git fetch` / `pull` 会卡在数据阶段** ——
-要在笔记本本机跑，或者用一次性计划任务，见 §10.4。）
+（origin 是 HTTPS + clash 代理，见 §10。~~⚠ 在一条 SSH 会话里派生 `git fetch` / `pull` 会卡在数据阶段~~
+—— **2026-09-27 已解决**：根因是 **git-over-SSH（`ssh://git@ssh.github.com:443`）自己挂死**
+（握手能过、数据阶段一个字节都不动），跟"嵌套 SSH 会话"无关。换成 HTTPS 通道后
+`git fetch origin` **1~3 秒**完成，见 §10.4。）
 
-✗ **`native` / `pcpreview` 在笔记本上编不过** —— 这两个 env 是 `platform = native`，要**宿主机 C 编译器**，笔记本上没有。
-（桌机是靠 `C:\Users\Public\206dash\.tools\zigbin` 里那套 `cc/gcc/c++/g++.exe` 代理。★ 那几个代理把 zig 的路径**硬编码**成 `C:\Users\Public\206dash\.tools\pyzig\ziglang\zig.exe`，所以**光把 `zigbin` 拷过来没用**，必须连 zig 本体一起放到那个绝对路径上。）
-想补，最省事的是装个 MinGW-w64，它直接提供 `gcc` / `g++`：
+### 3.1 ✅ 宿主机编译器已装（2026-09-27）—— `native` / `pcpreview` 现在能编了
 
 ```
 winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT
 ```
 
-装完新开一个终端（PATH 要刷新），再 `python -m platformio test -e native`。
-**在那之前，`native` 上的那套单元测试只能在桌机上跑** —— 别把它当成笔记本的 bug 去查。
+装的是 **GCC 16.1.0 + GNU Make 4.4.1**。实测：
+`python -m platformio test -e native` → **385 例 / 383 通过 / 2 跳过 / 0 失败**。
+★ 顺带结掉一笔旧账：`test_stage_table` 那个**既有崩溃（进程 exit 3）也没了**
+（`ACCEPTANCE` 里挂了好几轮的那条），16.1.0 下正常通过。
+
+★★ **但有个必踩的坑：中文用户名会让工具链全线崩**（这条不写下来谁也猜不到）
+
+`ld`/`as` 处理 **非 ASCII 路径**时编码出错，症状是**看起来像链接失败、其实是连目标文件都写不出来**：
+
+```
+Fatal error: can't create C:\Users\<中文>\AppData\Local\Temp\ccT3ZdH6.o: No such file or directory
+...
+ld.exe: cannot find .../crt2.o / -lstdc++ / -lmingw32 / -lgcc ... （一连串）
+```
+
+★ 误导点：那些 `crt2.o` / `.a` **确实存在**、路径也**没超 260**、`LongPathsEnabled=1` ——
+所以"补长路径支持"是白费劲。真正的病根就是路径里那个中文。
+
+**修法（两条一起做，缺一不可）**：
+
+1. **把工具链搬到纯 ASCII 短路径**：`Copy-Item <winget 装的那个 mingw64> C:\mingw64 -Recurse`，
+   再把 `C:\mingw64\bin` 放到 **PATH 最前**（winget 装的是
+   `...\WinGet\Packages\BrechtSanders...\mingw64\bin`，那条路径里带中文用户名）；
+2. ★★ **把 `TMP`/`TEMP` 指到 ASCII 路径**（**这条才是关键**）：编译器默认拿
+   `%TEMP%` 放中间 `.o`，而 `%TEMP%` 是 `C:\Users\<中文>\AppData\Local\Temp`。
+
+```powershell
+New-Item -ItemType Directory -Force -Path 'C:\temp' | Out-Null
+[Environment]::SetEnvironmentVariable('TEMP','C:\temp','User')
+[Environment]::SetEnvironmentVariable('TMP' ,'C:\temp','User')
+```
+
+（改的是**用户级**变量，不影响系统；新开终端生效。）
+
+跑测试时给它一个 ASCII 的构建目录也行（和固件那套一样）：
+
+```powershell
+$env:TMP='C:\temp'; $env:TEMP='C:\temp'
+$env:PLATFORMIO_BUILD_DIR='C:\206dash-build'
+python -m platformio test -e native
+```
+
+✗ 旧结论（已作废）：~~「`native` / `pcpreview` 在笔记本上编不过」~~。
+（桌机那套路子是把 zig 的 `cc/gcc/c++/g++` 代理放在 `C:\Users\Public\206dash\.tools\zigbin`，
+但那些代理**硬编码**了 zig 本体的绝对路径 ⇒ 光拷 `zigbin` 没用。现在**不需要**那条路了。）
 
 ## 4. 数据（`C:\206dash-data\`）
 
