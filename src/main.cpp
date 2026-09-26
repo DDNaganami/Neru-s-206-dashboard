@@ -19,6 +19,7 @@
 #define DASH_DEVICE_SELFTEST 1
 #endif
 #include "data_service.h"
+#include "obd_transport_serial.h"   // ObdTransportSerial：把 Serial1 包成 ObdTransport
 #include "dash_display.h"
 #include "dash_ui.h"
 #include "alerts.h"       // 告警层:只用已解字段(超速/红区/门/转向灯忘关)
@@ -522,7 +523,12 @@ static void preview_apply(const PreviewInput& in, VehicleState& st) {
 VehicleDataService& attachObdSerial() {
 #if OBD_SERIAL
   Serial1.begin(kObdBaud, SERIAL_8N1, OBD_RX_PIN, OBD_TX_PIN);
-  g_data = VehicleDataService(&Serial1);
+  // ★ 2026-09-27：`VehicleDataService` 的参数从 `HardwareSerial*` 换成了
+  //   `ObdTransport*`（理由见 `lib/dashcore/obd_transport.h`：2.8C 的 RGB 并口
+  //   占了 GPIO17/18，UART 那条路在这块板上物理上没了，OBD 要走 BLE）。
+  //   串口这条路用 `ObdTransportSerial` 包一层 —— 行为与抽取之前逐字节一致。
+  static ObdTransportSerial g_obd_serial(&Serial1);
+  g_data = VehicleDataService(&g_obd_serial);
   dash_logf("obd: UART1 已挂上 ELM327, RX=GPIO%d TX=GPIO%d @%u 8N1\n",
             (int)OBD_RX_PIN, (int)OBD_TX_PIN, (unsigned)kObdBaud);
 #else

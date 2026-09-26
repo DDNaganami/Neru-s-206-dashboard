@@ -1,5 +1,6 @@
 #include <unity.h>
 #include "test_helpers.h"
+#include "fake_obd_transport.h"   // FakeSerialAsTransport：把假串口包成 ObdTransport
 #include "obd_source.h"
 #include "obd_protocol.h"   // 0100 位图那两条纯函数(不是数据帧,单独一层)
 
@@ -16,7 +17,8 @@ static bool drive_until_tx(FakeSerial& fake, ObdSource& obd, uint32_t& t,
 
 void test_obd_init_sequence(void) {
   FakeSerial fake;
-  ObdSource obd(&fake);
+  FakeSerialAsTransport tr(&fake);
+  ObdSource obd(&tr);
   test_set_millis(0);
   obd.begin();
   TEST_ASSERT_TRUE(fake.sent("ATZ\r"));
@@ -82,7 +84,8 @@ void test_obd_supported_pids_bits(void) {
 void test_obd_poll_table_follows_bitmap(void) {
   {
     FakeSerial fake;
-    ObdSource obd(&fake);
+    FakeSerialAsTransport tr(&fake);
+  ObdSource obd(&tr);
     test_set_millis(0);
     obd.begin();
     uint32_t t = 1000;
@@ -95,7 +98,8 @@ void test_obd_poll_table_follows_bitmap(void) {
   }
   {
     FakeSerial fake;
-    ObdSource obd(&fake);
+    FakeSerialAsTransport tr(&fake);
+  ObdSource obd(&tr);
     test_set_millis(0);
     obd.begin();
     uint32_t t = 1000;
@@ -115,7 +119,8 @@ void test_obd_poll_table_follows_bitmap(void) {
 // 这条同时钉住"不能被位图卡死"—— 超时后必须自己往下走。
 void test_obd_support_query_timeout_keeps_polling(void) {
   FakeSerial fake;
-  ObdSource obd(&fake);
+  FakeSerialAsTransport tr(&fake);
+  ObdSource obd(&tr);
   test_set_millis(0);
   obd.begin();
   uint32_t t = 1000;
@@ -135,7 +140,8 @@ void test_obd_support_query_timeout_keeps_polling(void) {
 // 010D 车速:单字节 A = km/h
 void test_obd_speed_parse(void) {
   FakeSerial fake;
-  ObdSource obd(&fake);
+  FakeSerialAsTransport tr(&fake);
+  ObdSource obd(&tr);
   test_set_millis(0);
   obd.begin();
   uint32_t t = 1000;
@@ -160,7 +166,8 @@ void test_obd_speed_parse(void) {
 // 这条存在的理由:车速那一路值不值得加,靠的就是这几个数(见 obd_source.h)。
 void test_obd_rate_meter(void) {
   FakeSerial fake;
-  ObdSource obd(&fake);
+  FakeSerialAsTransport tr(&fake);
+  ObdSource obd(&tr);
   test_set_millis(0);
   obd.begin();
   uint32_t t = 1000;
@@ -227,7 +234,8 @@ static int drive_answering(FakeSerial& fake, ObdSource& obd, uint32_t& t,
 
 void test_obd_poll_schedule_fast_and_slow(void) {
   FakeSerial fake;
-  ObdSource obd(&fake);
+  FakeSerialAsTransport tr(&fake);
+  ObdSource obd(&tr);
   test_set_millis(0);
   obd.begin();
   uint32_t t = 1000;
@@ -248,7 +256,8 @@ void test_obd_poll_schedule_fast_and_slow(void) {
 // 不支持车速时:快路只剩转速 —— 转速每周期的份额从"三路均分 1/3"变成 4/6
 void test_obd_poll_schedule_without_speed(void) {
   FakeSerial fake;
-  ObdSource obd(&fake);
+  FakeSerialAsTransport tr(&fake);
+  ObdSource obd(&tr);
   test_set_millis(0);
   obd.begin();
   uint32_t t = 1000;
@@ -269,7 +278,8 @@ void test_obd_poll_schedule_without_speed(void) {
 //   旧行为:每格固定 250(等)+间隔;新行为只有间隔(80ms)。
 void test_obd_response_exits_wait_early(void) {
   FakeSerial fake;
-  ObdSource obd(&fake);
+  FakeSerialAsTransport tr(&fake);
+  ObdSource obd(&tr);
   test_set_millis(0);
   obd.begin();
   uint32_t t = 1000;
@@ -291,7 +301,8 @@ void test_obd_response_exits_wait_early(void) {
 
 void test_obd_rpm_coolant_parse(void) {
   FakeSerial fake;
-  ObdSource obd(&fake);
+  FakeSerialAsTransport tr(&fake);
+  ObdSource obd(&tr);
   test_set_millis(0);
   obd.begin();
 
@@ -318,7 +329,8 @@ void test_obd_rpm_coolant_parse(void) {
 // 进气温度(010F):与水温同形,单独喂一帧看它进没进状态。
 void test_obd_intake_parse(void) {
   FakeSerial fake;
-  ObdSource obd(&fake);
+  FakeSerialAsTransport tr(&fake);
+  ObdSource obd(&tr);
   test_set_millis(0);
   obd.begin();
 
@@ -341,7 +353,8 @@ void test_obd_intake_parse(void) {
 //   这条必须**什么都不改**(hasIntake 保持 false),否则会出现"进气 0℃"的假读数。
 void test_obd_intake_no_data_keeps_invalid(void) {
   FakeSerial fake;
-  ObdSource obd(&fake);
+  FakeSerialAsTransport tr(&fake);
+  ObdSource obd(&tr);
   test_set_millis(0);
   obd.begin();
 
@@ -356,7 +369,8 @@ void test_obd_intake_no_data_keeps_invalid(void) {
 
 void test_obd_bad_rpm_rejected(void) {
   FakeSerial fake;
-  ObdSource obd(&fake);
+  FakeSerialAsTransport tr(&fake);
+  ObdSource obd(&tr);
   test_set_millis(0);
   obd.begin();
 

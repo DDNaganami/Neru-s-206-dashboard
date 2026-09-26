@@ -1,12 +1,19 @@
 #pragma once
-#include <Arduino.h>
+#include "obd_transport.h"
 
 // K 线 OBD 数据源(ELM327, ISO 9141-2 / KWP2000)。
 // 非阻塞状态机:初始化 AT 序列 → 问一次 0100(支持的 PID 位图)→
 // 按"快路每轮、慢路每 N 轮"的节奏轮询转速/车速/水温/进气温度(见下面的节奏说明)。
-// 波特率由调用方在传入的串口上配好(常见 38400)。
+// 波特率由调用方在传入的传输上配好(常见 38400)。
 // 每路各自记录最后更新时间,供上层按字段独立超时回退。
 // 文本解析在 obd_protocol.h/.cpp(纯函数,宿主机可测)。
+//
+// ★★ 2026-09-27:**不再直接持有 `HardwareSerial*`,改成持有一个 `ObdTransport`**
+//   (见 `obd_transport.h` 的开头说明)。动机很实在:**2.8C 这块板上 UART 那条路
+//   物理上没了** —— RGB 并口把 GPIO17/18 占了(正是本文件默认的 RX/TX),
+//   所以 OBD 只能走 BLE(诊断头 `OBDBLE`,GATT 结构见 `docs/BLE-OBD.md`)。
+//   ★ 换的只是传输:**下面这一整段问答状态机、PID 轮询表、应答解析一个字没改**。
+//   ★ `nullptr` 仍然表示"不启用"(= `enabled()` 为 false,数据层回退),语义没变。
 //
 // ★ 为什么加 010F(进气温度):
 //   2026-09 用户用蓝牙 ELM327 + EOBD 实测:206 CC 的 ECU 支持这一项,
@@ -41,7 +48,10 @@
 //   上层优先级见 data_service.h:车速 Van > Obd > Sim。
 class ObdSource {
 public:
-  explicit ObdSource(HardwareSerial* serial = nullptr) : s_(serial) {}
+  // ★ 2026-09-27:参数从 `HardwareSerial*` 换成 `ObdTransport*`。
+  //   串口那条路用 `ObdTransportSerial`(见 obd_transport_serial.h)包一下即可 ——
+  //   行为与抽取之前逐字节一致。
+  explicit ObdSource(ObdTransport* t = nullptr) : s_(t) {}
 
   void begin();
   void tick(uint32_t now_ms);
@@ -108,7 +118,7 @@ private:
   void onSupportedPids(uint32_t mask);
   void buildPollTable(bool with_speed);
 
-  HardwareSerial* s_;
+  ObdTransport* s_;   // ★ 2026-09-27 起是 ObdTransport(原来直接是 HardwareSerial*)
   Phase phase_ = Phase::Init;
   uint8_t init_step_ = 0;
   uint8_t slot_ = 0;             // 当前在周期序列里的第几格

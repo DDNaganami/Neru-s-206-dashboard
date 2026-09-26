@@ -1,5 +1,20 @@
 #include "obd_source.h"
 #include "obd_protocol.h"
+#include <ctype.h>      // toupper（原来靠 obd_source.h 里那句 <Arduino.h> 带进来）
+
+// ★ 2026-09-27：`millis()` 的来源。
+//   原来是 `obd_source.h` 里的 `#include <Arduino.h>` 带进来的，而那个 include
+//   被去掉了（传输层不该依赖 Arduino）。这里改成**按需包含**：
+//     · 设备构建 → 真 `Arduino.h`；
+//     · 宿主机测试 → `test/arduino_shim/Arduino.h`（它提供 `millis()` 与
+//       `test_set_millis()`，见那份 shim）。
+//   ★ 为什么 `obd_source.h` 那边**必须**去掉 `Arduino.h`：`VehicleDataService`
+//     与它的用例都要 include 那个头，而宿主机上没有真 Arduino。
+#if defined(ARDUINO)
+#include <Arduino.h>
+#else
+#include "Arduino.h"    // 宿主机 shim（-I test/arduino_shim）
+#endif
 
 static const uint32_t kStepTimeoutMs  = 300;  // 每步 AT 命令等待
 // 两次请求之间的间隔。★ 2026-09-18 从 200ms 收到 80ms:
@@ -78,15 +93,15 @@ void ObdSource::buildPollTable(bool with_speed) {
 }
 
 void ObdSource::sendCmd(const char* cmd) {
-  s_->print(cmd);
-  s_->print('\r');
+  s_->write(cmd);
+  s_->write('\r');
 }
 
 void ObdSource::sendRequest(uint8_t pid) {
-  s_->print("01");
-  if (pid < 0x10) s_->print('0');
-  s_->print(pid, HEX);
-  s_->print('\r');
+  s_->write("01");
+  if (pid < 0x10) s_->write('0');
+  s_->writeHex(pid);
+  s_->write('\r');
 }
 
 void ObdSource::tick(uint32_t now_ms) {
@@ -156,8 +171,7 @@ void ObdSource::tick(uint32_t now_ms) {
 
 void ObdSource::drain() {
   while (s_->available()) {
-    const char c = (char)s_->read();
-    if (c == '\r' || c == '\n') {
+    const char c = (char)s_->read();    if (c == '\r' || c == '\n') {
       if (buf_len_) {
         buf_[buf_len_] = '\0';
         parseLine();

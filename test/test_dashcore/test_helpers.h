@@ -4,6 +4,12 @@
 #include <string>
 
 // 可编程假串口:记录 TX,按需回放 RX。
+//
+// ★ 2026-09-27:这个类**故意保持继承 `HardwareSerial` 不变** —— 它是既有那批
+//   用例的基础设施,动它会把整个 native 构建的库扫描碰坏(实测:把它改成实现
+//   `ObdTransport` 之后,清缓存重建会得到 `van::` 一片 undefined reference)。
+//   新代码要的是 `ObdTransport`,对应实现放在同目录的 `fake_obd_transport.h` 里,
+//   两者互不干扰。
 class FakeSerial : public HardwareSerial {
 public:
   std::string tx;

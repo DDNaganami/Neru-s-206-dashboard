@@ -1,5 +1,6 @@
 #include <unity.h>
 #include "test_helpers.h"
+#include "fake_obd_transport.h"   // FakeSerialAsTransport：把假串口包成 ObdTransport
 #include "data_service.h"
 
 // 以 50ms 步长推进虚拟时间,反复跑 update
@@ -36,7 +37,8 @@ void test_sim_only(void) {
 // 三路必须各记各的时间戳(旧实现共用时间戳 → 一路有数据就把另外两路也判成 OBD)。
 void test_obd_intake_takeover_per_field(void) {
   FakeSerial fake;
-  VehicleDataService svc(&fake);
+  FakeSerialAsTransport tr(&fake);
+    VehicleDataService svc(&tr);
   test_set_millis(0);
   svc.begin();
 
@@ -67,7 +69,8 @@ void test_obd_intake_takeover_per_field(void) {
 
 void test_obd_rpm_takeover_per_field_and_fallback(void) {
   FakeSerial fake;
-  VehicleDataService svc(&fake);
+  FakeSerialAsTransport tr(&fake);
+    VehicleDataService svc(&tr);
   test_set_millis(0);
   svc.begin();
 
@@ -120,7 +123,8 @@ void test_van_speed_and_fallback(void) {
 
 void test_obd_rpm_beats_van(void) {
   FakeSerial fake;
-  VehicleDataService svc(&fake);
+  FakeSerialAsTransport tr(&fake);
+    VehicleDataService svc(&tr);
   test_set_millis(0);
   svc.begin();
 
@@ -156,7 +160,8 @@ void test_obd_rpm_beats_van(void) {
 //   这条同时钉住"两段代码的先后顺序就是优先级"这个实现方式。
 void test_speed_priority_van_obd_sim(void) {
   FakeSerial fake;
-  VehicleDataService svc(&fake);
+  FakeSerialAsTransport tr(&fake);
+    VehicleDataService svc(&tr);
   test_set_millis(0);
   svc.begin();
 
@@ -196,7 +201,8 @@ void test_speed_priority_van_obd_sim(void) {
 // "K 线够不够用")。
 void test_obd_rates_reach_status(void) {
   FakeSerial fake;
-  VehicleDataService svc(&fake);
+  FakeSerialAsTransport tr(&fake);
+    VehicleDataService svc(&tr);
   test_set_millis(0);
   svc.begin();
 

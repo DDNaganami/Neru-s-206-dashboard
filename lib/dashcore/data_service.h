@@ -130,9 +130,14 @@ struct LinkData {
 //   表现是"弧停在某个位置不动",而不是黑屏或乱跳。
 class VehicleDataService {
 public:
-  // obd_serial: 接 ELM327 的串口(波特率由外部配置);nullptr = 不启用 OBD
-  explicit VehicleDataService(HardwareSerial* obd_serial = nullptr)
-      : obd_(obd_serial) {}
+  // obd_transport: 接 ELM327 的那条链路（串口见 `ObdTransportSerial`，
+  //   BLE 见 `ObdTransportBle`）；nullptr = 不启用 OBD。
+  // ★ 2026-09-27：参数从 `HardwareSerial*` 换成 `ObdTransport*`
+  //   —— 因为 2.8C 上 UART 那条路物理上没了（RGB 并口占了 GPIO17/18），
+  //   所以 OBD 只能走 BLE（诊断头 `OBDBLE`，见 `docs/BLE-OBD.md`）。
+  //   三条实现纪律见 `obd_transport.h`。
+  explicit VehicleDataService(ObdTransport* obd_transport = nullptr)
+      : obd_(obd_transport) {}
 
   void begin();
   VehicleState update(uint32_t now_ms);
