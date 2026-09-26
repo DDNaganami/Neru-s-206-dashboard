@@ -20,6 +20,9 @@
 #endif
 #include "data_service.h"
 #include "obd_transport_serial.h"   // ObdTransportSerial：把 Serial1 包成 ObdTransport
+#if defined(OBD_BLE)
+#include "obd_transport_ble.h"      // ObdTransportBle：走 BLE 诊断头（见 docs/BLE-OBD.md）
+#endif
 #include "dash_display.h"
 #include "dash_ui.h"
 #include "alerts.h"       // 告警层:只用已解字段(超速/红区/门/转向灯忘关)
@@ -516,16 +519,31 @@ static void preview_apply(const PreviewInput& in, VehicleState& st) {
 }
 #endif  // DASH_DISPLAY_PREVIEW
 #if defined(ARDUINO)
+#if OBD_BLE
+// ★★ BLE 那条路（2026-09-27 新增）：2.8C 上 UART 版**物理上没脚** ——
+//   RGB 并口把 GPIO17/18 占了（正是 OBD 的默认 RX/TX）⇒ 只剩 BLE。
+//   诊断头结构（服务 FFF0 / 通知 FFF1 / 写 FFF2）是笔记本侧实测出来的，
+//   见 `docs/BLE-OBD.md`。
+// ★ 为什么定义在**文件作用域**而不是 `attachObdSerial()` 里：主循环那边
+//   （1 Hz 体检行 + 每圈的 `tick()`）也要用它。函数内的 static 出不来。
+static ObdTransportBle g_obd_ble;
+#endif
+
 // 挂上 OBD 串口,并把 VehicleDataService 的指针换成 &Serial1。
 // ★ 必须在 setup() 里做,不能在静态初始化期做:Serial1 的 begin() 要等
 //   运行时(时钟/外设都就绪)才安全。
 // 返回该服务,setup() 里这样用:`g_data = attachObdSerial();`
 VehicleDataService& attachObdSerial() {
-#if OBD_SERIAL
+#if OBD_BLE
+  // ★ 这里**不阻塞**：`start()` 只做初始化（建 client/scan、起 NimBLE），
+  //   "扫描 → 连接 → 掉线重连"由主循环里的 `g_obd_ble.tick(now)` 推进。
+  g_obd_ble.start();
+  g_data = VehicleDataService(&g_obd_ble);
+  dash_logf("obd: BLE 那条路已挂上(目标服务 FFF0 / 通知 FFF1 / 写 FFF2)\n");
+#elif OBD_SERIAL
   Serial1.begin(kObdBaud, SERIAL_8N1, OBD_RX_PIN, OBD_TX_PIN);
   // ★ 2026-09-27：`VehicleDataService` 的参数从 `HardwareSerial*` 换成了
-  //   `ObdTransport*`（理由见 `lib/dashcore/obd_transport.h`：2.8C 的 RGB 并口
-  //   占了 GPIO17/18，UART 那条路在这块板上物理上没了，OBD 要走 BLE）。
+  //   `ObdTransport*`（理由见 `lib/dashcore/obd_transport.h`）。
   //   串口这条路用 `ObdTransportSerial` 包一层 —— 行为与抽取之前逐字节一致。
   static ObdTransportSerial g_obd_serial(&Serial1);
   g_data = VehicleDataService(&g_obd_serial);
@@ -3223,10 +3241,67 @@ void loop() {
               (unsigned long)g_vanraw_ok, (unsigned long)g_vanraw_bad,
               (unsigned long)(g_vanraw_last_ms == 0u ? 0u : (now - g_vanraw_last_ms)));
 #endif
+#if OBD_BLE
+    // ★ BLE OBD 那条路的体检行（2026-09-27）。跟着 1 Hz 心跳打，不另开节拍。
+    //   怎么判"这一单成了"：`state=ready` + 上面的 `SRC … intake=obd`（或 rpm/coolant）。
+    //   `drop>0` = 通知环满丢过字节 —— 那会让回答被截断、解出错的 PID 值，
+    //   先看是不是主循环被抢占太久（同一行的 BEACON 里有 `loop: max=`）。
+    dash_logf("obd-ble: state=%s peer=%s conn=%u drop=%lu connects=%lu\n",
+              g_obd_ble.stateName(), g_obd_ble.peerText(),
+              (unsigned)g_obd_ble.connected(), (unsigned long)g_obd_ble.dropped(),
+              (unsigned long)g_obd_ble.connects());
+#endif
 #if VAN_SNIFF
     van_sniff_report(now);
 #endif
   }
+
+#if OBD_BLE
+  // ★★ BLE 那条路的心跳（**每圈都调**，不是 1 Hz）：它推进"扫描 → 连接 → 重连"。
+  //   放在心跳块**外面** —— 那个块是 1 Hz 的，而连接状态机需要更细的推进
+  //   （退避最小 500ms）。`tick()` 自己非阻塞、自己判时间。
+  g_obd_ble.tick(now);
+#endif
+
+#if defined(LINK_PHY_ESP_NOW) && (LINK_PHY_ESP_NOW != 0) && (LINK_ROLE != 1)
+  // ==========================================================================
+  //  ★★ 从板：**收面停摆看门狗**（2026-09-27 新增，起因是一次实测挂死）
+  // ==========================================================================
+  //  实测现场（240 秒抓包，车主报"长时间怠速后副板进模拟数据 + 角标"）：
+  //    · 副板 `espnow: rx_frames=190250 … gap_rx=1469482ms` —— **射频接收整整
+  //      24.5 分钟没进过一帧**，而同一行的 `tx_frames` 一直正常在涨；
+  //    · 于是 `link: sim tick_age=1469s` ⇒ 屏上全字段回退模拟数据 + 挂"数据不可信"角标；
+  //    · **不会自愈**（重启两块板立刻恢复）。
+  //
+  //  为什么必须靠重启而不是"软恢复"：那是**射频接收面**停了 ——
+  //  收包回调本身只做"拷字节 + 计数"（见 `link_phy_espnow.cpp` 的 `onRecv`），
+  //  没有会卡住的分支；`overflow=0`、`rx_foreign=0` 说明环没满、也没被杂包误导。
+  //  这种状态在应用层没有任何可用的抓手（重注册回调也救不回一条停掉的 RX 通道）。
+  //
+  //  ★ 判据用 `tickAgeMs()`：它是"距上次收到 TICK 多久"，正常时**永远**在几百 ms 级
+  //    （TICK 是 20 Hz）。取 **15 秒**（= 正常值的 ~300 倍）保证不会误判：
+  //    · 主循环被长任务抢占、或链路短暂劣化（实测 >500 ms 只是"降级"）都到不了 15 s；
+  //    · 而从板挂死时它是**单调涨**的（1469 s），一定触发。
+  //  ★ 只在从板加：主板挂着屏和 VAN 接收，重启它代价大得多；而且主板的收面挂了
+  //    会让从板超时 → 从板重启 → 重连，已经能兜住大部分情形。
+  //  ★ 重启代价：从板左屏黑一两秒、随后自己重连（`AH`/peer MAC 走 NVS，不用重配）。
+  //    与"永久卡在模拟数据"相比这一步是净赚。
+  {
+    static uint32_t wd_seen_age = 0;
+    static uint32_t wd_since_ms = 0;
+    const uint32_t age = g_link_time.tickAgeMs();
+    if (age != wd_seen_age) {        // 还在收到东西 ⇒ 计时清零
+      wd_seen_age = age;
+      wd_since_ms = now;
+    } else if ((uint32_t)(now - wd_since_ms) >= 15000u) {
+      dash_logf("link: ★ 收面停摆看门狗触发 —— tick_age 连续 15s 不动(=%lums) ⇒ 重启从板\n",
+                (unsigned long)age);
+      dash_log_drain();              // ★ 先把这行写出去(它是重启前唯一的现场)
+      delay(50);
+      ESP.restart();
+    }
+  }
+#endif
 
   // ★★ 日志排空（2026-09-26）：**整圈的最后一步**。
   //   为什么放在最后：`dash_logf()` 现在只是"格式化进环"（`lib/dashcore/dash_log.h`），

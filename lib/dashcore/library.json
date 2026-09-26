@@ -1,0 +1,8 @@
+{
+  "name": "dashcore",
+  "version": "0.1.0",
+  "description": "206dash 核心逻辑层（数据源/协议/显示模型/链路判据）。宿主机可测。",
+  "build": { "srcFilter": "+<*> -<*.test.cpp>" },
+  "frameworks": "*",
+  "platforms": "*"
+}
