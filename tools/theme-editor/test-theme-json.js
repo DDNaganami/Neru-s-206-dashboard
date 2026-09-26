@@ -65,7 +65,7 @@ section("真实的 theme-default.json 必须能被导入");
   const t = TJ.themeObject(TJ.parseThemeJson(text));
   eq(t.bg_color, 0x141414, "背景色");
   eq(t.readout.digit_cy, 88, "读数位置");
-  eq(t.readout.coolant_cy, 440, "水温读数位置(实屏那一单:384 会被表情下巴压掉)");
+  eq(t.readout.coolant_cy, 444, "水温读数位置(实屏那一单:384 会被表情下巴压掉)");
   eq(t.screens.length, 2, "两屏");
   eq(t.screens[0].arcs.length, 2, "左屏两条弧");
   eq(t.screens[0].arcs[0].kind, 1, "左屏外弧 = 转速(法系车左=转速表)");
@@ -382,8 +382,8 @@ section("读数颜色:图片编辑器 vs ui_theme.h / dash_ui.cpp");
   let r;
   while ((r = fwRe.exec(hSrc)) !== null) fw[r[1]] = Number(r[2]);
   const FW_KEYS = ["digit_color", "unit_color", "coolant_color", "intake_color",
-                   "digit_font", "unit_font", "digit_cy", "unit_cy", "coolant_cy",
-                   "intake_cy", "show_units", "show_coolant", "show_intake"];
+                   "digit_font", "unit_font", "sub_font", "digit_cy", "unit_cy",
+                   "coolant_cy", "intake_cy", "show_units", "show_coolant", "show_intake"];
   eq(Object.keys(fw).length, FW_KEYS.length,
      "ui_theme.h 里解析出 " + FW_KEYS.length + " 个读数默认值(得到 " +
      Object.keys(fw).length + ")");
@@ -459,19 +459,22 @@ section("读数颜色:图片编辑器 vs ui_theme.h / dash_ui.cpp");
   const api = P480;
 
   // 预览用的位置/开关 = 固件默认值(本页不提供这些控件,只求"画得一样")
-  eq(Object.keys(api.READOUT_LAYOUT).length, 7, "READOUT_LAYOUT 七个字段");
-  for (const k of ["digit_cy", "unit_cy", "coolant_cy", "intake_cy",
+  eq(Object.keys(api.READOUT_LAYOUT).length, 8, "READOUT_LAYOUT 八个字段(含副表字号)");
+  for (const k of ["digit_cy", "unit_cy", "coolant_cy", "intake_cy", "sub_font",
                    "show_units", "show_coolant", "show_intake"]) {
     eq(api.READOUT_LAYOUT[k], fw[k], "READOUT_LAYOUT." + k + " = 固件默认值");
   }
 
-  // 字号表 = ui_theme.h 末尾那张 kReadoutFontPx(480 → 48/18、240 → 24/10)
+  // 字号表 = ui_theme.h 末尾那张 kReadoutFontPx(480 → 48/18/24、240 → 24/10/14)
   const tbl = /kReadoutFontPx\[kReadoutResTierCount\]\[kReadoutFontTierCount\]\s*=\s*\{([\s\S]*?)\n\};/
     .exec(hSrc);
   ok(!!tbl, "解析 ui_theme.h 的 kReadoutFontPx 表");
   const rows = [];
-  const rowRe = /\{\s*(\d+)\s*,\s*(\d+)\s*\}/g;
-  while ((r = rowRe.exec(tbl[1])) !== null) rows.push([Number(r[1]), Number(r[2])]);
+  // ★ 列数不再是写死的 2:2026-09-27 加了第三档(副表),这里按逗号切、列数由表自己决定。
+  const rowRe = /\{([^{}]*)\}/g;
+  while ((r = rowRe.exec(tbl[1])) !== null) {
+    rows.push(r[1].split(",").map((s) => Number(s.trim())).filter((v) => !Number.isNaN(v)));
+  }
   eq(rows.length, 2, "字号表两档(480 / 240)");
   eq(JSON.stringify(api.READOUT_FONT_PX[480]), JSON.stringify(rows[0]), "480 档字号 = 固件表");
   eq(JSON.stringify(api.READOUT_FONT_PX[240]), JSON.stringify(rows[1]), "240 档字号 = 固件表");

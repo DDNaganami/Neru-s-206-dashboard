@@ -529,7 +529,7 @@ static void build_readout(lv_obj_t* parent, const ScreenTheme& cfg, ScreenUi& ui
   // 若这屏唯一那条弧就是副表(大数字已经在显示它了),就别在底下重复一遍。
   if (READOUT_SHOW_COOLANT && pk != ArcKind::Coolant &&
       screen_has_kind(cfg, ArcKind::Coolant)) {
-    ui.coolant_lbl = make_readout_label(parent, READOUT_UNIT_FONT,
+    ui.coolant_lbl = make_readout_label(parent, READOUT_SUB_FONT,
                                         lv_color_hex(READOUT_COOLANT_COLOR),
                                         READOUT_COOLANT_CY);
   }
@@ -538,7 +538,7 @@ static void build_readout(lv_obj_t* parent, const ScreenTheme& cfg, ScreenUi& ui
   // 也能各自挪开,不会叠在一起。
   if (READOUT_SHOW_INTAKE && pk != ArcKind::Intake &&
       screen_has_kind(cfg, ArcKind::Intake)) {
-    ui.intake_lbl = make_readout_label(parent, READOUT_UNIT_FONT,
+    ui.intake_lbl = make_readout_label(parent, READOUT_SUB_FONT,
                                        lv_color_hex(READOUT_INTAKE_COLOR),
                                        READOUT_INTAKE_CY);
   }

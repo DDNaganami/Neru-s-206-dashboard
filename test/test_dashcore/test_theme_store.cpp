@@ -264,17 +264,18 @@ static void test_parse_readout_missing_keeps_defaults(void) {
   TEST_ASSERT_EQUAL_INT(def.readout.unit_cy, t.readout.unit_cy);
 }
 
-// 越界必须被钳制:字号只认 0/1(别的值会让 readout_font 返回空指针),
+// 越界必须被钳制:字号档位只认 0..kReadoutFontTierCount-1(别的值会让 readout_font 读越界),
 // 位置钳在表盘内(挪到屏幕外就成了"读数不见了"这种查半天的怪事)。
 static void test_clamp_readout(void) {
   const char* json = R"({"theme":{"readout":{
-     "digit_font": 7, "unit_font": 9,
+     "digit_font": 7, "unit_font": 9, "sub_font": 8,
      "digit_cy": -100, "unit_cy": 9999, "coolant_cy": -5,
      "show_units": 42, "show_coolant": 7 }}})";
   Theme t;
   TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
-  TEST_ASSERT_TRUE(t.readout.digit_font <= 1);
-  TEST_ASSERT_TRUE(t.readout.unit_font <= 1);
+  TEST_ASSERT_TRUE(t.readout.digit_font < kReadoutFontTierCount);
+  TEST_ASSERT_TRUE(t.readout.unit_font < kReadoutFontTierCount);
+  TEST_ASSERT_TRUE(t.readout.sub_font < kReadoutFontTierCount);
   TEST_ASSERT_TRUE(t.readout.digit_cy >= 10 && t.readout.digit_cy <= 115);
   TEST_ASSERT_TRUE(t.readout.unit_cy >= 10 && t.readout.unit_cy <= 119);
   TEST_ASSERT_TRUE(t.readout.coolant_cy >= 200 && t.readout.coolant_cy <= 470);
@@ -305,6 +306,10 @@ static void test_readout_defaults_fit_gap(void) {
   const int32_t kDigitBotOff = 16;      //           下偏 16
   const int32_t kUnitTopOff = -3;       // 18 号墨迹:上偏 3
   const int32_t kUnitBotOff = 10;       //           下偏 10
+  // ★ 副表(水温/进气)默认用 24 号(sub_font=2)——它的墨迹是**另一个数**,
+  //   pcpreview 落帧逐像素量出来的:cy-8..cy+8(17 行,比 18 号那 13 行高 4 行)。
+  const int32_t kSubTopOff  = -8;
+  const int32_t kSubBotOff  = 8;
 
   const int32_t digit_top = d.readout.digit_cy + kDigitTopOff;
   const int32_t digit_bottom = d.readout.digit_cy + kDigitBotOff;
@@ -324,11 +329,12 @@ static void test_readout_defaults_fit_gap(void) {
   // ⇒ 18 号墨迹(cy-3..cy+10)必须整条落在 **436 以下**,而且还得在 240 内切圆里:
   //   读数居中、字宽约 60px ⇒ 最外侧 |dx|≈30 ⇒ 圆的许可 y ≤ 240+sqrt(240²-30²)=478
   //   ⇒ 墨迹下沿(cy+10) ≤ 478 ⇒ cy ≤ 468(与 ui_theme.cpp 的解析夹取上限 470 同向)。
-  TEST_ASSERT_TRUE_MESSAGE(d.readout.coolant_cy >= 436,
+  // ★ 下界是硬的、量过:18 号字时 436 还压 183px、438 压 61px、440 起 0;
+  //   而副表现在默认是**24 号**(sub_font=2),它的墨迹是 **cy-8..cy+8**(pcpreview
+  //   落帧实测)⇒ 要让墨迹顶(cy-8)不碰灯条下沿 435,**cy ≥ 444**。
+  TEST_ASSERT_TRUE_MESSAGE(d.readout.coolant_cy + kSubTopOff >= 436,
                            "水温读数会压到表情下巴/副弧/灯条(它们一直占到 435)");
-  // ★ 下界是硬的、量过:436 还压 183px、438 压 61px、440 起 0 ⇒ 默认取 440
-  //   (车主 2026-09-27 在 436..468 之间选的),但判据只钉几何下界,不钉那个偏好值。
-  TEST_ASSERT_TRUE_MESSAGE(d.readout.coolant_cy + kUnitBotOff <= 468,
+  TEST_ASSERT_TRUE_MESSAGE(d.readout.coolant_cy + kSubBotOff <= 468,
                            "水温读数跑到内切圆外了(±30px 处圆的许可只到 478)");
   TEST_ASSERT_TRUE(d.readout.intake_cy == d.readout.coolant_cy);   // 两屏同一行
 }
@@ -393,14 +399,17 @@ static void test_readout_font_scales_with_resolution(void) {
   const int32_t digitCy = is240 ? 36 : 72;     // 72 × 240/480
   const int32_t unitCy  = is240 ? 53 : 107;    // 107 × 240/480 ≈ 53.5
 
-  // ② 两档各自钉死点数:480 = 48/18(原始设计),240 = 24/10(×0.5 后取现成字号)
+  // ② 三档各自钉死点数:480 = 48/18/24(原始设计),240 = 24/10/14(×0.5 后取现成字号)
   if (is240) {
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(24, readout_font_px(0), "240 档大数字 = 48 × 240/480");
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(10, readout_font_px(1),
                                     "240 档单位 = 18 × 0.5 = 9,取 LVGL 现成的 10 号");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(14, readout_font_px(2),
+                                    "240 档副表 = 24 × 0.5 = 12,取 LVGL 现成的 14 号");
   } else {
     TEST_ASSERT_EQUAL_UINT8(48, readout_font_px(0));
     TEST_ASSERT_EQUAL_UINT8(18, readout_font_px(1));
+    TEST_ASSERT_EQUAL_UINT8(24, readout_font_px(2));
   }
 
   // ③ 竖直带里放得下:数字不许明显骑到弧带上,单位不许被表情压住。
@@ -418,10 +427,14 @@ static void test_readout_font_scales_with_resolution(void) {
   // ④ 字号档位越界必须兜底(绝不能返回空指针 —— LVGL 拿到 NULL 字体会崩)
   TEST_ASSERT_NOT_NULL(readout_font(0));
   TEST_ASSERT_NOT_NULL(readout_font(1));
+  TEST_ASSERT_NOT_NULL(readout_font(2));      // ★ 副表档(2026-09-27 新增)
   TEST_ASSERT_EQUAL_UINT8_MESSAGE(readout_font_px(0), readout_font_px(99),
                                   "越界档位要回落到 0 档,而不是读越界");
   TEST_ASSERT_EQUAL_PTR_MESSAGE(readout_font(0), readout_font(99),
                                 "越界档位要拿到 0 档那张字体,不能是空指针");
+  // ★ 副表档必须真的比单位档大 —— 那一档存在的唯一理由就是"副表字太小"
+  TEST_ASSERT_TRUE_MESSAGE(readout_font_px(2) > readout_font_px(1),
+                           "副表档必须大于单位档,否则加这一档等于没做");
 }
 
 // ============================================================

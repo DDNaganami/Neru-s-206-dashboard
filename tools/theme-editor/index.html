@@ -235,10 +235,11 @@ function defaultTheme() {
       intake_color: 0xFFB020,
       digit_font: 0,      // 0 = 48 号,1 = 18 号
       unit_font: 1,
+      sub_font: 2,        // 副表(水温/进气)字号档:2 = 24 号
       digit_cy: 88,
       unit_cy: 110,
-      coolant_cy: 440,
-      intake_cy: 440,
+      coolant_cy: 444,
+      intake_cy: 444,
       show_units: 1,
       show_coolant: 1,
       show_intake: 1
@@ -464,7 +465,7 @@ function drawFace(ctx, cx, cy, theme, opts) {
 // 固件用的是 LVGL 内置 Montserrat,这里的字体是近似替代 —— 位置和字号
 // 可信,字宽只是近似(所以别拿这个预览去卡像素,要卡像素用 pcpreview)。
 // 定宽 + 居中文字:数字从 "8" 变到 "8000" 时不会左右挪 —— 与固件一致。
-const READOUT_FONT_PX = [48, 18];      // 与 ui_theme.cpp 的 readout_font() 对应
+const READOUT_FONT_PX = [48, 18, 24];  // 与 ui_theme.cpp 的 readout_font() 对应(2 = 副表档)
 function readoutFontPx(which) { return READOUT_FONT_PX[which] || READOUT_FONT_PX[0]; }
 
 function drawReadoutLabel(ctx, W, cy480, text, fontPx, colorHex) {
@@ -504,14 +505,14 @@ function drawReadout(ctx, W, theme, sc) {
   const hasCoolant = sc.arcs.some((a, i) => i < sc.arc_count && a.kind === 2);
   if (r.show_coolant && kind !== 2 && hasCoolant) {
     drawReadoutLabel(ctx, W, r.coolant_cy, Math.round(SIM.coolant) + "°C",
-                     readoutFontPx(r.unit_font), hex(r.coolant_color));
+                     readoutFontPx(r.sub_font), hex(r.coolant_color));
   }
   // 进气温度数字:同上一套(右屏的副表)。两条副表的中心 y 是**分开的字段**
   // (coolant_cy / intake_cy),所以万一放到同一屏也能各自挪开。
   const hasIntake = sc.arcs.some((a, i) => i < sc.arc_count && a.kind === 3);
   if (r.show_intake && kind !== 3 && hasIntake) {
     drawReadoutLabel(ctx, W, r.intake_cy, Math.round(SIM.intake) + "°C",
-                     readoutFontPx(r.unit_font), hex(r.intake_color));
+                     readoutFontPx(r.sub_font), hex(r.intake_color));
   }
 }
 
@@ -766,6 +767,11 @@ function buildControls() {
                       [{ v: 0, t: "48 号（大）" }, { v: 1, t: "18 号（小）" }]));
   syncers.push(select(g5, "单位字号", () => r.unit_font, v => r.unit_font = v,
                       [{ v: 0, t: "48 号（大）" }, { v: 1, t: "18 号（小）" }]));
+  // ★ 2026-09-27 深夜新增:副表(水温/进气)的字号原来跟"单位"共用一档。
+  //   单位是说明性的、副表是读数 ⇒ 分出来单独一档;档 2 = 24 号(480 上)。
+  syncers.push(select(g5, "副表字号", () => r.sub_font, v => r.sub_font = v,
+                      [{ v: 0, t: "48 号（大）" }, { v: 1, t: "18 号（小）" },
+                       { v: 2, t: "24 号（推荐）" }]));
   syncers.push(slider(g5, "数字中心 y", () => r.digit_cy, v => r.digit_cy = v, 10, 115, 1));
   syncers.push(slider(g5, "单位中心 y", () => r.unit_cy, v => r.unit_cy = v, 10, 119, 1));
   syncers.push(slider(g5, "水温中心 y", () => r.coolant_cy, v => r.coolant_cy = v, 200, 470, 1));

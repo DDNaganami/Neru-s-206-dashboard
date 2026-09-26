@@ -12,6 +12,7 @@ const lv_font_t* readout_font(uint8_t which) {
   switch (readout_font_px(which)) {
     case 48: return &lv_font_montserrat_48;
     case 24: return &lv_font_montserrat_24;
+    case 14: return &lv_font_montserrat_14;
     case 10: return &lv_font_montserrat_10;
     case 18:
     default: return &lv_font_montserrat_18;
@@ -114,6 +115,7 @@ void theme_clamp(Theme& t) {
   //   加一档字号就会静默退回 0 号 —— 大字变小字,不报错)。
   if (t.readout.digit_font >= kReadoutFontTierCount) t.readout.digit_font = 0;
   if (t.readout.unit_font  >= kReadoutFontTierCount) t.readout.unit_font  = 1;
+  if (t.readout.sub_font   >= kReadoutFontTierCount) t.readout.sub_font   = 2;
   // 竖直位置:0..480 之内;数字中心别低到 120 以下(那里是表情区)
   if (t.readout.digit_cy < 10)  t.readout.digit_cy = 10;
   if (t.readout.digit_cy > 115) t.readout.digit_cy = 115;

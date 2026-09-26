@@ -92,11 +92,15 @@ struct ScreenTheme {
 //       ⇒ 384 那版占 **381..394** ⇒ **上面 9 行正压在下巴上**;
 //     · **灯条**占 y=395..435(x=105..375,见 `lamp_view.h`)⇒ 往下第一格又是灯;
 //     · 再往下是**下半圆的副弧**(radius 168 / width 10 ⇒ 底部 y=398..408)。
-//   ⇒ 真正空着的是"副弧之下、灯条之下"。**440** 的墨迹 = 437..450:三样全躲开
-//     (到灯条下沿 435 留 2 px),且 x 方向 ±30 处仍在 240 内切圆内
-//     (240+sqrt(240²-30²)=478 > 456)。
-//   ★ 下界是硬的、量过:436 ⇒ 还有 183 px 压在灯条上;438 ⇒ 还有 61 px;440 起才是 0。
-//     上限由内切圆与解析夹取(470)给。**车主在 436..468 之间选了 440**(2026-09-27)。
+//   ⇒ 真正空着的是"副弧之下、灯条之下"。
+//   ★★ 副表字号 2026-09-27 从"跟单位共用 18 号"里**分出来独立一档、默认 24 号**
+//     （车主："字也太小了，能不能加大几号"）。字号变大 ⇒ 墨迹也变高，**实测**
+//     （pcpreview 落帧逐像素量，不是估的）：18 号 = cy-3..cy+10（13 行）；
+//     **24 号 = cy-8..cy+8（17 行）** ⇒ 同样 cy=440 会让 24 号字顶上 4 行压到灯条下沿 435。
+//   ⇒ 默认取 **444**：24 号墨迹 = **436..452**，三样（下巴 389 / 副弧 408 / 灯条 435）
+//     全躲开，且 x 方向 ±30 处仍在 240 内切圆内（许可到 478）。
+//   ★ 下界是硬的、量过：**18 号字** 436 ⇒ 还压 183px、438 ⇒ 61px、440 起 0；
+//     **24 号字的下界是 444**（墨迹顶 cy-8 必须 ≥ 436）。上限 468 由内切圆给。
 //   ★ 判据钉在 `test_readout_defaults_fit_gap`(下界=灯条下沿、上界=内切圆与解析夹取)。
 //
 // ★ 这几个数是**实测量出来的**(固件落帧读墨迹),不是从公式推的。
@@ -122,7 +126,8 @@ struct ReadoutTheme {
   //   所以同一份 theme.json 在 240 与 480 上都成立:480 上 48/18 号,
   //   240 上 24/10 号。**不要把点数写进主题文件** —— 那样换屏就废。
   uint8_t  digit_font;      // 0 = 大数字档
-  uint8_t  unit_font;       // 1 = 单位/副表档
+  uint8_t  unit_font;       // 1 = 单位档(km/h / rpm)
+  uint8_t  sub_font;        // 2 = 副表档(水温/进气读数;2026-09-27 从"跟单位共用"分出来)
 
   int16_t  digit_cy;        // 大数字中心 y(480 基准;两屏共用)
   int16_t  unit_cy;         // 单位中心 y
@@ -146,6 +151,7 @@ const lv_font_t* readout_font(uint8_t which);
 #define READOUT_INTAKE_COLOR  (g_theme.readout.intake_color)
 #define READOUT_DIGIT_FONT    readout_font(g_theme.readout.digit_font)
 #define READOUT_UNIT_FONT     readout_font(g_theme.readout.unit_font)
+#define READOUT_SUB_FONT      readout_font(g_theme.readout.sub_font)
 #define READOUT_DIGIT_CY      (g_theme.readout.digit_cy)
 #define READOUT_UNIT_CY       (g_theme.readout.unit_cy)
 #define READOUT_COOLANT_CY    (g_theme.readout.coolant_cy)
@@ -248,6 +254,7 @@ inline void theme_set_defaults(Theme& t) {
   t.readout.intake_color  = 0xFFB020;   // 与进气弧同色(琥珀 —— 速度表主色是蓝,不撞)
   t.readout.digit_font    = 0;          // 48 号
   t.readout.unit_font     = 1;          // 18 号
+  t.readout.sub_font      = 2;          // 24 号(副表读数:车主 2026-09-27 说"字太小")
   // ★★ 2026-09-24 第七轮：**数字下移 16px、单位下移 3px**（原 72 / 107）。
   //   起因：车主报"外弧被数字挡住"。落帧实测（pcpreview 2.8C 档，见
   //   tools/theme-editor/check-readout-clearance.js）：48 号墨迹顶从 y=55 起，
@@ -260,8 +267,8 @@ inline void theme_set_defaults(Theme& t) {
   //   ★ 弧带内沿那 6px 的蹭边余量在新位置**没有用掉**：墨迹顶 71 > 内沿 70 ⇒ 不再蹭弧。
   t.readout.digit_cy      = 88;         // 48 号墨迹实测 → 占 71..104(整条都在弧带内沿之下)
   t.readout.unit_cy       = 110;        // 18 号墨迹实测 → 占 107..120(下沿正好到表情图顶边)
-  t.readout.coolant_cy    = 440;        // ★ 副弧/灯条/下巴**之下**(车主在 436..468 里选的 440)
-  t.readout.intake_cy     = 440;        // 同上 —— 与水温**在各自屏上**同一行
+  t.readout.coolant_cy    = 444;        // ★ 24 号字墨迹 436..452:副弧/灯条/下巴**全躲开**
+  t.readout.intake_cy     = 444;        // 同上 —— 与水温**在各自屏上**同一行
   t.readout.show_units    = 1;
   t.readout.show_coolant  = 1;
   t.readout.show_intake   = 1;
@@ -429,7 +436,7 @@ static const uint32_t THEME_LAMP_ALERT_COLOR = 0xFF4D4D;  // 告警描边：与�
 // ★ 240 那几个**还没在实屏上量过**(屏刚点亮,owner 会看):
 //   量出来比预期大或小,只改上面这张表的一个数 —— 位置与几何都不用动。
 // ============================================================
-static const uint8_t kReadoutFontTierCount = 2;   // 0=大数字 1=单位/副表
+static const uint8_t kReadoutFontTierCount = 3;   // 0=大数字 1=单位 2=副表(水温/进气)
 static const uint8_t kReadoutResTierCount  = 2;   // 0=480 基准 1=240
 
 // [分辨率档][字号档] = 点阵点数。
@@ -437,10 +444,14 @@ static const uint8_t kReadoutResTierCount  = 2;   // 0=480 基准 1=240
 //   constexpr 而不是 static const:下面的 static_assert 要在编译期读它 ——
 //   写成 static const 会得到 "not usable in a constant expression"。
 static constexpr uint8_t kReadoutFontPx[kReadoutResTierCount][kReadoutFontTierCount] = {
-  // 大数字   单位/副表
-  {    48,       18   },   // 480 基准(THEME_BASE_RES)
-  {    24,       10   },   // 240×240,微雪 DualEye-Touch-LCD-1.28
+  // 大数字   单位    副表(水温/进气)
+  {    48,       18,      24   },   // 480 基准(THEME_BASE_RES)
+  {    24,       10,      14   },   // 240×240,微雪 DualEye-Touch-LCD-1.28
 };
+// ★ 2026-09-27 深夜加的**第三档(副表)**:车主实屏"字太小了,加大几号"。
+//   副表原来跟"单位(km/h/rpm)"共用 18 号 —— 但单位是**说明性**的,副表是**读数**,
+//   两者不该同一个字号。240 那列取 14:24 × 0.5 = 12,往大取到 LVGL 现成的 14
+//   (12 没编进来;include/lv_conf.h 只使能了 10/14/18/24/48)。
 
 // constexpr:两个宏都是编译期常量,所以这张表也是 —— 数组下标是编译期算出来的。
 static constexpr uint8_t readout_res_tier() {
@@ -450,11 +461,13 @@ static constexpr uint8_t readout_font_px(uint8_t which) {
   return kReadoutFontPx[readout_res_tier()][which < kReadoutFontTierCount ? which : 0u];
 }
 
-// 这张表只有两档字号,少一档就会读到别的档去(不报错,只是字不对) —— 钉住。
-static_assert(kReadoutFontTierCount == 2,
-              "字号档只有 0=大数字 / 1=单位:加档要同步 theme_clamp 的上限判断");
-static_assert(kReadoutFontPx[0][0] == 48 && kReadoutFontPx[0][1] == 18,
-              "480 那列必须是原始设计值(48 / 18),否则老屏上的字会变大小");
+// 这张表只有三档字号,少一档就会读到别的档去(不报错,只是字不对) —— 钉住。
+static_assert(kReadoutFontTierCount == 3,
+              "字号档 0=大数字 / 1=单位 / 2=副表:加档要同步 theme_clamp 的上限判断");
+static_assert(kReadoutFontPx[0][0] == 48 && kReadoutFontPx[0][1] == 18 &&
+              kReadoutFontPx[0][2] == 24,
+              "480 那列必须是原始设计值(48 / 18 / 24),否则老屏上的字会变大小");
 static_assert(kReadoutFontPx[1][0] < kReadoutFontPx[0][0] &&
-              kReadoutFontPx[1][1] < kReadoutFontPx[0][1],
+              kReadoutFontPx[1][1] < kReadoutFontPx[0][1] &&
+              kReadoutFontPx[1][2] < kReadoutFontPx[0][2],
               "小屏那列必须比 480 那列小,否则这次改动等于没做");

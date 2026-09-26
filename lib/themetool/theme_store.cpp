@@ -310,6 +310,7 @@ bool theme_parse_json(const char* json, uint32_t len, Theme& t) {
         if (keyIs(rk, rkl, "intake_color"))  { if (s.uintVal(&u)) t.readout.intake_color = u; return true; }
         if (keyIs(rk, rkl, "digit_font"))    { if (s.number(&d)) t.readout.digit_font = (uint8_t)d; return true; }
         if (keyIs(rk, rkl, "unit_font"))     { if (s.number(&d)) t.readout.unit_font = (uint8_t)d; return true; }
+        if (keyIs(rk, rkl, "sub_font"))      { if (s.number(&d)) t.readout.sub_font = (uint8_t)d; return true; }
         if (keyIs(rk, rkl, "digit_cy"))      { if (s.number(&d)) t.readout.digit_cy = (int32_t)d; return true; }
         if (keyIs(rk, rkl, "unit_cy"))       { if (s.number(&d)) t.readout.unit_cy = (int32_t)d; return true; }
         if (keyIs(rk, rkl, "coolant_cy"))    { if (s.number(&d)) t.readout.coolant_cy = (int32_t)d; return true; }

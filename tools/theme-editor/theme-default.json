@@ -35,10 +35,11 @@
       "intake_color": 0xFFB020,
       "digit_font": 0,
       "unit_font": 1,
+      "sub_font": 2,
       "digit_cy": 88,
       "unit_cy": 110,
-      "coolant_cy": 440,
-      "intake_cy": 440,
+      "coolant_cy": 444,
+      "intake_cy": 444,
       "show_units": 1,
       "show_coolant": 1,
       "show_intake": 1
