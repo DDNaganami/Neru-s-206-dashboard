@@ -407,8 +407,13 @@ Micro-USB 公头**，USB-C 是可选规格 —— 下单时必须在规格里**�
 3. 抓开机日志：`python tools/serial-capture/capture.py COM4`
    必须看到这一行 —— 看到 `van phy: stub` 就说明这次编译没开 GPIO 接收：
    ```
-   van phy: gpio 就绪 RX=GPIO16(RO),空闲 300us 关帧
+   van phy: gpio 就绪 RX=GPIO16(RO),空闲 70us 关帧,极性正常(VAN_RX_INVERT=0)
    ```
+   ★ 这里的 `70us` 是 `van_phy_gpio.cpp` 的 `kIdleCloseUs`（帧间空闲门限，
+   量出来的空档：帧内最长同电平 49.0µs、帧间最短空闲 95.5µs，取 70µs）。
+   **旧文档里写的 `300us` 是更早那版的值，已作废** —— 数字对不上不代表板子有问题，
+   以代码里的 `kIdleCloseUs` 为准（`capture.py` / `capture-van-nopy.ps1` 里的
+   `_SAMPLE` 那两处 300us 只是**统计自测的填充文本**，不参与任何断言）。
 4. 断电量收发器供电：`VCC` 对 `GND` 应 ≈3.3V（上电时）。
 5. **桌面"信号通路到底通没通"的判定法（2026-09-18 实测有效）**：
    桌上没有总线，所以 `frames` 必然是 0，但 `edges` 能告诉你**收发器是不是活着** ——

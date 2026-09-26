@@ -84,7 +84,7 @@
 | 依赖 | 版本 | 许可证 | 声明 / 核对来源 |
 |---|---|---|---|
 | **Unity**（PlatformIO 测试框架 `test_framework = unity`） | `library.json` → **2.6.1** | **MIT** | 自带 `library.json` → `"license": "MIT"`；自带 `LICENSE` → *"The MIT License (MIT) / Copyright (c) 2007-25 Mike Karlesky, Mark VanderVoord, & Greg Williams"* |
-| **pyserial**（`tools/serial-capture/capture.py`、`replay.py` 直接 `import serial`） | **3.5** | **BSD**（BSD-3-Clause 家族；以 PyPI 元数据 `License: BSD` 为准） | 本机 `.pio-pylibs/pyserial-3.5.dist-info/METADATA` → `License: BSD`、`Classifier: License :: OSI Approved :: BSD License` |
+| **pyserial**（`tools/serial-capture/capture.py`、`replay.py`、`replay-drive.py` 直接 `import serial`） | **3.5** | **BSD**（BSD-3-Clause 家族；以 PyPI 元数据 `License: BSD` 为准） | 本机 `.pio-pylibs/pyserial-3.5.dist-info/METADATA` → `License: BSD`、`Classifier: License :: OSI Approved :: BSD License` |
 
 ### 3.3 构建 / 烧录工具链（不在仓库内、构建时装）
 
