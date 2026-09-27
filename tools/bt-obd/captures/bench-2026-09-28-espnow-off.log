@@ -1,0 +1,37 @@
+# Bench evidence B: same board, same desktop simulator, only the link PHY changed
+#   (PLATFORMIO_BUILD_FLAGS=-DLINK_PHY_ESP_NOW=0).
+# Result: state=ready, connects=1, and SRC shows rpm/coolant/intake coming from OBD.
+
+SRC speed=sim rpm=sim coolant=sim intake=sim | v=176.6km/h 6956rpm 87.0C 28.3C
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=overspeed beeps=2 | buzz safety=0
+obd-ble: state=connecting peer=4f:01:46:04:a2:2b conn=0 drop=0 connects=0 cs=4/4 radio=balance win=1 cap=1 fails=4 lastFail=0x0D
+SRC speed=sim rpm=sim coolant=sim intake=sim | v=182.2km/h 1128rpm 90.6C 31.7C
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=overspeed beeps=5 | buzz safety=0
+obd-ble: state=ready peer=4f:01:46:04:a2:2b conn=1 drop=0 connects=0 cs=13/13 radio=balance win=1 cap=1 fails=12 lastFail=0x0D
+SRC speed=sim rpm=obd coolant=obd intake=obd | v=112.9km/h 2500rpm 91.0C 45.0C
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=none beeps=7 | buzz safety=0
+obd-ble: state=ready peer=4f:01:46:04:a2:2b conn=1 drop=0 connects=1 cs=13/13 radio=balance win=1 cap=1 fails=12 lastFail=0x0D
+SRC speed=sim rpm=obd coolant=obd intake=obd | v=39.4km/h 2500rpm 91.0C 45.0C
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=none beeps=7 | buzz safety=0
+obd-ble: state=ready peer=4f:01:46:04:a2:2b conn=1 drop=0 connects=1 cs=13/13 radio=balance win=1 cap=1 fails=12 lastFail=0x0D
+SRC speed=sim rpm=obd coolant=obd intake=obd | v=1.1km/h 2500rpm 91.0C 45.0C
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=none beeps=7 | buzz safety=0
+obd-ble: state=ready peer=4f:01:46:04:a2:2b conn=1 drop=0 connects=1 cs=13/13 radio=balance win=1 cap=1 fails=12 lastFail=0x0D
+SRC speed=sim rpm=obd coolant=obd intake=obd | v=18.6km/h 2500rpm 91.0C 45.0C
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=none beeps=7 | buzz safety=0
+obd-ble: state=ready peer=4f:01:46:04:a2:2b conn=1 drop=0 connects=1 cs=13/13 radio=balance win=1 cap=1 fails=12 lastFail=0x0D
+SRC speed=sim rpm=obd coolant=obd intake=obd | v=82.4km/h 2500rpm 91.0C 45.0C
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=none beeps=7 | buzz safety=0
+obd-ble: state=ready peer=4f:01:46:04:a2:2b conn=1 drop=0 connects=1 cs=13/13 radio=balance win=1 cap=1 fails=12 lastFail=0x0D
+SRC speed=sim rpm=obd coolant=obd intake=sim | v=158.3km/h 2500rpm 91.0C 32.5C
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=overspeed beeps=8 | buzz safety=0
+obd-ble: state=ready peer=4f:01:46:04:a2:2b conn=1 drop=0 connects=1 cs=13/13 radio=balance win=1 cap=1 fails=12 lastFail=0x0D
+SRC speed=sim rpm=obd coolant=sim intake=obd | v=205.7km/h 2500rpm 89.6C 45.0C
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=overspeed beeps=10 | buzz safety=0
+obd-ble: state=ready peer=4f:01:46:04:a2:2b conn=1 drop=0 connects=1 cs=13/13 radio=balance win=1 cap=1 fails=12 lastFail=0x0D
+SRC speed=sim rpm=obd coolant=obd intake=obd | v=199.0km/h 2500rpm 91.0C 45.0C
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=overspeed beeps=12 | buzz safety=0
+obd-ble: state=ready peer=4f:01:46:04:a2:2b conn=1 drop=0 connects=1 cs=13/13 radio=balance win=1 cap=1 fails=12 lastFail=0x0D
+SRC speed=sim rpm=obd coolant=obd intake=obd | v=141.9km/h 2500rpm 91.0C 45.0C
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=overspeed beeps=13 | buzz safety=0
+obd-ble: state=ready peer=4f:01:46:04:a2:2b conn=1 drop=0 connects=1 cs=13/13 radio=balance win=1 cap=1 fails=12 lastFail=0x0D

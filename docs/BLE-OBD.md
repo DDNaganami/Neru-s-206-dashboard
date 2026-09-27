@@ -154,6 +154,7 @@ $res = Await $op ([Windows.Devices.Bluetooth.GenericAttributeProfile.GattWriteRe
 | `tools/bt-obd/probe-ble-gatt.ps1` | 扫描 BLE、判"是不是 BLE"、配对、列全部服务/特征/UUID | ✅ 已验证可用 |
 | `tools/bt-obd/ble-obd-client.ps1` | 发 ELM327 指令（**写入**路径的参考实现 + 四处踩坑记录） | ✅ 写通；读不到（见 §4.1） |
 | `tools/bt-obd/ble-obd-client.py` | **真正收数据用这个**（Python + bleak） | ✅ 已实跑出真值 |
+| `tools/bt-obd/obd-ble-sim.py` | **反向**：让**桌面冒充诊断头**（GATT server + 假 ELM327），台面上就能试板子的 BLE 中心 | ✅ 2026-09-28 深夜实测（§14） |
 
 `.ps1` 两个都必须 **Windows PowerShell 5.1** 跑（脚本里已加运行环境自检，跑错解释器直接报错退出）。
 `bleak` 已装（3.0.2）。
@@ -717,12 +718,148 @@ if (connectNow()) return;
 
 
 
+★ 【历史：下面这段描述的是**同步 `connect()`** 那条路，而 §13.1 已经把它整段换成异步、
+  `taskWait` 不再参与建连 ⇒ "谁在 16ms 唤醒 `taskWait`" 这个问题**已经不存在**。
+  保留原文只为对账。】
+
 ★ **当前对失败机制的准确描述**（别再说"超时"）：`taskWait` 声称等
 `(m_connectTimeout + itvl_max*7) * (retries+1)`（15 秒量级），
 **实际 16~17ms 就返回 false**，随后库补写 `BLE_HS_ETIMEOUT`。
 所以真问题是"**谁在 16ms 时提前唤醒了 `taskWait`**"，不是"等超时了"。
 候选（都尚未验证，别再当结论用）：连接被取消 / 主机复位 / 控制器立刻报错 /
 库内部有别的路径释放了任务通知。
+
+---
+
+## 14. ★★★ 2026-09-28 深夜：**桌面当假诊断头**（BLE 外设模拟器）—— 车上那个失败在台面上复现了
+
+### 14.1 为什么做它
+
+诊断头只存在于车上 ⇒ 每一个"连不上"的判断都要跑一趟车。而**桌面本来就能当 BLE 外设**
+（Windows 的 GATT server）。这条打通之后，"能不能连上 / 为什么是 `0x0D`"这类问题
+可以**在机旁几分钟一轮**地试，不用动车。
+
+### 14.2 能力先验（这台机器，实测）
+
+| 项 | 结果 |
+|---|---|
+| 适配器 | `A0:B3:39:5C:6B:23`（Intel，Win11 26200） |
+| `IsPeripheralRoleSupported` | **True**（`IsCentralRoleSupported` 也 True） |
+| 建 GATT 服务 `FFF0` + `FFF1`(read+notify) + `FFF2`(write + write-no-resp) | ✅ 三个都成功 |
+| 广播 | `AdvertisementStatus = STARTED`（会先闪一下 `CREATED`/`ABORTED` 再稳住 `STARTED`，**别在那一瞬间下结论**） |
+
+### 14.3 ★★ 两条**做不到**的路（写下来省下一个人半天）
+
+1. **Windows PowerShell 5.1 做不了 GATT server** —— 卡在**收写请求**这一步：
+   `Register-ObjectEvent` 直接报
+   `Windows PowerShell cannot subscribe to Windows RT events.`；
+   而 GATT server 没有 `WriteRequested` 处理就没法接指令（对方写了也没人答）。
+2. **`Add-Type` 也做不了** —— PS 5.1 的 csc 要 WinRT 元数据，而这台机器上
+   `C:\Windows\System32\WinMetadata\Windows.winmd` **根本不存在**
+   （`Add-Type` 报 "The given assembly name or codebase was invalid"）。
+   ★ 这与 §4.1「PowerShell 收不到通知」是同一条根因。
+
+⇒ **顺手的路只有 Python + pywinrt**：`winrt-runtime 3.2.1` **有 cp314 轮子**，
+  本机 Python 3.14 直接 `pip install` 即可（**不用装 .NET SDK、不用装第二个 Python**）：
+  `winrt-runtime` / `winrt-Windows.Devices.Bluetooth` /
+  `winrt-Windows.Devices.Bluetooth.GenericAttributeProfile` /
+  `winrt-Windows.Devices.Bluetooth.Advertisement` / `winrt-Windows.Storage.Streams` /
+  `winrt-Windows.Foundation` / `winrt-Windows.Foundation.Collections`。
+  三个必须知道的 API 细节：`start_advertising()` 与
+  `start_advertising_with_parameters()` 是**分开的两个名字**（不是重载）；
+  `init_apartment(runtime.ApartmentType.MULTI_THREADED)` **要带参数**；
+  `IAsyncOperation` 直接 `await`（事件回调在**别的线程**上，要
+  `loop.call_soon_threadsafe` 交给事件循环，见工具头部的说明）。
+
+### 14.4 工具
+
+`tools/bt-obd/obd-ble-sim.py` —— 桌面侧的假 ELM327：
+
+- 服务/特征与真头逐字节相同（`FFF0` / `FFF1` notify / `FFF2` write-no-resp），
+  并**照抄真头的脾气**：回答分片（`--chunk 13`）、以 `\r` 结尾、末尾跟 `>` 提示符、
+  按 `--latency-ms` 慢答。
+- 值来源三档：`--mode idle`（常量）、`--mode sweep`（针来回扫）、
+  `--mode replay --csv tools/serial-capture/drive-2026-09-22-obd.csv`（**回放真实车上记录**）。
+- 故障注入：`--drop-after`（到点停广播 = 拔头）、`--kill-after`（不答 = 头哑了）、
+  `--fail-pids 0105`（回 `NO DATA`）、`--search-first`（`0100` 先只回 `SEARCHING...`）。
+- `--control sim-control.txt`：**不重启**改值（往里写 `rpm=3000` 这类行即可）。
+- `--selftest`：自己广播 + 自己被动扫描 —— ★ 实测**扫不到自己**（Windows 会滤掉本机
+  广播），所以"广播里到底有没有 `FFF0`"**不能**靠它判；判据是**板子那边**
+  `isAdvertisingService()` 命中（14.5a 已证）。
+
+### 14.5 ★★★ 台面实测（两块板都在机旁，2026-09-28 深夜）
+
+**（a）射频在跑 ⇒ 复现车上那个失败。** 从板刷 `esp32s3-rgb-slave-obdtest`
+（BLE + ESP-NOW 都在），桌面开着模拟器：
+
+```
+obd-ble: → connectNow begin (peer=64:d7:6d:0c:f5:55 type=1)   ← 广播**扫到了**（服务 UUID 命中）
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-71
+obd-ble: onConnectFail reason=0x0D
+obd-ble: state=connecting … conn=0 connects=0 cs=277/277 fails=277 lastFail=0x0D
+```
+
+140 秒里 **277 次**尝试、**一次都没连上**，错误码与车上**逐字相同**（`0x0D`）。
+⇒ **"从板 BLE 连不上"不需要车就能复现**，而且这次对端是一个**我们自己写的、已知正常的**
+GATT server（排掉了"诊断头脾气怪"这一整类解释）。
+★ 顺带证实：从板用**被动扫描**（`setActiveScan(false)`）也能认出 Windows 的广播
+⇒ `FFF0` 确实在 `ADV_IND` 里（这一条以前只是推测）。
+
+**（b）把从板的射频腾空 ⇒ 几秒内连上，整条 PID 链路都通了。**
+同一块板、同一个模拟器，只换 PHY
+（`PLATFORMIO_BUILD_FLAGS='-DLINK_PHY_ESP_NOW=0'`，即"链路 PHY 不启动"）：
+
+```
+23:18:46 client subscribed  (subscribed clients now 1)      ← 桌面侧：连上并订阅了 FFF1
+23:18:46 < 'ATZ' …                                          ← 板子在发 ELM327 指令
+obd-ble: state=ready peer=… conn=1 connects=1
+SRC speed=sim rpm=obd coolant=obd intake=obd | v=18.6km/h 2500rpm 91.0C 45.0C
+```
+
+`2500rpm / 91.0C / 45.0C` 正是模拟器被要求发的值（`--rpm 2500 --coolant 91 --intake 45`）
+⇒ **桌面假头 → 板上 NimBLE 中心 → `ObdSource` 解析 → 数据服务/UI** 整条链在台面上跑通。
+（`speed=sim` 也对：分工 v2 里车速走链路，台面上没有主板。）
+
+### 14.6 ★★ 由此得到的两条**已经能定性**的结论
+
+1. **射频就是那道坎**（同机 A/B，唯一变量是 PHY）：与车上"链路 PHY 不启动 ⇒ 一次就连上"
+   同向，而且这次在**桌面可控**的条件下拿到。
+2. **开机闸门今天等于不存在**（这是读代码 + 实测确认的真缺口，不是推断）：
+   - `src/main.cpp` 的 `link_start_gate_tick()` 条件是 `#if LINK_ROLE == 1 && OBD_BLE`
+     ⇒ **只装在主板**；
+   - 分工 v2 把 BLE 挪到了**从板**（`LINK_ROLE=0`）⇒ 从板**根本没有安静窗口**；
+   - 主板那一支当前还被 2026-09-28 的"ESP-NOW 先起"实验**绕过**了
+     （`setup()` 里直接 `g_link_phy.begin(false)`，闸门那次 `begin()` 被幂等守卫吃掉）。
+   ⇒ **两块板都不给 BLE 建连留那几秒空窗**；`radio_arbiter.h` 的策略实际只走了
+     "运行期优先权"这一半，而这一半**实测不够**（277/277 全败）。
+
+### 14.7 还没解决的（如实记，别当已验）
+
+- **静默窗口要不要给从板**：给了意味着从板上电后最长 15s 收不到主板数据
+  （左屏"数据不可信"角标 + 模拟值）—— 这是**产品取舍**，要车主点头。
+- **稳态共存**：这次只验到"射频腾空时能连上"。连上**之后**链路 PHY 再起来，
+  BLE 连接能不能维持，**没测**。
+- **模拟器的一个保真度缺口**：板子把一条指令拆成**好几个小 ATT 写**
+  （`"01"` + `"0C"` + `\r`；`writeHex` 还是两个单字符），而 Windows 的外设角色
+  **不保证 write-without-response 的顺序** ⇒ 模拟器按 `\r` 拼行之后仍会偶尔收到顺序
+  错乱的行（表现为 `?` / `NO DATA`）。真头背后是 UART，会把碎片按顺序拼回去，
+  所以**这不一定**是板子的 bug；但板子这侧"把整条指令攒起来一次写"是更稳的做法。
+- 桌面广播用的是**随机地址**（每次跑都不一样：`64:d7:…` / `65:9c:…` / `4f:01:…`）
+  ⇒ **不要按地址匹配**，按服务 UUID 匹配（现有固件就是这么做的，是对的）。
+
+### 14.8 怎么跑一遍
+
+```powershell
+$py = "$env:LOCALAPPDATA\Python\pythoncore-3.14-64\python.exe"   # 本机 Python 3.14
+# 1) 桌面当假头（另开一个窗口，Ctrl+C 停）
+& $py tools\bt-obd\obd-ble-sim.py --mode idle --rpm 2500 --coolant 91 --intake 45 --speed 60
+# 2) 板子：刷 -DOBD_BLE=1 的那一档（从板 obdtest / 主板带 BLE 的档），看串口这几行：
+#    obd-ble: state=ready … conn=1        ← 连上
+#    SRC ... rpm=obd coolant=obd          ← 数据真的从假头来了
+# 3) 想复现"连不上"：让 ESP-NOW 也跑起来（默认档就是这样），或者反过来
+#    PLATFORMIO_BUILD_FLAGS='-DLINK_PHY_ESP_NOW=0' 刷一版做 A/B。
+```
+
 
 
 
