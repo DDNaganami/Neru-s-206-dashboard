@@ -125,7 +125,9 @@ class StatusSender {
 //     而 §3 的 `DATA.flags` 每个字段只有 2 位（0 None/1 Sim/2 Obd/3 Van）——
 //     **"链路"这一档编不进去**（`link_app.cpp` 的 `fieldSourceToSrc()` 把 Link 编成 Sim）。
 //     ⇒ "温度弧有没有源"这件事从板答不出来，而"敢不敢报一个自己也不确定的值"的
-//     答案是不报（§8 的口径：没生产者就不填，见 `STATUS.last_gap_ms` 那条定案）。
+//     答案是不报（§8 的口径：没生产者就不填）。★ 2026-09-27 深夜（分工 v2）：
+//   原来举的例子是 `STATUS.last_gap_ms` —— 那一格**已经改用途**（现在装进气温度，
+//   由 `main.cpp` 填），所以"没生产者就不填"这条口径本身没变，只是例子换了。
 uint8_t slaveStatusFlags(bool ver_mismatch, bool role_conflict, LinkTimeState data_state);
 
 // ------------------------------------------------------------

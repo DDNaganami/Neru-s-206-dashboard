@@ -153,6 +153,19 @@ public:
   // 语义见 LinkData 的注释：每字段独立，None 的字段不覆盖。
   void applyLinkData(const LinkData& d) { link_ = d; link_seen_ = true; }
 
+  // ★★ 2026-09-27 深夜（双板分工 v2：从板当 OBD 网关）：**只把进气那一格**从链路更新。
+  //   为什么不能直接复用 `applyLinkData()`：那个是"整份快照替换"，语义属于**从板**
+  //   （它收主板的 DATA）；主板上链路只回传进气这一格，整份替换会把别的字段的
+  //   `*_src` 清成 None、把从板那套语义搬到主板上用错。
+  //   主板这边没有 OBD（`-DOBD_BLE=0`）⇒ 进气本地永远是 Sim ⇒ 按既有规则
+  //   （`update()` 里"只有本地是 Sim 才采用链接"）**自动落到 Link 源**，优先级表一行没动。
+  void applyLinkIntake(float c, uint32_t now_ms) {
+    link_.intake_c   = c;
+    link_.intake_src = FieldSource::Link;
+    link_.rx_ms      = now_ms;
+    link_seen_       = true;
+  }
+
 private:
   // §3 §5 之外的一处"数据层"细节：链路快照的新鲜度判据与其它源一致（3 秒，
   // 见 .cpp 的 kStaleMs）。这里只存"最近一次收到的时刻"。

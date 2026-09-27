@@ -49,7 +49,7 @@ void fillStatus(StatusMsg* m) {
   m->frames_ok = 0x1122u;
   m->frames_dropped = 0x3344u;
   m->crc_err = 0x5566u;
-  m->last_gap_ms = 0x7788u;
+  m->intake_raw = 0x0063u;   // 59℃(v2:这一格现在是进气,编码 ℃+40)
   m->left_face = (uint8_t)Face::Sport;
   m->flags = (uint8_t)(kStFlagVerMismatch | kStFlagTempNoSource);
 }
@@ -111,8 +111,8 @@ static void test_link_msg_byte_layout_and_endianness(void) {
   TEST_ASSERT_EQUAL_HEX8(0x44u, p[9]);
   TEST_ASSERT_EQUAL_HEX8(0x55u, p[10]);  // crc_err
   TEST_ASSERT_EQUAL_HEX8(0x66u, p[11]);
-  TEST_ASSERT_EQUAL_HEX8(0x77u, p[12]);  // last_gap_ms
-  TEST_ASSERT_EQUAL_HEX8(0x88u, p[13]);
+  TEST_ASSERT_EQUAL_HEX8(0x00u, p[12]);  // intake_raw(v2) 高字节
+  TEST_ASSERT_EQUAL_HEX8(0x63u, p[13]);  // intake_raw(v2) 低字节 = 59+40
   TEST_ASSERT_EQUAL_HEX8((uint8_t)Face::Sport, p[14]);
   TEST_ASSERT_EQUAL_HEX8((uint8_t)(kStFlagVerMismatch | kStFlagTempNoSource), p[15]);
   TEST_ASSERT_EQUAL_HEX8(0xEEu, p[16]);  // STATUS 恰好写 16 个字节,不多写一个
@@ -164,7 +164,7 @@ static void test_link_msg_roundtrip_all(void) {
   TEST_ASSERT_EQUAL_HEX16(s.frames_ok, s2.frames_ok);
   TEST_ASSERT_EQUAL_HEX16(s.frames_dropped, s2.frames_dropped);
   TEST_ASSERT_EQUAL_HEX16(s.crc_err, s2.crc_err);
-  TEST_ASSERT_EQUAL_HEX16(s.last_gap_ms, s2.last_gap_ms);
+  TEST_ASSERT_EQUAL_HEX16(s.intake_raw, s2.intake_raw);
   TEST_ASSERT_EQUAL_HEX8(s.left_face, s2.left_face);
   TEST_ASSERT_EQUAL_HEX8(s.flags, s2.flags);
 
@@ -191,7 +191,7 @@ static void test_link_msg_roundtrip_all(void) {
   maxs.frames_ok = 0xFFFFu;
   maxs.frames_dropped = 0xFFFFu;
   maxs.crc_err = 0xFFFFu;
-  maxs.last_gap_ms = 0xFFFFu;
+  maxs.intake_raw = 0xFFFFu;
   maxs.left_face = 0xFFu;
   maxs.flags = 0xFFu;
   TEST_ASSERT_TRUE(packStatus(maxs, p));
@@ -201,7 +201,7 @@ static void test_link_msg_roundtrip_all(void) {
   TEST_ASSERT_EQUAL_HEX16(0xFFFFu, s2.frames_ok);
   TEST_ASSERT_EQUAL_HEX16(0xFFFFu, s2.frames_dropped);
   TEST_ASSERT_EQUAL_HEX16(0xFFFFu, s2.crc_err);
-  TEST_ASSERT_EQUAL_HEX16(0xFFFFu, s2.last_gap_ms);
+  TEST_ASSERT_EQUAL_HEX16(0xFFFFu, s2.intake_raw);
   TEST_ASSERT_EQUAL_HEX8(0xFFu, s2.left_face);
   TEST_ASSERT_EQUAL_HEX8(0xFFu, s2.flags);
 }

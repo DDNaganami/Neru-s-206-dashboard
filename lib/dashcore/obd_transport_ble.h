@@ -93,6 +93,11 @@ public:
   // ---- 射频仲裁（诊断用；体检行里打出来）----
   // `radioHeld()` = **现在**射频优先权在 BLE 手上（真去调过 `esp_coex_preference_set`）。
   bool     radioHeld() const { return arb_.holding(); }
+  // ★ 2026-09-27 深夜（分工 v2）：射频占用上限**按角色可调** —— 从板跑 BLE 时被压住的
+  //   是"它收主板的 TICK"（压过 3 秒左屏就掉进"数据不可信"）⇒ 从板设 4000ms。
+  //   执行点见 `main.cpp` 里 `g_obd_ble.start()` 之后那一处。
+  void     setRadioHoldMaxMs(uint32_t ms) { arb_.setHoldMaxMs(ms); }
+  uint32_t radioHoldMaxMs() const { return arb_.holdMaxMs(); }
   uint32_t radioWindows() const { return arb_.windows(); }   // 抢过几次
   uint32_t radioCapped() const { return arb_.capped(); }     // 被 8s 上限掐断几次
   // "现在需要射频吗"：★ **扫到过对端** 且还没 ready。

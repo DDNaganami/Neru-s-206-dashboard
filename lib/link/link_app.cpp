@@ -229,7 +229,8 @@ bool StatusSender::due(uint32_t now_ms, StatusMsg* out) {
   //     · `uptime_ms` —— 契约就是"从复位起算的单调毫秒"，而 `now_ms` 正是调用方
   //       传进来的那个 millis() ⇒ 这里填它，调用方不必再传一遍；
   //     · `build_tag` —— §3 的 HELLO 用它，STATUS 表里没有这一项，**不填**。
-  // ★ 其余字段**一个都不碰**（包括 `last_gap_ms`）：§3 定案"字段保留、v1 一律发 0、
+  // ★ 其余字段**一个都不碰**（v2 起 STATUS 里的 `intake_raw` 由调用方 `main.cpp` 填 ——
+  //   它是"这一拍从板测到的进气温度"，不属于本发送器的职责）：
   //   没有生产者" ⇒ 让调用方的 `StatusMsg{}` 默认值自然流过去。在这里补一行 `= 0`
   //   会把"没有生产者"伪装成"生产者说是 0"（两者将来要分开看）。
   out->uptime_ms = now_ms;

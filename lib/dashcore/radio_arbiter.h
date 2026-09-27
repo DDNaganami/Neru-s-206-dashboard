@@ -71,7 +71,13 @@ class RadioArbiter {
   // 一次连续占用的上限。为什么是 8 秒：
   //   BLE 建连（扫描一轮 2s + 一次 connect）在这个量级；再长就不是"抢时隙"，
   //   而是"把链路停掉"了。
+  // ★★ 2026-09-27 深夜（双板分工 v2）：**这个上限按角色可调** ——
+  //   主板跑 BLE 时被压住的是"它自己发 TICK"；**从板**跑 BLE 时被压住的是
+  //   "它**收**主板的 TICK"（压过 `link_time` 的 3 秒档，左屏就掉进"数据不可信"）
+  //   ⇒ 从板把它调到 4 s（执行点见 `main.cpp` 里按角色设的那一处）。
   static constexpr uint32_t kHoldMaxMs = 8000u;
+  void setHoldMaxMs(uint32_t ms) { hold_max_ms_ = (ms != 0u) ? ms : kHoldMaxMs; }
+  uint32_t holdMaxMs() const { return hold_max_ms_; }
   // 让出之后的冷却：这段时间里**即使还在忙也不抢**，把射频还给链路。
   static constexpr uint32_t kCooldownMs = 30000u;
   // 连上之后再多压一会儿：服务发现 + 订阅 CCCD + 第一条指令要几个来回，
@@ -96,7 +102,7 @@ class RadioArbiter {
           return false;
         }
       }
-      if ((uint32_t)(now_ms - hold_since_) >= kHoldMaxMs) {
+      if ((uint32_t)(now_ms - hold_since_) >= hold_max_ms_) {
         release(now_ms);
         ++capped_;          // ★ 被上限掐断的次数：这个数在体检行里可见
         return false;
@@ -135,6 +141,7 @@ class RadioArbiter {
   bool     holding_   = false;
   bool     cooling_   = false;   // 是否处于冷却期（**不用 `cool_until_ == 0` 判**）
   bool     ready_seen_ = false;
+  uint32_t hold_max_ms_ = kHoldMaxMs;   // 角色可调（见 setHoldMaxMs 的说明）
   uint32_t hold_since_ = 0;
   uint32_t cool_until_ = 0;
   uint32_t ready_at_   = 0;

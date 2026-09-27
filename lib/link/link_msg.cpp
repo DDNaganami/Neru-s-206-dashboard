@@ -137,7 +137,9 @@ bool unpackData(const uint8_t* p, uint8_t len, DataMsg* out) {
 
 // ------------------------------------------------------------
 // STATUS 0x30：fw_ver | uptime_ms u32 | frames_ok | frames_dropped |
-//              crc_err | last_gap_ms | left_face | flags   （共 16 B）
+//              crc_err | intake_raw(v2) | left_face | flags   （共 16 B）
+//   ★ v2（分工 v2）：第 12 字节那两格原来是保留的 `last_gap_ms`（恒 0、无生产者），
+//     现在装进气温度（℃ + 40）—— **帧长一个字节都没变**，理由见 link_msg.h 那一段。
 // ------------------------------------------------------------
 bool packStatus(const StatusMsg& m, uint8_t* out) {
   if (out == nullptr) return false;
@@ -146,7 +148,7 @@ bool packStatus(const StatusMsg& m, uint8_t* out) {
   putU16(out + 6, m.frames_ok);
   putU16(out + 8, m.frames_dropped);
   putU16(out + 10, m.crc_err);
-  putU16(out + 12, m.last_gap_ms);
+  putU16(out + 12, m.intake_raw);      // ★ v2：原来是 last_gap_ms（保留、恒 0）
   out[14] = m.left_face;
   out[15] = m.flags;
   return true;
@@ -159,7 +161,7 @@ bool unpackStatus(const uint8_t* p, uint8_t len, StatusMsg* out) {
   out->frames_ok      = getU16(p + 6);
   out->frames_dropped = getU16(p + 8);
   out->crc_err        = getU16(p + 10);
-  out->last_gap_ms    = getU16(p + 12);
+  out->intake_raw     = getU16(p + 12);
   out->left_face      = p[14];
   out->flags          = p[15];
   return true;

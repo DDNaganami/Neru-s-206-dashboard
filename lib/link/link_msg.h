@@ -39,7 +39,7 @@ namespace dashlink {
 static const uint8_t kHelloLen  = 5u;    // fw_ver u16 + build_tag u16 + boot_reason u8
 static const uint8_t kTickLen   = 5u;    // tick_ms u32 + seq u8
 static const uint8_t kDataLen   = 6u;    // rpm_raw u16 + speed_raw + coolant_raw + intake_raw + flags
-static const uint8_t kStatusLen = 16u;   // 见下
+static const uint8_t kStatusLen = 16u;   // 见下（★ v2 里**一个字节都没变长**）
 static const uint8_t kEventLen  = 4u;    // evt_id u8 + value u16 + face u8
 
 // TYPE → 该消息在 v1 的载荷长度（未知 TYPE 返回 0）。
@@ -140,11 +140,23 @@ struct StatusMsg {
   uint16_t frames_ok     = 0;   // 收下的帧
   uint16_t frames_dropped = 0;  // 丢掉的帧（§2 的三种：crc / bad_len / unknown_type）
   uint16_t crc_err       = 0;
-  // ★ v1 决定（2026-09-23，ARCHITECTURE.md §3 表下那一段）：**字段保留、一律发 0**
+  // ★★ v2（2026-09-27 深夜，双板分工 v2：从板当 OBD 网关）：**这一格改成装进气温度**。
+  //   原来是 `last_gap_ms`：v1 定案"字段保留、一律发 0"，**既没有生产者、也没有语义**
+  //   （见下一段被保留的那条说明）。
+  //   为什么非用它不可 —— **帧层的载荷上限就是 16 B**（`LEN(4..16)`），而 STATUS 已经
+  //   正好 16 ⇒ "只加尾巴"在 STATUS 上物理上不可能（用例当场就炸了：`enqueueFrame()`
+  //   对 17 B 直接返回 false）。拿一个"v1 保留、无生产者"的格子改用途，**帧长不变**，
+  //   是最小的改法。
+  //   编码与 DATA 里那一格**同一套**：`= ℃ + 40`（16 位宽度够，实际只用低 8 位）。
+  //   只有 `kStFlagIntakeValid` 置位时才有意义（从板那一格不是 Obd 源时不置位）。
+  //   ★ 混版本也安全：旧从板这里恒 0 且不置位 ⇒ 新主板不用它；新从板发的值旧主板
+  //     只会当成 "gap" 记在日志里（无副作用）。VER 0x10 → 0x11 是这次语义变更的标记。
+  uint16_t intake_raw = 0;      // v2：进气温度（℃ + 40；低 8 位有效）
+  // ★ 以下这条说明属于被本字段顶掉的 `last_gap_ms`，**留着**（它是"别按字段名猜语义"
+  //   那条纪律的出处；将来真要启用"最近一次帧间隔"，先定语义、再找新格子）：
+  //   v1 决定（2026-09-23，ARCHITECTURE.md §3 表下那一段）：**字段保留、一律发 0**
   //   —— 要填它，发送侧必须先有**接收侧自己的时钟**（"从板观测到的帧间隔"得有基准），
   //   而 v1 没有那条落地代码 ⇒ 这里既没有生产者、也没有"语义"可定。
-  //   ★ 别按字段名猜语义（"最近一次帧间隔"只是名字）：将来要填时先定语义再写实现。
-  uint16_t last_gap_ms   = 0;   // 保留；v1 恒 0（无生产者）
   uint8_t  left_face     = 0;   // 左屏当前档位 = expression.h 的 Face 槽位下标
   uint8_t  flags         = 0;   // kStFlag*
 };
@@ -154,6 +166,9 @@ static const uint8_t kStFlagVerMismatch  = 1u << 0;   // §2：主版本不匹�
 static const uint8_t kStFlagRoleConflict = 1u << 1;   // §5：收到过同角色的帧
 static const uint8_t kStFlagNoData       = 1u << 2;   // 无 DATA 超时（§3 DATA 行）
 static const uint8_t kStFlagTempNoSource = 1u << 3;   // 温度弧无源（§3 原话）
+// ★ 2026-09-27 深夜（分工 v2）：STATUS 里那一格 `intake_raw` **有效吗**。
+//   置位 = 从板那一格现在是真值（Obd 源）；不置位 = 别用（保持主板自己的回退链）。
+static const uint8_t kStFlagIntakeValid  = 1u << 4;
 
 // ---- 0x40 EVENT（双向，v1 实际只用 B→A；事件发生即发、限速 ≥100 ms 防抖） ----
 // ★ **不重传**：丢一条 EVENT 不会漏掉持续状态 —— 当前档位每 500 ms 由

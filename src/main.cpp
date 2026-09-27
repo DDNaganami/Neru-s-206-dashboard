@@ -557,7 +557,7 @@ VehicleDataService& attachObdSerial() {
   dash_logf("obd: UART1 已挂上 ELM327, RX=GPIO%d TX=GPIO%d @%u 8N1\n",
             (int)OBD_RX_PIN, (int)OBD_TX_PIN, (unsigned)kObdBaud);
 #else
-  dash_logf("obd: 未启用(-DOBD_SERIAL=0),只跑 Sim 假数据\n");
+  dash_logf("obd: 本机未启用(-DOBD_SERIAL=0,-DOBD_BLE=0) —— 分工 v2 下这正是主板该有的样子(进气由从板经链路回传)\n");
 #endif
   return g_data;
 }
@@ -2238,7 +2238,7 @@ static bool link_poll_bounded_slave(uint32_t now) {
 //
 // ★ 本函数**不碰** `LINK_ROLE`：它是 `#if LINK_ROLE != 1` 那一支里的代码
 //   （§5：谁发什么由编译期角色定，运行期没有任何判据）。
-static void link_slave_tick(uint32_t now, const ArcDashView& view) {
+static void link_slave_tick(uint32_t now, const ArcDashView& view, float intake_c) {
   // ① HELLO：上电 1 次，之后每 5 s，直到收到对端 HELLO（§3）。
   //    判据与主板那一支是**同一个函数**（`dashlink::helloDue`）——
   //    不是"抄了一遍"，所以两边不可能漂。
@@ -2262,9 +2262,10 @@ static void link_slave_tick(uint32_t now, const ArcDashView& view) {
   //      frames_dropped = §2 那三种（crc / bad_len / unknown_type）+ 角色冲突等
   //                       —— 直接用 `LinkRxStats::framesDropped()`（与 §3 的语义同源）
   //      crc_err        = §2 的 CRC 不过
-  //      last_gap_ms    = **保留、v1 一律 0**（§3 那条定案；`StatusSender` 刻意不碰它）
+  //      intake_raw     = ★ v2：**进气温度**（℃ + 40）—— 见下面那段（分工 v2 的落点）
   //      left_face      = 左屏当前档位（`expression.h` 的 Face 槽位下标）
-  //      flags          = `slaveStatusFlags()`：bit0/bit1/bit2 有生产者，bit3 恒 0
+  //      flags          = `slaveStatusFlags()`：bit0/bit1/bit2 有生产者；bit3 恒 0；
+  //                       ★ v2 起 bit4 = `kStFlagIntakeValid`（上面那格有效吗）
   //    ★ 计数**截到 u16** 是契约的宽度（§3 表：三个都是 u16）—— 累计量在
   //      `LinkRxStats` 里是 u32，这里按契约窄化；截断由主板那行日志的单调性可见。
   dashlink::StatusMsg sm;
@@ -2274,11 +2275,22 @@ static void link_slave_tick(uint32_t now, const ArcDashView& view) {
     sm.frames_ok      = (uint16_t)rs.frames_ok;
     sm.frames_dropped = (uint16_t)rs.framesDropped();
     sm.crc_err        = (uint16_t)rs.crc_err;
-    // last_gap_ms 不写：见上面那一行（保持 StatusMsg 的默认值 0）
+    // intake_raw 由下面那段写（v2）：它是**唯一**一个由调用方填的格子。
     sm.left_face      = (uint8_t)view.face_left;
     sm.flags          = dashlink::slaveStatusFlags(g_link_rx.verMismatchSeen(),
                                                    g_link_rx.roleConflictSeen(),
                                                    g_link_time.dataState());
+    // ★★ 2026-09-27 深夜（双板分工 v2：从板当 OBD 网关）：**进气温度挂在 STATUS 的
+    //   尾巴上**（契约允许"已知 TYPE 只加尾巴"，见 `link_msg.h` 的 `kStatusLenBase`）。
+    //   为什么是这里：主板上没有 OBD 了（`-DOBD_BLE=0`），而右屏的进气副表要真值 ——
+    //   从板自己问 ELM 的 `010F`，2 Hz 的 STATUS 对进气这种慢量完全够（OBD 那边也就 1 Hz）。
+    //   ★ **只有本地那一格真的是 Obd 源才置位**：OBD 没连上/还没问到的时候绝不
+    //     把假数据当"从板测到的温度"发出去 —— 主板那边据此保持自己的回退链。
+    //   ★ 编码与 DATA 里那一格**同一套**（℃ + 40），不发浮点。
+    if (g_data.status().intake == FieldSource::Obd) {
+      sm.intake_raw = (uint16_t)((int)lroundf(intake_c) + 40);   // 只低 8 位有效
+      sm.flags |= dashlink::kStFlagIntakeValid;
+    }
     uint8_t payload[dashlink::kStatusLen];
     if (dashlink::packStatus(sm, payload)) {
       g_link_tx.enqueueFrame((uint8_t)dashlink::MsgType::Status, payload, dashlink::kStatusLen,
@@ -2334,10 +2346,10 @@ static void link_log_peer_line(const dashlink::Frame& f) {
       //     刻意**不再降频**（与 `206 dash ok` 那两行不同）：它是"从板在线"的心跳，
       //     与 `link: tx=… B 在线` 那个 1 Hz 的门限（§8 L13 的 30 s）互补 ——
       //     降频会让"从板刚开始不上报"与"从板掉线"看起来一样。
-      dash_logf("link: B uptime=%lums rx_ok=%u dropped=%u crc=%u gap=%u face=%u flags=0x%02X\n",
+      dash_logf("link: B uptime=%lums rx_ok=%u dropped=%u crc=%u intake=%u face=%u flags=0x%02X\n",
                 (unsigned long)s.uptime_ms, (unsigned)s.frames_ok,
                 (unsigned)s.frames_dropped, (unsigned)s.crc_err,
-                (unsigned)s.last_gap_ms, (unsigned)s.left_face, (unsigned)s.flags);
+                (unsigned)s.intake_raw, (unsigned)s.left_face, (unsigned)s.flags);
       break;
     }
     case (uint8_t)dashlink::MsgType::Event: {
@@ -2403,6 +2415,18 @@ static void link_poll_inbound(uint32_t now) {
       continue;
     }
     if (f.type == (uint8_t)dashlink::MsgType::Hello) g_link_hello_acked = true;
+    // ★★ 2026-09-27 深夜（双板分工 v2：从板当 OBD 网关）：**从板是进气的源**
+    //   （它在问 ELM 的 `010F`），值挂在 STATUS 的尾巴上（契约允许"已知 TYPE 只加尾巴"）。
+    //   主板这边没有 OBD（`-DOBD_BLE=0`）⇒ 进气本地永远是 Sim ⇒ 按既有规则
+    //   （`data_service` 里"只有本地是 Sim 才采用链接"）**自动落到 Link 源**，
+    //   优先级表一行没动。★ 只在 valid 位置位时喂 —— 从板没问到真值时不污染这一格。
+    if (f.type == (uint8_t)dashlink::MsgType::Status) {
+      dashlink::StatusMsg s;
+      if (dashlink::unpackStatus(f.payload, f.len, &s) &&
+          (s.flags & dashlink::kStFlagIntakeValid) != 0u) {
+        g_data.applyLinkIntake((float)s.intake_raw - 40.0f, now);
+      }
+    }
     link_log_peer_line(f);   // §3 的"单一日志出口"：B 的状态变成 A 的一行
   }
   if (g_link_rx.roleConflictSeen() && !announced_conflict) {
@@ -2847,6 +2871,14 @@ void setup() {
     const bool ok = g_obd_ble.start();
     dash_logf("obd: BLE start() = %d  heap=%uKB(面板之后)\n",
               (int)ok, (unsigned)(ESP.getFreeHeap() / 1024u));
+#if LINK_ROLE != 1
+    // ★★ 2026-09-27 深夜（双板分工 v2）：**从板现在是 OBD 网关**（它在问 ELM），
+    //   而它抢射频时被压住的是"**收**主板的 50 Hz TICK" —— 压过 3 秒左屏就掉进
+    //   "数据不可信"（`link_time` 的三级超时）⇒ 把仲裁上限从 8s 缩到 **4s**。
+    //   主板那一档不设（它没有 BLE 了；真要有，压住的是它自己发，容忍度高）。
+    g_obd_ble.setRadioHoldMaxMs(4000u);
+    dash_logf("obd: 从板角色 ⇒ 射频占用上限 4000ms（压久了左屏会掉进\"数据不可信\"）\n");
+#endif
   }
 #endif
   // 一行汇总:有没有图片资源一眼可见(没刷图片是正常情况,不是错误)。
@@ -3197,7 +3229,7 @@ void loop() {
     // ★ 位置就是上面那段的第一条理由：`view` 是刚刚推上屏的那一份 ⇒
     //   `left_face` 与屏上一致；而且它与渲染同拍（200 ms），正好把 2 Hz 的
     //   STATUS 节奏卡得整整齐齐（§3 的 500 ms 是节流的整数倍，不会抖动）。
-    link_slave_tick(now, view);
+    link_slave_tick(now, view, st_mut.intake_c);
 #endif
     // 渲染帧率（EMA，alpha = 1/8，×10 定点）：它回答"这条 200 ms 节流有没有被卡住"
     // （RGB 那条路上第一次整屏刷新要 ≈1 秒 ⇒ 那一秒 fps 会掉下来）。
@@ -3401,16 +3433,28 @@ void loop() {
   //    会让从板超时 → 从板重启 → 重连，已经能兜住大部分情形。
   //  ★ 重启代价：从板左屏黑一两秒、随后自己重连（`AH`/peer MAC 走 NVS，不用重配）。
   //    与"永久卡在模拟数据"相比这一步是净赚。
+  //  ★★ 2026-09-28 早上修：**判据原来是错的，所以它一次都没触发过**。
+  //   现场：从板 `link: sim tick_age=28181469ms`（7.8 小时没收到 TICK）、
+  //   而主板那边 `rx_ok=15616` 说明从板→主板是通的 ⇒ **单向断**，正是本看门狗该管的场景，
+  //   可它一行都没打。根因：`tickAgeMs()` 在"收不到数据"时是**一直在涨**的，
+  //   于是 `age != wd_seen_age` 每圈都成立 ⇒ 永远走"还在收到东西 ⇒ 计时清零"那一支，
+  //   15 秒判据**永远到不了**。
+  //   ⇒ 换成 **PHY 侧的单调计数器** `rxFrames()`：链路正常时它每圈都在涨（TICK 50 Hz），
+  //     射频接收面真停了就**冻住** —— 这才是"停摆"的可判定形式。
+  //   ★ 另外加"**曾经连上过才武装**"：台面上只插从板（主板不在）时 `rxFrames` 恒 0，
+  //     没有这一条就会变成"每 15 秒重启一次"的死循环。
   {
-    static uint32_t wd_seen_age = 0;
-    static uint32_t wd_since_ms = 0;
-    const uint32_t age = g_link_time.tickAgeMs();
-    if (age != wd_seen_age) {        // 还在收到东西 ⇒ 计时清零
-      wd_seen_age = age;
-      wd_since_ms = now;
-    } else if ((uint32_t)(now - wd_since_ms) >= 15000u) {
-      dash_logf("link: ★ 收面停摆看门狗触发 —— tick_age 连续 15s 不动(=%lums) ⇒ 重启从板\n",
-                (unsigned long)age);
+    static uint32_t wd_last_frames = 0;
+    static uint32_t wd_since_ms    = 0;
+    static bool     wd_armed       = false;
+    const uint32_t frames = g_link_phy.rxFrames();
+    if (frames != wd_last_frames) {
+      wd_last_frames = frames;
+      wd_since_ms    = now;
+      if (frames > 0u) wd_armed = true;      // 收到过东西 ⇒ 之后才允许判"停摆"
+    } else if (wd_armed && (uint32_t)(now - wd_since_ms) >= 15000u) {
+      dash_logf("link: ★ 收面停摆看门狗触发 —— rxFrames 连续 15s 冻在 %lu ⇒ 重启从板\n",
+                (unsigned long)frames);
       dash_log_drain();              // ★ 先把这行写出去(它是重启前唯一的现场)
       delay(50);
       ESP.restart();

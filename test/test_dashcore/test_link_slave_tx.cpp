@@ -167,7 +167,7 @@ static void test_link_status_encodes_contract_fields(void) {
   m.frames_ok      = 0x0A0Bu;
   m.frames_dropped = 0x0C0Du;
   m.crc_err        = 0x0E0Fu;
-  m.last_gap_ms    = 0u;          // §3 定案：v1 恒 0（没有生产者）
+  m.intake_raw     = 0u;          // v2：这一格由 main.cpp 填；本用例只验"发送器不碰它"
   m.left_face      = 5u;
   m.flags          = kStFlagRoleConflict | kStFlagNoData;
 
@@ -188,8 +188,8 @@ static void test_link_status_encodes_contract_fields(void) {
   TEST_ASSERT_EQUAL_HEX8(0x0Du, p[9]);
   TEST_ASSERT_EQUAL_HEX8(0x0Eu, p[10]);
   TEST_ASSERT_EQUAL_HEX8(0x0Fu, p[11]);
-  TEST_ASSERT_EQUAL_HEX8(0x00u, p[12]);    // last_gap_ms 高字节
-  TEST_ASSERT_EQUAL_HEX8(0x00u, p[13]);    // last_gap_ms 低字节
+  TEST_ASSERT_EQUAL_HEX8(0x00u, p[12]);    // intake_raw 高字节
+  TEST_ASSERT_EQUAL_HEX8(0x00u, p[13]);    // intake_raw 低字节
   TEST_ASSERT_EQUAL_HEX8(5u, p[14]);       // left_face
   TEST_ASSERT_EQUAL_HEX8((uint8_t)(kStFlagRoleConflict | kStFlagNoData), p[15]);
 
@@ -201,7 +201,7 @@ static void test_link_status_encodes_contract_fields(void) {
   TEST_ASSERT_EQUAL_UINT16(m.frames_ok, back.frames_ok);
   TEST_ASSERT_EQUAL_UINT16(m.frames_dropped, back.frames_dropped);
   TEST_ASSERT_EQUAL_UINT16(m.crc_err, back.crc_err);
-  TEST_ASSERT_EQUAL_UINT16(m.last_gap_ms, back.last_gap_ms);
+  TEST_ASSERT_EQUAL_UINT16(m.intake_raw, back.intake_raw);
   TEST_ASSERT_EQUAL_UINT8(m.left_face, back.left_face);
   TEST_ASSERT_EQUAL_UINT8(m.flags, back.flags);
   // 解包也认"带尾巴"的载荷（次版本规矩），但那不属于本用例的判据 —— 见 test_link_msg.cpp

@@ -409,10 +409,39 @@ link: 主板侧就绪 TX=GPIO43 RX=GPIO44 @115200 8N1(§0/§1.1)      ← ★ �
 ...
 link: 首次收到从板帧(HELLO, role=0)                             ← ★ HELLO 互通
 link: B HELLO fw=0 build=0 boot=0                               ← 从板报的版本/构建标记
-link: B uptime=…ms rx_ok=… dropped=… crc=… gap=… face=… flags=0x00   ← 每 2 s 一行的 STATUS
+link: B uptime=…ms rx_ok=… dropped=… crc=… intake=… face=… flags=0x00   ← 每 500 ms 一行的 STATUS   ★ 2026-09-27 深夜（分工 v2）：原来这一格打的是 `gap=`（保留字段、恒 0），现在打
+     **`intake=`** —— 同一格改成装进气温度（℃ + 40），见 `link_msg.h` 的 StatusMsg 与
+     ARCHITECTURE「双板分工 v2」。分辨率位 0x10 也顺手变成了 0x11（语义变更的标记）。
 link: tx=…B rx_ok=… crc=0 bad_len=0 unk=0 role=0   B 在线(对端已 …ms 没动静)   ← ★ 每秒那行
 vanraw: pushed=… drop=0 long=0 queued=0B                                      ← ★ 原始帧转发（2026-09-27 新增）
 ```
+
+## ★★ 2026-09-28 早上实测：**主板发送面停摆**（`pending` 卡死）—— 从板 7.8 小时收不到
+
+**现场**（两块板都开着约 9 小时、都静音）：
+- 从板：`link: sim tick_age=28181469ms seen=65535` ⇒ **7.8 小时没收到过 TICK**，
+  左屏全字段回退模拟数据 + 挂"数据不可信"角标（**屏上那些数是假的，别拿去对账**）；
+- 主板：`link: B uptime=32588576ms rx_ok=15616 …` ⇒ **它收得到从板**（STATUS 的 uptime
+  一直在涨）⇒ **单向断**：从板→主板通，主板→从板不通；
+- 主板 `espnow: tx_frames=539911 … done=539903 done_fail=0 pending=8 txring=252`
+  ⇒ ★ **`pending` 卡在 8（在途窗口满）、`done` 比 `tx_frames` 少 8** ⇒ 发送完成回调
+  **再也没回来** ⇒ 之后的包**一个都没真上射频**（而 `tx_fail=0`、`last_err=0` 看着全正常
+  —— 这正是最容易骗过判据的形态）。
+
+**判据（新）**：`espnow:` 那一行的 **`pending` 长期贴着上限、且 `done` 不再追平 `tx_frames`**
+= 主板发送面停摆。★ 复位主板后**立刻恢复**（从板 20 秒内 `link: locked`、`pending` 回到 0~2）。
+
+**两个修法（一已做、一待做）**：
+1. ✅ **从板侧的"收面停摆看门狗"判据原来写错了**（2026-09-28 修）：它盯的是
+   `tickAgeMs()`，而收不到数据时这个值是**一直在涨**的 ⇒ `age != wd_seen_age` 每圈都成立
+   ⇒ 永远走"还在收到东西"那一支、**15 秒判据永远到不了**（所以这 7.8 小时它一次没触发）。
+   现在改成盯 **PHY 的单调计数器 `rxFrames()`**（正常时每圈都涨，停了就冻住），
+   并加"**曾经收到过才武装**"（台面上只插从板时不要变成每 15 秒重启的死循环）。
+2. ❗ **待做：主板侧的"发面停摆看门狗"** —— 从板那个看门狗**管不了这个方向**
+   （它修的是从板收面；这次挂的是主板发面，从板怎么重启都没用）。
+   判据就用上面那条（`pending` 贴顶 + `done` 不追平），动作：先打一行现场日志，
+   再**重新初始化 ESP-NOW**（`esp_now_deinit/init` + 重新 add peer，比整机重启便宜），
+   实在不行才 `ESP.restart()`（主板挂着屏与 VAN，能不动就不动）。
 
 | 行 | 期望 | 它在证明什么 |
 |---|---|---|

@@ -55,7 +55,13 @@ namespace dashlink {
 static const uint8_t kSync     = 0x5Au;
 static const uint8_t kVerMajor = 1u;
 static const uint8_t kVerMinor = 0u;
-static const uint8_t kVer      = 0x10u;   // (kVerMajor << 4) | kVerMinor
+static const uint8_t kVer      = 0x11u;   // (kVerMajor << 4) | kVerMinor
+// ★ 2026-09-27 深夜（双板分工 v2）：**0x10 → 0x11**。线格式（帧长/字段偏移）**一个字节
+//   都没变**，变的是 STATUS 里第 12 字节那两格的**语义**：原来的保留字段 `last_gap_ms`
+//   改成装进气温度（见 `link_msg.h` 的 StatusMsg）。为什么值得动版本号：
+//     · 混版本仍然安全（旧发送方那一格恒 0 且不置 valid 位 ⇒ 新接收方不用它），
+//       但"同一份 VER 下字段含义不同"是不该留着的隐性债 —— 版本号就是它的标记；
+//     · 收端对 ver 不匹配的口径没变：**不断链、不降级**，只记一行（§2）。
 
 // §2 偏移表
 static const uint8_t kOffSync    = 0u;
