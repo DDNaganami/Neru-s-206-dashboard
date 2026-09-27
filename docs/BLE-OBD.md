@@ -483,4 +483,80 @@ SRC speed=van rpm=van coolant=van intake=link | v=0.0km/h 910rpm 87.0C 35.0C
 判据仍按 `VAN-PROTOCOL.md` §4.8.5（冷启动看 `data[2]` 单调升到稳态 85~95 ℃、
 与 OBD `0105` 对照），**别用现在这个 90 ℃ 当已验**。
 
+---
+
+## 12. ★★ 2026-09-28 深夜：BLE 建连失败**查到了哪一步**（含一条推翻前面推断的读数）
+
+### 12.1 ★★★ `status=13` **不是控制器给的错误码** —— 前面基于它的推断全部作废
+
+**怎么查出来的**（读库源码，不是猜）：
+
+`NimBLEClient::connect()` 里那个 `rc` 来自 `taskData.m_flags`：
+
+```cpp
+if (!NimBLEUtils::taskWait(taskData, (m_connectTimeout + …) * (retries + 1))) {
+    if (m_connStatus != CONNECTED) {
+        ble_gap_conn_cancel();
+        taskData.m_flags = BLE_HS_ETIMEOUT;      // ← 兜底写的 13
+    }
+}
+rc = taskData.m_flags;
+if (rc != 0) NIMBLE_LOGE(LOG_TAG, "Connection failed; status=%d %s", rc, …);
+```
+
+而 `NimBLEUtils::taskWait()`：
+
+```cpp
+xTaskNotifyWait(0, TASK_BLOCK_BIT, &notificationValue, 0);   // ★ 超时 = 0 tick（不阻塞）
+if (notificationValue & TASK_BLOCK_BIT) return true;         // ← 走这条就**不写 m_flags**
+return xTaskNotifyWait(0, TASK_BLOCK_BIT, nullptr, ticks) == pdTRUE;
+```
+
+⇒ **快速路径从不设置 `taskData.m_flags`** ⇒ `rc` 可能是 `NimBLETaskData` 的构造值。
+⇒ 我们看到的 **`status=13` 极可能是未初始化/兜底值，不是控制器真实错误码。**
+
+**因此作废的推断（两条，都别再引用）**：
+
+| 作废的说法 | 为什么作废 |
+|---|---|
+| "内存不够导致建连失败（largest 只剩 25KB）" | 15 秒超时窗口里 17ms 就返回 ⇒ 根本没等到控制器结果 |
+| "地址类型不对（`type=0` public，而 `AA:BB:CC…` 是 random static）" | 同上；而且这条从来没有直接证据 |
+
+★ **教训（写给下一个查 BLE 的人）**：`status=13` 在 NimBLE-Arduino 2.5.1 上
+**不能当作"控制器报超时"来读**。要拿真错误码必须自己挂 `onConnectFail` 打印 `reason`，
+或读 `client->getLastError()` —— 而 `connect()` 只返回 bool，**这两条路现在都没走**。
+
+### 12.2 本轮**排除**掉的假设（都有实测依据）
+
+| 假设 | 判据 | 结论 |
+|---|---|---|
+| 扫描没扫到对端 | `onDiscovered()` 命中、`rssi=-69~-71` | ✗ 排除，扫得到 |
+| 停扫后立刻连被控制器拒（.cpp 里那条老注释） | 加了 600ms 闸门后**仍是 17ms 失败** | ✗ 排除 |
+| 存下来的地址过期（换头/对端重启） | 加"连败 5 次丢地址重扫" ⇒ 重扫**又扫到同一个** `aa:bb:cc:12:22:33` | ✗ 排除，地址新鲜、头就在那儿 |
+| 内存不够 | 见 12.1：17ms 返回，没等到控制器结果 | ✗ 作废 |
+| 手机/笔记本占着这个头 | 笔记本用 bleak 连同一个头**一连连妥**（2026-09-27 实测） | ✗ 排除 |
+
+### 12.3 本轮**落地的两个修复**（都是真 bug，与根因无关也该修）
+
+1. **`kPostScanSettleMs = 600`**（`obd_transport_ble.{h,cpp}`）——
+   把 `.cpp` 注释里承诺过、却被整段删掉的"停扫之后等够再连"闸门补回来，
+   ★ 并且**给它自己的时间戳 `scan_stop_ms_`**：绝不能借 `last_try_ms_`
+   （它在函数开头刚被赋值，差值恒 0 ⇒ 闸门永远成立 ⇒ connect() 一次都发不出去，
+   2026-09-27 就是这么栽的，然后闸门被删、原始问题又回来了 —— **同一处栽过两次**）。
+2. **`kRescanAfterFails = 5`**（同上）—— `peer_addr_` 原本是**开机扫一次就再也不刷新**
+   （`onDiscovered()` 里 `if (want_peer_) return;`）；换头/对端重启后地址一变就是
+   **拿过期地址盲撞**，而那个错误形状与"地址类型不对"完全一样，日志分不出来。
+   现在连败 5 次就丢掉地址重扫。
+
+### 12.4 下一步（**要真错误码，不要再从 `status` 推**）
+
+1. `onConnectFail` 里已经打了 `reason`（`obd-ble: onConnectFail reason=0x%02X`）——
+   ★ 但它**从来没出现过**，说明 `onConnectFail` 根本没被调用，
+   这与 12.1 自洽：快速路径直接返回、不走回调。
+2. 直接读 `client_->getLastError()` 打进 `connectNow()` 那行日志。
+3. 若两条都拿不到有效值 ⇒ 改用 `asyncConnect = true` + 在 `onConnect`/`onConnectFail`
+   回调里驱动状态机（**结构性绕开** `taskWait` 那条可疑的快速路径），
+   不依赖查出"快速路径为何被唤醒"。
+
+
 

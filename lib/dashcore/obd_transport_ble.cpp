@@ -95,6 +95,7 @@ void ObdTransportBle::onDiscovered(const NimBLEAdvertisedDevice* d) {
   //   而日志只有 `conn=0`（看起来像"设备不在/被手机占着"），极易误判。
   peer_addr_  = d->getAddress();
   peer_valid_ = true;
+  peer_rssi_  = d->getRSSI();   // ★ 2026-09-28：记下扫描那一刻的信号强度（判"弱链路"用）
   scan_tries_ = 0;              // ★ 2026-09-28：扫到了 ⇒ 扫描上限的计数复位
   last_slow_scan_ms_ = 0;
   snprintf(peer_, sizeof(peer_), "%s", peer_addr_.toString().c_str());
@@ -252,20 +253,66 @@ void ObdTransportBle::tick(uint32_t now_ms) {
     //   日志环有每秒预算、可能把这种低频行丢掉；而这两个数直接进状态行，
     //   一眼就能分清"没进这个分支"与"进了但 connect 没返回"。
     if (scan_) {
-      if (scan_->isScanning()) scan_->stop();
+      if (scan_->isScanning()) {
+        scan_->stop();
+        // ★★★ 2026-09-28：**记下停扫的那一刻**，供下面那道"停扫后等够"的闸门用。
+        //   `onDiscovered()` 里也会停扫（找到就停），它不经过这里 ⇒ 那种情况下
+        //   地址到手已经有时间间隔了，闸门自然放行（见下面的判据）。
+        scan_stop_ms_ = now_ms;
+      }
+    }
+    // ★★★ 2026-09-28 修正：**把"停扫之后等够再连"这道闸门补回来，并且给它自己的时间戳**。
+    //
+    //   来龙去脉（这是本文件最容易读歪的一段，两次都栽在同一处）：
+    //     · 2026-09-27：发现"停扫之后立刻连会被控制器直接拒掉"，于是加了一道等 600ms 的闸门；
+    //     · 但那次用的是 `now_ms - last_try_ms_`，而 `last_try_ms_` **在函数开头刚被赋值**
+    //       ⇒ 差值恒为 0 ⇒ 闸门永远成立 ⇒ **connect() 一次都发不出去**（那是另一个 bug）；
+    //     · 修那个 bug 时把整道闸门**删掉了**，却没有换成"用自己的时间戳"的正确实现
+    //       ⇒ 于是"停扫后立刻连"这个原始问题又回来了，而且这次表现为
+    //         `E NimBLEClient: Connection failed; status=13`（BLE_HS_ETIMEOUT）、
+    //         **毫秒级**返回、`onConnectFail` 不触发 —— 与"前置检查失败"的形状一模一样，
+    //         所以很容易被误判成"内存不够/地址无效/主机没同步"。实测 2026-09-28：
+    //         18~19ms 返回、`cs=27/27`（27 次全败）、同一时刻扫描是能扫到对端的。
+    //   ⇒ 本闸门**只认 `scan_stop_ms_`**（上面刚停扫才置位），绝不碰 `last_try_ms_`：
+    //       停扫那一刻起算，满 `kPostScanSettleMs` 才允许 connect。
+    //   ★ 为什么 600ms 够：控制器停扫是"命令已受理 + 射频收尾"，量级是几十毫秒；
+    //     600ms 是留了 10 倍余量（宁可慢 0.6 秒，也不要每次都被当场拒）。
+    //   ★ 判据：改完之后若有 `onConnectFail` / 真超时（≈15s）出现，说明请求**真的发出去了**，
+    //     那才是"时序"这一关过了；仍 `status=13` + 毫秒级返回 ⇒ 还没发出，回来再查。
+    if (scan_stop_ms_ != 0u) {
+      if ((uint32_t)(now_ms - scan_stop_ms_) < kPostScanSettleMs) return;   // 等够再来
+      scan_stop_ms_ = 0u;      // 放行一次即可，之后按正常退避节奏走
     }
     ++cs_attempts;
-    // ★★ 这里**不要**再放"停扫后等 N ms"的闸门 —— 2026-09-27 车上踩到：
-    //   函数开头（退避那一段）已经做过 `last_try_ms_ = now_ms`，
-    //   此处的 `now_ms - last_try_ms_` **恒为 0**，于是 `< 600` 永远成立、
-    //   每次都 return ⇒ **connect() 一次都发不出去**。
-    //   现象极具误导性：state 停在 `connecting`、一个回调都没有，
-    //   看起来像"对端不理我们"。真正的判据是计数器 `cs=a/b`：
-    //   `a` 在涨而 `b` 恒为 0 ⇒ 卡在这儿，不是链路问题。
-    //   ★ 节奏由函数开头那个**退避闸门**负责，这里不必再来一道。
     ++cs_calls;
     if (connectNow()) { ++connects_; backoff_ms_ = 0; return; }
     backoff_ms_ = (backoff_ms_ < 8000u) ? (backoff_ms_ * 2u) : 8000u;
+
+    // ★★★ 2026-09-28：**连败若干次之后，把地址丢掉、重新扫**。
+    //
+    //   为什么必须这么做（这是"地址会不会过期"这个盲点的补丁）：
+    //     `peer_addr_` 是**开机扫描那一刻**存下来的，之后**再也不刷新**
+    //     （`onDiscovered()` 里有 `if (want_peer_) return;`，拿到就不再收新的）。
+    //     于是——**诊断头换过、或它自己重启后换了随机静态地址**——板子就会拿着
+    //     一个**过期地址**一直撞：对端根本不在那个地址上，控制器**当场拒绝**
+    //     （实测形状：`E NimBLEClient: Connection failed; status=13`、**17ms** 返回、
+    //      `onConnectFail` 不触发、`cs` 一路涨而 `connects=0`）。
+    //     ⇒ 这个错误形状**与"地址类型不对"完全一样**，光看日志分不出来，
+    //       所以两条都要堵：地址类型靠存整个 `NimBLEAddress` 保证（见 onDiscovered），
+    //       **地址本身的新鲜度靠这里**。
+    //   ★ 阈值取 5：正常车上（头就在那儿）永远走不到这一步 —— 因为连上就 `ready()` 早退；
+    //     真走到这里说明"手里这个地址没用"，重扫一次的代价远小于继续盲撞。
+    //   ★ 重扫会重新走 `onDiscovered()`，把地址与**地址类型**一起刷新，
+    //     并复位 `scan_tries_`（扫描上限计数）。
+    if (cs_attempts != 0u && (cs_attempts % kRescanAfterFails) == 0u) {
+      dash_logf("obd-ble: 连败 %u 次 ⇒ 丢掉地址重扫(地址可能已过期:换头/对端重启)\n",
+                (unsigned)cs_attempts);
+      peer_valid_ = false;
+      want_peer_  = false;
+      peer_[0]    = '\0';
+      scan_stop_ms_ = 0u;
+      scan_tries_   = 0;      // 让重扫走"快速"节奏，别等到 5 分钟那一档
+    }
     return;
   }
 
@@ -307,9 +354,15 @@ bool ObdTransportBle::connectNow() {
   dash_logf("obd-ble:   pre: isConnected=%d connHandle=0x%04X\n",
             (int)client_->isConnected(), (unsigned)client_->getConnInfo().getConnHandle());
   // ★ 用**存下来的地址对象**（类型正确），别拿字符串重建 —— 见 onDiscovered 里的实测教训。
+  // ★★ 并且**直接量真实耗时**（2026-09-28）：日志行之间的"行距"**不能**当耗时用 ——
+  //   日志环有每秒预算、这种低频行会被丢。这个数决定方向：
+  //     · 接近 15000ms ⇒ 连接请求发出去了、对端不理（真超时，往对端/射频查）；
+  //     · 毫秒级      ⇒ 库或控制器**当场拒绝**（前置检查失败），与射频无关。
+  const uint32_t t0 = millis();
   const bool ok = client_->connect(peer_addr_);
-  dash_logf("obd-ble: ← client->connect() = %d  isConnected=%d\n",
-            (int)ok, (int)client_->isConnected());
+  const uint32_t dt = (uint32_t)(millis() - t0);
+  dash_logf("obd-ble: ← client->connect() = %d  isConnected=%d  耗时=%ums  rssi=%d\n",
+            (int)ok, (int)client_->isConnected(), (unsigned)dt, (int)peer_rssi_);
   if (!ok) return false;
 
   NimBLERemoteService* svc = client_->getService(NimBLEUUID(kServiceUuid));

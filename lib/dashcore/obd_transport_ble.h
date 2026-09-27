@@ -134,6 +134,18 @@ private:
   uint32_t boot_ms_  = 0;
   uint32_t last_try_ms_ = 0;
   uint32_t backoff_ms_  = 0;             // 退避：500ms → … → 8s
+  // ★★★ 2026-09-28：**停扫时刻**（只由"我们主动 `scan_->stop()`"那一刻置位，0 = 没在等）。
+  //   用途见 .cpp 里"停扫之后等够再连"那一段 —— 那道闸门**必须有自己的时间戳**，
+  //   绝不能借 `last_try_ms_`：它在函数开头刚被赋值，差值恒 0 ⇒ 闸门永远成立
+  //   ⇒ **connect() 一次都发不出去**（2026-09-27 就是这么栽的，然后闸门被整段删掉、
+  //   原始问题又回来了）。这条注释就是防止第三次踩同一处。
+  uint32_t scan_stop_ms_ = 0;
+  // 停扫之后等多久才允许 connect。控制器收尾是几十毫秒量级，取 600ms = 10 倍余量。
+  static constexpr uint32_t kPostScanSettleMs = 600u;
+  // ★★★ 2026-09-28：连败这么多次就**丢掉地址、重新扫**（地址新鲜度的补丁）。
+  //   理由见 .cpp 里那段 —— `peer_addr_` 原本是开机扫一次就再也不刷新，
+  //   换头/对端重启后地址一变，就变成拿过期地址盲撞（控制器当场拒、17ms 返回）。
+  static constexpr uint32_t kRescanAfterFails = 5u;
   // ★★ 2026-09-28：**扫描上限**（连不上就别一直扫 —— 那会把射频从 ESP-NOW 那边抠走，
   //   见 obd_transport_ble.cpp 里那个分支的说明）。扫到对端时两个量都会被复位。
   static constexpr uint8_t  kScanTriesFast = 10u;        // 先快速试 10 轮（≈1 分钟）
@@ -146,6 +158,7 @@ private:
   //   看起来像"设备不在/被占着"。`getAddress()` 回来的对象类型是对的。
   NimBLEAddress peer_addr_{};
   bool          peer_valid_ = false;
+  int           peer_rssi_  = 0;      // ★ 扫描到那一刻的 RSSI(dBm),判弱链路用
   char     peer_[20] = {0};              // 仅供日志打印
 
   // ★★ 射频仲裁状态机（策略见 radio_arbiter.h，这里只存实例与"上次有没有占用"）
