@@ -9,6 +9,10 @@
 //   （函数 `esp_coex_preference_set(esp_coex_prefer_t)`、枚举 `ESP_COEX_PREFER_BALANCE`）。
 #if defined(ARDUINO)
 #include <esp_coexist.h>
+// ★ 2026-09-28：`connect()` 那行要把"内部自由堆"和错误码打在**同一行** ——
+//   判"到底是不是内存"必须两个数一起看。头文件是 `esp_heap_caps.h`
+//   （与 `esp_coexist.h` 同一个 `include/` 根，不用改 platformio.ini 的 -I）。
+#include <esp_heap_caps.h>
 #endif
 
 ObdTransportBle* ObdTransportBle::s_self_ = nullptr;
@@ -394,8 +398,30 @@ bool ObdTransportBle::connectNow() {
   const uint32_t t0 = millis();
   const bool ok = client_->connect(peer_addr_);
   const uint32_t dt = (uint32_t)(millis() - t0);
-  dash_logf("obd-ble: ← client->connect() = %d  isConnected=%d  耗时=%ums  rssi=%d\n",
-            (int)ok, (int)client_->isConnected(), (unsigned)dt, (int)peer_rssi_);
+  // ★★★ 2026-09-28：**把真实错误码打出来**（docs/BLE-OBD.md §12.4 的第一步）。
+  //
+  //   为什么必须打：`connect()` 只返回 bool，真实的 `rc` 被丢在里面；而库在
+  //   快速路径（`taskWait` 的超时 0-tick 那条）返回时**从不设置** `taskData.m_flags`
+  //   ⇒ 它随后补写的 `BLE_HS_ETIMEOUT(13)` 是**兜底值、不是控制器给的错误码**
+  //   （见 §12.1 的源码推导）。所以 `status=13` 这条线索一直是死的，两条基于它的
+  //   推断（"内存不够"、"地址类型不对"）都已作废。
+  //   ⇒ 要拿真值只有两条路，这里走**第一条**：
+  //     ① `client_->getLastError()` —— 库在 `error:` 标号处会 `m_lastErr = rc`，
+  //        所以它比日志里的 `status` 可信（`connect()` 失败必经那里）；
+  //     ② 改 `asyncConnect = true` + 回调驱动（结构性绕开快速路径）—— 还没做。
+  //   ★ 判据（怎么读这个数）：
+  //     · `0` 或仍是 13 ⇒ `getLastError()` 也没拿到，说明失败**根本没走到 error 标号**，
+  //        那就只剩 ② 那条路（改异步 + 回调）。
+  //     · 非 0 且不是 13 ⇒ **这就是真错误码**，按 NimBLE 错误表查（如
+  //        `BLE_HS_ENOTSYNCED=8` / `BLE_HS_EREJECT=14` / `BLE_HS_EINVAL=3` /
+  //        `BLE_HS_ETIMEOUT_HCI=17` 等），不要再去猜内存。
+  //   ★ 同时把 `free heap` 打进来：判"到底是不是内存"需要它和错误码**同一行**，
+  //     否则"OOM"与"协议拒绝"在日志上分不开。
+  dash_logf("obd-ble: ← client->connect() = %d  isConnected=%d  耗时=%ums  rssi=%d"
+            "  lastErr=%d  内部free=%uKB\n",
+            (int)ok, (int)client_->isConnected(), (unsigned)dt, (int)peer_rssi_,
+            (int)client_->getLastError(),
+            (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024u));
   if (!ok) return false;
 
   NimBLERemoteService* svc = client_->getService(NimBLEUUID(kServiceUuid));

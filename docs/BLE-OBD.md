@@ -550,13 +550,25 @@ return xTaskNotifyWait(0, TASK_BLOCK_BIT, nullptr, ticks) == pdTRUE;
 
 ### 12.4 下一步（**要真错误码，不要再从 `status` 推**）
 
-1. `onConnectFail` 里已经打了 `reason`（`obd-ble: onConnectFail reason=0x%02X`）——
-   ★ 但它**从来没出现过**，说明 `onConnectFail` 根本没被调用，
-   这与 12.1 自洽：快速路径直接返回、不走回调。
-2. 直接读 `client_->getLastError()` 打进 `connectNow()` 那行日志。
-3. 若两条都拿不到有效值 ⇒ 改用 `asyncConnect = true` + 在 `onConnect`/`onConnectFail`
-   回调里驱动状态机（**结构性绕开** `taskWait` 那条可疑的快速路径），
-   不依赖查出"快速路径为何被唤醒"。
+1. ~~`onConnectFail` 里已经打了 `reason`~~ —— ★ 它**从来没出现过**，说明
+   `onConnectFail` 根本没被调用，这与 12.1 自洽：快速路径直接返回、不走回调。
+2. ✅ **已做（2026-09-28）：读 `client_->getLastError()` 打进 `connectNow()` 那行日志。**
+   **结果：`lastErr=13`，与日志里的 `status` 是同一个数。**
+   ⇒ 这条也走不通：失败路径**本身就是设 13 的那条**（`error:` 标号处 `m_lastErr = rc`，
+   而 `rc` 就是那个补写的 `BLE_HS_ETIMEOUT`）。**`getLastError()` 拿不到真错误码。**
+   ★ 同一行顺带打了 `内部free=30KB` ⇒ **"内存不够"这条可以彻底划掉了**
+     （30KB 空闲，而 17ms 就返回，根本没等到控制器分配连接状态）。
+3. ⇒ **只剩这一条路：改 `asyncConnect = true` + 在 `onConnect`/`onConnectFail`
+   回调里驱动状态机**（结构性绕开 `taskWait` 那条可疑的快速路径）。
+   不依赖查出"快速路径为何被唤醒"，直接把 17ms 那个黑盒换掉。
+
+★ **当前对失败机制的准确描述**（别再说"超时"）：`taskWait` 声称等
+`(m_connectTimeout + itvl_max*7) * (retries+1)`（15 秒量级），
+**实际 16~17ms 就返回 false**，随后库补写 `BLE_HS_ETIMEOUT`。
+所以真问题是"**谁在 16ms 时提前唤醒了 `taskWait`**"，不是"等超时了"。
+候选（都尚未验证，别再当结论用）：连接被取消 / 主机复位 / 控制器立刻报错 /
+库内部有别的路径释放了任务通知。
+
 
 
 
