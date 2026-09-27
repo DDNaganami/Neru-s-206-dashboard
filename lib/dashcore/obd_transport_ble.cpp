@@ -15,6 +15,14 @@
 #include <esp_heap_caps.h>
 #endif
 
+// ★★★★ 2026-09-28 深夜实验开关：**建连时把对端地址类型强制成 random**。
+//   默认 **0（关）= 保持线上固件原本的行为**，免得"实验性改动"悄悄变成默认行为；
+//   要试的那次构建在 platformio.ini 里显式 `-DOBD_BLE_FORCE_RANDOM_ADDR_TYPE=1`。
+//   （未定义时 `#if` 会当 0 —— 行为虽然一样，但那是隐式的，写明白更好查。）
+#ifndef OBD_BLE_FORCE_RANDOM_ADDR_TYPE
+#define OBD_BLE_FORCE_RANDOM_ADDR_TYPE 0
+#endif
+
 ObdTransportBle* ObdTransportBle::s_self_ = nullptr;
 
 // ============================================================================
@@ -51,7 +59,8 @@ public:
     if (ObdTransportBle::s_self_) {
       ObdTransportBle::s_self_->conn_            = true;
       ObdTransportBle::s_self_->connect_pending_ = false;   // 等到了，别再超时重试
-      dash_logf("obd-ble: onConnect ✓（异步连接完成，接着去拿特征）\n");
+      dash_logf("obd-ble: onConnect ✓（异步连接完成，距发起 %lums，接着去拿特征）\n",
+                (unsigned long)((uint32_t)millis() - ObdTransportBle::s_self_->connect_started_ms_));
     }
   }
   // ★★ 连接**失败的原因码**只有这里能拿到（`connect()` 只回 bool）。
@@ -61,6 +70,15 @@ public:
   //   常见取值：`BLE_ERR_CONN_ESTABLISHMENT`(0x3E) 对端没应 / `BLE_ERR_UNK_CONN_ID`(0x02)
   //   连接已不存在 / `BLE_ERR_AUTH_FAIL`(0x05) 要配对绑定（本头被 Windows 配过，
   //   有可能要求加密链路而我们裸连）。
+  // ★★★★ 2026-09-28 深夜：**必须印原始整数**，`%02X` 会骗人。
+  //   库源码 `NimBLEClient.cpp:1062-1085` 的判据是
+  //     `connEstablishFailReason = BLE_HS_HCI_ERR(BLE_ERR_CONN_ESTABLISHMENT)`
+  //   而 `BLE_HS_HCI_ERR(x)` = `0x200 + x` ⇒ 那个值是 **0x23E(=574)**，
+  //   用 `%02X` 打就成了 **`0x3E`**；可我们日志里看到的是 **`0x0D`**
+  //   ⇒ 只看 `%02X` **分不清** `0x0D / 0x10D / 0x20D / 0x23E`，而这几个的含义完全不同。
+  //   ⇒ 十进制 + 十六进制一起打，并且把 `onConnectFail` 与 `onDisconnect` 的**两条路**
+  //     都打出来 —— 库是这么分流的：`rc == 0x23E` 才走 `onConnectFail`，
+  //     其余一律走 `onDisconnect`。所以"哪条路被打出来"本身就是判据。
   void onConnectFail(NimBLEClient* c, int reason) override {
     (void)c;
     if (ObdTransportBle::s_self_) {
@@ -68,13 +86,35 @@ public:
       ObdTransportBle::s_self_->connect_pending_ = false;
       ObdTransportBle::s_self_->connect_fails_++;
       ObdTransportBle::s_self_->last_fail_reason_ = reason;
+      // ★ 量"发起 → 失败"的真实延迟。判据：
+      //   真·控制器超时 ⇒ 10000ms 量级；**当场被拒 ⇒ 几毫秒～几十毫秒**。
+      //   两者是完全不同的根因（前者=对端不应答，后者=请求没发出去）。
+      //   ★ 带上流水号：日志是异步交错的，没有编号就没法确定这条失败属于哪次发起。
+      //   ★ `connect_started_ms_ == 0` ⇒ 还没成功发起过（重扫刚清过）⇒ 差值没意义，不报。
+      {
+        ObdTransportBle* s = ObdTransportBle::s_self_;
+        if (s->connect_started_ms_ == 0u) {
+          dash_logf("obd-ble: onConnectFail #%lu reason=%d(0x%X) 距发起 n/a（尚未发起过）"
+                    " ← ★ 这才是真错误码\n",
+                    (unsigned long)s->attempt_seq_, reason, (unsigned)reason);
+        } else {
+          dash_logf("obd-ble: onConnectFail #%lu reason=%d(0x%X) 距发起 %lums"
+                    " ← ★ 这才是真错误码\n",
+                    (unsigned long)s->attempt_seq_, reason, (unsigned)reason,
+                    (unsigned long)((uint32_t)millis() - s->connect_started_ms_));
+        }
+      }
     }
-    dash_logf("obd-ble: onConnectFail reason=0x%02X ← ★ 这才是真错误码\n", (unsigned)reason);
   }
   // 掉线原因同样有用（空闲掉线 vs 远端主动断）
   void onDisconnect(NimBLEClient* c, int reason) override {
     (void)c;
-    dash_logf("obd-ble: onDisconnect reason=0x%02X\n", (unsigned)reason);
+    // ★★ 与 `onConnectFail` **成对看**：库只把 `rc==0x23E` 那条路送进 `onConnectFail`，
+    //   其余原因码全从这条路出来。所以"到底哪条路被打出来"能直接分辨根因：
+    //     · 走进 `onConnectFail`(0x23E) ⇒ **控制器报"连接建立失败"**（对端没应 / 请求没发出）
+    //     · 走进 `onDisconnect`        ⇒ **别的原因码**，含义另说（别混为一谈）
+    dash_logf("obd-ble: onDisconnect reason=%d(0x%X) ← ★ 注意：这条路 ≠ 连接建立失败\n",
+              reason, (unsigned)reason);
     if (ObdTransportBle::s_self_) ObdTransportBle::s_self_->onDisconnected();
   }
 };
@@ -134,6 +174,43 @@ void ObdTransportBle::onDiscovered(const NimBLEAdvertisedDevice* d) {
   scan_tries_ = 0;              // ★ 2026-09-28：扫到了 ⇒ 扫描上限的计数复位
   last_slow_scan_ms_ = 0;
   snprintf(peer_, sizeof(peer_), "%s", peer_addr_.toString().c_str());
+  // ★★★★ 2026-09-28 深夜：**把地址类型打出来**（车主要求的"验证地址类型"）。
+  //
+  //   为什么这是首要嫌疑：真头 `AA:BB:CC:12:22:33` 的首字节 `0xAA` = `0b10101010`
+  //   ⇒ **最高两 bit 是 `10`**，属于**随机地址**（RPA/随机静态），**不是 public**。
+  //   而固件在 `connectNow()` 里打的 `type=0` = `BLE_ADDR_PUBLIC`。
+  //   若按 public 去发 `LE Create Connection`，对端不会应答 ⇒ 超时 ⇒ 正好是 `0x0D`。
+  //   ⇒ 这里一次把**两个来源**都打出来，好分辨是"库没保住类型"还是"控制器按 public 发"：
+  //     · `adv=` 来自 `NimBLEAdvertisedDevice::getAddressType()`（广播里声明的类型）
+  //     · `obj=` 来自存下来的 `NimBLEAddress::getType()`（**实际拿去建连的那个值**）
+  //   ★ 语义（BLE 规范）：0=public 1=random 2=public-id 3=random-id。
+  //     两个字**不一致** ⇒ 就是"库把类型丢了"；**一致但仍是 0** ⇒ 库/控制器把它当 public。
+  dash_logf("obd-ble: 扫到对端 %s rssi=%d 地址类型 adv=%u obj=%u（0=public 1=random 2=public-id 3=random-id）\n",
+            peer_, (int)peer_rssi_, (unsigned)d->getAddressType(), (unsigned)peer_addr_.getType());
+#if OBD_BLE_FORCE_RANDOM_ADDR_TYPE
+  // ★★★★ 2026-09-28 深夜（**行为改动，实验性**）：实测 `adv=0 obj=0` —— 库与控制器
+  //   **都把这个地址当 public**，而 `AA:BB:CC:…` 的首字节 `0xAA` 最高两 bit 是 `10`
+  //   ⇒ 按 BLE 规范它落在**随机地址**域（RPA / 随机静态）。
+  //   控制器以 public 发 `LE Create Connection` ⇒ 对端不应答 ⇒ 超时 ⇒ 正是 `0x0D`。
+  //   旁证：笔记本（bleak/Windows）能连 ⇒ 它的协议栈带对了类型；
+  //         而 Windows 假头 `40:ab:3d:ef:3b:df` 首字节 `0x40`=`01…`
+  //         **恰好与 public 兼容** ⇒ 所以假头能连上、真头不能。
+  //
+  //   ⇒ 用**带类型的构造函数**重建地址对象，强制 `BLE_ADDR_RANDOM`(=1) 再拿去连。
+  //   ★ 判据：出现 `特征已配齐 … state=ready` ⇒ **就是它**，真头当场解决；
+  //     仍是 `0x0D` ⇒ 类型不是根因 ⇒ `-DOBD_BLE_FORCE_RANDOM_ADDR_TYPE=0` 关掉即可。
+  //   ★ 为什么一个宏就行：它只改"建连时用的地址类型"这一个值，不碰扫描/GATT/共存。
+  {
+    // ★ 用**字符串 + 类型**重建（`NimBLEAddress(const std::string&, uint8_t)`）：
+    //   比 `(uint64_t)` 转换更稳妥 —— 不依赖那个转换是否保住全部字节。
+    const NimBLEAddress orig = peer_addr_;
+    const std::string    s    = orig.toString();
+    peer_addr_ = NimBLEAddress(s, (uint8_t)BLE_ADDR_RANDOM);
+    snprintf(peer_, sizeof(peer_), "%s", peer_addr_.toString().c_str());
+    dash_logf("obd-ble: ★ 地址类型强制为 random（obj %u ⇒ %u）后再建连\n",
+              (unsigned)orig.getType(), (unsigned)peer_addr_.getType());
+  }
+#endif
   want_peer_ = true;
   if (scan_) scan_->stop();     // 找到就停，别再占射频
 }
@@ -495,7 +572,8 @@ bool ObdTransportBle::connectNow() {
   //     (a) 压根没进这个函数、(b) `connect()` 阻塞住没返回、
   //     (c) `connect()` 返回 false 但库里不回调、(d) 连上了但特征没拿到。
   //   ⇒ 分别对应下面几条日志；日志只在这里打（进函数一次），不刷屏。
-  dash_logf("obd-ble: → connectNow begin (peer=%s type=%u)\n", peer_, (unsigned)peer_addr_.getType());
+  dash_logf("obd-ble: → connectNow begin #%lu (peer=%s type=%u)\n",
+            (unsigned long)(attempt_seq_ + 1u), peer_, (unsigned)peer_addr_.getType());
   // ★★ `NimBLEClient::connect()` 里有**三条会立刻返回失败、且不回调 onConnectFail**
   //   的前置检查（见 `NimBLEClient.cpp` 开头）—— 这正是"卡在 connecting、一个回调
   //   都没有"的形状：
@@ -507,8 +585,15 @@ bool ObdTransportBle::connectNow() {
   //   ★★ 异步下这三条**仍然存在**（它们在 `asyncConnect` 判断之前）⇒ 若日志里
   //     `→ connectNow begin` 之后**既没有 onConnect 也没有 onConnectFail**，
   //     就是又撞上了这三条 —— 那时问题在"库的前置状态"，不在射频也不在对端。
-  dash_logf("obd-ble:   pre: isConnected=%d connHandle=0x%04X\n",
-            (int)client_->isConnected(), (unsigned)client_->getConnInfo().getConnHandle());
+  //   ★★ 加 `connect_pending_` 与 `getLastError()`：库的 `m_connStatus` 有
+  //     DISCONNECTED/CONNECTING/CONNECTED 三态，而 `connect()` 的第二个前置检查是
+  //     `m_connStatus != DISCONNECTED ⇒ 当场 return false`（`NimBLEClient.cpp:261`）。
+  //     "毫秒级失败"正好是这个形状。★ 但库**没有公开的 `isConnecting()`**
+  //     （只有 `isConnected()` / `getConnInfo()` / `getLastError()`，实测编译报错），
+  //     所以"上一拍还在连接中"只能看**我们自己的** `connect_pending_`。
+  dash_logf("obd-ble:   pre: isConnected=%d pending=%d lastErr=%d connHandle=0x%04X attempts=%lu\n",
+            (int)client_->isConnected(), (int)connect_pending_, client_->getLastError(),
+            (unsigned)client_->getConnInfo().getConnHandle(), (unsigned long)cs_attempts);
   // ★ 用**存下来的地址对象**（类型正确），别拿字符串重建 —— 见 onDiscovered 里的实测教训。
   //
   // ★ 三个参数：`deleteAttributes=true`（每次连接清掉旧的服务缓存）、
@@ -516,6 +601,7 @@ bool ObdTransportBle::connectNow() {
   const uint32_t t0 = millis();
   const bool accepted = client_->connect(peer_addr_, true, /*asyncConnect=*/true, true);
   const uint32_t dt = (uint32_t)(millis() - t0);
+  ++attempt_seq_;   // ★ 编号：让"哪次失败属于哪次发起"可以逐条配对，不靠猜
   dash_logf("obd-ble: ← connect() 受理=%d 立即返回耗时=%ums rssi=%d 内部free=%uKB"
             "（★ 异步：结果看 onConnect / onConnectFail）\n",
             (int)accepted, (unsigned)dt, (int)peer_rssi_,

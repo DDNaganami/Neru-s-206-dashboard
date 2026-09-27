@@ -1,0 +1,378 @@
+206 dash ok
+boot: reason=UNKNOWN n=96 (raw=11) up=242ms | prev=UNKNOWN (raw=11) prev_up=100min | hb=22 | role=SLAVE
+usb: personality=ch343p(43/44 to the on-board bridge) (GPIO0 left alone -> FSUSB42 SEL follows R44/R45 (ch343p))
+--- 自检(上电)---
+chip  : ESP32-S3 rev2, 2 核 @ 240 MHz
+flash : 16 MB
+psram : 8189 KB 可用 / 8192 KB 总
+heap  : 166 KB
+image : 分区 8192 KB @ 0x254000(编译期口径 8192 KB)
+obd: BLE 那条路已挂上(目标服务 FFF0 / 通知 FFF1 / 写 FFF2) —— start() 推迟到显示初始化之后
+mute: 1 (loaded from NVS)
+alerts: 已就绪(超速 120 / 红区 5800 / 门 / 转向灯忘关 20s)
+van phy: gpio 就绪 RX=GPIO44(RO),空闲 70us 关帧,极性正常(VAN_RX_INVERT=0)
+theme: 已加载 (2579 字节, bg=0x141414, face=200)
+image: 已加载 11 张图 (3160800 字节数据)
+rgb: RGB565 480x480 pclk=12000000Hz 数据位=16 已就绪(第二块屏待接)
+rgb: 双framebuffer num_fbs=2 fb0=0x3c181320 fb1=0x3c1f1b40(各 450KB PSRAM) on_vsync=已注册
+rgb: bounce=10行/块(2块共18KB内部SRAM) on_frame_buf_complete=已注册 ⇒ 换帧在**帧边界**由驱动锁存(bb_fb_index=cur_fb_index);DMA 不读 PSRAM
+rgb: 刷新档=局部刷新(每30ms整屏失效一次;自动交替=0ms)——本行是"当前是全屏重绘还是局部刷新"的判据
+rgb: 两块fb收敛=空闲时间小碎步补拷上一次的脏区(每步8行,pend_step) ⇒ 局部刷新也不会跳回旧内容;换帧=帧边界锁存
+rgb: 编译期事实 LV_COLOR_DEPTH=16 lv_color_t=3B draw_buf=23040B 元素行=16 flush≤24行(每行960B);单笔>bounce 18KB 旧口径不成立
+rgb: 板=微雪 ESP32-S3-LCD-2.8C(非触控) ST7701 RST=EXIO1 CS=EXIO3 BL=GPIO6/PWM20000 @50%
+rgb: 双fb 之后 空闲 PSRAM=7287KB heap=144KB(内部)
+layout: role=SLAVE last=LEFT/rpm+coolant slots=[RIGHT/speed+intake | LEFT/rpm+coolant]
+faceimg: screen=0 group=1 panel=RIGHT/speed+intake gauge=speed idle_role=6
+faceimg: screen=1 group=0 panel=LEFT/rpm+coolant gauge=rpm idle_role=3
+206 dash boot
+obd-ble: 射频优先权 -> BALANCE(还给链路) (esp_coex=0)
+obd: BLE start() = 1  heap=82KB(面板之后)
+obd: heap_caps 内部 free 144→82 KB(掉 61) largest 91→41 KB | PSRAM free 7287→7287 KB(掉 0)
+obd: 从板角色 ⇒ 射频占用上限 4000ms（压久了左屏会掉进"数据不可信"）
+image ok: 11 张,数据 3160800 字节,镜像 8388608 字节
+alert: none (muted)
+rgb: 整屏刷新 139.1ms(块=20 拷贝21.0ms 数据450KB) 换帧在下一个帧边界由驱动锁存(bb_fb_index)
+trust: none (episodes=0)
+obd-ble: 扫到对端 aa:bb:cc:12:22:33 rssi=-79 地址类型 adv=0 obj=0（0=public 1=random 2=public-id 3=random-id）
+obd-ble: 射频优先权 -> BT(给建连让路,<=8s) (esp_coex=0)
+rgb: vsync=22(+22/s) wrap=22(+22/s) swap=9(+9/s) flush=37 blit_max=1193us step_max=143us copy_max=1193us copy_avg=617us swap_wait_max=2637us phase_max=19788us timeout=0 fb=1/0 catchup=8(+8/s 537KB/s forced486KB) refresh=32019/13629/43411us fullrb=1/s bounce=9MB/s 模式=局部刷新 psram=7287KB heap=81KB
+rgb: 脏区/s inv=249453px2(=一屏的 108.2%) flush=37/s(累计37) fmax=480x24(一屏的 5.0%) 单屏=230400px2
+206 dash ok  spd= 58% rpm= 69% coolant=85C face=high/sport | role=SLAVE last=LEFT/rpm+coolant
+alert: overspeed (muted)
+BEACON  1  step=7(loop: 数据已更新)  uptime=1s heap=81KB psram=8192KB flash=16MB
+boot anim done (收尾补一次 boot_apply: faceStage=1 → 表情 opa=COVER)
+obd-ble: → connectNow begin #1 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=1
+obd-ble: ← connect() 受理=1 立即返回耗时=0ms rssi=-79 内部free=81KB（★ 异步：结果看 onConnect / onConnectFail）
+espnow: ★PHY 未上线 stage=0 | ps=0 chan=0 init=0 | heap=81KB（0=没进begin 1=信道 2=esp_now_init 3=peer 9=成功）
+obd-ble: onConnect ✓（异步连接完成，距发起 342ms，接着去拿特征）
+BEACON  2  step=8(loop: UI 已 tick)  uptime=2s heap=81KB psram=8192KB flash=16MB
+BEACON  3  step=8(loop: UI 已 tick)  uptime=3s heap=81KB psram=8192KB flash=16MB
+obd-ble: 特征已配齐（FFF1 已订阅 / FFF2 可写）⇒ state=ready
+loop: stalled 1700ms (n=6545 link rx bytes=0 crc=0 bad_len=0 noise=0) probe_took=1us prev=UNKNOWN
+espnow: bcast_peer=yes peers=1 (add=ok)
+espnow: sta_mac=90:70:69:ea:f6:b4 ch=6 rxring=1024 txring=256 ps=off
+link: 从板侧就绪(§5, LINK_ROLE=0) ESP-NOW ch=6 (no pins) @1000000—— 真 PHY(ESP-NOW) —— 收主板的 TICK/DATA，发 HELLO(每 5s 直到收到对端)+STATUS(2Hz,§3)
+link: 启动闸门开了 —— BLE 已连上(ready),等了 3247ms ⇒ 现在启链路 PHY(射频让出来了)
+rgb: vsync=145(+79/s) wrap=145(+79/s) swap=32(+2/s) flush=131 blit_max=1193us step_max=216us copy_max=1193us copy_avg=390us swap_wait_max=13307us phase_max=21440us timeout=0 fb=0/1 catchup=32(+3/s 110KB/s forced36KB) refresh=45552/28441/62664us fullrb=0/s bounce=34MB/s 模式=局部刷新 psram=7282KB heap=28KB
+rgb: 脏区/s inv=26532px2(=一屏的 11.5%) flush=6/s(累计131) fmax=145x78(一屏的 4.9%) 单屏=230400px2
+trust: sim-fallback  <-- 屏上出现数据不可信提示 muted (episodes=1)
+206 dash ok  spd= 77% rpm= 95% coolant=87C face=redline/overspeed | role=SLAVE last=LEFT/rpm+coolant
+obd-ble: ★ 已就绪（第 1 次连上）
+alert: none (muted)
+BEACON  4  step=6(loop: 刚开始一轮)  uptime=4s heap=28KB psram=8192KB flash=16MB
+trust: none (episodes=1)
+obd-ble: 射频优先权 -> BALANCE(还给链路) (esp_coex=0)
+SRC speed=van rpm=van coolant=van intake=link | v=0.0km/h 902rpm 87.0C 21.0C
+SRC-Hz rpm=0.0 cool=0.0 intake=0.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=222ms door=-ms vin=-ms | src turn=van door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=34ms seen=17 seq_gap=3 miss=4 offset=1407584ms
+vanraw: ok=41 bad=0 age=94ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+BEACON  5  step=8(loop: UI 已 tick)  uptime=5s heap=28KB psram=8192KB flash=16MB
+loop: n=21199 in 5000ms (4239/s) max=1700ms stall=1 | link rx bytes=1507 frames=95 | stage=1699us@render | txprobe=620544us | log drain=248 drop=0 dropped=0 blocked=21199 ring=5815/8192 hwm=5815
+rgb: vsync=232(+44/s) wrap=232(+43/s) swap=51(+10/s) flush=208 blit_max=1465us step_max=968us copy_max=1465us copy_avg=160us swap_wait_max=13307us phase_max=23101us timeout=0 fb=1/0 catchup=51(+11/s 154KB/s forced0KB) refresh=99273/87346/112160us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=28KB
+rgb: 脏区/s inv=43056px2(=一屏的 18.6%) flush=24/s(累计208) fmax=127x78(一屏的 4.2%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=87C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=9 tx_bytes=185 tx_fail=0 last_err=0 done=9 done_fail=0 pending=0 txring=23 | rx_frames=112 rx_bytes=1721 rx_foreign=1 overflow=0 gap_rx=20ms
+BEACON  6  step=8(loop: UI 已 tick)  uptime=6s heap=28KB psram=8192KB flash=16MB
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0xb (SPI_FAST_FLASH_BOOT)
+Saved PC:0x4037f5fe
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce2820,len:0x10cc
+load:0x403c8700,len:0xc2c
+load:0x403cb700,len:0x30c0
+entry 0x403c88b8
+206 dash ok
+boot: reason=UNKNOWN n=97 (raw=11) up=242ms | prev=UNKNOWN (raw=11) prev_up=100min | hb=22 | role=SLAVE
+usb: personality=ch343p(43/44 to the on-board bridge) (GPIO0 left alone -> FSUSB42 SEL follows R44/R45 (ch343p))
+--- 自检(上电)---
+chip  : ESP32-S3 rev2, 2 核 @ 240 MHz
+flash : 16 MB
+psram : 8189 KB 可用 / 8192 KB 总
+heap  : 166 KB
+image : 分区 8192 KB @ 0x254000(编译期口径 8192 KB)
+obd: BLE 那条路已挂上(目标服务 FFF0 / 通知 FFF1 / 写 FFF2) —— start() 推迟到显示初始化之后
+mute: 1 (loaded from NVS)
+alerts: 已就绪(超速 120 / 红区 5800 / 门 / 转向灯忘关 20s)
+van phy: gpio 就绪 RX=GPIO44(RO),空闲 70us 关帧,极性正常(VAN_RX_INVERT=0)
+theme: 已加载 (2579 字节, bg=0x141414, face=200)
+image: 已加载 11 张图 (3160800 字节数据)
+rgb: RGB565 480x480 pclk=12000000Hz 数据位=16 已就绪(第二块屏待接)
+rgb: 双framebuffer num_fbs=2 fb0=0x3c181320 fb1=0x3c1f1b40(各 450KB PSRAM) on_vsync=已注册
+rgb: bounce=10行/块(2块共18KB内部SRAM) on_frame_buf_complete=已注册 ⇒ 换帧在**帧边界**由驱动锁存(bb_fb_index=cur_fb_index);DMA 不读 PSRAM
+rgb: 刷新档=局部刷新(每30ms整屏失效一次;自动交替=0ms)——本行是"当前是全屏重绘还是局部刷新"的判据
+rgb: 两块fb收敛=空闲时间小碎步补拷上一次的脏区(每步8行,pend_step) ⇒ 局部刷新也不会跳回旧内容;换帧=帧边界锁存
+rgb: 编译期事实 LV_COLOR_DEPTH=16 lv_color_t=3B draw_buf=23040B 元素行=16 flush≤24行(每行960B);单笔>bounce 18KB 旧口径不成立
+rgb: 板=微雪 ESP32-S3-LCD-2.8C(非触控) ST7701 RST=EXIO1 CS=EXIO3 BL=GPIO6/PWM20000 @50%
+rgb: 双fb 之后 空闲 PSRAM=7287KB heap=144KB(内部)
+layout: role=SLAVE last=LEFT/rpm+coolant slots=[RIGHT/speed+intake | LEFT/rpm+coolant]
+faceimg: screen=0 group=1 panel=RIGHT/speed+intake gauge=speed idle_role=6
+faceimg: screen=1 group=0 panel=LEFT/rpm+coolant gauge=rpm idle_role=3
+206 dash boot
+obd-ble: 射频优先权 -> BALANCE(还给链路) (esp_coex=0)
+obd: BLE start() = 1  heap=82KB(面板之后)
+obd: heap_caps 内部 free 144→82 KB(掉 61) largest 91→41 KB | PSRAM free 7287→7287 KB(掉 0)
+obd: 从板角色 ⇒ 射频占用上限 4000ms（压久了左屏会掉进"数据不可信"）
+image ok: 11 张,数据 3160800 字节,镜像 8388608 字节
+alert: none (muted)
+rgb: 整屏刷新 140.3ms(块=20 拷贝21.5ms 数据450KB) 换帧在下一个帧边界由驱动锁存(bb_fb_index)
+trust: none (episodes=0)
+rgb: vsync=22(+22/s) wrap=22(+22/s) swap=9(+9/s) flush=35 blit_max=1171us step_max=115us copy_max=1171us copy_avg=671us swap_wait_max=3229us phase_max=16633us timeout=0 fb=1/0 catchup=8(+8/s 534KB/s forced494KB) refresh=31595/14714/42414us fullrb=1/s bounce=9MB/s 模式=局部刷新 psram=7287KB heap=81KB
+rgb: 脏区/s inv=252566px2(=一屏的 109.6%) flush=35/s(累计35) fmax=480x24(一屏的 5.0%) 单屏=230400px2
+206 dash ok  spd= 58% rpm= 69% coolant=85C face=high/sport | role=SLAVE last=LEFT/rpm+coolant
+alert: overspeed (muted)
+BEACON  1  step=7(loop: 数据已更新)  uptime=1s heap=81KB psram=8192KB flash=16MB
+boot anim done (收尾补一次 boot_apply: faceStage=1 → 表情 opa=COVER)
+espnow: ★PHY 未上线 stage=0 | ps=0 chan=0 init=0 | heap=81KB（0=没进begin 1=信道 2=esp_now_init 3=peer 9=成功）
+trust: sim-fallback  <-- 屏上出现数据不可信提示 muted (episodes=1)
+BEACON  2  step=7(loop: 数据已更新)  uptime=2s heap=81KB psram=8192KB flash=16MB
+rgb: vsync=108(+43/s) wrap=108(+43/s) swap=40(+11/s) flush=170 blit_max=1441us step_max=518us copy_max=1441us copy_avg=456us swap_wait_max=13280us phase_max=20177us timeout=0 fb=0/1 catchup=40(+12/s 1086KB/s forced535KB) refresh=86066/28789/193040us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7287KB heap=81KB
+rgb: 脏区/s inv=239667px2(=一屏的 104.0%) flush=46/s(累计170) fmax=157x73(一屏的 4.9%) 单屏=230400px2
+206 dash ok  spd= 73% rpm= 90% coolant=86C face=redline/overspeed | role=SLAVE last=LEFT/rpm+coolant
+BEACON  3  step=7(loop: 数据已更新)  uptime=3s heap=81KB psram=8192KB flash=16MB
+espnow: ★PHY 未上线 stage=0 | ps=0 chan=0 init=0 | heap=81KB（0=没进begin 1=信道 2=esp_now_init 3=peer 9=成功）
+BEACON  4  step=7(loop: 数据已更新)  uptime=4s heap=81KB psram=8192KB flash=16MB
+obd-ble: 扫到对端 aa:bb:cc:12:22:33 rssi=-81 地址类型 adv=0 obj=0（0=public 1=random 2=public-id 3=random-id）
+obd-ble: 射频优先权 -> BT(给建连让路,<=8s) (esp_coex=0)
+SRC speed=sim rpm=sim coolant=sim intake=sim | v=176.6km/h 6956rpm 87.0C 28.3C
+SRC-Hz rpm=0.0 cool=0.0 intake=0.0 speed=0.0
+SRC-VAN turn=-- low=none pos=none door=idle vin=-
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=overspeed beeps=0 muted | buzz safety=0
+link: sim tick_age=5000ms seen=0 seq_gap=0 miss=0 offset=0ms
+vanraw: ok=0 bad=0 age=0ms
+obd-ble: state=connecting peer=aa:bb:cc:12:22:33 conn=0 drop=0 connects=0 cs=0/0 radio=BT win=1 cap=0 fails=0 lastFail=0x00
+rgb: vsync=194(+43/s) wrap=195(+44/s) swap=60(+10/s) flush=246 blit_max=1441us step_max=518us copy_max=1441us copy_avg=281us swap_wait_max=13280us phase_max=22482us timeout=0 fb=0/1 catchup=60(+10/s 384KB/s forced0KB) refresh=100735/95553/106928us fullrb=0/s bounce=19MB/s 模式=局部刷新 psram=7287KB heap=81KB
+rgb: 脏区/s inv=138931px2(=一屏的 60.2%) flush=38/s(累计246) fmax=151x76(一屏的 4.9%) 单屏=230400px2
+206 dash ok  spd= 85% rpm=100% coolant=87C face=redline/overspeed | role=SLAVE last=LEFT/rpm+coolant
+BEACON  5  step=7(loop: 数据已更新)  uptime=5s heap=81KB psram=8192KB flash=16MB
+loop: n=44434 in 5000ms (8886/s) max=167ms stall=0 | link rx bytes=0 frames=0 | stage=165us@data | txprobe=618592us | log drain=5649 drop=0 dropped=0 blocked=26 ring=0/8192 hwm=2515
+obd-ble: → connectNow begin #1 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=1
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=81KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #1 reason=13(0xD) 距发起 17ms ← ★ 这才是真错误码
+espnow: ★PHY 未上线 stage=0 | ps=0 chan=0 init=0 | heap=81KB（0=没进begin 1=信道 2=esp_now_init 3=peer 9=成功）
+BEACON  6  step=7(loop: 数据已更新)  uptime=6s heap=81KB psram=8192KB flash=16MB
+rgb: vsync=281(+43/s) wrap=281(+43/s) swap=80(+10/s) flush=318 blit_max=1441us step_max=518us copy_max=1441us copy_avg=275us swap_wait_max=13280us phase_max=22482us timeout=0 fb=0/1 catchup=80(+10/s 381KB/s forced0KB) refresh=101418/92283/119114us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7287KB heap=81KB
+rgb: 脏区/s inv=130114px2(=一屏的 56.4%) flush=39/s(累计318) fmax=153x75(一屏的 4.9%) 单屏=230400px2
+206 dash ok  spd= 94% rpm= 96% coolant=88C face=redline/overspeed | role=SLAVE last=LEFT/rpm+coolant
+BEACON  7  step=7(loop: 数据已更新)  uptime=7s heap=81KB psram=8192KB flash=16MB
+obd-ble: → connectNow begin #2 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=2
+obd-ble: ← connect() 受理=1 立即返回耗时=0ms rssi=-81 内部free=81KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #2 reason=13(0xD) 距发起 17ms ← ★ 这才是真错误码
+espnow: ★PHY 未上线 stage=0 | ps=0 chan=0 init=0 | heap=81KB（0=没进begin 1=信道 2=esp_now_init 3=peer 9=成功）
+BEACON  8  step=7(loop: 数据已更新)  uptime=8s heap=81KB psram=8192KB flash=16MB
+obd-ble: 射频优先权 -> BALANCE(还给链路) (esp_coex=0)
+rgb: vsync=367(+43/s) wrap=367(+43/s) swap=100(+10/s) flush=388 blit_max=1441us step_max=518us copy_max=1441us copy_avg=323us swap_wait_max=13280us phase_max=22756us timeout=0 fb=0/1 catchup=100(+10/s 381KB/s forced0KB) refresh=100447/94302/106507us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7287KB heap=81KB
+rgb: 脏区/s inv=137398px2(=一屏的 59.6%) flush=35/s(累计388) fmax=149x77(一屏的 4.9%) 单屏=230400px2
+206 dash ok  spd= 99% rpm= 80% coolant=89C face=high/overspeed | role=SLAVE last=LEFT/rpm+coolant
+BEACON  9  step=7(loop: 数据已更新)  uptime=9s heap=81KB psram=8192KB flash=16MB
+obd-ble: → connectNow begin #3 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=3
+obd-ble: ← connect() 受理=1 立即返回耗时=0ms rssi=-81 内部free=81KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #3 reason=13(0xD) 距发起 17ms ← ★ 这才是真错误码
+SRC speed=sim rpm=sim coolant=sim intake=sim | v=209.7km/h 4972rpm 88.8C 30.1C
+SRC-Hz rpm=0.0 cool=0.0 intake=0.0 speed=0.0
+SRC-VAN turn=-- low=none pos=none door=idle vin=-
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=overspeed beeps=0 muted | buzz safety=0
+link: sim tick_age=10000ms seen=0 seq_gap=0 miss=0 offset=0ms
+vanraw: ok=0 bad=0 age=0ms
+obd-ble: state=connecting peer=aa:bb:cc:12:22:33 conn=0 drop=0 connects=0 cs=3/3 radio=balance win=1 cap=1 fails=3 lastFail=0x0D
+espnow: ★PHY 未上线 stage=0 | ps=0 chan=0 init=0 | heap=81KB（0=没进begin 1=信道 2=esp_now_init 3=peer 9=成功）
+BEACON 10  step=6(loop: 刚开始一轮)  uptime=10s heap=81KB psram=8192KB flash=16MB
+loop: n=56986 in 5000ms (11397/s) max=116ms stall=0 | link rx bytes=0 frames=0 | stage=115us@data | txprobe=20032us | log drain=9366 drop=0 dropped=0 blocked=35 ring=0/8192 hwm=2515
+rgb: vsync=453(+43/s) wrap=453(+43/s) swap=120(+10/s) flush=479 blit_max=1441us step_max=628us copy_max=1441us copy_avg=413us swap_wait_max=13280us phase_max=22756us timeout=0 fb=0/1 catchup=119(+9/s 542KB/s forced0KB) refresh=101648/57269/191014us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7287KB heap=81KB
+rgb: 脏区/s inv=234531px2(=一屏的 101.7%) flush=46/s(累计479) fmax=153x75(一屏的 4.9%) 单屏=230400px2
+206 dash ok  spd=100% rpm= 57% coolant=89C face=sport/overspeed | role=SLAVE last=LEFT/rpm+coolant
+BEACON 11  step=8(loop: UI 已 tick)  uptime=11s heap=81KB psram=8192KB flash=16MB
+obd-ble: → connectNow begin #4 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=4
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=81KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #4 reason=13(0xD) 距发起 17ms ← ★ 这才是真错误码
+espnow: ★PHY 未上线 stage=0 | ps=0 chan=0 init=0 | heap=81KB（0=没进begin 1=信道 2=esp_now_init 3=peer 9=成功）
+BEACON 12  step=7(loop: 数据已更新)  uptime=12s heap=81KB psram=8192KB flash=16MB
+rgb: vsync=540(+43/s) wrap=541(+44/s) swap=140(+10/s) flush=546 blit_max=1441us step_max=628us copy_max=1441us copy_avg=401us swap_wait_max=13280us phase_max=22756us timeout=0 fb=0/1 catchup=139(+10/s 345KB/s forced0KB) refresh=97625/71425/106481us fullrb=0/s bounce=19MB/s 模式=局部刷新 psram=7287KB heap=81KB
+rgb: 脏区/s inv=115834px2(=一屏的 50.2%) flush=24/s(累计546) fmax=149x77(一屏的 4.9%) 单屏=230400px2
+206 dash ok  spd= 96% rpm= 34% coolant=90C face=cruise/overspeed | role=SLAVE last=LEFT/rpm+coolant
+BEACON 13  step=8(loop: UI 已 tick)  uptime=13s heap=81KB psram=8192KB flash=16MB
+obd-ble: → connectNow begin #5 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=5
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=81KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #5 reason=13(0xD) 距发起 17ms ← ★ 这才是真错误码
+espnow: ★PHY 未上线 stage=0 | ps=0 chan=0 init=0 | heap=81KB（0=没进begin 1=信道 2=esp_now_init 3=peer 9=成功）
+BEACON 14  step=7(loop: 数据已更新)  uptime=14s heap=81KB psram=8192KB flash=16MB
+SRC speed=sim rpm=sim coolant=sim intake=sim | v=186.5km/h 1283rpm 90.5C 31.5C
+SRC-Hz rpm=0.0 cool=0.0 intake=0.0 speed=0.0
+SRC-VAN turn=-- low=none pos=none door=idle vin=-
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=overspeed beeps=0 muted | buzz safety=0
+link: sim tick_age=15021ms seen=0 seq_gap=0 miss=0 offset=0ms
+vanraw: ok=0 bad=0 age=0ms
+obd-ble: state=connecting peer=aa:bb:cc:12:22:33 conn=0 drop=0 connects=0 cs=5/5 radio=balance win=1 cap=1 fails=5 lastFail=0x0D
+rgb: vsync=627(+43/s) wrap=627(+43/s) swap=160(+10/s) flush=616 blit_max=1441us step_max=628us copy_max=1441us copy_avg=510us swap_wait_max=13280us phase_max=22756us timeout=0 fb=0/1 catchup=160(+11/s 577KB/s forced37KB) refresh=100612/57641/187430us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7287KB heap=81KB
+rgb: 脏区/s inv=221958px2(=一屏的 96.3%) flush=38/s(累计616) fmax=300x38(一屏的 4.9%) 单屏=230400px2
+206 dash ok  spd= 88% rpm= 17% coolant=91C face=idle/overspeed | role=SLAVE last=LEFT/rpm+coolant
+BEACON 15  step=8(loop: UI 已 tick)  uptime=15s heap=81KB psram=8192KB flash=16MB
+espnow: bcast_peer=yes peers=1 (add=ok)
+espnow: sta_mac=90:70:69:ea:f6:b4 ch=6 rxring=1024 txring=256 ps=off
+link: 从板侧就绪(§5, LINK_ROLE=0) ESP-NOW ch=6 (no pins) @1000000—— 真 PHY(ESP-NOW) —— 收主板的 TICK/DATA，发 HELLO(每 5s 直到收到对端)+STATUS(2Hz,§3)
+link: 启动闸门开了 —— BLE 没连上(到 15s 上限:仪表优先,不再等 OBD),等了 15000ms ⇒ 现在启链路 PHY(射频让出来了)
+loop: n=55538 in 5000ms (11107/s) max=122ms stall=0 | link rx bytes=0 frames=0 | stage=121us@data | txprobe=20338us | log drain=13302 drop=0 dropped=0 blocked=44 ring=189/8192 hwm=2515
+alert: none (muted)
+obd-ble: → connectNow begin #6 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=6
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #6 reason=13(0xD) 距发起 16ms ← ★ 这才是真错误码
+BEACON 16  step=7(loop: 数据已更新)  uptime=16s heap=29KB psram=8192KB flash=16MB
+trust: none (episodes=1)
+rgb: vsync=713(+43/s) wrap=713(+43/s) swap=180(+10/s) flush=682 blit_max=1441us step_max=628us copy_max=1441us copy_avg=189us swap_wait_max=13280us phase_max=22933us timeout=0 fb=0/1 catchup=180(+10/s 193KB/s forced0KB) refresh=99271/76773/119052us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=65889px2(=一屏的 28.5%) flush=30/s(累计682) fmax=121x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=87C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+BEACON 17  step=8(loop: UI 已 tick)  uptime=17s heap=29KB psram=8192KB flash=16MB
+espnow: tx_frames=28 tx_bytes=600 tx_fail=0 last_err=0 done=28 done_fail=0 pending=0 txring=0 | rx_frames=86 rx_bytes=1245 rx_foreign=0 overflow=0 gap_rx=7ms
+obd-ble: → connectNow begin #7 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=7
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #7 reason=13(0xD) 距发起 17ms ← ★ 这才是真错误码
+BEACON 18  step=6(loop: 刚开始一轮)  uptime=18s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=799(+43/s) wrap=799(+43/s) swap=200(+10/s) flush=725 blit_max=1441us step_max=628us copy_max=1441us copy_avg=59us swap_wait_max=13280us phase_max=22933us timeout=0 fb=0/1 catchup=200(+10/s 61KB/s forced0KB) refresh=100001/96282/103780us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=8340px2(=一屏的 3.6%) flush=20/s(累计725) fmax=43x35(一屏的 0.6%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=87C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+BEACON 19  step=8(loop: UI 已 tick)  uptime=19s heap=29KB psram=8192KB flash=16MB
+espnow: tx_frames=32 tx_bytes=692 tx_fail=0 last_err=0 done=32 done_fail=0 pending=0 txring=0 | rx_frames=148 rx_bytes=2148 rx_foreign=0 overflow=0 gap_rx=35ms
+obd-ble: → connectNow begin #8 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=8
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #8 reason=13(0xD) 距发起 17ms ← ★ 这才是真错误码
+SRC speed=van rpm=van coolant=van intake=link | v=0.0km/h 906rpm 87.0C 18.0C
+SRC-Hz rpm=0.0 cool=0.0 intake=0.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=1061ms door=-ms vin=-ms | src turn=none door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=60ms seen=50 seq_gap=0 miss=0 offset=1414542ms
+vanraw: ok=80 bad=0 age=9ms
+obd-ble: state=connecting peer=aa:bb:cc:12:22:33 conn=0 drop=0 connects=0 cs=8/8 radio=balance win=1 cap=1 fails=8 lastFail=0x0D
+BEACON 20  step=6(loop: 刚开始一轮)  uptime=20s heap=29KB psram=8192KB flash=16MB
+loop: n=64442 in 5008ms (12867/s) max=52ms stall=0 | link rx bytes=2629 frames=181 | stage=35us@data | txprobe=20651us | log drain=17114 drop=0 dropped=0 blocked=52 ring=0/8192 hwm=2515
+rgb: vsync=885(+43/s) wrap=885(+43/s) swap=220(+10/s) flush=780 blit_max=1441us step_max=628us copy_max=1441us copy_avg=184us swap_wait_max=13280us phase_max=22933us timeout=0 fb=0/1 catchup=220(+10/s 179KB/s forced0KB) refresh=99395/87326/116685us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=58527px2(=一屏的 25.4%) flush=28/s(累计780) fmax=127x78(一屏的 4.2%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=87C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+BEACON 21  step=8(loop: UI 已 tick)  uptime=21s heap=29KB psram=8192KB flash=16MB
+espnow: tx_frames=37 tx_bytes=796 tx_fail=0 last_err=0 done=37 done_fail=0 pending=0 txring=0 | rx_frames=221 rx_bytes=3226 rx_foreign=0 overflow=0 gap_rx=0ms
+obd-ble: → connectNow begin #9 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=9
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #9 reason=13(0xD) 距发起 18ms ← ★ 这才是真错误码
+BEACON 22  step=7(loop: 数据已更新)  uptime=22s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=972(+44/s) wrap=972(+44/s) swap=240(+10/s) flush=825 blit_max=1441us step_max=628us copy_max=1441us copy_avg=117us swap_wait_max=13280us phase_max=22933us timeout=0 fb=0/1 catchup=240(+10/s 100KB/s forced0KB) refresh=99890/88574/109959us fullrb=0/s bounce=19MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=26570px2(=一屏的 11.5%) flush=22/s(累计825) fmax=125x78(一屏的 4.2%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=87C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+BEACON 23  step=6(loop: 刚开始一轮)  uptime=23s heap=29KB psram=8192KB flash=16MB
+espnow: tx_frames=41 tx_bytes=888 tx_fail=0 last_err=0 done=41 done_fail=0 pending=0 txring=0 | rx_frames=287 rx_bytes=4189 rx_foreign=0 overflow=0 gap_rx=36ms
+obd-ble: → connectNow begin #10 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=10
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #10 reason=13(0xD) 距发起 16ms ← ★ 这才是真错误码
+BEACON 24  step=8(loop: UI 已 tick)  uptime=24s heap=29KB psram=8192KB flash=16MB
+SRC speed=van rpm=van coolant=van intake=link | v=0.0km/h 896rpm 87.0C 18.0C
+SRC-Hz rpm=0.0 cool=0.0 intake=0.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=41ms door=-ms vin=-ms | src turn=van door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=59ms seen=100 seq_gap=0 miss=0 offset=1414542ms
+vanraw: ok=170 bad=0 age=9ms
+obd-ble: state=connecting peer=aa:bb:cc:12:22:33 conn=0 drop=0 connects=0 cs=10/10 radio=balance win=1 cap=1 fails=10 lastFail=0x0D
+rgb: vsync=1058(+43/s) wrap=1058(+43/s) swap=260(+10/s) flush=871 blit_max=1441us step_max=628us copy_max=1441us copy_avg=150us swap_wait_max=13280us phase_max=23194us timeout=0 fb=0/1 catchup=260(+10/s 120KB/s forced0KB) refresh=99866/87224/112350us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=36164px2(=一屏的 15.6%) flush=23/s(累计871) fmax=127x78(一屏的 4.2%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=87C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+BEACON 25  step=6(loop: 刚开始一轮)  uptime=25s heap=29KB psram=8192KB flash=16MB
+loop: n=68825 in 5001ms (13762/s) max=22ms stall=0 | link rx bytes=5135 frames=351 | stage=21us@data | txprobe=20948us | log drain=20863 drop=0 dropped=0 blocked=59 ring=0/8192 hwm=2515
+espnow: tx_frames=45 tx_bytes=980 tx_fail=0 last_err=0 done=45 done_fail=0 pending=0 txring=12 | rx_frames=356 rx_bytes=5212 rx_foreign=0 overflow=0 gap_rx=16ms
+obd-ble: → connectNow begin #11 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=11
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #11 reason=13(0xD) 距发起 16ms ← ★ 这才是真错误码
+BEACON 26  step=7(loop: 数据已更新)  uptime=26s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=1144(+43/s) wrap=1144(+43/s) swap=280(+10/s) flush=917 blit_max=1441us step_max=628us copy_max=1441us copy_avg=168us swap_wait_max=13280us phase_max=23194us timeout=0 fb=0/1 catchup=280(+10/s 140KB/s forced0KB) refresh=101205/86797/113528us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KBrgb: 脏区/s inv=45056px2(=一屏的 19.5%) flush=24/s(累计917) fmax=121x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=87C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+BEACON 27  step=7(loop: 数据已更新)  uptime=27s heap=29KB psram=8192KB flash=16MB
+espnow: tx_frames=50 tx_bytes=1084 tx_fail=0 last_err=0 done=50 done_fail=0 pending=0 txring=0 | rx_frames=428 rx_bytes=6282 rx_foreign=0 overflow=0 gap_rx=10ms
+obd-ble: → connectNow begin #12 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=12
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #12 reason=13(0xD) 距发起 16ms ← ★ 这才是真错误码
+BEACON 28  step=6(loop: 刚开始一轮)  uptime=28s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=1230(+43/s) wrap=1230(+43/s) swap=300(+10/s) flush=959 blit_max=1441us step_max=628us copy_max=1441us copy_avg=116us swap_wait_max=13280us phase_max=23194us timeout=0 fb=0/1 catchup=300(+10/s 100KB/s forced0KB) refresh=100046/87296/112429us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KBrgb: 脏区/s inv=26258px2(=一屏的 11.3%) flush=22/s(累计959) fmax=121x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=87C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+BEACON 29  step=6(loop: 刚开始一轮)  uptime=29s heap=29KB psram=8192KB flash=16MB
+espnow: tx_frames=54 tx_bytes=1176 tx_fail=0 last_err=0 done=54 done_fail=0 pending=0 txring=0 | rx_frames=492 rx_bytes=7240 rx_foreign=0 overflow=0 gap_rx=21ms
+obd-ble: → connectNow begin #13 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=13
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #13 reason=13(0xD) 距发起 16ms ← ★ 这才是真错误码
+SRC speed=van rpm=van coolant=van intake=link | v=0.0km/h 905rpm 87.0C 19.0C
+SRC-Hz rpm=0.0 cool=0.0 intake=0.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=427ms door=-ms vin=-ms | src turn=van door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=60ms seen=150 seq_gap=0 miss=0 offset=1414542ms
+vanraw: ok=262 bad=0 age=43ms
+obd-ble: state=connecting peer=aa:bb:cc:12:22:33 conn=0 drop=0 connects=0 cs=13/13 radio=balance win=1 cap=1 fails=13 lastFail=0x0D
+BEACON 30  step=6(loop: 刚开始一轮)  uptime=30s heap=29KB psram=8192KB flash=16MB
+loop: n=69087 in 5000ms (13817/s) max=22ms stall=0 | link rx bytes=7617 frames=517 | stage=21us@data | txprobe=20300us | log drain=24636 drop=0 dropped=0 blocked=67 ring=0/8192 hwm=2515
+rgb: vsync=1316(+43/s) wrap=1316(+43/s) swap=320(+10/s) flush=1001 blit_max=1441us step_max=628us copy_max=1441us copy_avg=87us swap_wait_max=13280us phase_max=23194us timeout=0 fb=0/1 catchup=320(+10/s 80KB/s forced0KB) refresh=99991/86257/113019us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=17366px2(=一屏的 7.5%) flush=21/s(累计1001) fmax=127x78(一屏的 4.2%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=87C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+BEACON 31  step=8(loop: UI 已 tick)  uptime=31s heap=29KB psram=8192KB flash=16MB
+espnow: tx_frames=59 tx_bytes=1280 tx_fail=0 last_err=0 done=59 done_fail=0 pending=0 txring=0 | rx_frames=556 rx_bytes=8188 rx_foreign=0 overflow=0 gap_rx=36ms
+obd-ble: → connectNow begin #14 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=14
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #14 reason=13(0xD) 距发起 16ms ← ★ 这才是真错误码
+BEACON 32  step=7(loop: 数据已更新)  uptime=32s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=1403(+44/s) wrap=1403(+43/s) swap=340(+10/s) flush=1045 blit_max=1441us step_max=628us copy_max=1441us copy_avg=119us swap_wait_max=13280us phase_max=23194us timeout=0 fb=0/1 catchup=340(+10/s 100KB/s forced0KB) refresh=99982/87309/112400us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KBrgb: 脏区/s inv=26726px2(=一屏的 11.5%) flush=22/s(累计1045) fmax=127x78(一屏的 4.2%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=84C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+BEACON 33  step=8(loop: UI 已 tick)  uptime=33s heap=29KB psram=8192KB flash=16MB
+espnow: tx_frames=63 tx_bytes=1372 tx_fail=0 last_err=0 done=63 done_fail=0 pending=0 txring=0 | rx_frames=615 rx_bytes=9054 rx_foreign=0 overflow=0 gap_rx=36ms
+obd-ble: → connectNow begin #15 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=15
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #15 reason=13(0xD) 距发起 16ms ← ★ 这才是真错误码
+BEACON 34  step=8(loop: UI 已 tick)  uptime=34s heap=29KB psram=8192KB flash=16MB
+SRC speed=van rpm=van coolant=link intake=link | v=0.0km/h 893rpm 83.0C 20.0C
+SRC-Hz rpm=0.0 cool=0.0 intake=0.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=206ms door=-ms vin=-ms | src turn=van door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=59ms seen=200 seq_gap=0 miss=0 offset=1414542ms
+vanraw: ok=340 bad=0 age=23ms
+obd-ble: state=connecting peer=aa:bb:cc:12:22:33 conn=0 drop=0 connects=0 cs=15/15 radio=balance win=1 cap=1 fails=15 lastFail=0x0D
+rgb: vsync=1489(+43/s) wrap=1489(+43/s) swap=360(+10/s) flush=1097 blit_max=1441us step_max=628us copy_max=1441us copy_avg=65us swap_wait_max=13280us phase_max=23194us timeout=0 fb=0/1 catchup=360(+10/s 78KB/s forced0KB) refresh=99451/93195/106807us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=11071px2(=一屏的 4.8%) flush=23/s(累计1097) fmax=69x39(一屏的 1.1%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=83C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+BEACON 35  step=8(loop: UI 已 tick)  uptime=35s heap=29KB psram=8192KB flash=16MB
+loop: n=68614 in 5018ms (13673/s) max=31ms stall=0 | link rx bytes=9958 frames=675 | stage=31us@data | txprobe=20621us | log drain=28388 drop=0 dropped=0 blocked=74 ring=0/8192 hwm=2515
+espnow: tx_frames=67 tx_bytes=1464 tx_fail=0 last_err=0 done=67 done_fail=0 pending=0 txring=12 | rx_frames=678 rx_bytes=9997 rx_foreign=0 overflow=0 gap_rx=32ms
+obd-ble: → connectNow begin #16 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=16
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #16 reason=13(0xD) 距发起 16ms ← ★ 这才是真错误码
+BEACON 36  step=8(loop: UI 已 tick)  uptime=36s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=1575(+43/s) wrap=1575(+43/s) swap=380(+10/s) flush=1148 blit_max=1441us step_max=628us copy_max=1441us copy_avg=131us swap_wait_max=13280us phase_max=23194us timeout=0 fb=0/1 catchup=380(+10/s 100KB/s forced0KB) refresh=98798/87233/112362us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KBrgb: 脏区/s inv=26726px2(=一屏的 11.5%) flush=22/s(累计1148) fmax=127x78(一屏的 4.2%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=82C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+BEACON 37  step=7(loop: 数据已更新)  uptime=37s heap=29KB psram=8192KB flash=16MB
+espnow: tx_frames=72 tx_bytes=1568 tx_fail=0 last_err=0 done=72 done_fail=0 pending=0 txring=0 | rx_frames=753 rx_bytes=11116 rx_foreign=0 overflow=0 gap_rx=6ms
+obd-ble: → connectNow begin #17 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=17
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #17 reason=13(0xD) 距发起 16ms ← ★ 这才是真错误码
+obd-ble: 射频优先权 -> BT(给建连让路,<=8s) (esp_coex=0)
+BEACON 38  step=8(loop: UI 已 tick)  uptime=38s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=1661(+43/s) wrap=1661(+43/s) swap=400(+10/s) flush=1200 blit_max=1441us step_max=628us copy_max=1441us copy_avg=109us swap_wait_max=13280us phase_max=23194us timeout=0 fb=0/1 catchup=400(+10/s 105KB/s forced0KB) refresh=98822/86680/116690us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KBrgb: 脏区/s inv=26718px2(=一屏的 11.5%) flush=23/s(累计1200) fmax=121x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=82C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+BEACON 39  step=7(loop: 数据已更新)  uptime=39s heap=29KB psram=8192KB flash=16MB
+espnow: tx_frames=76 tx_bytes=1660 tx_fail=0 last_err=0 done=76 done_fail=0 pending=0 txring=0 | rx_frames=824 rx_bytes=12196 rx_foreign=0 overflow=0 gap_rx=36ms
+obd-ble: → connectNow begin #18 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=18
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail #18 reason=13(0xD) 距发起 16ms ← ★ 这才是真错误码

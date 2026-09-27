@@ -1,0 +1,32 @@
+﻿# Car test capture 3: SLAVE (active-scan build) vs the REAL dongle, 2026-09-28 laptop side.
+# Port COM8, firmware esp32s3-rgb-slave-obdtest + setActiveScan(true).
+# The real dongle OBDBLE / AA:BB:CC:12:22:33 (owner re-plugged it just before this run).
+# Same 60 s window also shows the LAPTOP FAKE dongle (40:ab:3d:ef:3b:df) from the B-plan run:
+#   fake : 4 samples, state=ready conn=1 connects=1      -> connected and stayed
+#   real : 69 samples, state=connecting ... fails=NN lastFail=0x0D -> NEVER connected
+# -> The board's BLE central is fine; the failure is specific to the real dongle.
+# Same-moment laptop control (bleak): advertise rssi=-81, `connect -> True` on the FIRST try
+# -> not signal strength (board saw -70..-73), not "dongle refuses", not distance.
+# Leading suspect: ADDRESS TYPE. The firmware logs `type=0` (= BLE_ADDR_PUBLIC) while the
+# dongle address AA:BB:CC:12:22:33 starts with 0xAA = 0b10101010, i.e. a RANDOM address.
+# A public-typed LE Create Connection to a random-address peer never gets answered -> 0x0D.
+# Lines below are verbatim from the board (UTF-8).
+
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-68 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+SRC speed=van rpm=van coolant=van intake=link | v=0.0km/h 890rpm 87.0C 35.0C
+link: locked tick_age=38ms seen=452 seq_gap=1 miss=1 offset=78422ms
+obd-ble: state=connecting peer=aa:bb:cc:12:22:33 conn=0 drop=0 connects=0 cs=59/59 radio=balance win=2 cap=2 fails=59 lastFail=0x0D
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-68 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+obd-ble: ← connect() 受理=1 立即返回耗时=0ms rssi=-68 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-68 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-68 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-68 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+SRC speed=van rpm=van coolant=link intake=link | v=0.0km/h 906rpm 91.0C 34.0C
+link: locked tick_age=36ms seen=502 seq_gap=1 miss=1 offset=78413ms
+obd-ble: state=connecting peer=aa:bb:cc:12:22:33 conn=0 drop=0 connects=0 cs=64/64 radio=balance win=2 cap=2 fails=64 lastFail=0x0D

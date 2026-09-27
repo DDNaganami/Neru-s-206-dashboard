@@ -527,6 +527,39 @@ return xTaskNotifyWait(0, TASK_BLOCK_BIT, nullptr, ticks) == pdTRUE;
 **不能当作"控制器报超时"来读**。要拿真错误码必须自己挂 `onConnectFail` 打印 `reason`，
 或读 `client->getLastError()` —— 而 `connect()` 只返回 bool，**这两条路现在都没走**。
 
+### 12.1b ★★★ 2026-09-29 凌晨：异步版**挂上了 `onConnectFail`，13 依然出现** —— 但这次知道了它是谁
+
+`onConnectFail(reason)` 已接（`lib/dashcore/obd_transport_ble.cpp`，含 `millis()` 时间差）。
+实测（`tools/bt-obd/captures/bench-2026-09-28-fail-latency.log`）：
+
+```
+obd-ble: onConnectFail #1 reason=13(0xD) 距发起 17ms
+obd-ble: onConnectFail #2 reason=13(0xD) 距发起 17ms
+```
+
+**`reason` 就是十进制 13**（不是宽值被 `%02X` 截断 —— 我们改印原始整数后确认）。
+所以 13 本身有效，只是**它的含义不是"对端超时"**：
+
+| 出处 | 触发 |
+|---|---|
+| `ble_gap.c:1131 ble_gap_master_connect_cancelled()` | 主机**取消建连** ⇒ `event.connect.status = BLE_HS_ETIMEOUT` |
+| `ble_gap.c:2632` → 上面的调用 | 只由 `BLE_ERR_UNK_CONN_ID` 触发，即**主机发了 `LE Create Connection Cancel`** |
+
+⇒ **13 = "主机把这次建连取消了"**，而主机只会在自己的建连计时器到点时取消。
+而 `m_connectTimeout` 是 **30000 ms**（`NimBLEClient.cpp:69`）⇒ 计时器不可能 17ms 到点。
+
+★ 与 §12.1 的账要对上：那里写"同步版 16~17ms 返回、随后库补写 13"，
+候选中第一条就是"**连接被取消**"（标注"尚未验证"）。
+现在**异步版（没有 `taskWait`）量到同一个 16~18ms** ⇒
+**不是 `taskWait` 的问题，而是那个取消动作本身**。§12.1 的结论要按这一格收窄。
+
+★ 同期**排除**（都在 `docs/CAR-TEST-BLE-V2-RESULT.md` 附五，有证据文件）：
+地址类型（强制 random 无效）、头被占用（笔记本断开后仍失败）、内存、射频共存、
+信号强度、现场有第二个 FFF0 设备。**头本身可连**（`CONNECTABLE_UNDIRECTED`、
+FFF0 就在广播包里、笔记本 2.6s 连上）。
+
+⇒ 下一步只验一个数：**改 `m_connectTimeout`，看 17ms 跟不跟着变**（见附五 ⑤.9）。
+
 ### 12.2 本轮**排除**掉的假设（都有实测依据）
 
 | 假设 | 判据 | 结论 |
