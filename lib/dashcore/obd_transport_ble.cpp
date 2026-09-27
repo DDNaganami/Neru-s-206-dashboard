@@ -264,7 +264,23 @@ void ObdTransportBle::tick(uint32_t now_ms) {
   //   它是状态机（每圈推进：占用有 8s 上限、让出有 30s 冷却），所以每圈都要调。
   applyRadioArbitration(now_ms);
 
-  if (ready()) { backoff_ms_ = 0; return; }        // 好了，什么都不做
+  // ★★★ 2026-09-28：**成功只在"上升沿"记账一次**。
+  //   `ready()` 在连上期间**每拍都成立**，所以直接 `++connects_` 会把它数成几百次；
+  //   而 `connects_` 的语义是"**成功连上过几次**"（掉线重连才算下一次）。
+  //   ⇒ 用 `was_ready_` 记住上一拍，只在 false→true 那一下 +1，并在那里清零退避。
+  //   ★ 清零判据用 `ready()`（`conn_` 由 `onConnect` 置位 + 特征已配齐）——
+  //     "连一半断了"不成立、不会误清退避。
+  const bool now_ready = ready();
+  if (now_ready) {
+    if (!was_ready_) {
+      ++connects_;
+      backoff_ms_ = 0;
+      dash_logf("obd-ble: ★ 已就绪（第 %lu 次连上）\n", (unsigned long)connects_);
+    }
+    was_ready_ = true;
+    return;                                        // 好了，什么都不做
+  }
+  was_ready_ = false;                              // 掉线/没就绪 ⇒ 下次连上重新计数
 
   // ---------------------------------------------------------------------------
   // ★★★ 2026-09-28：**异步连接的两个收尾点**（`asyncConnect = true` 之后必须有的）
@@ -371,9 +387,17 @@ void ObdTransportBle::tick(uint32_t now_ms) {
     }
     ++cs_attempts;
     ++cs_calls;
-    // 异步发起：`connectNow()` 现在**立刻返回**（请求已交给控制器），
-    // 真正连上没有/失败走 `onConnect` / `onConnectFail`。
-    if (connectNow()) { ++connects_; backoff_ms_ = 0; return; }
+    // ★★★ 2026-09-28 修正（异步改造的后续，这是个**自伤 bug**，必须记清楚）：
+    //
+    //   这一行原来是 `if (connectNow()) { ++connects_; backoff_ms_ = 0; return; }`
+    //   —— 在**同步**语义下它是对的（`true` = 连上了，所以成功要清零退避）。
+    //   但改成异步之后 `connectNow()` 的 `true` 变成了"**请求已受理**"，
+    //   于是**每发一次请求就把退避清零重来** ⇒ `backoff_ms_` 永远停在初始的 500ms
+    //   ⇒ 每秒猛撞约 2 次、连接过程被自己打断 ⇒ 实测把 `fails` 打到 **200+**、
+    //   而且每个请求都活不到超时（`cs` 每秒涨约 10）。
+    //   ⇒ 正确做法：**受理 ≠ 成功**。发起之后什么都不做（退避保持"下一档"），
+    //     成功与否交给 `ready()`（回调置的 `conn_`）——那里才清零退避。
+    if (connectNow()) return;
     backoff_ms_ = (backoff_ms_ < kRetryBackoffMaxMs) ? (backoff_ms_ * 2u) : kRetryBackoffMaxMs;
 
     // ★★★ 2026-09-28：**连败若干次之后，把地址丢掉、重新扫**。
