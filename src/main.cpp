@@ -2868,9 +2868,26 @@ void setup() {
   //   `rgb: 面板创建失败 err=257`，而主循环/链路/VAN 全都正常）。
   //   放在这里之后，面板已经把它的内部 RAM 拿走了，剩下的才给 NimBLE。
   {
+    // ★★ 2026-09-28（按 Grok 的判据）：BLE 启动前后的**三条 heap_caps 读数** ——
+    //   它是"Host 有没有真的进 PSRAM"的唯一现场证据（估不出来，只能量）：
+    //     · 内部自由堆掉一大截、PSRAM 几乎不动 ⇒ `-D` 没吃进去（Host 仍走内部）；
+    //     · 内部只掉 25~40KB、PSRAM 掉十几 KB ⇒ Host 已外置，剩下是控制器地板；
+    //     · `largest` 比 `free` 小很多 ⇒ 是**碎片**，而 bounce 30 要的正是连续块。
+    const uint32_t in_free_before  = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const uint32_t in_large_before = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    const uint32_t ps_free_before  = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     const bool ok = g_obd_ble.start();
+    const uint32_t in_free_after  = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const uint32_t in_large_after = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    const uint32_t ps_free_after  = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     dash_logf("obd: BLE start() = %d  heap=%uKB(面板之后)\n",
               (int)ok, (unsigned)(ESP.getFreeHeap() / 1024u));
+    dash_logf("obd: heap_caps 内部 free %u→%u KB(掉 %d) largest %u→%u KB | PSRAM free %u→%u KB(掉 %d)\n",
+              (unsigned)(in_free_before / 1024u), (unsigned)(in_free_after / 1024u),
+              (int)((in_free_before - in_free_after) / 1024),
+              (unsigned)(in_large_before / 1024u), (unsigned)(in_large_after / 1024u),
+              (unsigned)(ps_free_before / 1024u), (unsigned)(ps_free_after / 1024u),
+              (int)((ps_free_before - ps_free_after) / 1024));
 #if LINK_ROLE != 1
     // ★★ 2026-09-27 深夜（双板分工 v2）：**从板现在是 OBD 网关**（它在问 ELM），
     //   而它抢射频时被压住的是"**收**主板的 50 Hz TICK" —— 压过 3 秒左屏就掉进
