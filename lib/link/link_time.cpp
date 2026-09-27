@@ -66,9 +66,10 @@ bool TickGen::due(uint32_t now_ms, TickMsg* out) {
   ++mSeq;                     // u8 自己回绕（255 → 0）
   ++mSent;
 
-  // 跳过错过的槽位，但**保持栅格相位**（每次都 +20，不是 now+20）
+  // 跳过错过的槽位，但**保持栅格相位**（每次都 +周期，不是 now+周期）
+  // ★ 周期从 `mPeriodMs` 取（2026-09-28 起可配，默认仍是 `kTickPeriodMs`=20ms）
   do {
-    mNextMs += kTickPeriodMs;
+    mNextMs += mPeriodMs;
   } while ((int32_t)(now_ms - mNextMs) >= 0);
   return true;
 }

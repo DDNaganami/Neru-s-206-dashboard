@@ -158,6 +158,16 @@ uint32_t lineMsPerSecondForFrame(uint8_t payload_len, uint32_t frames_per_second
 //     所以取与 DATA 同一个量级：总线上 ≈80 Hz 的那一帧就是车速帧）
 // ★ 默认参数**就是契约值**，调用方（`main.cpp` 的注释、用例、将来的诊断页）
 //   不必各抄一遍数字；要算"提高频率会怎样"时显式传别的值。
+//
+// ★★★ 2026-09-28：**生产固件已经不吃这套默认值了**（射频共存那一单）——
+//   `main.cpp` 现在显式设 `DATA 20Hz`（`kLinkDataMinIntervalMs = 50`）与
+//   `TICK 10Hz`（`kLinkTickPeriodMs = 100`）。本函数的**默认参数仍留契约值**
+//   （80/50）是**刻意的**：既有用例钉的是契约那笔账，改默认值等于悄悄改判据。
+//   ⇒ 要算"现在真发多少"，调用方**显式传** `linkBudgetMsPerSecond(20u, 100u, 2u, 0u, 80u)`。
+//   ★ 降频的动机与实测见 `main.cpp` 的 `kLinkDataMinIntervalMs` 那一段 +
+//     `docs/BLE-OBD.md` §13（射频从不安静 ⇒ BLE 的 `BLE_HS_ETIMEOUT`）。
+//     实测帧数与字节都降了约 80~90%（主板 tx 1615 B/s → 168 B/s）。
+
 // ★★ 加 VANRAW 之后**契约 §1.1 那张占空比表就不完整了**（它写的是 A→B ≈14%）：
 //   算出来的口径（115200 8N1，整帧 = 7 + 载荷）——
 //     DATA   80 Hz × 13 B =  90 ms/s

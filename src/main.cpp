@@ -1142,7 +1142,37 @@ static void link_start_gate_tick(uint32_t now) {
 // ★ 它**也不改** `DataSender` 自身的默认值（默认仍是 0 = 不限）—— 那是给用例与
 //   "就想全速发"的场景留的口径；生产固件在两处显式设定：这里，以及
 //   `test_link_app.cpp` 的 `test_link_app_data_sender_min_interval`（同一条判据的宿主面）。
-static const uint32_t kLinkDataMinIntervalMs = 12u;
+// ★★★ 2026-09-28：**12 ms（80 Hz）→ 50 ms（20 Hz）** —— 给射频留空窗。
+//
+//   为什么改（实测依据，别再退回 80 Hz 而不看这一段）：
+//     · 射频占空不是"带宽不够"（ESP-NOW 1 Mbps，实测只占 ~4~5%），
+//       而是**从不安静**：TICK 50 Hz + DATA 80 Hz + VANRAW 80 Hz ≈ **43 帧/秒**，
+//       射频没有空窗 ⇒ BLE 的扫描/连接窗口被碎片化
+//       （docs/BLE-OBD.md §13：`BLE_HS_ETIMEOUT`，而同一个头笔记本一连就上）。
+//     · **80 Hz 是总线速率，不是显示需要**：显示刷新是 10 Hz（LVGL 渲染门），
+//       面板扫描 43 Hz。参考实现 `steveEcode/obd_brz_gauge` 走 ESP-NOW + BLE 共存、
+//       广播只有 **10 Hz**（`BROADCAST_INTERVAL_MS 100`，"plenty for gauges"）。
+//     · ⇒ 20 Hz 给显示留了 2 倍余量，同时把帧数砍掉 3/4。
+//   ★ 为什么走 `setMinIntervalMs`（既有旋钮）而不是改 `due()` 的判据：
+//     `link_app.h` 那一行注释写得很清楚 —— "真要为别的目的降频，用这个参数，
+//       别去改判断条件"。所以**协议逻辑一个字没动**，既有用例也不用改。
+//   ★ 它**不影响有 VAN 的那条主路径**的语义：`due()` 仍然只在"新的 0x824 到了"
+//     才可能发，本参数只是在上面再加一道"别比 50ms 更快"的上限。
+static const uint32_t kLinkDataMinIntervalMs = 50u;
+
+// ★★★ 2026-09-28：**TICK 50 Hz → 10 Hz**（周期 20 ms → 100 ms）—— 与 DATA 同一动机。
+//
+//   ★★ 这里有个**不能越过的边界**，写清楚免得下一个人踩：
+//     `link_time.h` 的 `kBasisLostMs = 100ms` 注释是"**5 个周期**没见 ⇒ 时间基准失效"，
+//     那层余量是**针对 20ms 周期**设计的。
+//     ⇒ 周期一旦 ≥ 100ms，从板在每一帧之间都会落进 `NoBasis`（动画退回本地时钟）。
+//     本档取 **100ms（10 Hz）**，正好贴着该门限；**要再往下必须同时改
+//     `kBasisLostMs` 与状态机用例** —— 那是另一单，别在这儿顺手改。
+//   ★ TICK 承载的是**时基**而不是数据，10 Hz 对"动画对齐栅格（`kAnimGridMs = 100ms`）"
+//     本来就够：栅格自己就是 100 ms，TICK 与它同频即可。
+//   ★ 默认值仍是契约的 20 ms（`kTickPeriodMs`）⇒ 不调 `setPeriodMs()` 的调用方
+//     （含全部既有用例）行为一个字不变。
+static const uint32_t kLinkTickPeriodMs = 100u;
 
 #endif  // LINK_ROLE == 1
 
@@ -2789,9 +2819,12 @@ void setup() {
 #endif
   g_link_rx.setLocalRole(dashlink::kLocalRole);
   g_link_tick.reset(millis());   // §4：tick_ms 是主板**自己**的单调毫秒(从复位起算)
+  // ★★★ 2026-09-28：TICK 降到 10 Hz（见 `kLinkTickPeriodMs` 那一段 —— 含"不能低于
+  //   100ms"的边界理由）。**必须在 `reset()` 之后调**：`reset()` 只置起点，
+  //   周期在这里生效；反过来的话下一次 `due()` 会按默认 20ms 先排一格。
+  g_link_tick.setPeriodMs(kLinkTickPeriodMs);
   // ★★ DATA 的速率下限（见 `kLinkDataMinIntervalMs` 那一段的实测与理由）：
-  //   "没有 VAN 快照"那一条路会把主循环每一圈都当一份新快照 ⇒ 不设这一行就会
-  //   以满线速发（实测 946 帧/秒）。设成 12 ms = 契约 §3 给的那一档（≈80 Hz）。
+  //   把速率压到 20 Hz（原 80 Hz）—— 给射频留空窗，服务 BLE 共存。
   g_link_data.setMinIntervalMs(kLinkDataMinIntervalMs);
   // ★ 2026-09-27（另一单）：`link: 主板侧就绪 …` 那一行按**编译进来的 PHY** 分两种说法
   //   （无线那一档没有引脚，`txPin()` 报 -1 ⇒ 打 "TX=GPIO-1" 读不懂）—— 现在它搬进

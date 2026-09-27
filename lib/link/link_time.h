@@ -85,8 +85,30 @@ class TickGen {
   uint8_t  seq() const { return mSeq; }
   uint16_t ticksSent() const { return mSent; }
 
+  // ★★★ 2026-09-28：**周期可配**（原先是硬编码 `kTickPeriodMs`）。
+  //
+  //   为什么要加这个口子：TICK 是 50 Hz，而它承载的是**时基**（不是数据）——
+  //   50 Hz 是"看着舒服"，不是"够用"。实测射频占空约 43 帧/秒从不安静，
+  //   而 BLE 要连上必须有一段**安静的射频窗**（docs/BLE-OBD.md §13）。
+  //   ⇒ 把 TICK 降下来是"给射频留空窗"最直接的一刀。
+  //
+  //   ★★ 但**不能随便往下降**：`kBasisLostMs = 100ms` 的注释写着"5 个周期没见
+  //      ⇒ 时间基准失效"，那层余量是**针对 20ms 周期**设计的。
+  //      周期一旦 ≥ 100ms，从板在**每一帧之间**都会落进 `NoBasis`
+  //      （动画退回本地时钟）⇒ 那是**踩契约**，不是调参。
+  //   ⇒ 允许的上限就是 `kBasisLostMs` 本身（=100ms，即 10 Hz）：
+  //     每帧之后还剩 0ms 才到失效门限……太紧，本仓库取 **100ms 并接受它贴着边界**，
+  //     要再往下必须**同时**改 `kBasisLostMs` 与状态机用例（那是另一单的事）。
+  //   ★ 默认值 = 契约值 `kTickPeriodMs` ⇒ 不调这个函数的调用方行为**一个字不变**
+  //     （既有用例按默认值跑，所以那条算线时的用例不必改）。
+  void setPeriodMs(uint32_t ms) {
+    mPeriodMs = (ms != 0u) ? ms : kTickPeriodMs;
+  }
+  uint32_t periodMs() const { return mPeriodMs; }
+
  private:
   uint32_t mNextMs = 0;
+  uint32_t mPeriodMs = kTickPeriodMs;   // ★ 默认 = 契约的 20ms（见 setPeriodMs）
   uint8_t  mSeq    = 0;
   uint16_t mSent   = 0;
   bool     mStarted = false;
