@@ -145,6 +145,12 @@ class LinkPhyEspNow : public LinkPhy {
   //     参数对既有调用方**零影响**。
   uint16_t pumpTx(uint32_t now_ms = 0u);
 
+  // ★★ 2026-09-28：**发送面停摆的软恢复** —— 把 ESP-NOW 驱动 deinit/init、
+  //   重挂回调、按当前已知情况重建 peer 表、把在途计数清零。
+  //   现场与判据见 `link_phy_espnow.cpp` 的实现注释与 `docs/LINK-TWO-BOARD.md`。
+  //   ★ 只在主循环里调，而且**调用方要拿着 `phy_tx_lock`**（TICK 任务也在写这个环）。
+  bool reinitRadio();
+
   // ---- dashlink::LinkPhy ----
   int    available() override;
   int    read() override;

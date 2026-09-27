@@ -385,6 +385,35 @@ void LinkPhyEspNow::begin(bool loopback) {
   mOnline = true;
 }
 
+// ★★ 2026-09-28：**发送面停摆的软恢复**（当天抓到两例，签名一致：`pending` 贴顶、
+//   `done` 再也追不平 `tx_frames`，而 `tx_fail=0`/`last_err=0` 看着全正常）。
+//   只重做"ESP-NOW 那一层"：驱动 deinit → init → 重挂两个回调 → 按当前已知情况重建
+//   peer 表（广播 + 学到过的单播）。**不动 WiFi 的 mode/信道/功耗**（那三样没必要重来，
+//   而且 `WiFi.mode()` 会重建整个接口、代价大）。
+//   ★ 调用方必须**先在主循环里拿到 `phy_tx_lock`**（TICK 任务也在写这个环）。
+//   ★ `mPending` 清零是安全的：完成回调那一侧本来就写着 `if (mPending > 0) --mPending;`
+//     （见 onSendDone），所以"旧包的回调晚到"只会被它忽略，不会把计数减穿。
+bool LinkPhyEspNow::reinitRadio() {
+  esp_now_deinit();
+  const esp_err_t e = esp_now_init();
+  if (e != ESP_OK) {
+    dash_logf("espnow: ★ 软重 init 失败 err=%d\n", (int)e);
+    return false;
+  }
+  esp_now_register_recv_cb(&LinkPhyEspNow::onRecvStatic);
+  esp_now_register_send_cb(&LinkPhyEspNow::onSendDoneStatic);
+  if (!addPeerBroadcast()) {
+    dash_logf("espnow: ★ 软重 init 后广播 peer 失败\n");
+    return false;
+  }
+  if (mPeerKnown) addPeerUnicast();
+  mPending = 0;                    // 驱动重来 ⇒ 在途计数必须清零（否则窗口永远是满的）
+  mLastSendErr = 0;
+  dash_logf("espnow: ★ 软重 init 完成（pending 清零、peer 表已重建,bcast+%s）\n",
+            mPeerKnown ? "unicast" : "仅广播");
+  return true;
+}
+
 bool LinkPhyEspNow::addPeerBroadcast() {
   esp_now_peer_info_t p{};
   for (uint8_t i = 0; i < kEspNowMacLen; ++i) p.peer_addr[i] = 0xFFu;

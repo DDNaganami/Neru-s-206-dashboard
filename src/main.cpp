@@ -3410,6 +3410,52 @@ void loop() {
   g_obd_ble.tick(now);
 #endif
 
+#if defined(LINK_PHY_ESP_NOW) && (LINK_PHY_ESP_NOW != 0) && (LINK_ROLE == 1)
+  // ==========================================================================
+  //  ★★ 主板：**发送面停摆看门狗**（2026-09-28，当天抓到两例）
+  // ==========================================================================
+  //  现场（两次同一个签名）：`espnow: tx_frames=… done=… pending=8 txring=…` ——
+  //  `pending` 贴顶（在途窗口满）、`done` 再也追不平 `tx_frames` ⇒ 发送完成回调不回来
+  //  ⇒ 之后的包**一个都没真上射频**（而 `tx_fail=0`、`last_err=0` 看着全正常）。
+  //  同一时刻**收面是好的**（从板→主板那半边一直通）⇒ 只有从板受害（它收不到 TICK）。
+  //  ★ 为什么必须由主板自己管：从板的看门狗只看得见"我没收到"，它重启一万次也没用
+  //    —— 2026-09-28 上午第二例里，从板正是被它自己的看门狗带成了 15 秒重启循环。
+  //  判据：`pending` 贴顶 **且** `done` 不再推进，连续 **15 秒**。
+  //  动作：先**软重 init ESP-NOW**（不重启整机 —— 主板挂着屏和 VAN 接收）；失败或
+  //        连续两次仍不行才 `ESP.restart()`。
+  {
+    static uint32_t wd_last_done = 0;
+    static uint32_t wd_since_ms  = 0;
+    static uint8_t  wd_tries     = 0;
+    const uint32_t done = g_link_phy.txDone();
+    const bool jammed = (g_link_phy.pending() >= dashlink::LinkPhyEspNow::kMaxPending);
+    if (!jammed || done != wd_last_done) {
+      wd_last_done = done;
+      wd_since_ms  = now;
+      if (!jammed) wd_tries = 0;          // 窗口不满了 ⇒ 记一次"自愈"，下次还能再来
+    } else if ((uint32_t)(now - wd_since_ms) >= 15000u) {
+      ++wd_tries;
+      dash_logf("link: ★ 发送面停摆看门狗触发 —— pending=%u 贴顶、done 连续 15s 冻在 %lu"
+                " ⇒ 软重 init(第 %u 次)\n",
+                (unsigned)g_link_phy.pending(), (unsigned long)done, (unsigned)wd_tries);
+      bool ok = false;
+      if (phy_tx_lock(50u)) {               // ★ 与 TICK 任务互斥（它也在写这个环）
+        ok = g_link_phy.reinitRadio();
+        phy_tx_unlock();
+      }
+      if (ok && wd_tries < 3u) {
+        wd_last_done = g_link_phy.txDone();
+        wd_since_ms  = now;
+      } else {
+        dash_logf("link: ★ 软重 init 无效(或已试 %u 次) ⇒ 重启主板\n", (unsigned)wd_tries);
+        dash_log_drain();
+        delay(50);
+        ESP.restart();
+      }
+    }
+  }
+#endif
+
 #if defined(LINK_PHY_ESP_NOW) && (LINK_PHY_ESP_NOW != 0) && (LINK_ROLE != 1)
   // ==========================================================================
   //  ★★ 从板：**收面停摆看门狗**（2026-09-27 新增，起因是一次实测挂死）
@@ -3447,14 +3493,26 @@ void loop() {
     static uint32_t wd_last_frames = 0;
     static uint32_t wd_since_ms    = 0;
     static bool     wd_armed       = false;
+    // ★★ 2026-09-28 补：**跨重启退避** —— 这个看门狗救不了"主板发面挂了"那种情况。
+    //   上午实测：主板 `pending` 贴顶时从板被它自己这个看门狗带成**每 15 秒重启一次**
+    //   的循环（屏上就是 SIM 角标一闪一闪），而问题根本不在从板。
+    //   ⇒ 连着重启 **3 次**之后就不再重启（等链路自己好、或人去复位主板）；
+    //     而链路**连续健康 ≥60 秒**就把计数清零（下次真需要时还能救）。
+    //   计数放在 RTC 无初值内存（软重启不清零；冷启动时靠 magic 认出来重新开始）。
+    RTC_NOINIT_ATTR static uint32_t s_wd_magic;
+    RTC_NOINIT_ATTR static uint32_t s_wd_boots;
+    if (s_wd_magic != 0x57444B31u) { s_wd_magic = 0x57444B31u; s_wd_boots = 0u; }
     const uint32_t frames = g_link_phy.rxFrames();
     if (frames != wd_last_frames) {
+      // ★ 链路连续健康 ≥60s ⇒ 把"连着重启次数"清零
+      if ((uint32_t)(now - wd_since_ms) >= 60000u) s_wd_boots = 0u;
       wd_last_frames = frames;
       wd_since_ms    = now;
       if (frames > 0u) wd_armed = true;      // 收到过东西 ⇒ 之后才允许判"停摆"
-    } else if (wd_armed && (uint32_t)(now - wd_since_ms) >= 15000u) {
-      dash_logf("link: ★ 收面停摆看门狗触发 —— rxFrames 连续 15s 冻在 %lu ⇒ 重启从板\n",
-                (unsigned long)frames);
+    } else if (wd_armed && (uint32_t)(now - wd_since_ms) >= 15000u && s_wd_boots < 3u) {
+      ++s_wd_boots;
+      dash_logf("link: ★ 收面停摆看门狗触发（第 %u/3 次）—— rxFrames 连续 15s 冻在 %lu"
+                " ⇒ 重启从板\n", (unsigned)s_wd_boots, (unsigned long)frames);
       dash_log_drain();              // ★ 先把这行写出去(它是重启前唯一的现场)
       delay(50);
       ESP.restart();

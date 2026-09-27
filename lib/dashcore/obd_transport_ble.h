@@ -134,6 +134,12 @@ private:
   uint32_t boot_ms_  = 0;
   uint32_t last_try_ms_ = 0;
   uint32_t backoff_ms_  = 0;             // 退避：500ms → … → 8s
+  // ★★ 2026-09-28：**扫描上限**（连不上就别一直扫 —— 那会把射频从 ESP-NOW 那边抠走，
+  //   见 obd_transport_ble.cpp 里那个分支的说明）。扫到对端时两个量都会被复位。
+  static constexpr uint8_t  kScanTriesFast = 10u;        // 先快速试 10 轮（≈1 分钟）
+  static constexpr uint32_t kScanSlowMs    = 300000u;    // 之后每 5 分钟试一次
+  uint8_t  scan_tries_        = 0;
+  uint32_t last_slow_scan_ms_ = 0;
   // ★★ 存**整个 `NimBLEAddress`**（含地址类型），不是地址字符串 ——
   //   实测：`aa:bb:cc:12:22:33` 这种是**随机静态地址**，拿字符串重建成
   //   `BLE_ADDR_PUBLIC` 去连**永远连不上**，而日志里只会看到 `conn=0`，

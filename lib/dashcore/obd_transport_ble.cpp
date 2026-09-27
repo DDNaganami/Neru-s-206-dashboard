@@ -95,6 +95,8 @@ void ObdTransportBle::onDiscovered(const NimBLEAdvertisedDevice* d) {
   //   而日志只有 `conn=0`（看起来像"设备不在/被手机占着"），极易误判。
   peer_addr_  = d->getAddress();
   peer_valid_ = true;
+  scan_tries_ = 0;              // ★ 2026-09-28：扫到了 ⇒ 扫描上限的计数复位
+  last_slow_scan_ms_ = 0;
   snprintf(peer_, sizeof(peer_), "%s", peer_addr_.toString().c_str());
   want_peer_ = true;
   if (scan_) scan_->stop();     // 找到就停，别再占射频
@@ -268,8 +270,20 @@ void ObdTransportBle::tick(uint32_t now_ms) {
   }
 
   // 没地址 ⇒ 扫一轮（非阻塞；扫到就由 onDiscovered 停下并记地址）
+  // ★★ 2026-09-28：**扫描必须有上限**（当天那两例"主板发送面停摆"的可疑诱因）：
+  //   台面上没有诊断头时，这个分支原来会**永远每 ~8 秒扫 2 秒**（占空比 ~25%），
+  //   把射频时间从 ESP-NOW 的发送完成侧抠走 ⇒ 在途窗口填满、`done` 追不平 ⇒ 停摆。
+  //   ⇒ 快速试 `kScanTriesFast` 轮之后退成 **每 `kScanSlowMs` 试一次**（车上插着诊断头
+  //     时正常路径不受影响：扫到就 `onDiscovered()`，计数与慢速计时都被复位）。
   if (scan_ && !scan_->isScanning()) {
-    scan_->start(2000, false, false);
+    const bool fast = (scan_tries_ < kScanTriesFast);
+    if (fast) {
+      ++scan_tries_;
+      scan_->start(2000, false, false);
+    } else if ((uint32_t)(now_ms - last_slow_scan_ms_) >= kScanSlowMs) {
+      last_slow_scan_ms_ = now_ms;
+      scan_->start(2000, false, false);
+    }
     backoff_ms_ = (backoff_ms_ < 8000u) ? (backoff_ms_ * 2u) : 8000u;
   }
 }
