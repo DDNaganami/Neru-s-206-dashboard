@@ -301,6 +301,12 @@ void LinkPhyEspNow::begin(bool loopback) {
   //   ⇒ 开着省电时我们会把"节拍误差"记成"链路抖动"，然后白折腾一轮排查。
   //   ★ 代价：射频常开 ⇒ 功耗高一些（车上不缺电；代价与数字见 ARCHITECTURE §8.3.7）。
   const esp_err_t ps_err = esp_wifi_set_ps(WIFI_PS_NONE);
+  // ★★★★ 2026-09-28 深夜：**从这一刻起每一步的 errno 都存进静态成员**（见 .h 的说明）。
+  //   为什么必须存：下面那几条 `dash_logf` **会被日志环的每秒预算静默丢掉**
+  //   （实测：三条失败行一条都没打出来），于是"ESP-NOW 为什么没起"这件事
+  //   我们查了整晚都**没有证据** —— 只看到 `online()=false` 这个结论。
+  //   ⇒ 存进静态量之后由 1 Hz 的 `espnow:` 行常驻带出（那行走的是主循环输出）。
+  mFailPs = (int8_t)ps_err;
   if (ps_err != ESP_OK) {
     dash_logf("espnow: esp_wifi_set_ps(WIFI_PS_NONE) 失败 err=%d —— 抖动可能被省电节拍污染\n",
               (int)ps_err);
@@ -308,6 +314,8 @@ void LinkPhyEspNow::begin(bool loopback) {
   // ★★ 信道固定：ESP-NOW **不跨信道**，两端必须同一个；配错的症状是
   //   "两端都打 rx=0"，不会有任何编译期信号 ⇒ 所以这里显式设、日志里显式打。
   const esp_err_t chan_err = esp_wifi_set_channel(kChannel, WIFI_SECOND_CHAN_NONE);
+  mFailChan = (int8_t)chan_err;      // ★ 常驻（理由同上）
+  mFailStage = 1;                    // 1 = 走到信道这一步
   if (chan_err != ESP_OK) {
     dash_logf("espnow: esp_wifi_set_channel(%u) 失败 err=%d —— 链路不会通\n",
               (unsigned)kChannel, (int)chan_err);
@@ -316,6 +324,8 @@ void LinkPhyEspNow::begin(bool loopback) {
 
   // ---- ② ESP-NOW 本体 ----
   const esp_err_t init_err = esp_now_init();
+  mFailInit = (int8_t)init_err;      // ★ 常驻（理由同上）
+  mFailStage = 2;                    // 2 = 走到 esp_now_init
   if (init_err != ESP_OK) {
     dash_logf("espnow: esp_now_init 失败 err=%d —— 链路不会通\n", (int)init_err);
     return;
@@ -383,6 +393,7 @@ void LinkPhyEspNow::begin(bool loopback) {
 #endif
 
   mOnline = true;
+  mFailStage = 9;      // ★ 成功标记（1Hz 行靠它一眼看出"到底卡在哪一步"）
 }
 
 // ★★ 2026-09-28：**发送面停摆的软恢复**（当天抓到两例，签名一致：`pending` 贴顶、
@@ -582,6 +593,22 @@ uint16_t LinkPhyEspNow::pumpTx(uint32_t now_ms) {
               (unsigned long)mRxTotal, (unsigned long)mRxForeign, (unsigned long)mRxOverflow,
               // ★ "射频静默多久了"：一条读数就把"本来就没包"与"射频停了"分开
               ever_rx ? (unsigned long)gap_rx : (unsigned long)0xFFFFFFFFu);
+  } else if (!mOnline && (uint32_t)(now_ms - mPhyLogAtMs) >= kPhyLogPeriodMs) {
+    // ★★★★ 2026-09-28 深夜：**PHY 没起来时的常驻失败行**。
+    //   为什么必须加这一支：上面那条 `if (mOnline && …)` 在 PHY 没起来时**恒 false**
+    //   ⇒ 整晚**一条诊断都没有**，我们只知道 `online()=false`、不知道卡在哪一步。
+    //   而 `begin()` 里那三条失败日志又被日志环的每秒预算丢掉了
+    //   ⇒ "ESP-NOW 为什么没起"这个问题**从来没有证据**。
+    //   判据（怎么读）：`stage` 0=没进 begin / 1=信道 / 2=esp_now_init / 3=peer / 9=成功。
+    //     · `stage=2  init=<非0>` ⇒ `esp_now_init` 失败 —— 看 errno 定性质；
+    //       `ESP_ERR_ESP_NETIF_INIT_FAIL`/`NO_MEM` 一类 ⇒ 往仲裁或内存查。
+    //     · `stage=2  init=0` 且一直不到 9 ⇒ 卡在 peer 那一段（少见）。
+    //     · `stage=0` ⇒ `begin()` 压根没被调用（那就是闸门那条路的问题）。
+    mPhyLogAtMs = now_ms;
+    dash_logf("espnow: ★PHY 未上线 stage=%d | ps=%d chan=%d init=%d | heap=%uKB"
+              "（0=没进begin 1=信道 2=esp_now_init 3=peer 9=成功）\n",
+              (int)mFailStage, (int)mFailPs, (int)mFailChan, (int)mFailInit,
+              (unsigned)(ESP.getFreeHeap() / 1024u));
   }
 
   if (!mOnline || mTxCount == 0u) return 0u;

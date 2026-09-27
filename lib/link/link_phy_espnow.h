@@ -157,6 +157,15 @@ class LinkPhyEspNow : public LinkPhy {
   int    availableForWrite() override;
   size_t write(const uint8_t* data, size_t n) override;
   bool   online() const override { return mOnline; }
+  // ★★★★ 2026-09-28 深夜：**失败现场**（常驻，供 1 Hz 行带出）。
+  //   为什么需要它：`begin()` 里那三条失败日志会被日志环的每秒预算**静默丢掉**
+  //   （实测三条一条都没打出来）⇒ "ESP-NOW 为什么没起"整晚没有证据。
+  //   读法：`stage` = 走到第几步（0=没进、1=信道、2=esp_now_init、3=peer、9=成功），
+  //        三个 errno 各自对应那一步的返回值（0 = 那一步成功）。
+  int  failStage() const { return mFailStage; }
+  int  failPs()    const { return mFailPs; }
+  int  failChan()  const { return mFailChan; }
+  int  failInit()  const { return mFailInit; }
 
   // ---- 与 LinkPhyUart 同形的形状补齐（见 link_phy_null.h 那段"为什么还要有"） ----
   int8_t   port() const { return kNoPort; }
@@ -248,6 +257,12 @@ class LinkPhyEspNow : public LinkPhy {
   bool addPeerUnicast();
 
   bool mOnline      = false;
+  // ★★★★ 2026-09-28 深夜：失败现场（常驻）。**刻意不标 volatile** —— 它们只在
+  //   `begin()` 里写一次、之后只被主循环读，不在紧密循环里当判据（同下面那条判据）。
+  int8_t mFailStage = 0;   // 0=没进 begin 1=信道 2=esp_now_init 3=peer 9=成功
+  int8_t mFailPs    = 0;
+  int8_t mFailChan  = 0;
+  int8_t mFailInit  = 0;
   // ★ **这两个刻意不标 volatile**（与 `mRxHead` 那两个不同，理由要说得清）：
   //   `mPeerKnown`/`mPeer` 虽然也是"回调写、主循环读"，但它们**只在函数调用之间传递**
   //   （`onRecv()` 写、`pumpTx()` 读），而两次读之间必然夹着 `esp_now_send()` 这个

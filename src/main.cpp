@@ -621,11 +621,30 @@ static const uint8_t kVanRawFramesPerLoop = 8u;
 //   ★ 打印**不在这里**：80 Hz × 一行 46 B ≈ 3.7 KB/s 的日志负担只有物理层那条
 //     路径才付（它本来就在付），回放那条继续不打印 —— 回放的证据是 `SRC` 那几行
 //     与 `vanraw` 计数，不是逐帧行。
-static void van_frame_in(const VanPacket& pkt) {
-  ++g_van_frames_seen;
+// ★★ 2026-09-28（临时观测）：转发队列里各 ID 的帧数，用来看"谁占了 VANRAW 的带宽"。
+//   ★ 必须声明在 `van_frame_in()` **之前**（它要 ++）—— 第一次放错位置直接编译不过。
+static uint32_t g_van_id_824 = 0, g_van_id_464 = 0, g_van_id_4dc = 0;
+static uint32_t g_van_id_4fc = 0, g_van_id_8a4 = 0, g_van_id_other = 0;
+
+static void van_frame_in(const VanPacket& pkt) {  ++g_van_frames_seen;
   if (pkt.fcs_ok) ++g_van_frames_fcs_ok;
   g_van_last_rx_ms = pkt.rx_ms;
 #if LINK_ROLE == 1
+  // ★★ 2026-09-28（临时观测，射频降帧那一单）：**按 ID 数出转发的帧分布**。
+  //   为什么需要：`VANRAW` 把**每一帧**都转给从板（18B/帧），而它在稳态下是
+  //   链路里最大的那一块。要决定"限速该怎么限"必须先知道**谁在占**——
+  //   是 80 Hz 的 0x824（车速/转速，快变量）还是那些慢变量（0x4FC 灯位/门、
+  //   0x8A4 水温，实测只有 0.3~0.9 Hz）。
+  //   ★ 只计数、不改行为；`vanraw:` 那行把它打出来。结论落地后本段可删。
+  {
+    uint16_t id = pkt.iden;
+    if      (id == 0x824u) ++g_van_id_824;
+    else if (id == 0x464u) ++g_van_id_464;
+    else if (id == 0x4DCu) ++g_van_id_4dc;
+    else if (id == 0x4FCu) ++g_van_id_4fc;
+    else if (id == 0x8A4u) ++g_van_id_8a4;
+    else                   ++g_van_id_other;
+  }
   // 只往队列里拷字节（纯内存、不碰 PHY）—— **不在回调里发**，见 link_app.h。
   g_van_raw.push(dashlink::vanRawFromPacket(pkt));
 #endif
@@ -1110,6 +1129,10 @@ static void link_start_gate_tick(uint32_t now) {
   link_tx_task_start_once();
 #endif
   link_log_master_ready();
+  // ★★★★ 2026-09-28 深夜：这里**恢复成原样**（闸门负责启链路 PHY）。
+  //   上面那段"只报窗口过去、不重复 begin"是我一次**错误的修复**留下的，
+  //   已随 `setup()` 那处一起回滚 —— 原因见 `setup()` 里那段长注释
+  //   （先 BLE 后链路是一条实测纪律，动它会让主板静默）。
   dash_logf("link: 启动闸门开了 —— %s,等了 %lums ⇒ 现在启链路 PHY(射频让出来了)\n",
             !obd_up ? "BLE 那一路没起来(没得等,直接启链路)"
                     : (obd_ready ? "BLE 已连上(ready)"
@@ -2812,7 +2835,31 @@ void setup() {
   //   ★ 没有 BLE 的构建在**同一位置**直接 begin()，日志逐字节与改之前相同 ⇒
   //     有线档 / 从板 / pcpreview 的启动序列一个字都没变。
 #if OBD_BLE
-  // 这里**只打点**（闸门自己记第一圈的时刻），什么都不启。
+  // ★★★★ 2026-09-28 深夜【顺序实验】：**改回"先 ESP-NOW、后 BLE"**。
+  //
+  //   为什么要试这个（一句话）：失败点在 `esp_now_init`，而**当前顺序是 BLE 先起**
+  //   ⇒ 只要 ESP-NOW 需要**先**把射频拿到手，反过来就可能两个都活。
+  //   依据：用户提供的资料明确写着「ESP-NOW **TX** 可以和 BLE 共存；**RX** 不支持」
+  //   —— 也就是"共存并非绝对不可能，而是有条件的"。而那份资料同时也说
+  //   「Arduino 库的底层仲裁不如 IDF 完善」⇒ **顺序**正是最便宜的那个条件。
+  //
+  //   实验判据（1 Hz 的 `espnow: ★PHY 未上线 stage=…` 行会直接给出答案）：
+  //     · 出现 `stage=9`（或那条常规 `espnow: tx_frames=…` 行）⇒ **ESP-NOW 起来了**
+  //       ⇒ 顺序就是根因，**不用迁 IDF**；
+  //     · 仍是 `stage=2 init=<非0>` ⇒ BLE 后来才起也依然挡不住 ESP-NOW
+  //       ⇒ 顺序不是根因，那时才轮到 IDF / 供电那两条。
+  //
+  //   ★ 这里直接 `begin()`（不再交给闸门）：`begin()` 带幂等守卫，闸门稍后那次调用
+  //     会直接返回，所以两处并存无害。BLE 的启动**留在原处不动**（它在面板之后、
+  //     在本行之后）⇒ 天然形成"ESP-NOW 先、BLE 后"。
+  g_link_phy.begin(false);
+  link_log_master_ready();
+  // ★ 历史记录（别再把这两条结论弄丢）：
+  //   ① 我早先"因为闸门没启链路就把 begin() 改成无条件"的那次改动，**方向是错的**
+  //      —— 它动摇了"先 BLE、后链路"的顺序，结果主板**彻底静默**（串口 0 字节）。
+  //   ② 但后来查明：**闸门本身是好的**（`link: 启动闸门开了 …等了 15000ms` 确实打了），
+  //      PHY 也 `begin()` 了，**是 `online()` 起不来** —— 卡在 `esp_now_init` 那一步。
+  //   ⇒ 所以本轮改的是**顺序**（不是闸门），判据由 `espnow: ★PHY 未上线 stage=…` 给出。
 #else
   g_link_phy.begin(false);
   link_log_master_ready();
@@ -3415,9 +3462,18 @@ void loop() {
       //   · `long=` = 数据太长搬不过去（VIN 那 17 字节）——**这是设计限制，不是故障**；
       //   · `drop=` = 环满/`LinkTx` 满丢掉的整帧 —— **这个必须是 0**，非 0 说明
       //     "VAN 的到达率 + 主循环的排水能力"不匹配，先看 `loop: max=` 有没有被抢占。
-      dash_logf("vanraw: pushed=%lu drop=%lu long=%lu queued=%uB\n",
+      // ★★ 2026-09-28（临时观测）：转发的帧**按 ID 分布** —— 定限速策略的唯一依据。
+      //   ★ 为什么并进这一行而不是新开一行：**独立的一行会被日志环的每秒预算丢掉**
+      //     （本仓库记过这条：低频行会静默消失）。同一行里加字段不会丢。
+      //   读法：如果 0x824 占绝大多数，那"限速"就该只针对它（或干脆让它走 DATA）；
+      //   如果慢变量占大头，那就是另一套改法。**结论落地后本段可删。**
+      dash_logf("vanraw: pushed=%lu drop=%lu long=%lu queued=%uB"
+                " | id 824=%lu 464=%lu 4DC=%lu 4FC=%lu 8A4=%lu other=%lu\n",
                 (unsigned long)g_van_raw.pushed(), (unsigned long)g_van_raw.dropped(),
-                (unsigned long)g_van_raw.tooLong(), (unsigned)g_van_raw.queuedBytes());
+                (unsigned long)g_van_raw.tooLong(), (unsigned)g_van_raw.queuedBytes(),
+                (unsigned long)g_van_id_824, (unsigned long)g_van_id_464,
+                (unsigned long)g_van_id_4dc, (unsigned long)g_van_id_4fc,
+                (unsigned long)g_van_id_8a4, (unsigned long)g_van_id_other);
     }
 #else
     // 从板侧：§4 的三级超时状态就是它唯一要看的链路指标。
