@@ -178,18 +178,19 @@ VehicleState VehicleDataService::update(uint32_t now_ms) {
       status_.position_lamp = FieldSource::Van;
       status_.low_beam = FieldSource::Van;
     } else {
-      // 过窗：值**清掉**（不是停在最后那个状态）—— 闪着的灯不能让屏上留个僵尸箭头。
-      // 来源回 `None` = "这一格现在没有有效值"，与 LinkData 里 None 的语义一致。
+      // ★★★ 2026-09-28（车主实车）：**过窗不再清掉"稳态灯"** —— 近光开一段时间后
+      //   屏上那格消失就是这个分支干的（`0x4FC` 停发时"值 + 来源"一起被清掉了）。
+      //   "近光 / 仪表盘灯"是**状态量**（灯杆位置），不是测量量 ⇒ **最后一次已知值继续算数**，
+      //   而 `lights_age_ms` 照旧报真实新鲜度（日志里仍看得出"多久没收到帧"）。
+      //   ★ 转向灯/双闪**保持原来的清屏行为**：它们在闪，停帧后留个僵尸箭头是错的
+      //     （下面那句原注释的理由在这里仍然成立）。
       state_.indicator_left = false;
       state_.indicator_right = false;
       state_.hazard = false;
-      state_.position_lamp = false;
-      state_.low_beam = false;
       status_.indicator_left = FieldSource::None;
       status_.indicator_right = FieldSource::None;
       status_.hazard = FieldSource::None;
-      status_.position_lamp = FieldSource::None;
-      status_.low_beam = FieldSource::None;
+      // ★ position_lamp / low_beam：**不清**（latch 最后一次已知值，来源保持 Van）
     }
   }
   if (van_.hasDoor()) {

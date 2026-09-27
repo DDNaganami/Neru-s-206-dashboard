@@ -3445,9 +3445,13 @@ void loop() {
     static uint32_t wd_since_ms  = 0;
     static uint8_t  wd_tries     = 0;
     const uint32_t done = g_link_phy.txDone();
-    const bool jammed = (g_link_phy.pending() >= dashlink::LinkPhyEspNow::kMaxPending);
+    // [2026-09-28] SECOND stall mode: esp_now_send() keeps being rejected (field: tx_fail=415435, last_err was ESP_ERR_ESPNOW_NO_MEM truncated to 103) while pending was only 5 => the old pending-only gate never fired.
+    static uint32_t wd_last_fail = 0;
+    const uint32_t fail_now = g_link_phy.txSendFail();
+    const bool jammed = (g_link_phy.pending() >= dashlink::LinkPhyEspNow::kMaxPending) || (fail_now != wd_last_fail);
     if (!jammed || done != wd_last_done) {
       wd_last_done = done;
+      wd_last_fail = fail_now;
       wd_since_ms  = now;
       if (!jammed) wd_tries = 0;          // 窗口不满了 ⇒ 记一次"自愈"，下次还能再来
     } else if ((uint32_t)(now - wd_since_ms) >= 15000u) {

@@ -197,7 +197,10 @@ class LinkPhyEspNow : public LinkPhy {
   //   （`ESP_ERR_ESPNOW_NOT_FOUND` = peer 不在表里 / `_NO_MEM` = 驱动队列满 /
   //    `_IF` = 接口不匹配 / `_CHAN` = 信道不匹配）—— 而这几个原因的修法完全不同。
   //   ⇒ 存下这个值（主循环日志里打出来），本地排查一眼就能对号。
-  int8_t   lastSendErr() const { return mLastSendErr; }
+  //   ★ 2026-09-28：**改成 int32_t** —— 原来存 int8_t 会把错误码截成低字节
+  //     （现场 `last_err=103` 其实就是 `ESP_ERR_ESPNOW_NO_MEM` = 0x3067 的低字节，
+  //      害我们多查了一轮才认出是"发送队列满"）。
+  int32_t  lastSendErr() const { return mLastSendErr; }
 
   // ---- 给"测速/测丢包"用（见 link_meas.h）----
   // ★ 收端解析测量帧时要用到包边界：本 PHY 的**入环是整包进出**的
@@ -309,7 +312,7 @@ class LinkPhyEspNow : public LinkPhy {
   uint32_t mNvsLoads = 0;
   uint32_t mNvsSaves = 0;
   // ★ 最近一次 `esp_now_send()` 的返回值（主循环读、主循环写 ⇒ 不需要 volatile）
-  int8_t   mLastSendErr = 0;
+  int32_t  mLastSendErr = 0;   // ★ 2026-09-28：int8_t → int32_t（见 lastSendErr 的说明）
   // ---- 下而三个是"上板实测跑几秒就停"那一单补的可观测性（2026-09-27）----
   // ★ 计数器那一行从"开机一次"改成**周期性**（同 `link:` 那行的节拍，2 s）：
   //   否则"发送从哪里开始失败"根本看不见（实测就是这么卡住的）。

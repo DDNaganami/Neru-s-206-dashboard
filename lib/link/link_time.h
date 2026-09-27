@@ -128,7 +128,7 @@ class LinkTime {
   uint32_t dataAgeMs() const { return mNowMs - mLastDataMs; }
   bool     tickSeen() const { return mSeenTick; }
 
-  uint16_t ticksSeen() const { return mTicks; }
+  uint32_t ticksSeen() const { return mTicks; }   // [2026-09-28] u16->u32: it saturated at 65535 and hid how long the link had been dead
   // seq 跳变的次数与按 seq 差值累计的丢帧数（§3：`TICK.seq` 让"回绕/丢帧可见"）
   uint16_t seqGaps() const { return mSeqGaps; }
   uint16_t seqMissing() const { return mSeqMissing; }
@@ -155,7 +155,7 @@ class LinkTime {
   bool     mSeenTick   = false;
   bool     mSeenData   = false;
 
-  uint16_t mTicks      = 0;
+  uint32_t mTicks      = 0;   // [2026-09-28] u16->u32 (see ticksSeen)
   uint16_t mSeqGaps    = 0;
   uint16_t mSeqMissing = 0;
   uint8_t  mLastSeq    = 0;
