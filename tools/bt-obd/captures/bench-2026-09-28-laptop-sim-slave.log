@@ -1,0 +1,40 @@
+﻿# Bench capture: section 8 reproduction attempt (laptop-as-fake-dongle), 2026-09-28 laptop side.
+# Fake dongle: tools/bt-obd/obd-ble-sim.py --mode idle --rpm 2400 --coolant 90 --intake 42 --speed 55
+# Slave board COM8 (esp32s3-rgb-slave-obdtest), reset right after the simulator started.
+# Verdict: section 8 FAILED -- the board never connected to the fake dongle.
+#
+# TWO independent findings (both block section 8 as written):
+#  A) The simulator's OWN self-test says the board cannot find it:
+#       advertising service 0000fff0-...  status=2
+#       --- advertisement seen by a PASSIVE scanner (rssi=-87 addr=7DEC7BC78A99 type=0) ---
+#         service uuids : ['42594420-4155-544f-e0a9-e50e24dcca9e']
+#         VERDICT       : FFF0 NOT in the advertisement -> board would never find us
+#     Windows puts the service UUID in the SCAN RESPONSE, while the firmware scans PASSIVELY
+#     (ObdTransportBle: scan_->setActiveScan(false) and it filters on isAdvertisingService(FFF0)).
+#  B) --mode idle NEVER answers AT commands (it only notifies unsolicited), so it can never
+#     produce the section 8 expected line `SRC speed=link rpm=obd coolant=obd intake=obd |
+#     ...2400rpm 90.0C 42.0C...`. Simulator log: cmd=0 notify=0 write=0 for the whole run.
+#
+# Simulator side log (66 s, verbatim):
+#   advertising service 0000fff0-0000-1000-8000-00805f9b34fb  status=2
+#   t=  5.1s subs=0 cmd=0 notify=0 write=0 err=0 | rpm=2400 cool=90 speed=55 intake=42
+#   ... (subs/cmd/notify/write stay 0 for every sample) ...
+#   t= 66.0s subs=0 cmd=0 notify=0 write=0 err=0 | rpm=2400 cool=90 speed=55 intake=42
+#   stopped: cmd=0 notify=0 write=0 err=0
+#
+# Board side (verbatim, from a 40 s capture):
+
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+SRC speed=van rpm=van coolant=link intake=link | v=0.0km/h 885rpm 83.0C 35.0C
+obd-ble: state=connecting peer=aa:bb:cc:12:22:33 conn=0 drop=0 connects=0 cs=24/24 radio=balance win=1 cap=1 fails=24 lastFail=0x0D
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-70 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-70 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-70 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-70 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-70 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+SRC speed=van rpm=van coolant=link intake=link | v=0.0km/h 900rpm 85.0C 36.0C

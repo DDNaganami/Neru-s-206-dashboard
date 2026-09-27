@@ -596,7 +596,7 @@ async def main_async(args, api):
             await asyncio.sleep(args.seconds)
         else:
             print("running. Ctrl+C to stop.")
-    print("NOTE: one connection per run -- restart this script before each board (re)boot.")
+            print("NOTE: one connection per run -- restart this script before each board (re)boot.")
             while True:
                 await asyncio.sleep(1.0)
     except (KeyboardInterrupt, asyncio.CancelledError):

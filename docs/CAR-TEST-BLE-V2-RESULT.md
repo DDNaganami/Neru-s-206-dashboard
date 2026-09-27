@@ -152,3 +152,76 @@ entry 0x403c88b8          ← 进了应用入口，然后一行都不打
 以免把"起不来的配置"留在仓库里。**从板未刷**（仍是 `obdtest`，带 BLE）；因此
 §7.2 要求的"两块板同源同批刷"**没有完成** —— 因为第 ② 条在第一步就断了。
 
+---
+
+## 附二：§8（可选，笔记本冒充假诊断头）已执行 —— **失败，且它本身跑不通**
+
+车主要求做 §8。结论：**§8 按现在的工具/固件组合不可能成功**，有两个独立原因，
+**都不是板子的问题**。
+
+### 发现 1 ★★ `tools/bt-obd/obd-ble-sim.py` 提交进来时**有语法错误，根本跑不起来**
+
+```
+File "…/obd-ble-sim.py", line 599
+    print("NOTE: one connection per run -- restart this script before each board (re)boot.")
+    ^^^^^
+SyntaxError: expected 'except' or 'finally' block
+```
+
+第 599 行的 `print` 被放在 `else:` 块里、却按 `try:` 的层级缩进（`git show HEAD:` 里就是这样，
+**不是笔记本侧改坏的**）。⇒ **桌面侧**说"§8 用 `obd-ble-sim.py` 验过"这件事需要复核 ——
+**这份文件在提交状态下无法执行**（除非桌面侧另有一份未提交的版本）。
+笔记本侧**只做了缩进修正**（把该行移回 `else:` 内），未改任何逻辑。
+
+### 发现 2 ★★★ 即使修好，**固件也找不到这个假头**（sim 自己的自检就这么判）
+
+修正缩进后跑 `--selftest`，它**自己给出了判决**：
+
+```
+advertising service 0000fff0-0000-1000-8000-00805f9b34fb  status=2
+--- advertisement seen by a PASSIVE scanner (rssi=-87 addr=7DEC7BC78A99 type=0) ---
+  service uuids : ['42594420-4155-544f-e0a9-e50e24dcca9e']
+  VERDICT       : FFF0 NOT in the advertisement -> board would never find us
+```
+
+**Windows 把服务 UUID 放在 SCAN RESPONSE 里**，而固件是
+**被动扫描**（`ObdTransportBLE`：`scan_->setActiveScan(false)`）且靠
+`isAdvertisingService(FFF0)` 认设备 ⇒ **广播包里没有 FFF0 就永远匹配不上**。
+（对照：真诊断头 `OBDBLE` 的广播里**是带** `0000fff0-…` 的 —— 实测
+`service_uuids = ['0000fff0-0000-1000-8000-00805f9b34fb']`，所以板子能"扫到"真头。）
+
+### 发现 3 ★ `--mode idle` **永远不回 AT 命令**，所以 §8 的期望行不可达
+
+sim 跑 idle 时只做"无请求的通知"，**不解析 `010C`/`0105`**。而 §8 期望的是
+
+```
+SRC speed=link rpm=obd coolant=obd intake=obd | …2400rpm 90.0C 42.0C…
+```
+
+那要求 `rpm/coolant/intake` 标成 `obd` —— 也就是**必须回答 PID 请求**。
+实测假头全程 `cmd=0 notify=0 write=0` ⇒ **§8 的期望结果在 `--mode idle` 下不可达**
+（要复现桌面侧那一轮得用 `--mode sweep` 或 `replay`）。
+
+### 实测（已存证）
+
+- 假头侧（66 s）：`subs=0 cmd=0 notify=0 write=0 err=0`，`stopped: cmd=0 notify=0 write=0`
+  ⇒ **板子从来没连上来过**。
+- 从板侧（40 s）：`特征已配齐` **未出现**；
+  `link: 启动闸门开了 —— BLE 没连上(到 15s 上限…),等了 15000ms`；
+  `onConnectFail reason=0x0D`（多次）。
+  ★ 一个**值得注意的细节**：板子**仍在不停地尝试连接**（`受理=1`、`rssi=-70/-73`），
+  说明它的扫描**匹配到了某个带 FFF0 的设备**（`onDiscovered` 命中 ⇒ 地址被写进缓存）。
+  这台机器上除了假头还有别的 BLE 设备，但**假头自己的计数器是 0** ⇒
+  它连的不是假头。这一格建议桌面侧下次留意（是否匹配到了别的 FFF0 设备／缓存里的旧地址）。
+
+证据：`tools/bt-obd/captures/bench-2026-09-28-laptop-sim-slave.log`
+
+### 结论
+
+**§8 无法在"被动扫描 + Windows 假头"这个组合下完成。** 要做成，至少需要其中之一：
+① 固件改**主动扫描**（`setActiveScan(true)`，会多一次 scan-request/response 往返）；
+② 或让假头把服务 UUID 放进**广播包**而不是 scan response（`is_discoverable` 已经是 true，
+   但 Windows 的摆放位置不由我们定）；
+③ 或 §8 改用 `--mode sweep`/`replay` 并且**前提是连接已经能建立**。
+
+
