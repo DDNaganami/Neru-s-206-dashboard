@@ -260,7 +260,7 @@ static const size_t kPanelInitCount = sizeof(kPanelInit) / sizeof(kPanelInit[0])
 //   ⇒ 本机当前:**15MHz** / ((480+8+10+50) × (480+2+18+8)) = 15e6/548/508 ≈ **53.9 Hz**。
 //     (串口上 `rgb: vsync=…(+N/s)` 的 N 就是这个量级 —— 它同时是"PCLK 到底跑成
 //      多少"的**第一手判据**:15MHz→约 54、18MHz→约 65、30MHz→约 108。)
-#define RGB_PIXEL_CLOCK_HZ  (15 * 1000 * 1000)   // ← 定案历史:30MHz 也实测过(帧率 107.8Hz 对得上),
+#define RGB_PIXEL_CLOCK_HZ  12000000u
                                                    //   但同一帧里往 fb 里搬像素的耗时从 19.9ms 涨到 27.2ms
                                                    //   —— 那正是 PSRAM 争用的信号。18MHz 是微雪官方例程值,
                                                    //   本轮因为"会移动的横纹"再降到 15MHz(见 docs 第 11 节)。
