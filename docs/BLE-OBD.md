@@ -560,7 +560,67 @@ return xTaskNotifyWait(0, TASK_BLOCK_BIT, nullptr, ticks) == pdTRUE;
      （30KB 空闲，而 17ms 就返回，根本没等到控制器分配连接状态）。
 3. ⇒ **只剩这一条路：改 `asyncConnect = true` + 在 `onConnect`/`onConnectFail`
    回调里驱动状态机**（结构性绕开 `taskWait` 那条可疑的快速路径）。
-   不依赖查出"快速路径为何被唤醒"，直接把 17ms 那个黑盒换掉。
+
+---
+
+## 13. ★★★ 2026-09-28：异步连接改造完成 —— **真错误码拿到了**
+
+### 13.1 改动（`obd_transport_ble.{h,cpp}`）
+
+- `connect(peer_addr_, /*deleteAttributes=*/true, /*asyncConnect=*/true, /*exchangeMTU=*/true)`
+  —— **不再阻塞**。实测发起即返回：`← connect() 受理=1 立即返回耗时=1ms`。
+- 回调**只记事实**：`onConnect` 置 `conn_`；`onConnectFail(reason)` 记
+  `connect_fails_` / `last_fail_reason_` 并打日志。
+- 连上之后的"拿服务/特征/订阅"抽成 `attachCharacteristics()`，**从 `tick()` 里调**，
+  不放回调里 —— `getService()`/`subscribe()` 要等对端应答（走 `taskWait` 那一族），
+  在 NimBLE 任务上下文里同步等容易把自己等死。
+- ★ **补上"发起后一直没回调"的超时收尾**（`kAsyncConnectTimeoutMs = 15000`）：
+  同步版由 `taskWait` 的超时负责这一格，异步把它绕开了 ⇒ 必须自己发现，
+  否则会**永久卡在 connecting**。走到这条超时本身就是判据（见 13.3）。
+- ★★ **`connectNow()` 返回值语义变了**：旧 = "连上了"，新 = "**请求已受理**"。
+  调用方不能再拿它 `++connects_`（那会变成"发一次请求算一次成功"）。
+- 1 Hz 状态行加上 `fails=` 与 `lastFail=0x%02X` —— 判据落在同一行。
+
+### 13.2 ★ 结果：真错误码 = `0x0D`
+
+```
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-81 内部free=30KB
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+obd-ble: state=connecting … cs=87/87 fails=87 lastFail=0x0D
+```
+
+★★ **一处必须纠正的说法（我一开始也读错了）**：`0x0D` **就是 13** ——
+`ble_hs.h` 的权威定义：
+
+```
+#define BLE_HS_ETIMEOUT       13   (0x0D)   ← 控制器报告"建立连接超时"
+#define BLE_HS_ETIMEOUT_HCI   19   (0x13)   ← HCI 命令超时（另一个码）
+```
+
+所以**不是"换了一个新码"，而是同一个码、这次是真的**：
+- 改造前那个 13 是库在 `taskWait` 提前返回后**补写的兜底值**（§12.1）；
+- 现在这个 `0x0D` 是控制器**通过 `onConnectFail` 报上来的真值**。
+
+⇒ 异步改造**达到了目的**：`getLastError()` 拿不到的东西，回调拿到了；
+而且这条路本身**走通了**（受理 → 回调被调用 → 状态行可见）。
+
+### 13.3 ★ 由此得到的结论（方向变了）
+
+`BLE_HS_ETIMEOUT(0x0D)` 的含义是"**建立连接的过程超时**"，即
+**连接请求发出去了、对端没有在时限内完成连接** —— 这与之前"当场被拒 17ms"是
+**两个不同的故障**，而后者已被证明是库的假象。
+
+★ 所以现在的问题**从"库/时序"转到了"对端/射频"**：
+- 同一时刻 `rssi=-81`（开机扫描读到的最弱一档；先前是 -69~-71）⇒ **链路很弱**；
+- 弱链路下 `LE Create Connection` 超时是最典型的症状。
+
+**下一步（按代价排序）**：
+1. **把诊断头挪近板子**（或把板子挪出机舱金属遮挡）⇒ 看 `rssi` 是否回到 -70 以内、
+   `fails` 是否还在涨。这是**零代码**的一步，先做它。
+2. 若信号好了仍失败 ⇒ 查对端是不是**已被别的中心占着**（手机/笔记本还连着它）。
+3. 若都不是 ⇒ 试 `setConnectTimeout()` 放大、或改用**白名单式定向广播**连接
+   （`NimBLEDevice::setScanFilterMode` / 直接连白名单地址），减少扫描-连接切换。
+
 
 ★ **当前对失败机制的准确描述**（别再说"超时"）：`taskWait` 声称等
 `(m_connectTimeout + itvl_max*7) * (retries+1)`（15 秒量级），

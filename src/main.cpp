@@ -3424,13 +3424,15 @@ void loop() {
     // ★ 抑制标志必须进去：开了 `o` 之后这一行要能一眼看出"现在是被抑制的"，
     //   否则"按了没反应"和"按了但状态行没变"分不清（判据要落在同一行里）。
     dash_logf("obd-ble: state=%s peer=%s conn=%u drop=%lu connects=%lu cs=%lu/%lu"
-              " radio=%s win=%lu cap=%lu%s\n",
+              " radio=%s win=%lu cap=%lu fails=%lu lastFail=0x%02X%s\n",
               g_obd_ble.stateName(), g_obd_ble.peerText(),
               (unsigned)g_obd_ble.connected(), (unsigned long)g_obd_ble.dropped(),
               (unsigned long)g_obd_ble.connects(),
               (unsigned long)g_obd_ble.csAttempts(), (unsigned long)g_obd_ble.csCalls(),
               g_obd_ble.radioHeld() ? "BT" : "balance",
               (unsigned long)g_obd_ble.radioWindows(), (unsigned long)g_obd_ble.radioCapped(),
+              // ★ 异步连接的真错误码（`fails` 涨而 `lastFail` 具体值 ⇒ 一眼归因）
+              (unsigned long)g_obd_ble.connectFails(), (unsigned)g_obd_ble.lastFailReason(),
               g_obd_ble.inhibited() ? " **射频抑制=开(串口 o 切换)**" : "");
 #endif
 #if VAN_SNIFF

@@ -36,22 +36,40 @@ public:
 
 class ObdBleClientCb : public NimBLEClientCallbacks {
 public:
+  // ★★★ 2026-09-28：异步连接（`asyncConnect = true`）—— 回调**只记事实**，
+  //   真正的"拿特征 / 订阅通知"交给 `tick()` 里那段 `attachCharacteristics()`。
+  //
+  //   为什么必须这么分（本轮改动的全部理由）：
+  //     同步版 `connect()` 会阻塞在 `NimBLEUtils::taskWait()` 上，而那条路在实测里
+  //     **16~17ms 就返回 false**、随后库补写一个 `BLE_HS_ETIMEOUT(13)` 当挡箭牌
+  //     ⇒ `status` 与 `getLastError()` 都拿不到真错误码（docs/BLE-OBD.md §12.1/§12.4）。
+  //     异步版**不阻塞**，成功进 `onConnect`、失败进 `onConnectFail(reason)` ——
+  //     那个 `reason` 就是我们要了很久的真实错误码。
+  //   ★ 回调里**不碰 LVGL、不碰长循环**：它在 NimBLE 任务上下文里跑。
   void onConnect(NimBLEClient* c) override {
     (void)c;
-    if (ObdTransportBle::s_self_) ObdTransportBle::s_self_->conn_ = true;
+    if (ObdTransportBle::s_self_) {
+      ObdTransportBle::s_self_->conn_            = true;
+      ObdTransportBle::s_self_->connect_pending_ = false;   // 等到了，别再超时重试
+      dash_logf("obd-ble: onConnect ✓（异步连接完成，接着去拿特征）\n");
+    }
   }
   // ★★ 连接**失败的原因码**只有这里能拿到（`connect()` 只回 bool）。
-  //   2026-09-27 实测：板子在车上扫描能看到诊断头（`peer=` 有了），但 `connect()`
-  //   **立刻**失败（重试间隔 ~1s，而连接超时设的是 8s ⇒ 不是超时，是对端拒绝）。
-  //   把原因码打出来才能区分这几种：
-  //     · `BLE_ERR_CONN_ESTABLISHMENT`(0x3E) → 对端没应/不在
-  //     · `BLE_ERR_UNK_CONN_ID`(0x02)        → 连接已不存在（时序问题）
-  //     · `BLE_ERR_AUTH_FAIL`(0x05)          → 要配对/绑定（**本头可能就是这种**：
-  //        它被 Windows 配对过 ⇒ 可能要求加密链路，而我们是"裸连"）
-  //   ⇒ 这就是当初"为什么必须把错误码打出来"的原因。
+  //   ★ 口径提醒（别沿用旧结论）：2026-09-27 记录过"重试间隔 ~1s 而连接超时 8s
+  //     ⇒ 不是超时、是对端拒绝" —— 那条推断**建立在 `status` 上**，而 `status` 已证伪
+  //     （§12.1）。现在这个 `reason` 才是**唯一**可信的原因码，以它为准。
+  //   常见取值：`BLE_ERR_CONN_ESTABLISHMENT`(0x3E) 对端没应 / `BLE_ERR_UNK_CONN_ID`(0x02)
+  //   连接已不存在 / `BLE_ERR_AUTH_FAIL`(0x05) 要配对绑定（本头被 Windows 配过，
+  //   有可能要求加密链路而我们裸连）。
   void onConnectFail(NimBLEClient* c, int reason) override {
     (void)c;
-    dash_logf("obd-ble: onConnectFail reason=0x%02X\n", (unsigned)reason);
+    if (ObdTransportBle::s_self_) {
+      ObdTransportBle::s_self_->conn_            = false;
+      ObdTransportBle::s_self_->connect_pending_ = false;
+      ObdTransportBle::s_self_->connect_fails_++;
+      ObdTransportBle::s_self_->last_fail_reason_ = reason;
+    }
+    dash_logf("obd-ble: onConnectFail reason=0x%02X ← ★ 这才是真错误码\n", (unsigned)reason);
   }
   // 掉线原因同样有用（空闲掉线 vs 远端主动断）
   void onDisconnect(NimBLEClient* c, int reason) override {
@@ -249,6 +267,37 @@ void ObdTransportBle::tick(uint32_t now_ms) {
   if (ready()) { backoff_ms_ = 0; return; }        // 好了，什么都不做
 
   // ---------------------------------------------------------------------------
+  // ★★★ 2026-09-28：**异步连接的两个收尾点**（`asyncConnect = true` 之后必须有的）
+  //
+  //   ① 连上了（`onConnect` 回调置的 `conn_`）⇒ 在这里把特征配齐。
+  //      放在 tick 而不是回调里：`getService()`/`subscribe()` 要等对端应答，
+  //      在 NimBLE 任务上下文里等容易把自己等死（见 attachCharacteristics 的说明）。
+  //   ② **发起后一直没回调** ⇒ 超时收尾。这是异步必须补的一格：
+  //      原来同步版由 `taskWait` 的超时负责，现在那个超时被我们绕开了，
+  //      所以"既没连上、也没报失败"必须由我们自己发现，否则会**永久卡在 connecting**。
+  //      ★ 超时值取 `kAsyncConnectTimeoutMs`（15s，与库原本那个连接超时同量级）。
+  //      ★ 走到这条超时本身也是**判据**：说明 `onConnectFail` 也没来 ⇒
+  //        要么撞上了库那三条前置检查（`NimBLEClient.cpp` 开头），要么控制器没回事件。
+  // ---------------------------------------------------------------------------
+  if (conn_ && notify_ == nullptr) {
+    if (attachCharacteristics()) { backoff_ms_ = 0; return; }
+    // 特征没配齐 ⇒ 断开重来（下一拍会走下面的重连，退避照旧）
+    if (client_) client_->disconnect();
+    onDisconnected();
+    return;
+  }
+  if (connect_pending_) {
+    if ((uint32_t)(now_ms - connect_started_ms_) < kAsyncConnectTimeoutMs) return;  // 还在进行中
+    dash_logf("obd-ble: ★ 异步连接 %ums 无任何回调 ⇒ 判超时收尾"
+              "（onConnect/onConnectFail 都没来：查库的前置检查，不是射频）\n",
+              (unsigned)kAsyncConnectTimeoutMs);
+    connect_pending_ = false;
+    if (client_) client_->disconnect();
+    onDisconnected();
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
   // ★★★ 2026-09-28：**射频抑制**（诊断开关，串口 `o` 切换）
   //
   //   为什么需要它：BLE 连不上时这段状态机是**每 ~600ms 撞一次、每次占射频最长 8s**
@@ -322,6 +371,8 @@ void ObdTransportBle::tick(uint32_t now_ms) {
     }
     ++cs_attempts;
     ++cs_calls;
+    // 异步发起：`connectNow()` 现在**立刻返回**（请求已交给控制器），
+    // 真正连上没有/失败走 `onConnect` / `onConnectFail`。
     if (connectNow()) { ++connects_; backoff_ms_ = 0; return; }
     backoff_ms_ = (backoff_ms_ < kRetryBackoffMaxMs) ? (backoff_ms_ * 2u) : kRetryBackoffMaxMs;
 
@@ -372,13 +423,31 @@ void ObdTransportBle::tick(uint32_t now_ms) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// ★★★ 2026-09-28：`connectNow()` 改为**异步发起**（`asyncConnect = true`）。
+//
+//   改动前（同步）：`connect()` 阻塞在 `NimBLEUtils::taskWait()` 上，
+//   实测**16~17ms 就返回 false**，随后库补写 `BLE_HS_ETIMEOUT(13)`。
+//   那条路把真错误码整个吞掉了 —— `status` 与 `getLastError()` 都只能是 13
+//   （docs/BLE-OBD.md §12.1/§12.4 有源码推导），于是我们查了三轮都在猜。
+//
+//   改动后（异步）：本函数**只负责把请求交给控制器并立刻返回**；
+//     · 连上 ⇒ `onConnect()` 回调置 `conn_`，`tick()` 里那段
+//       `attachCharacteristics()` 去拿服务/特征/订阅；
+//     · 失败 ⇒ `onConnectFail(reason)` 回调把**真实 reason** 打进日志。
+//   ⇒ 这就是"把 17ms 那个黑盒整个换掉"：不再有 `taskWait`，也就没有那个补写的 13。
+//
+//   ★ 返回值语义变了（**调用方要看清**）：原来 `true` = "连上了"，
+//     现在 `true` = "**请求已受理**"（连接还在进行中）。所以调用方**不能再**因为
+//     它返回 true 就 `++connects_` —— 那会变成"发一次请求算一次成功"。
+//     成功与否一律看 `ready()` / `conn_`（由回调设置）。
 bool ObdTransportBle::connectNow() {
   if (client_ == nullptr || !peer_valid_) return false;
   // ★★ 每一步都留痕（2026-09-27 车上排查）：现象是"`state=connecting` 卡住、
   //   一个回调都不来"，必须分清是
   //     (a) 压根没进这个函数、(b) `connect()` 阻塞住没返回、
   //     (c) `connect()` 返回 false 但库里不回调、(d) 连上了但特征没拿到。
-  //   ⇒ 分别对应下面四条日志；日志只在这里打（进函数一次），不刷屏。
+  //   ⇒ 分别对应下面几条日志；日志只在这里打（进函数一次），不刷屏。
   dash_logf("obd-ble: → connectNow begin (peer=%s type=%u)\n", peer_, (unsigned)peer_addr_.getType());
   // ★★ `NimBLEClient::connect()` 里有**三条会立刻返回失败、且不回调 onConnectFail**
   //   的前置检查（见 `NimBLEClient.cpp` 开头）—— 这正是"卡在 connecting、一个回调
@@ -388,41 +457,40 @@ bool ObdTransportBle::connectNow() {
   //       失败路径若没把状态复位，之后每次调用都会当场被拒，永远自愈不了）
   //     · `address.isNull()`               → 地址无效
   //   把状态打出来，一眼就能归因。
+  //   ★★ 异步下这三条**仍然存在**（它们在 `asyncConnect` 判断之前）⇒ 若日志里
+  //     `→ connectNow begin` 之后**既没有 onConnect 也没有 onConnectFail**，
+  //     就是又撞上了这三条 —— 那时问题在"库的前置状态"，不在射频也不在对端。
   dash_logf("obd-ble:   pre: isConnected=%d connHandle=0x%04X\n",
             (int)client_->isConnected(), (unsigned)client_->getConnInfo().getConnHandle());
   // ★ 用**存下来的地址对象**（类型正确），别拿字符串重建 —— 见 onDiscovered 里的实测教训。
-  // ★★ 并且**直接量真实耗时**（2026-09-28）：日志行之间的"行距"**不能**当耗时用 ——
-  //   日志环有每秒预算、这种低频行会被丢。这个数决定方向：
-  //     · 接近 15000ms ⇒ 连接请求发出去了、对端不理（真超时，往对端/射频查）；
-  //     · 毫秒级      ⇒ 库或控制器**当场拒绝**（前置检查失败），与射频无关。
-  const uint32_t t0 = millis();
-  const bool ok = client_->connect(peer_addr_);
-  const uint32_t dt = (uint32_t)(millis() - t0);
-  // ★★★ 2026-09-28：**把真实错误码打出来**（docs/BLE-OBD.md §12.4 的第一步）。
   //
-  //   为什么必须打：`connect()` 只返回 bool，真实的 `rc` 被丢在里面；而库在
-  //   快速路径（`taskWait` 的超时 0-tick 那条）返回时**从不设置** `taskData.m_flags`
-  //   ⇒ 它随后补写的 `BLE_HS_ETIMEOUT(13)` 是**兜底值、不是控制器给的错误码**
-  //   （见 §12.1 的源码推导）。所以 `status=13` 这条线索一直是死的，两条基于它的
-  //   推断（"内存不够"、"地址类型不对"）都已作废。
-  //   ⇒ 要拿真值只有两条路，这里走**第一条**：
-  //     ① `client_->getLastError()` —— 库在 `error:` 标号处会 `m_lastErr = rc`，
-  //        所以它比日志里的 `status` 可信（`connect()` 失败必经那里）；
-  //     ② 改 `asyncConnect = true` + 回调驱动（结构性绕开快速路径）—— 还没做。
-  //   ★ 判据（怎么读这个数）：
-  //     · `0` 或仍是 13 ⇒ `getLastError()` 也没拿到，说明失败**根本没走到 error 标号**，
-  //        那就只剩 ② 那条路（改异步 + 回调）。
-  //     · 非 0 且不是 13 ⇒ **这就是真错误码**，按 NimBLE 错误表查（如
-  //        `BLE_HS_ENOTSYNCED=8` / `BLE_HS_EREJECT=14` / `BLE_HS_EINVAL=3` /
-  //        `BLE_HS_ETIMEOUT_HCI=17` 等），不要再去猜内存。
-  //   ★ 同时把 `free heap` 打进来：判"到底是不是内存"需要它和错误码**同一行**，
-  //     否则"OOM"与"协议拒绝"在日志上分不开。
-  dash_logf("obd-ble: ← client->connect() = %d  isConnected=%d  耗时=%ums  rssi=%d"
-            "  lastErr=%d  内部free=%uKB\n",
-            (int)ok, (int)client_->isConnected(), (unsigned)dt, (int)peer_rssi_,
-            (int)client_->getLastError(),
+  // ★ 三个参数：`deleteAttributes=true`（每次连接清掉旧的服务缓存）、
+  //   **`asyncConnect=true`**（本轮的关键）、`exchangeMTU=true`。
+  const uint32_t t0 = millis();
+  const bool accepted = client_->connect(peer_addr_, true, /*asyncConnect=*/true, true);
+  const uint32_t dt = (uint32_t)(millis() - t0);
+  dash_logf("obd-ble: ← connect() 受理=%d 立即返回耗时=%ums rssi=%d 内部free=%uKB"
+            "（★ 异步：结果看 onConnect / onConnectFail）\n",
+            (int)accepted, (unsigned)dt, (int)peer_rssi_,
             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024u));
-  if (!ok) return false;
+  if (!accepted) return false;
+  connect_pending_     = true;
+  connect_started_ms_  = t0;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// 连上之后把服务/特征/订阅配齐。**从 `tick()` 里调，不在回调里做**。
+//
+//   为什么不在 `onConnect` 回调里直接做：回调跑在 **NimBLE 任务**上下文，
+//   里面的 `getService()` / `subscribe()` 都是"要等对端应答"的操作（会走
+//   `taskWait` 那一族），在回调里同步等很容易把自己等死。
+//   放到主循环（`tick`）里，阻塞的是我们自己的循环 —— 与改动前的行为等价，
+//   只是**连接那一小段**不再阻塞。
+//   ★ 这段会阻塞（最坏几百 ms），所以它**必须放在 `tick()` 的早退之后**：
+//     只在"还没有特征"的那几拍才走到，配齐一次之后就 `ready()` 早退了。
+bool ObdTransportBle::attachCharacteristics() {
+  if (client_ == nullptr || !client_->isConnected()) return false;
 
   NimBLERemoteService* svc = client_->getService(NimBLEUUID(kServiceUuid));
   if (svc == nullptr) return false;
@@ -438,6 +506,7 @@ bool ObdTransportBle::connectNow() {
   }
   notify_ = n;
   write_  = w;
+  dash_logf("obd-ble: 特征已配齐（FFF1 已订阅 / FFF2 可写）⇒ state=ready\n");
   return true;
 }
 

@@ -88,6 +88,11 @@ public:
   // ★ 车上排查用:进 connecting 分支几次 / 真的发起 connect 几次
   uint32_t csAttempts() const { return cs_attempts; }
   uint32_t csCalls() const { return cs_calls; }
+  // ★★★ 2026-09-28：异步连接的**真错误码**（这是本轮改造的全部目的）。
+  //   异步下 `connect()` 一发起就返回，失败必然走 `onConnectFail(reason)`，
+  //   所以这两个数才是可归因的：以前只能看到库补写的那个假的 13。
+  uint32_t connectFails() const { return connect_fails_; }
+  int      lastFailReason() const { return last_fail_reason_; }
   const char* peerText() const { return peer_[0] ? peer_ : "-"; }
 
   // ---- 射频仲裁（诊断用；体检行里打出来）----
@@ -123,6 +128,11 @@ private:
   void onDisconnected();                                // 回调 → 清句柄（掉线后它们就失效了）
   void pushBytes(const uint8_t* d, size_t n);           // 只在回调里调
   bool connectNow();
+  // ★★★ 2026-09-28：连上之后把服务/特征/订阅配齐。**从 `tick()` 里调，不在回调里做**
+  //   —— `getService()` / `subscribe()` 都要等对端应答（走 `taskWait` 那一族），
+  //   在 NimBLE 任务上下文里同步等容易把自己等死。
+  //   返回 true ⇒ `ready()` 成立；false ⇒ 调用方断开重来。
+  bool attachCharacteristics();
   void applyRadioArbitration(uint32_t now_ms);          // 射频优先权的**过渡**处理
   void setCoexPreference(bool ble_first);               // 真去调 IDF（过渡时才调）
 
@@ -181,6 +191,31 @@ private:
   //   为什么要有它而不用"重刷一版关掉 BLE 的固件"：刷机几十秒 + 打断现场观察，
   //   而且判据与变量一起动就分不清；敲一个字符开/关才能做真正的 A/B。
   bool          inhibited_ = false;
+
+  // ==========================================================================
+  // ★★★ 2026-09-28：**异步连接**（`asyncConnect = true`）要的三个状态 + 一个超时
+  //
+  //   为什么改成异步（一句话）：同步 `connect()` 阻塞在 `NimBLEUtils::taskWait()`，
+  //   实测 16~17ms 就返回 false、随后库补写 `BLE_HS_ETIMEOUT(13)` 当挡箭牌
+  //   ⇒ `status` 与 `getLastError()` 都拿不到真错误码（docs/BLE-OBD.md §12.1/§12.4）。
+  //   异步把那条路整个绕开：失败进 `onConnectFail(reason)`，**那才是真错误码**。
+  //
+  //   ★★ `connectNow()` 的**返回值语义已变**，调用方要看清：
+  //      旧 = "连上了"；新 = "**请求已受理**"（连接还在进行中）。
+  //      所以不能再拿它去 `++connects_`（那会变成"发一次请求算一次成功"）；
+  //      成功与否一律看 `ready()` / `conn_`（由回调设置）。
+  // ==========================================================================
+  bool     connect_pending_ = false;   // 已发起、还没等到 onConnect / onConnectFail
+  uint32_t connect_started_ms_ = 0;
+  // 发起后等多久算"没有任何回调"。取 15s（与库原本那个连接超时同量级）。
+  // ★ 走到这条超时本身就是判据：`onConnectFail` 也没来 ⇒ 问题在库的前置检查
+  //   或控制器没回事件，**不在射频**。
+  static constexpr uint32_t kAsyncConnectTimeoutMs = 15000u;
+  // 诊断用（进 1 Hz 状态行）：异步失败次数与**最近一次的真实 reason**。
+  //   ★ reason 是本次改造的全部目的 —— 以前只能看到那个假的 13。
+  uint32_t connect_fails_    = 0;
+  int      last_fail_reason_ = 0;
+
   // 停扫之后等多久才允许 connect。控制器收尾是几十毫秒量级，取 600ms = 10 倍余量。
   static constexpr uint32_t kPostScanSettleMs = 600u;
   // ★★★ 2026-09-28：连败这么多次就**丢掉地址、重新扫**（地址新鲜度的补丁）。
