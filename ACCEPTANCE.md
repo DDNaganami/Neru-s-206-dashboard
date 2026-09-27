@@ -7898,3 +7898,73 @@ native 用例也不编 `main.cpp` ⇒ 一路绿灯。
 2. **`--raw` 的参数用冒号切分**，而 Windows 绝对路径自带 `C:` ⇒ 被切碎（报"尺寸要写成 宽x高"）。
    改用**相对路径**即可。另外 CLI 的角色名表里"市区"那档叫 **`face_city`**（不是 `face_city_r`，与同组其它 `_r` 不一致）——
    这是既有的小债，没动它（改表会动到别人的脚本），只在这儿记一笔。
+
+- [x] **★ BLE OBD 打通（车上实测）：根因是 ESP-NOW 抢射频；顺带修掉三个会上车的 bug（2026-09-27，笔记本侧）**
+      **起因**：2.8C 上 UART 版 OBD **物理上没脚**（RGB 并口占了 GPIO17/18，正是 OBD 的默认 RX/TX），
+      所以进气温度/水温只有 BLE 一条路。车主新到诊断头 `OBDBLE`（`AA:BB:CC:12:22:33`）。
+
+      **① 先决判据：它必须是 BLE（不是蓝牙经典 SPP）** —— ESP32-S3 只有 BLE，SPP 硬件上就没有。
+      判据（实测好用）：**能被 WinRT 的 `BluetoothLEDevice` 枚举出来的就是 BLE**，
+      SPP 根本不会出现在那个列表里。实测 `OBDBLE` 出现在列表中 ⇒ 通过。
+      工具：`tools/bt-obd/probe-ble-gatt.ps1`。
+      ★ 别拿"配对后有没有多一个 COM 口"当判据：BLE 不给 COM（实测配对后端口仍是 COM5/6/7/8）。
+
+      **② GATT 结构（实测，板上照此实现）**：服务 `0000FFF0` / `0000FFF1`（读+通知，回答从这来）/
+      `0000FFF2`（写+无响应写，指令往这写）。
+
+      **③ 笔记本侧两个坑（会让判据完全失效）**：
+      · **必须 Windows PowerShell 5.1，不能用 pwsh** —— WinRT 的 `IAsyncOperation→Task` 桥只在
+        .NET Framework 里；pwsh 里症状是"表头打出来了、设备列表空的"，会得出"没有 BLE 设备"的错结论；
+      · `Register-ObjectEvent` **挂不上 WinRT 事件** ⇒ 读取侧只能走 Python + `bleak`
+        （`tools/bt-obd/ble-obd-client.py`，实测读出了 978rpm / 87℃ / 59℃）。
+
+      **④ 板上实现**：抽出 `ObdTransport`（4 方法）⇒ **问答/解析一行没改**，只换传输；
+      `ObdTransportBle`（NimBLE-Arduino 2.5.1）。★ 一个教训：第一版回调类名是**猜的**，
+      改正做法是**读本地 libdeps 里的真实头文件**（2.x 是新回调风格，1.x 的类已删）。
+
+      **⑤ ★★ 根因：ESP-NOW 与 BLE 抢射频（不是配对/参数/内存）**
+      现象：`connect()` 永远 `status=13`（`BLE_HS_ETIMEOUT`），而**同一位置笔记本一连就上**。
+      依次排掉：地址类型 / 客户端状态 / 扫描未停干净 / 连接参数 / `PREFER_BALANCE` / 配对绑定 /
+      内存（10KB 与 29KB 表现一致）/ 发射功率。
+      **决定性实验**：临时不启动链路 PHY ⇒ BLE **一次就连上**（`connects=1`），
+      且 `SRC rpm=obd coolant=obd intake=obd` 拿到真值（进气 **62~63℃**，印证冬菇头）。
+      ⇒ 结论：**不是"不可能共存"，是默认调度下 BLE 拿不到建连要的那几毫秒**。
+      （后续的 `radio_arbiter.h` 正是按这条结论做的。）
+
+      **⑥ 本轮修掉的三个真 bug（都会带上车）**
+      · **`sendRequest` 重复补零**：原来那句"`pid<0x10` 就补个 `0`"是按 Arduino `print(v,HEX)`
+        **不补零**写的，而新抽的 `writeHex()` **总是两位** ⇒ 叠加成 `0100C`/`01000`/`01005`/`0100F`，
+        **ECU 一个都不认**，而现象只是"OBD 一直没数据"（与"没插头"长得一样）。
+        ★ 它是被 native 单测抓出来的，而单测能跑起来的前提是加了 `lib/dashcore/library.json`
+        （此前 native 构建**根本没编 dashcore**）⇒ **"测试跑不起来"本身就是风险**。
+      · **`setPower` 参数口径**：`setPower(int8_t dbm,…)` 收 **dBm 数值**、
+        `setPowerLevel(esp_power_level_t,…)` 才收枚举。把枚举传给了前者 ⇒ 越界 ⇒
+        **空指针崩溃**（`Guru Meditation: LoadProhibited`、`EXCVADDR: 0x38`、25 秒重启 23 次）。
+      · **主板黑屏**：`start()` 里 NimBLE 先吃掉 ~50KB 内部 RAM ⇒ RGB 面板弹跳缓冲分配失败
+        （`no mem for bounce buffer` ⇒ `面板创建失败 err=257`），现象是"上电后屏一直黑"
+        而主循环/链路/VAN 全正常。修法：`start()` 推到 `dash_ui_init()` **之后**。
+
+      **⑦ 判据小抄（复用价值高）**
+      · 排查"某段代码到底进没进"：**别只依赖打印**（日志环有每秒预算会丢低频行）——
+        车主这一单就是靠计数器 `cs=a/b` 才定位到我自己的时序 bug；
+      · 判板间链路活没活：看从板 `vanraw: age`（毫秒级=活），**不是** `rx_ok`（那是累计量）；
+      · 屏上"模拟数据 + 仍挂 VAN 角标"= 链路曾经断过；
+      · V**A**N 信号质量：`edges` 虚高 + 解帧暴跌 = **地线接触不良**（实测 5419 边沿/秒、
+        只有 4.2 帧/秒，而基线是 3400/54）；
+      · 查"某块内容不见了"时，**"看不清"与"没画/没数据"必须并列怀疑**（进气温度那次就是颜色不显眼）。
+
+      **⑧ 笔记本构建环境（今天装齐；坑都固化进 `tools/build/pio.ps1`）**
+      · 必须用 PlatformIO 自己的 venv python（另一个只有 platformio 本体、没有 esptool/intelhex）；
+      · **中文用户名会打死宿主机工具链**：症状像链接失败、其实是连中间 `.o` 都写不出来。
+        修法：工具链搬到 `C:\mingw64` + **只给编译器 ASCII 的 `TMP`**；
+        ★ **别改用户级 `TEMP`**（改了 Python 的 site-packages 就 import 不到 intelhex）；
+      · **pioarduino 那几档要从 ASCII 镜像编**（`robocopy` 到 `C:\206dash-repo`）；
+      · 两块 2.8C 真正跑的档：主板 `esp32s3-rgb-master-now`、从板 `esp32s3-rgb-slave-now`；
+      · 实测能力：`pio test -e native` **385 例 / 383 通过 / 2 跳过 / 0 失败**、
+        `esp32s3-rgb-master-now` 编译 SUCCESS。
+
+      **⑨ 交接（明天上车前必看）**
+      · 现在车上跑的是**诊断构建**（`-DOBD_BLE_ONLY_TEST=1`，链路 PHY 没启）⇒
+        **从板拿不到数据、左屏是空的**，去掉这个宏才能恢复；
+      · 主板弹跳缓冲被我 20→10（为给 BLE 腾内存）⇒ **上车复看横纹**；
+      · VAN 掉帧那一段等车主弄好**地线**（见 ⑦ 最后两条）。
