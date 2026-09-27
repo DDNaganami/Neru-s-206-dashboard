@@ -224,4 +224,65 @@ SRC speed=link rpm=obd coolant=obd intake=obd | …2400rpm 90.0C 42.0C…
    但 Windows 的摆放位置不由我们定）；
 ③ 或 §8 改用 `--mode sweep`/`replay` 并且**前提是连接已经能建立**。
 
+---
+
+## 附三：★ B 方案（车主明确授权刷机后执行）—— **成功**
+
+车主要求"刷机走一次 B 方案"，即落实上面 ① ：把从板改成**主动扫描**，
+从而判定"**从板的 BLE 中央设备究竟能不能连上任何外设**"。
+
+### 改动（只有一行，且是实验性的）
+
+```cpp
+// lib/dashcore/obd_transport_ble.cpp
+scan_->setActiveScan(true);   // 原为 false（被动）
+```
+
+镜像验证：`firmware.bin` → **1706752**，编译输出里确实编了 `obd_transport_ble.cpp.o`
+（**不是只看 `[SUCCESS]`**）。
+
+### 结果：**连上了，而且数据、订阅、共存全通**
+
+| 判据 | 实测（原样） |
+|---|---|
+| 特征/订阅 | `obd-ble: 特征已配齐（FFF1 已订阅 / FFF2 可写）⇒ state=ready` |
+| 闸门 | `link: 启动闸门开了 —— BLE 已连上(ready),等了 14759ms ⇒ …` |
+| 连接维持 | `obd-ble: state=ready peer=40:ab:3d:ef:3b:df conn=1 drop=0 connects=1` |
+| 数据来源 | `SRC speed=van rpm=obd coolant=obd intake=obd \| … 90.0C 42.0C`（假头设的 90/42）|
+| **共存** | `link: locked tick_age=38ms seen=250 seq_gap=0 miss=0`、`espnow: done_fail=0 overflow=0` |
+| 假头侧 | `client subscribed`、`cmd=186 notify=234 write=744 err=0`，命令/应答闭环 |
+
+⇒ **从板的 BLE 中央设备工作正常，且与 ESP-NOW 接收共存无碍**（零丢帧）。
+**被动扫描就是那道锁** —— 它让板子收不到 scan response，于是匹配不上任何把服务 UUID
+放在 scan response 里的对端。
+
+★ 这条**不影响真头**：真头 `OBDBLE` 的 FFF0 **在广播包里**，主动扫描对它只会更容易匹配。
+
+### 一条留给下一单的观察（本次只记录、不追）
+
+假头侧看到的 AT 请求**是逐字节串行的**，且字符交错：
+
+```
+< '01'  < '0'  < 'C'  < '\r'        →  > '41 0C 51 05 \r'
+< '0'   < '01' < 'C'  < '\r'        →  > '?\r\r>'
+< '01'  < '0'  < '\r'               →  > '?\r\r>'
+< '01'  < 'C'  < '0'  < '\r'        →  > 'NO DATA\r\r>'
+```
+
+也就是说**一个请求被拆成了多次 write，而且两次请求的字节会交错**。
+`err=0`（假头侧没报错）且数据能用，所以不影响本单结论；
+但它解释了为什么有些 PID 回 `?`/`NO DATA` —— 建议下一单查
+"`sendRequest` 是否应该把整条命令**一次** `write()` 写完"。
+证据：`tools/bt-obd/captures/bench-2026-09-28-bplan-active-scan.log`
+
+### 现在的状态与建议
+
+- 从板跑的是**带主动扫描的实验固件**（`esp32s3-rgb-slave-obdtest` + `setActiveScan(true)`）。
+- ★ **这一行是去是留需要桌面侧决定**（我按车主授权只做实验，未擅自把它当结论固化）：
+  留 ⇒ 兼容"服务 UUID 只在 scan response"的对端，代价是每次命中多一次
+  SCAN_REQ/SCAN_RSP 往返；不留 ⇒ 恢复被动，但永远匹配不上那类对端。
+- ★ 更值得下一单回答的是：**为什么真头连不上，而假头一连就上** —— 现在这一格被
+  收窄到"真头特有的属性"（广播内容/地址类型/连接参数/是否已被别的中心占用）。
+
+
 

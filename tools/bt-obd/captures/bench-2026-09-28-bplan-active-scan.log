@@ -1,0 +1,37 @@
+﻿# B-plan experiment (owner-authorized flash): SLAVE with ACTIVE scan vs the laptop fake dongle.
+# 2026-09-28 laptop side. Firmware esp32s3-rgb-slave-obdtest, one line changed:
+#   lib/dashcore/obd_transport_ble.cpp  scan_->setActiveScan(false) -> (true)
+# Fake dongle: obd-ble-sim.py --mode sweep --rpm 2400 --coolant 90 --intake 42 --speed 55
+#
+# RESULT: *** B PLAN SUCCEEDS *** -- the board connects, subscribes, and exchanges AT/PID traffic.
+#   board side : obd-ble: 特征已配齐（FFF1 已订阅 / FFF2 可写）⇒ state=ready
+#                link: 启动闸门开了 —— BLE 已连上(ready),等了 14759ms
+#                obd-ble: state=ready peer=40:ab:3d:ef:3b:df conn=1 drop=0 connects=1
+#                SRC speed=van rpm=obd coolant=obd intake=obd | ... 90.0C 42.0C   (= the sim's values)
+#   link side  : link: locked tick_age=38ms seen=250 seq_gap=0 miss=0   (ESP-NOW unaffected)
+#   sim side   : client subscribed (subscribed clients now 1)
+#                cmd=186 notify=234 write=744 err=0
+# => the slave's BLE central + ESP-NOW RX COEXIST fine. The active-scan change was the unlock.
+#
+# One observation worth chasing later (NOT the subject of this test): the AT requests arriving at
+# the simulator look byte-serialized (`0`,`01`,`C`,`\r`) with interleaved characters, and PID requests
+# sometimes arrive as `01 0 \r` / `NO DATA`. That is reported here as raw evidence only.
+#
+# Board side (verbatim):
+
+obd: BLE 那条路已挂上(目标服务 FFF0 / 通知 FFF1 / 写 FFF2) —— start() 推迟到显示初始化之后
+obd: BLE start() = 1  heap=82KB(面板之后)
+SRC speed=sim rpm=sim coolant=sim intake=sim | v=176.6km/h 6956rpm 87.0C 28.3C
+obd: BLE 那条路已挂上(目标服务 FFF0 / 通知 FFF1 / 写 FFF2) —— start() 推迟到显示初始化之后
+obd: BLE start() = 1  heap=82KB(面板之后)
+SRC speed=sim rpm=sim coolant=sim intake=sim | v=176.6km/h 6956rpm 87.0C 28.3C
+SRC speed=sim rpm=sim coolant=sim intake=sim | v=209.8km/h 4957rpm 88.8C 30.1C
+obd-ble: 特征已配齐（FFF1 已订阅 / FFF2 可写）⇒ state=ready
+link: 启动闸门开了 —— BLE 已连上(ready),等了 14759ms ⇒ 现在启链路 PHY(射频让出来了)
+espnow: tx_frames=0 tx_bytes=0 tx_fail=0 last_err=0 done=0 done_fail=0 pending=0 txring=256 | rx_frames=7 rx_bytes=107 rx_foreign=0 overflow=0 gap_rx=0ms
+SRC speed=sim rpm=sim coolant=sim intake=sim | v=183.2km/h 1159rpm 90.6C 31.6C
+obd-ble: state=ready peer=40:ab:3d:ef:3b:df conn=1 drop=0 connects=0 cs=12/12 radio=balance win=1 cap=1 fails=11 lastFail=0x0D
+espnow: tx_frames=27 tx_bytes=577 tx_fail=0 last_err=0 done=27 done_fail=0 pending=0 txring=0 | rx_frames=105 rx_bytes=1617 rx_foreign=0 overflow=0 gap_rx=6ms
+espnow: tx_frames=31 tx_bytes=669 tx_fail=0 last_err=0 done=31 done_fail=0 pending=0 txring=0 | rx_frames=167 rx_bytes=2543 rx_foreign=0 overflow=0 gap_rx=34ms
+SRC speed=van rpm=obd coolant=van intake=obd | v=0.0km/h 2564rpm 86.0C 42.0C
+link: locked tick_age=39ms seen=50 seq_gap=0 miss=0 offset=84873ms

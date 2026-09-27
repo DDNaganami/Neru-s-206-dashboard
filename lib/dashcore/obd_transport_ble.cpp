@@ -205,7 +205,23 @@ bool ObdTransportBle::start() {
   scan_->setScanCallbacks(new ObdBleScanCb(), true);
   scan_->setInterval(100);
   scan_->setWindow(80);
-  scan_->setActiveScan(false);                // 被动扫描：够认出服务 UUID 了
+  scan_->setActiveScan(true);   // ★ 2026-09-28 车主授权的 B 方案实验：被动→主动(见下)
+  // ★★★★ 2026-09-28 深夜（**车主明确授权的 B 方案实验**）：**被动 → 主动扫描**。
+  //
+  //   为什么改：执行单 §8 要用"笔记本冒充的假诊断头"做验证工具，而
+  //   `tools/bt-obd/obd-ble-sim.py` **自己的自检**就给出了判决：
+  //       VERDICT: FFF0 NOT in the advertisement -> board would never find us
+  //   Windows 把服务 UUID 放在 **scan response** 里，而**被动扫描收不到 scan response**
+  //   ⇒ 固件那句 `isAdvertisingService(FFF0)` 永远匹配不上假头
+  //   ⇒ §8 按现状**不可能成功**（实测：假头 66 s 全程 `subs=0 cmd=0`）。
+  //   改成主动扫描后会多发一次 SCAN_REQ/SCAN_RSP，才可能匹配上假头，
+  //   从而**判定"从板的 BLE 中央设备究竟能不能连上任何外设"** —— 这是 B 方案的目的。
+  //
+  //   ★ 对真头的影响：真头 `OBDBLE` 的 FFF0 **在广播包里**（实测
+  //     `service_uuids=['0000fff0-…']`）⇒ 主动扫描对它只会更容易匹配，**不会有坏处**。
+  //   ★ 代价（要如实记账）：主动扫描每命中一个设备多一次 SCAN_REQ/SCAN_RSP 往返，
+  //     射频占用略增。当初选被动正是为了省这一下。
+  //   ★ 本行是**实验性改动**，做完实验要决定去留，别默认永久留着。
   scan_->setMaxResults(8);
 
   started_  = true;
