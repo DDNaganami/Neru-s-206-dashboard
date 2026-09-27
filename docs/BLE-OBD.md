@@ -560,6 +560,50 @@ FFF0 就在广播包里、笔记本 2.6s 连上）。
 
 ⇒ 下一步只验一个数：**改 `m_connectTimeout`，看 17ms 跟不跟着变**（见附五 ⑤.9）。
 
+### 12.1c ★★★★★ 2026-09-29 凌晨：**根因 = `setConnectTimeout` 的单位写错了（毫秒被当成秒）**
+
+上一节那个"只验一个数"的实验做完了，答案就是根因本身：
+
+```cpp
+client_->setConnectTimeout(15);             // ← 原文的注释写"秒"
+```
+
+**这个 API 收的是毫秒**：
+- `NimBLEClient.h`：`void setConnectTimeout(uint32_t timeout);`
+- `NimBLEClient.cpp:584`：`m_connectTimeout = time;`
+- `NimBLEClient.cpp:69`：`m_connectTimeout{30000}` —— 注释原文
+  *"The number of milliseconds before timeout, default is 30 seconds."*
+- 用法：`ble_gap_connect(..., m_connectTimeout, ...)`，
+  内部 `ble_npl_time_ms_to_ticks(duration_ms, …)`
+
+⇒ **真正的建连超时一直是 15 毫秒**（比库默认小 2000 倍）
+⇒ 主机计时器 15ms 到点 ⇒ `LE Create Connection Cancel` ⇒ `UNKNOWN_CONN_ID`
+⇒ `ble_gap_master_connect_cancelled()` ⇒ `status = BLE_HS_ETIMEOUT` = **13**。
+
+| 实测档位 | 结果 |
+|---|---|
+| `15`（线上那版） | 恒定 **16~18ms** 失败，130 次全败 |
+| `3000` | **连上**（433ms 完成，150 秒零掉线）|
+| `30000`（库默认） | **连上**（350ms / 969ms）|
+
+**修后实测**（真头、台面、默认档）：
+```
+obd-ble: onConnect ✓（异步连接完成，距发起 969ms，接着去拿特征）
+obd-ble: 特征已配齐（FFF1 已订阅 / FFF2 可写）⇒ state=ready
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 894rpm 89.0C 64.0C
+```
+
+⇒ §12.1 / §12.1b 里"13 是主机取消"那条判断**是对的**，只是当时没往下追
+"主机为什么取消"；答案是我们自己**传了个 15**。
+⇒ 之前所有"假头能连、真头不能"的解释（射频/地址类型/占用/内存）**全部作废**：
+  真头广播间隔 **2~5 秒**（WinRT 实测），15 毫秒的建连窗里几乎抓不到；
+  假头广播密，碰巧抓得到。
+
+★ **教训**：给库传数字的地方，注释必须写单位，并且要能对到库的声明。
+   `// 秒` 这五个字让后面每一轮排查都按"15 秒"推理，白花了一整天。
+★ 现场应急：串口 **`t`** 可以切建连超时档 {3000, 30000, 1000, 10000}，
+   不必重刷固件（`main.cpp` / `serial_cmd.h`，口径与 `o` 相同）。
+
 ### 12.2 本轮**排除**掉的假设（都有实测依据）
 
 | 假设 | 判据 | 结论 |

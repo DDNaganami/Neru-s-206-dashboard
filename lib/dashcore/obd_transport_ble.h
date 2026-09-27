@@ -8,6 +8,15 @@
 #include <NimBLEDevice.h>
 #include "radio_arbiter.h"   // ★★ 射频仲裁（BLE ↔ ESP-NOW 共存策略，见文件头那段）
 
+// ★★★★ 2026-09-29 凌晨：**建连超时**的编译期初值（0 = 用库默认的 30000ms）。
+//   实测（真头，台面）：**3000ms 连得上、30000ms 一次都连不上**，失败恒定 16~18ms。
+//   ⇒ 在机制查清之前，这个值就是"能不能连上"的开关 ⇒ 定义放在头里，
+//     因为运行期切换（串口 `t`）要用它当**初值**，而运行期那一份在成员变量里。
+//   ★ 现场用 `t` 切换即可，**不必重刷固件**；这里只是"开机时是哪一档"。
+#ifndef OBD_BLE_CONNECT_TIMEOUT_MS
+#define OBD_BLE_CONNECT_TIMEOUT_MS 0
+#endif
+
 // ============================================================================
 // ObdTransportBle —— 把 `ObdTransport` 接到一个 BLE OBD 诊断头上
 // ============================================================================
@@ -115,6 +124,42 @@ public:
   //     解除后按原来的退避节奏继续，不需要重启。
   void setInhibited(bool on) { inhibited_ = on; }
   bool inhibited() const { return inhibited_; }
+
+  // ★★★★ 2026-09-29 凌晨：**建连超时的运行期切换**（串口 `t`）。
+  //   为什么做成运行期：实测 **3000ms 连得上真头、30000ms（库默认）一次都连不上**，
+  //   而失败恒定 16~18ms ⇒ 机制未清，只知道"这个值说了算"。
+  //   ⇒ 机制清掉之前，唯一能回答"哪个值才对"的办法是**试**；
+  //     而车上绝不为每个候选刷一次机 ⇒ 敲一个字符换一档，屏前当场看 `state=ready`。
+  //   ★ 语义：只改**下一次发起建连**用的超时；**不动已经连上的连接**。
+  //     0 有特殊含义 = **回到库默认（30000ms）**，这样"默认那档"现场也能一键试到。
+  void setConnectTimeoutMs(uint32_t ms) {
+    connect_timeout_ms_ = ms;
+    if (client_ != nullptr) client_->setConnectTimeout(ms ? ms : 30000u);
+  }
+  // 轮换档位（`t` 每敲一下换下一档）。档位是**实测出来的分界两侧**：
+  //   · 3000 = 已知能连上的那一档（真头实测，150 秒零掉线）
+  //   · 30000 = 库默认、也是已知**完全连不上**的那一档（130 次全败）
+  //   · 1000 / 10000 = 分界两侧各补一档，用来把边界夹出来
+  //   ★ 顺序刻意把"能连的"与"不能连的"交错，免得看到一次成功就以为某档稳了。
+  //   ★★ 2026-09-29 凌晨**根因已找到**（见 .cpp 里 `setConnectTimeout` 那一段）：
+  //      原代码写的是 `setConnectTimeout(15)` 并**当成 15 秒**，而这个 API 收的是
+  //      **毫秒** ⇒ 真正的建连超时一直只有 **15ms** ⇒ 主机 15ms 就取消建连 ⇒
+  //      表现成"恒定 16~18ms 失败、`reason=13`"。这个轮换开关留着，
+  //      是因为它**当场量出**了 3000 能连 / 30000 不能连，是定位这根因的证据链之一。
+  uint32_t cycleConnectTimeoutMs() {
+    static const uint32_t kSteps[] = {3000u, 30000u, 1000u, 10000u};
+    ++ct_step_;
+    const uint32_t ms = kSteps[ct_step_ % (sizeof(kSteps) / sizeof(kSteps[0]))];
+    setConnectTimeoutMs(ms);
+    return ms;
+  }
+
+  // ★★ 建连超时的**当前生效值（毫秒）**。0 是"回库默认"的写法 ⇒ 对外报 30000。
+  //   为什么要这个函数：原代码那处 `setConnectTimeout(15)` 的**单位写错了**
+  //   （注释当秒、API 收毫秒）⇒ 日志里必须能一眼看到"这一档到底是多少毫秒"，
+  //   否则同样的错还会再犯一次。
+  uint32_t connectTimeoutMs() const { return connect_timeout_ms_ ? connect_timeout_ms_ : 30000u; }
+
   // "现在需要射频吗"：★ **扫到过对端** 且还没 ready。
   //   为什么要 `peer_valid_`：台面上根本没有诊断头时（peer 从没扫到），
   //   状态机也会一直在扫+退避重连 ⇒ 那种"忙"抢射频是**纯白抢**，会平白压低链路。
@@ -222,6 +267,10 @@ private:
   //     于是重扫后的**第一次**失败算出来的差值 = `millis()` 本身（虚高的假数）。
   //     有了编号就能一眼认出并丢掉那一条。
   uint32_t attempt_seq_ = 0;
+  // ★ 建连超时（运行期可切，串口 `t`）。0 = 库默认 30000ms。
+  //   初值由 `OBD_BLE_CONNECT_TIMEOUT_MS` 给（编译期那档），运行期可被 `t` 覆盖。
+  uint32_t connect_timeout_ms_ = (uint32_t)OBD_BLE_CONNECT_TIMEOUT_MS;
+  uint8_t  ct_step_ = 0;
   // ★★ 上一拍是否已就绪 —— 用来把 `connects_` 记成"**成功连上过几次**"而不是"每拍+1"。
   //   `ready()` 在连上期间每拍都成立，没有这个边沿判据 `connects_` 会涨到几百。
   bool     was_ready_ = false;
@@ -235,7 +284,13 @@ private:
   int      last_fail_reason_ = 0;
 
   // 停扫之后等多久才允许 connect。控制器收尾是几十毫秒量级，取 600ms = 10 倍余量。
-  static constexpr uint32_t kPostScanSettleMs = 600u;
+  // ★★★ 2026-09-29 凌晨：这个值可以用 `-DOBD_BLE_POST_SCAN_SETTLE_MS=N` 覆盖，
+  //   用来做"扫描与建连是否在控制器里重叠"的定点实验（见 platformio.ini 的注释）。
+  //   默认仍是 600ms —— 不改宏时行为与之前完全一致。
+#ifndef OBD_BLE_POST_SCAN_SETTLE_MS
+#define OBD_BLE_POST_SCAN_SETTLE_MS 600u
+#endif
+  static constexpr uint32_t kPostScanSettleMs = (uint32_t)OBD_BLE_POST_SCAN_SETTLE_MS;
   // ★★★ 2026-09-28：连败这么多次就**丢掉地址、重新扫**（地址新鲜度的补丁）。
   //   理由见 .cpp 里那段 —— `peer_addr_` 原本是开机扫一次就再也不刷新，
   //   换头/对端重启后地址一变，就变成拿过期地址盲撞（控制器当场拒、17ms 返回）。

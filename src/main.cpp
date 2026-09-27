@@ -1712,6 +1712,25 @@ static bool serial_cmd_handle(char c, char* line, uint8_t& len) {
 #else
       return false;
 #endif
+    case SerialCmd::ConnectTimeout:
+      // ★★★★ 2026-09-29 凌晨：**建连超时切档** —— 这条命令的来历值得记住：
+      //   实测 `setConnectTimeout(15)` 被当成 15 秒，而这个 API 收的是**毫秒**
+      //   ⇒ 真正的建连超时一直只有 **15ms** ⇒ 主机 15ms 就到点、自己取消建连
+      //   ⇒ 表现成"恒定 16~18ms 失败、`reason=13`、真头永远连不上"。
+      //   修好之后这一档仍有价值：现场若遇到连不上，敲 `t` 换档就能当场分辨
+      //   "是超时值不合适"还是"别的问题"，**不必重刷固件**。
+      //   ★ 与 `o` 同一口径：没装 BLE 的构建里返回 false，字节照旧走回放路径。
+#if defined(OBD_BLE) && (OBD_BLE == 1)
+      {
+        const uint32_t ms = g_obd_ble.cycleConnectTimeoutMs();
+        dash_logf("obd-ble: 建连超时 -> %ums（%s；生效于下一次发起建连，不影响已连上的连接）\n",
+                  (unsigned)ms,
+                  (ms == 30000u) ? "库默认" : "非默认档");
+      }
+      return true;
+#else
+      return false;
+#endif
     case SerialCmd::Inject:
       // ★★ 临时故障注入（**默认构建里恒为 false**，见下面那一段）。
       //   ★ 开了注入时，这里只**记下**"下一位是次数"，真正的动作在下一颗字节

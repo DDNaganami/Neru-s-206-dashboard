@@ -1,0 +1,494 @@
+206 dash ok
+boot: reason=UNKNOWN n=105 (raw=11) up=242ms | prev=UNKNOWN (raw=11) prev_up=100min | hb=22 | role=SLAVE
+usb: personality=ch343p(43/44 to the on-board bridge) (GPIO0 left alone -> FSUSB42 SEL follows R44/R45 (ch343p))
+--- 自检(上电)---
+chip  : ESP32-S3 rev2, 2 核 @ 240 MHz
+flash : 16 MB
+psram : 8189 KB 可用 / 8192 KB 总
+heap  : 166 KB
+image : 分区 8192 KB @ 0x254000(编译期口径 8192 KB)
+obd: BLE 那条路已挂上(目标服务 FFF0 / 通知 FFF1 / 写 FFF2) —— start() 推迟到显示初始化之后
+mute: 1 (loaded from NVS)
+alerts: 已就绪(超速 120 / 红区 5800 / 门 / 转向灯忘关 20s)
+van phy: gpio 就绪 RX=GPIO44(RO),空闲 70us 关帧,极性正常(VAN_RX_INVERT=0)
+theme: 已加载 (2579 字节, bg=0x141414, face=200)
+image: 已加载 11 张图 (3160800 字节数据)
+rgb: RGB565 480x480 pclk=12000000Hz 数据位=16 已就绪(第二块屏待接)
+rgb: 双framebuffer num_fbs=2 fb0=0x3c181320 fb1=0x3c1f1b40(各 450KB PSRAM) on_vsync=已注册
+rgb: bounce=10行/块(2块共18KB内部SRAM) on_frame_buf_complete=已注册 ⇒ 换帧在**帧边界**由驱动锁存(bb_fb_index=cur_fb_index);DMA 不读 PSRAM
+rgb: 刷新档=局部刷新(每30ms整屏失效一次;自动交替=0ms)——本行是"当前是全屏重绘还是局部刷新"的判据
+rgb: 两块fb收敛=空闲时间小碎步补拷上一次的脏区(每步8行,pend_step) ⇒ 局部刷新也不会跳回旧内容;换帧=帧边界锁存
+rgb: 编译期事实 LV_COLOR_DEPTH=16 lv_color_t=3B draw_buf=23040B 元素行=16 flush≤24行(每行960B);单笔>bounce 18KB 旧口径不成立
+rgb: 板=微雪 ESP32-S3-LCD-2.8C(非触控) ST7701 RST=EXIO1 CS=EXIO3 BL=GPIO6/PWM20000 @50%
+rgb: 双fb 之后 空闲 PSRAM=7287KB heap=144KB(内部)
+layout: role=SLAVE last=LEFT/rpm+coolant slots=[RIGHT/speed+intake | LEFT/rpm+coolant]
+faceimg: screen=0 group=1 panel=RIGHT/speed+intake gauge=speed idle_role=6
+faceimg: screen=1 group=0 panel=LEFT/rpm+coolant gauge=rpm idle_role=3
+206 dash boot
+obd-ble: 射频优先权 -> BALANCE(还给链路) (esp_coex=0)
+obd: BLE start() = 1  heap=82KB(面板之后)
+obd: heap_caps 内部 free 144→82 KB(掉 61) largest 91→41 KB | PSRAM free 7287→7287 KB(掉 0)
+obd: 从板角色 ⇒ 射频占用上限 4000ms（压久了左屏会掉进"数据不可信"）
+image ok: 11 张,数据 3160800 字节,镜像 8388608 字节
+alert: none (muted)
+rgb: 整屏刷新 138.1ms(块=20 拷贝20.8ms 数据450KB) 换帧在下一个帧边界由驱动锁存(bb_fb_index)
+trust: none (episodes=0)
+obd-ble: 射频优先权 -> BT(给建连让路,<=8s) (esp_coex=0)
+obd-ble: 扫到对端 aa:bb:cc:12:22:33 rssi=-83 地址类型 adv=0 obj=0（0=public 1=random 2=public-id 3=random-id）
+rgb: vsync=22(+22/s) wrap=22(+22/s) swap=9(+9/s) flush=37 blit_max=1157us step_max=128us copy_max=1157us copy_avg=615us swap_wait_max=8129us phase_max=15496us timeout=0 fb=1/0 catchup=8(+8/s 537KB/s forced507KB) refresh=32838/16552/49961us fullrb=1/s bounce=9MB/s 模式=局部刷新 psram=7287KB heap=81KB
+rgb: 脏区/s inv=249584px2(=一屏的 108.3%) flush=37/s(累计37) fmax=480x24(一屏的 5.0%) 单屏=230400px2
+206 dash ok  spd= 58% rpm= 69% coolant=85C face=high/sport | role=SLAVE last=LEFT/rpm+coolant
+alert: overspeed (muted)
+BEACON  1  step=7(loop: 数据已更新)  uptime=1s heap=81KB psram=8192KB flash=16MB
+obd-ble: → connectNow begin #1 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=1
+obd-ble: ← connect() 受理=1 立即返回耗时=0ms rssi=-83 内部free=81KB（★ 异步：结果看 onConnect / onConnectFail）
+boot anim done (收尾补一次 boot_apply: faceStage=1 → 表情 opa=COVER)
+espnow: ★PHY 未上线 stage=0 | ps=0 chan=0 init=0 | heap=81KB（0=没进begin 1=信道 2=esp_now_init 3=peer 9=成功）
+trust: sim-fallback  <-- 屏上出现数据不可信提示 muted (episodes=1)
+BEACON  2  step=7(loop: 数据已更新)  uptime=2s heap=81KB psram=8192KB flash=16MB
+obd-ble: onConnect ✓（异步连接完成，距发起 969ms，接着去拿特征）
+BEACON  3  step=8(loop: UI 已 tick)  uptime=3s heap=81KB psram=8192KB flash=16MB
+BEACON  4  step=8(loop: UI 已 tick)  uptime=4s heap=81KB psram=8192KB flash=16MB
+obd-ble: 特征已配齐（FFF1 已订阅 / FFF2 可写）⇒ state=ready
+loop: stalled 1600ms (n=10689 link rx bytes=0 crc=0 bad_len=0 noise=0) probe_took=2us prev=UNKNOWN
+espnow: bcast_peer=yes peers=1 (add=ok)
+espnow: sta_mac=90:70:69:ea:f6:b4 ch=6 rxring=1024 txring=256 ps=off
+link: 从板侧就绪(§5, LINK_ROLE=0) ESP-NOW ch=6 (no pins) @1000000—— 真 PHY(ESP-NOW) —— 收主板的 TICK/DATA，发 HELLO(每 5s 直到收到对端)+STATUS(2Hz,§3)
+link: 启动闸门开了 —— BLE 已连上(ready),等了 3749ms ⇒ 现在启链路 PHY(射频让出来了)
+rgb: vsync=166(+100/s) wrap=166(+99/s) swap=36(+7/s) flush=164 blit_max=1160us step_max=647us copy_max=1160us copy_avg=427us swap_wait_max=14104us phase_max=22726us timeout=0 fb=0/1 catchup=36(+8/s 944KB/s forced320KB) refresh=97988/62935/190278us fullrb=0/s bounce=43MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=187063px2(=一屏的 81.1%) flush=35/s(累计164) fmax=150x76(一屏的 4.9%) 单屏=230400px2
+206 dash ok  spd= 80% rpm= 97% coolant=87C face=redline/overspeed | role=SLAVE last=LEFT/rpm+coolant
+obd-ble: ★ 已就绪（第 1 次连上）
+alert: none (muted)
+obd-ble: 射频优先权 -> BALANCE(还给链路) (esp_coex=0)
+SRC speed=van rpm=van coolant=link intake=link | v=0.0km/h 896rpm 78.0C 25.0C
+SRC-Hz rpm=0.0 cool=0.0 intake=0.0 speed=0.0
+SRC-VAN turn=-- low=none pos=none door=idle vin=-
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=0ms seen=8 seq_gap=0 miss=0 offset=2842630ms
+vanraw: ok=26 bad=0 age=36ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+BEACON  5  step=6(loop: 刚开始一轮)  uptime=5s heap=28KB psram=8192KB flash=16MB
+trust: none (episodes=1)
+loop: n=22326 in 5020ms (4447/s) max=1600ms stall=1 | link rx bytes=1132 frames=69 | stage=1599us@render | txprobe=612568us | log drain=248 drop=0 dropped=0 blocked=22326 ring=5827/8192 hwm=5827
+BEACON  6  step=8(loop: UI 已 tick)  uptime=6s heap=28KB psram=8192KB flash=16MB
+rgb: vsync=253(+44/s) wrap=253(+43/s) swap=56(+10/s) flush=245 blit_max=1160us step_max=975us copy_max=1160us copy_avg=176us swap_wait_max=14104us phase_max=22726us timeout=0 fb=0/1 catchup=56(+10/s 220KB/s forced0KB) refresh=98624/79329/116437us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=28KB
+rgb: 脏区/s inv=72719px2(=一屏的 31.5%) flush=35/s(累计245) fmax=121x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=10 tx_bytes=208 tx_fail=0 last_err=0 done=10 done_fail=0 pending=0 txring=23 | rx_frames=98 rx_bytes=1455 rx_foreign=1 overflow=0 gap_rx=98ms
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0xb (SPI_FAST_FLASH_BOOT)
+Saved PC:0x4037f5fe
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce2820,len:0x10cc
+load:0x403c8700,len:0xc2c
+load:0x403cb700,len:0x30c0
+entry 0x403c88b8
+206 dash ok
+boot: reason=UNKNOWN n=106 (raw=11) up=242ms | prev=UNKNOWN (raw=11) prev_up=100min | hb=22 | role=SLAVE
+usb: personality=ch343p(43/44 to the on-board bridge) (GPIO0 left alone -> FSUSB42 SEL follows R44/R45 (ch343p))
+--- 自检(上电)---
+chip  : ESP32-S3 rev2, 2 核 @ 240 MHz
+flash : 16 MB
+psram : 8189 KB 可用 / 8192 KB 总
+heap  : 166 KB
+image : 分区 8192 KB @ 0x254000(编译期口径 8192 KB)
+obd: BLE 那条路已挂上(目标服务 FFF0 / 通知 FFF1 / 写 FFF2) —— start() 推迟到显示初始化之后
+mute: 1 (loaded from NVS)
+alerts: 已就绪(超速 120 / 红区 5800 / 门 / 转向灯忘关 20s)
+van phy: gpio 就绪 RX=GPIO44(RO),空闲 70us 关帧,极性正常(VAN_RX_INVERT=0)
+theme: 已加载 (2579 字节, bg=0x141414, face=200)
+image: 已加载 11 张图 (3160800 字节数据)
+rgb: RGB565 480x480 pclk=12000000Hz 数据位=16 已就绪(第二块屏待接)
+rgb: 双framebuffer num_fbs=2 fb0=0x3c181320 fb1=0x3c1f1b40(各 450KB PSRAM) on_vsync=已注册
+rgb: bounce=10行/块(2块共18KB内部SRAM) on_frame_buf_complete=已注册 ⇒ 换帧在**帧边界**由驱动锁存(bb_fb_index=cur_fb_index);DMA 不读 PSRAM
+rgb: 刷新档=局部刷新(每30ms整屏失效一次;自动交替=0ms)——本行是"当前是全屏重绘还是局部刷新"的判据
+rgb: 两块fb收敛=空闲时间小碎步补拷上一次的脏区(每步8行,pend_step) ⇒ 局部刷新也不会跳回旧内容;换帧=帧边界锁存
+rgb: 编译期事实 LV_COLOR_DEPTH=16 lv_color_t=3B draw_buf=23040B 元素行=16 flush≤24行(每行960B);单笔>bounce 18KB 旧口径不成立
+rgb: 板=微雪 ESP32-S3-LCD-2.8C(非触控) ST7701 RST=EXIO1 CS=EXIO3 BL=GPIO6/PWM20000 @50%
+rgb: 双fb 之后 空闲 PSRAM=7287KB heap=144KB(内部)
+layout: role=SLAVE last=LEFT/rpm+coolant slots=[RIGHT/speed+intake | LEFT/rpm+coolant]
+faceimg: screen=0 group=1 panel=RIGHT/speed+intake gauge=speed idle_role=6
+faceimg: screen=1 group=0 panel=LEFT/rpm+coolant gauge=rpm idle_role=3
+206 dash boot
+obd-ble: 射频优先权 -> BALANCE(还给链路) (esp_coex=0)
+obd: BLE start() = 1  heap=82KB(面板之后)
+obd: heap_caps 内部 free 144→82 KB(掉 61) largest 91→41 KB | PSRAM free 7287→7287 KB(掉 0)
+obd: 从板角色 ⇒ 射频占用上限 4000ms（压久了左屏会掉进"数据不可信"）
+image ok: 11 张,数据 3160800 字节,镜像 8388608 字节
+alert: none (muted)
+rgb: 整屏刷新 138.1ms(块=20 拷贝20.6ms 数据450KB) 换帧在下一个帧边界由驱动锁存(bb_fb_index)
+trust: none (episodes=0)
+rgb: vsync=22(+22/s) wrap=22(+22/s) swap=9(+9/s) flush=37 blit_max=1158us step_max=129us copy_max=1158us copy_avg=608us swap_wait_max=8120us phase_max=14927us timeout=0 fb=1/0 catchup=8(+8/s 537KB/s forced507KB) refresh=32824/16759/49845us fullrb=1/s bounce=9MB/s 模式=局部刷新 psram=7287KB heap=81KB
+rgb: 脏区/s inv=249584px2(=一屏的 108.3%) flush=37/s(累计37) fmax=480x24(一屏的 5.0%) 单屏=230400px2
+206 dash ok  spd= 58% rpm= 69% coolant=85C face=high/sport | role=SLAVE last=LEFT/rpm+coolant
+alert: overspeed (muted)
+BEACON  1  step=7(loop: 数据已更新)  uptime=1s heap=81KB psram=8192KB flash=16MB
+boot anim done (收尾补一次 boot_apply: faceStage=1 → 表情 opa=COVER)
+espnow: ★PHY 未上线 stage=0 | ps=0 chan=0 init=0 | heap=81KB（0=没进begin 1=信道 2=esp_now_init 3=peer 9=成功）
+trust: sim-fallback  <-- 屏上出现数据不可信提示 muted (episodes=1)
+BEACON  2  step=8(loop: UI 已 tick)  uptime=2s heap=81KB psram=8192KB flash=16MB
+rgb: vsync=108(+43/s) wrap=108(+43/s) swap=39(+10/s) flush=172 blit_max=1158us step_max=660us copy_max=1158us copy_avg=415us swap_wait_max=8120us phase_max=22783us timeout=0 fb=1/0 catchup=39(+11/s 1054KB/s forced295KB) refresh=94203/65525/189695us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7287KB heap=81KB
+rgb: 脏区/s inv=224939px2(=一屏的 97.6%) flush=46/s(累计172) fmax=149x77(一屏的 4.9%) 单屏=230400px2
+206 dash ok  spd= 73% rpm= 90% coolant=86C face=redline/overspeed | role=SLAVE last=LEFT/rpm+coolant
+BEACON  3  step=7(loop: 数据已更新)  uptime=3s heap=81KB psram=8192KB flash=16MB
+obd-ble: 扫到对端 aa:bb:cc:12:22:33 rssi=-76 地址类型 adv=0 obj=0（0=public 1=random 2=public-id 3=random-id）
+obd-ble: 射频优先权 -> BT(给建连让路,<=8s) (esp_coex=0)
+espnow: ★PHY 未上线 stage=0 | ps=0 chan=0 init=0 | heap=81KB（0=没进begin 1=信道 2=esp_now_init 3=peer 9=成功）
+BEACON  4  step=7(loop: 数据已更新)  uptime=4s heap=81KB psram=8192KB flash=16MB
+SRC speed=sim rpm=sim coolant=sim intake=sim | v=176.6km/h 6956rpm 87.0C 28.3C
+SRC-Hz rpm=0.0 cool=0.0 intake=0.0 speed=0.0
+SRC-VAN turn=-- low=none pos=none door=idle vin=-
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=overspeed beeps=0 muted | buzz safety=0
+link: sim tick_age=5000ms seen=0 seq_gap=0 miss=0 offset=0ms
+vanraw: ok=0 bad=0 age=0ms
+obd-ble: state=connecting peer=aa:bb:cc:12:22:33 conn=0 drop=0 connects=0 cs=0/0 radio=BT win=1 cap=0 fails=0 lastFail=0x00
+rgb: vsync=194(+43/s) wrap=195(+44/s) swap=59(+10/s) flush=249 blit_max=1158us step_max=660us copy_max=1158us copy_avg=303us swap_wait_max=8120us phase_max=22783us timeout=0 fb=1/0 catchup=59(+10/s 384KB/s forced0KB) refresh=100082/94464/111902us fullrb=0/s bounce=19MB/s 模式=局部刷新 psram=7287KB heap=81KB
+rgb: 脏区/s inv=139979px2(=一屏的 60.7%) flush=39/s(累计249) fmax=151x76(一屏的 4.9%) 单屏=230400px2
+206 dash ok  spd= 85% rpm=100% coolant=87C face=redline/overspeed | role=SLAVE last=LEFT/rpm+coolant
+BEACON  5  step=7(loop: 数据已更新)  uptime=5s heap=81KB psram=8192KB flash=16MB
+loop: n=47788 in 5000ms (9557/s) max=175ms stall=0 | link rx bytes=0 frames=0 | stage=174us@data | txprobe=612567us | log drain=5643 drop=0 dropped=0 blocked=27 ring=0/8192 hwm=2516
+obd-ble: → connectNow begin #1 (peer=aa:bb:cc:12:22:33 type=0)
+obd-ble:   pre: isConnected=0 pending=0 lastErr=0 connHandle=0x0000 attempts=1
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-76 内部free=81KB（★ 异步：结果看 onConnect / onConnectFail）
+espnow: ★PHY 未上线 stage=0 | ps=0 chan=0 init=0 | heap=81KB（0=没进begin 1=信道 2=esp_now_init 3=peer 9=成功）
+obd-ble: onConnect ✓（异步连接完成，距发起 350ms，接着去拿特征）
+BEACON  6  step=8(loop: UI 已 tick)  uptime=6s heap=81KB psram=8192KB flash=16MB
+BEACON  7  step=8(loop: UI 已 tick)  uptime=7s heap=81KB psram=8192KB flash=16MB
+obd-ble: 特征已配齐（FFF1 已订阅 / FFF2 可写）⇒ state=ready
+loop: stalled 1522ms (n=6481 link rx bytes=0 crc=0 bad_len=0 noise=0) probe_took=2us prev=UNKNOWN
+espnow: bcast_peer=yes peers=1 (add=ok)
+espnow: sta_mac=90:70:69:ea:f6:b4 ch=6 rxring=1024 txring=256 ps=off
+link: 从板侧就绪(§5, LINK_ROLE=0) ESP-NOW ch=6 (no pins) @1000000—— 真 PHY(ESP-NOW) —— 收主板的 TICK/DATA，发 HELLO(每 5s 直到收到对端)+STATUS(2Hz,§3)
+link: 启动闸门开了 —— BLE 已连上(ready),等了 6949ms ⇒ 现在启链路 PHY(射频让出来了)
+rgb: vsync=306(+68/s) wrap=306(+68/s) swap=70(+1/s) flush=286 blit_max=1158us step_max=660us copy_max=1158us copy_avg=257us swap_wait_max=8120us phase_max=23108us timeout=0 fb=0/1 catchup=69(+0/s 1KB/s forced0KB) refresh=119503/119503/119503us fullrb=0/s bounce=29MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=12368px2(=一屏的 5.3%) flush=4/s(累计286) fmax=149x77(一屏的 4.9%) 单屏=230400px2
+206 dash ok  spd= 95% rpm= 94% coolant=88C face=redline/overspeed | role=SLAVE last=LEFT/rpm+coolant
+espnow: peer=80:45:6b:35:a3:c4 learned
+obd-ble: ★ 已就绪（第 1 次连上）
+alert: none (muted)
+obd-ble: 射频优先权 -> BALANCE(还给链路) (esp_coex=0)
+BEACON  8  step=7(loop: 数据已更新)  uptime=8s heap=29KB psram=8192KB flash=16MB
+trust: none (episodes=1)
+BEACON  9  step=7(loop: 数据已更新)  uptime=9s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=392(+43/s) wrap=392(+43/s) swap=90(+10/s) flush=364 blit_max=1158us step_max=722us copy_max=1158us copy_avg=131us swap_wait_max=8120us phase_max=23108us timeout=0 fb=0/1 catchup=90(+10/s 141KB/s forced0KB) refresh=98541/87009/111607us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=39830px2(=一屏的 17.2%) flush=30/s(累计364) fmax=127x78(一屏的 4.2%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=17 tx_bytes=369 tx_fail=0 last_err=0 done=17 done_fail=0 pending=0 txring=23 | rx_frames=94 rx_bytes=1373 rx_foreign=1 overflow=0 gap_rx=2ms
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 908rpm 88.0C 63.0C
+SRC-Hz rpm=4.0 cool=0.0 intake=1.0 speed=0.0
+SRC-VAN turn=-- low=none pos=none door=idle vin=-
+SRC-VAN age lights=-ms door=-ms vin=-ms | src turn=none door=none vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=17ms seen=28 seq_gap=2 miss=6 offset=2849993ms
+vanraw: ok=46 bad=0 age=72ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+BEACON 10  step=7(loop: 数据已更新)  uptime=10s heap=29KB psram=8192KB flash=16MB
+loop: n=45883 in 5000ms (9176/s) max=1522ms stall=1 | link rx bytes=1737 frames=115 | stage=1490us@render | txprobe=20728us | log drain=9212 drop=0 dropped=0 blocked=41 ring=0/8192 hwm=2516
+BEACON 11  step=8(loop: UI 已 tick)  uptime=11s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=478(+43/s) wrap=478(+43/s) swap=110(+10/s) flush=413 blit_max=1158us step_max=722us copy_max=1158us copy_avg=97us swap_wait_max=8120us phase_max=23128us timeout=0 fb=0/1 catchup=110(+10/s 87KB/s forced0KB) refresh=100049/85866/109104us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=20137px2(=一屏的 8.7%) flush=22/s(累计413) fmax=127x78(一屏的 4.2%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=22 tx_bytes=473 tx_fail=0 last_err=0 done=22 done_fail=0 pending=0 txring=23 | rx_frames=151 rx_bytes=2194 rx_foreign=1 overflow=0 gap_rx=23ms
+BEACON 12  step=7(loop: 数据已更新)  uptime=12s heap=29KB psram=8192KB flash=16MB
+BEACON 13  step=6(loop: 刚开始一轮)  uptime=13s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=564(+43/s) wrap=564(+43/s) swap=130(+10/s) flush=459 blit_max=1158us step_max=722us copy_max=1158us copy_avg=110us swap_wait_max=8120us phase_max=23128us timeout=0 fb=0/1 catchup=130(+10/s 115KB/s forced0KB) refresh=99968/89419/112658us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=26756px2(=一屏的 11.6%) flush=25/s(累计459) fmax=127x78(一屏的 4.2%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=26 tx_bytes=565 tx_fail=0 last_err=0 done=26 done_fail=0 pending=0 txring=23 | rx_frames=216 rx_bytes=3138 rx_foreign=1 overflow=0 gap_rx=31ms
+BEACON 14  step=8(loop: UI 已 tick)  uptime=14s heap=29KB psram=8192KB flash=16MB
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 896rpm 88.0C 63.0C
+SRC-Hz rpm=6.0 cool=0.0 intake=0.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=1299ms door=-ms vin=-ms | src turn=none door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=18ms seen=78 seq_gap=2 miss=6 offset=2850006ms
+vanraw: ok=127 bad=0 age=105ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+BEACON 15  step=6(loop: 刚开始一轮)  uptime=15s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=650(+43/s) wrap=651(+44/s) swap=150(+10/s) flush=507 blit_max=1158us step_max=722us copy_max=1158us copy_avg=69us swap_wait_max=8120us phase_max=23128us timeout=0 fb=0/1 catchup=150(+10/s 88KB/s forced0KB) refresh=98676/88322/112292us fullrb=0/s bounce=19MB/s 模式=局部刷新 psram=7282KB heap=28KB
+rgb: 脏区/s inv=13755px2(=一屏的 5.9%) flush=24/s(累计507) fmax=70x39(一屏的 1.1%) 单屏=230400px2
+loop: n=78271 in 5000ms (15654/s) max=26ms stall=0 | link rx bytes=4120 frames=278 | stage=25us@data | txprobe=20574us | log drain=12128 drop=0 dropped=0 blocked=48 ring=0/8192 hwm=2516
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=30 tx_bytes=657 tx_fail=0 last_err=0 done=30 done_fail=0 pending=0 txring=23 | rx_frames=283 rx_bytes=4120 rx_foreign=1 overflow=0 gap_rx=34ms
+BEACON 16  step=8(loop: UI 已 tick)  uptime=16s heap=29KB psram=8192KB flash=16MB
+BEACON 17  step=8(loop: UI 已 tick)  uptime=17s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=737(+43/s) wrap=737(+43/s) swap=170(+10/s) flush=555 blit_max=1158us step_max=722us copy_max=1158us copy_avg=106us swap_wait_max=8120us phase_max=23128us timeout=0 fb=0/1 catchup=170(+10/s 104KB/s forced0KB) refresh=100521/88756/112054us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=27163px2(=一屏的 11.7%) flush=23/s(累计555) fmax=127x78(一屏的 4.2%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=35 tx_bytes=761 tx_fail=0 last_err=0 done=35 done_fail=0 pending=0 txring=23 | rx_frames=352 rx_bytes=5118 rx_foreign=1 overflow=0 gap_rx=34ms
+BEACON 18  step=6(loop: 刚开始一轮)  uptime=18s heap=29KB psram=8192KB flash=16MB
+BEACON 19  step=6(loop: 刚开始一轮)  uptime=19s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=823(+43/s) wrap=823(+43/s) swap=190(+10/s) flush=601 blit_max=1158us step_max=722us copy_max=1158us copy_avg=118us swap_wait_max=8120us phase_max=23128us timeout=0 fb=0/1 catchup=190(+10/s 100KB/s forced0KB) refresh=99994/88081/112459us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=26414px2(=一屏的 11.4%) flush=22/s(累计601) fmax=123x78(一屏的 4.1%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=39 tx_bytes=853 tx_fail=0 last_err=0 done=39 done_fail=0 pending=0 txring=23 | rx_frames=426 rx_bytes=6217 rx_foreign=1 overflow=0 gap_rx=13ms
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 901rpm 88.0C 64.0C
+SRC-Hz rpm=4.0 cool=0.0 intake=1.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=275ms door=-ms vin=-ms | src turn=van door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=18ms seen=128 seq_gap=2 miss=6 offset=2850019ms
+vanraw: ok=224 bad=0 age=22ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+BEACON 20  step=8(loop: UI 已 tick)  uptime=20s heap=29KB psram=8192KB flash=16MB
+loop: n=76701 in 5000ms (15340/s) max=21ms stall=0 | link rx bytes=6819 frames=461 | stage=20us@data | txprobe=20730us | log drain=14867 drop=0 dropped=0 blocked=55 ring=0/8192 hwm=2516
+BEACON 21  step=7(loop: 数据已更新)  uptime=21s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=909(+43/s) wrap=909(+43/s) swap=210(+10/s) flush=644 blit_max=1158us step_max=722us copy_max=1158us copy_avg=65us swap_wait_max=8120us phase_max=23128us timeout=0 fb=0/1 catchup=210(+10/s 78KB/s forced0KB) refresh=99992/94167/107702us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=11025px2(=一屏的 4.7%) flush=23/s(累计644) fmax=69x39(一屏的 1.1%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=86C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=44 tx_bytes=957 tx_fail=0 last_err=0 done=44 done_fail=0 pending=0 txring=23 | rx_frames=494 rx_bytes=7222 rx_foreign=1 overflow=0 gap_rx=34ms
+BEACON 22  step=6(loop: 刚开始一轮)  uptime=22s heap=29KB psram=8192KB flash=16MB
+BEACON 23  step=6(loop: 刚开始一轮)  uptime=23s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=995(+43/s) wrap=995(+43/s) swap=230(+10/s) flush=693 blit_max=1158us step_max=722us copy_max=1158us copy_avg=72us swap_wait_max=8120us phase_max=23128us timeout=0 fb=0/1 catchup=230(+10/s 92KB/s forced0KB) refresh=99975/88138/112766us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=14153px2(=一屏的 6.1%) flush=25/s(累计693) fmax=69x39(一屏的 1.1%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=48 tx_bytes=1049 tx_fail=0 last_err=0 done=48 done_fail=0 pending=0 txring=23 | rx_frames=569 rx_bytes=8346 rx_foreign=1 overflow=0 gap_rx=34ms
+BEACON 24  step=6(loop: 刚开始一轮)  uptime=24s heap=29KB psram=8192KB flash=16MB
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 898rpm 88.0C 63.0C
+SRC-Hz rpm=5.0 cool=0.0 intake=1.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=1063ms door=-ms vin=-ms | src turn=none door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=18ms seen=178 seq_gap=2 miss=6 offset=2850019ms
+vanraw: ok=315 bad=0 age=25ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+BEACON 25  step=6(loop: 刚开始一轮)  uptime=25s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=1082(+44/s) wrap=1082(+44/s) swap=250(+10/s) flush=736 blit_max=1158us step_max=722us copy_max=1158us copy_avg=87us swap_wait_max=8120us phase_max=23128us timeout=0 fb=0/1 catchup=250(+10/s 80KB/s forced0KB) refresh=98796/87249/113077us fullrb=0/s bounce=19MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=16898px2(=一屏的 7.3%) flush=21/s(累计736) fmax=121x78(一屏的 4.0%) 单屏=230400px2
+loop: n=77445 in 5000ms (15489/s) max=22ms stall=0 | link rx bytes=9352 frames=633 | stage=21us@data | txprobe=20164us | log drain=17785 drop=0 dropped=0 blocked=62 ring=0/8192 hwm=2516
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=52 tx_bytes=1141 tx_fail=0 last_err=0 done=52 done_fail=0 pending=0 txring=23 | rx_frames=638 rx_bytes=9352 rx_foreign=1 overflow=0 gap_rx=34ms
+BEACON 26  step=7(loop: 数据已更新)  uptime=26s heap=29KB psram=8192KB flash=16MB
+BEACON 27  step=7(loop: 数据已更新)  uptime=27s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=1168(+43/s) wrap=1168(+43/s) swap=270(+10/s) flush=794 blit_max=1158us step_max=722us copy_max=1158us copy_avg=98us swap_wait_max=8120us phase_max=23190us timeout=0 fb=0/1 catchup=270(+10/s 138KB/s forced0KB) refresh=98755/86299/120003us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=28KB
+rgb: 脏区/s inv=28191px2(=一屏的 12.2%) flush=31/s(累计794) fmax=144x78(一屏的 4.8%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 20% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=57 tx_bytes=1245 tx_fail=0 last_err=0 done=57 done_fail=0 pending=0 txring=23 | rx_frames=696 rx_bytes=10232 rx_foreign=1 overflow=0 gap_rx=34ms
+BEACON 28  step=7(loop: 数据已更新)  uptime=28s heap=29KB psram=8192KB flash=16MB
+BEACON 29  step=8(loop: UI 已 tick)  uptime=29s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=1254(+43/s) wrap=1254(+43/s) swap=290(+10/s) flush=845 blit_max=1158us step_max=722us copy_max=1158us copy_avg=107us swap_wait_max=8120us phase_max=23190us timeout=0 fb=0/1 catchup=290(+10/s 110KB/s forced0KB) refresh=99546/88582/114044us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=28KB
+rgb: 脏区/s inv=24934px2(=一屏的 10.8%) flush=25/s(累计845) fmax=126x78(一屏的 4.2%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=61 tx_bytes=1337 tx_fail=0 last_err=0 done=61 done_fail=0 pending=0 txring=23 | rx_frames=745 rx_bytes=10946 rx_foreign=1 overflow=0 gap_rx=34ms
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 891rpm 87.0C 63.0C
+SRC-Hz rpm=3.0 cool=1.0 intake=1.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=2045ms door=-ms vin=-ms | src turn=none door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=18ms seen=228 seq_gap=2 miss=6 offset=2850019ms
+vanraw: ok=384 bad=0 age=54ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+BEACON 30  step=8(loop: UI 已 tick)  uptime=30s heap=29KB psram=8192KB flash=16MB
+loop: n=74212 in 5000ms (14842/s) max=28ms stall=0 | link rx bytes=11462 frames=776 | stage=27us@data | txprobe=20601us | log drain=20537 drop=0 dropped=0 blocked=69 ring=0/8192 hwm=2516
+BEACON 31  step=6(loop: 刚开始一轮)  uptime=31s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=1340(+43/s) wrap=1340(+43/s) swap=310(+10/s) flush=890 blit_max=1158us step_max=722us copy_max=1158us copy_avg=91us swap_wait_max=8120us phase_max=23190us timeout=0 fb=0/1 catchup=310(+10/s 82KB/s forced0KB) refresh=100017/87604/112843us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=18503px2(=一屏的 8.0%) flush=21/s(累计890) fmax=120x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=66 tx_bytes=1441 tx_fail=0 last_err=0 done=66 done_fail=0 pending=0 txring=23 | rx_frames=822 rx_bytes=12059 rx_foreign=1 overflow=0 gap_rx=13ms
+BEACON 32  step=7(loop: 数据已更新)  uptime=32s heap=29KB psram=8192KB flash=16MB
+BEACON 33  step=8(loop: UI 已 tick)  uptime=33s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=1426(+43/s) wrap=1426(+43/s) swap=330(+10/s) flush=947 blit_max=1260us step_max=722us copy_max=1260us copy_avg=446us swap_wait_max=8120us phase_max=23190us timeout=0 fb=0/1 catchup=330(+10/s 428KB/s forced0KB) refresh=103447/54942/206083us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=28KB
+rgb: 脏区/s inv=172068px2(=一屏的 74.6%) flush=35/s(累计947) fmax=300x38(一屏的 4.9%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 39% coolant=88C face=cruise/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=70 tx_bytes=1533 tx_fail=0 last_err=0 done=70 done_fail=0 pending=0 txring=23 | rx_frames=903 rx_bytes=13277 rx_foreign=1 overflow=0 gap_rx=25ms
+BEACON 34  step=7(loop: 数据已更新)  uptime=34s heap=28KB psram=8192KB flash=16MB
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 1496rpm 87.0C 62.0C
+SRC-Hz rpm=2.0 cool=1.0 intake=0.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=1766ms door=-ms vin=-ms | src turn=none door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=18ms seen=278 seq_gap=2 miss=6 offset=2849974ms
+vanraw: ok=489 bad=0 age=25ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+BEACON 35  step=7(loop: 数据已更新)  uptime=35s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=1513(+44/s) wrap=1513(+44/s) swap=350(+10/s) flush=993 blit_max=1260us step_max=722us copy_max=1260us copy_avg=187us swap_wait_max=8120us phase_max=23190us timeout=0 fb=0/1 catchup=350(+10/s 149KB/s forced0KB) refresh=99974/87139/113404us fullrb=0/s bounce=19MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=47836px2(=一屏的 20.7%) flush=23/s(累计993) fmax=139x78(一屏的 4.7%) 单屏=230400px2
+loop: n=72525 in 5000ms (14505/s) max=116ms stall=0 | link rx bytes=14381 frames=972 | stage=115us@data | txprobe=20441us | log drain=23473 drop=0 dropped=0 blocked=76 ring=0/8192 hwm=2516
+206 dash ok  spd=  0% rpm= 21% coolant=87C face=cruise/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=74 tx_bytes=1625 tx_fail=0 last_err=0 done=74 done_fail=0 pending=0 txring=23 | rx_frames=978 rx_bytes=14399 rx_foreign=1 overflow=0 gap_rx=19ms
+BEACON 36  step=7(loop: 数据已更新)  uptime=36s heap=29KB psram=8192KB flash=16MB
+BEACON 37  step=6(loop: 刚开始一轮)  uptime=37s heap=29KB psram=8192KB flash=16MB
+rgb: vsync=1602(+44/s) wrap=1602(+43/s) swap=370(+10/s) flush=1062 blit_max=1399us step_max=722us copy_max=1399us copy_avg=413us swap_wait_max=8120us phase_max=23190us timeout=0 fb=0/1 catchup=370(+11/s 619KB/s forced132KB) refresh=92463/44898/197688us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29Krgb: 脏区/s inv=153962px2(=一屏的 66.8%) flush=34/s(累计1062) fmax=300x38(一屏的 4.9%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 68% coolant=88C face=high/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=79 tx_bytes=1729 tx_fail=0 last_err=0 done=79 done_fail=0 pending=0 txring=23 | rx_frames=1056 rx_bytes=15556 rx_foreign=1 overflow=0 gap_rx=80ms
+BEACON 38  step=6(loop: 刚开始一轮)  uptime=38s heap=29KB psram=8192KB flash=16MB
+BEACON 39  step=7(loop: 数据已更新)  uptime=39s heap=28KB psram=8192KB flash=16MB
+rgb: vsync=1688(+43/s) wrap=1688(+43/s) swap=390(+10/s) flush=1124 blit_max=1399us step_max=722us copy_max=1399us copy_avg=344us swap_wait_max=8120us phase_max=23190us timeout=0 fb=0/1 catchup=390(+10/s 319KB/s forced0KB) refresh=99993/44288/200653us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=121508px2(=一屏的 52.7%) flush=32/s(累计1124) fmax=300x38(一屏的 4.9%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 65% coolant=88C face=sport/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=83 tx_bytes=1821 tx_fail=0 last_err=0 done=83 done_fail=0 pending=0 txring=23 | rx_frames=1125 rx_bytes=16573 rx_foreign=1 overflow=0 gap_rx=11ms
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 5355rpm 88.0C 66.0C
+SRC-Hz rpm=2.0 cool=2.0 intake=1.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=6877ms door=-ms vin=-ms | src turn=none door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=0ms seen=329 seq_gap=2 miss=6 offset=2849918ms
+vanraw: ok=579 bad=0 age=152ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+BEACON 40  step=7(loop: 数据已更新)  uptime=40s heap=29KB psram=8192KB flash=16MB
+loop: n=61663 in 5000ms (12332/s) max=117ms stall=0 | link rx bytes=16890 frames=1143 | stage=117us@data | txprobe=20027us | log drain=26250 drop=0 dropped=0 blocked=82 ring=0/8192 hwm=2516
+rgb: vsync=1774(+43/s) wrap=1774(+43/s) swap=409(+9/s) flush=1195 blit_max=1399us step_max=816us copy_max=1399us copy_avg=573us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=408(+8/s 328KB/s forced82KB) refresh=115059/47940/213941us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=243016px2(=一屏的 105.4%) flush=38/s(累计1195) fmax=147x78(一屏的 4.9%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 31% coolant=88C face=cruise/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=88 tx_bytes=1925 tx_fail=0 last_err=0 done=88 done_fail=0 pending=0 txring=23 | rx_frames=1185 rx_bytes=17425 rx_foreign=1 overflow=0 gap_rx=75ms
+rgb: vsync=1861(+44/s) wrap=1861(+43/s) swap=429(+10/s) flush=1248 blit_max=1404us step_max=816us copy_max=1404us copy_avg=434us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=429(+10/s 347KB/s forced14KB) refresh=101733/45225/205689us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29Krgb: 脏区/s inv=147016px2(=一屏的 63.8%) flush=31/s(累计1248) fmax=300x38(一屏的 4.9%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=92 tx_bytes=2017 tx_fail=0 last_err=0 done=92 done_fail=0 pending=0 txring=23 | rx_frames=1255 rx_bytes=18467 rx_foreign=1 overflow=0 gap_rx=24ms
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 891rpm 88.0C 64.0C
+SRC-Hz rpm=4.0 cool=2.0 intake=1.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=1499ms door=-ms vin=-ms | src turn=none door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=21ms seen=379 seq_gap=2 miss=6 offset=2849930ms
+vanraw: ok=666 bad=0 age=11ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+loop: n=67086 in 5000ms (13417/s) max=126ms stall=0 | link rx bytes=19323 frames=1308 | stage=125us@data | txprobe=20339us | log drain=28336 drop=0 dropped=0 blocked=88 ring=0/8192 hwm=2516
+rgb: vsync=1947(+43/s) wrap=1947(+43/s) swap=449(+10/s) flush=1293 blit_max=1404us step_max=816us copy_max=1404us copy_avg=95us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=449(+10/s 84KB/s forced0KB) refresh=100000/90196/110037us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=19882px2(=一屏的 8.6%) flush=21/s(累计1293) fmax=120x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=96 tx_bytes=2109 tx_fail=0 last_err=0 done=96 done_fail=0 pending=0 txring=23 | rx_frames=1318 rx_bytes=19404 rx_foreign=1 overflow=0 gap_rx=2ms
+rgb: vsync=2033(+43/s) wrap=2033(+43/s) swap=469(+10/s) flush=1338 blit_max=1404us step_max=816us copy_max=1404us copy_avg=118us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=469(+10/s 110KB/s forced0KB) refresh=100643/87095/113176us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KBrgb: 脏区/s inv=28949px2(=一屏的 12.5%) flush=23/s(累计1338) fmax=121x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=101 tx_bytes=2213 tx_fail=0 last_err=0 done=101 done_fail=0 pending=0 txring=23 | rx_frames=1394 rx_bytes=20537 rx_foreign=1 overflow=0 gap_rx=34ms
+rgb: vsync=2119(+43/s) wrap=2119(+43/s) swap=489(+10/s) flush=1380 blit_max=1404us step_max=816us copy_max=1404us copy_avg=65us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=489(+10/s 70KB/s forced0KB) refresh=100538/98270/105635us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=10151px2(=一屏的 4.4%) flush=21/s(累计1380) fmax=69x39(一屏的 1.1%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=105 tx_bytes=2305 tx_fail=0 last_err=0 done=105 done_fail=0 pending=0 txring=23 | rx_frames=1473 rx_bytes=21732 rx_foreign=1 overflow=0 gap_rx=0ms
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 884rpm 88.0C 66.0C
+SRC-Hz rpm=4.0 cool=2.0 intake=0.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=73ms door=-ms vin=-ms | src turn=van door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=22ms seen=429 seq_gap=2 miss=6 offset=2850002ms
+vanraw: ok=767 bad=0 age=32ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+loop: n=76477 in 5008ms (15270/s) max=22ms stall=0 | link rx bytes=22273 frames=1504 | stage=21us@data | txprobe=20391us | log drain=31100 drop=0 dropped=0 blocked=97 ring=0/8192 hwm=2516
+rgb: vsync=2205(+43/s) wrap=2206(+44/s) swap=509(+10/s) flush=1425 blit_max=1404us step_max=816us copy_max=1404us copy_avg=71us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=509(+10/s 80KB/s forced0KB) refresh=98953/87115/102810us fullrb=0/s bounce=19MB/s 模式=局部刷新 psram=7282KB heap=28KB
+rgb: 脏区/s inv=12842px2(=一屏的 5.5%) flush=22/s(累计1425) fmax=69x39(一屏的 1.1%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=110 tx_bytes=2409 tx_fail=0 last_err=0 done=110 done_fail=0 pending=0 txring=23 | rx_frames=1554 rx_bytes=22942 rx_foreign=1 overflow=0 gap_rx=1ms
+rgb: vsync=2292(+43/s) wrap=2292(+43/s) swap=529(+10/s) flush=1467 blit_max=1404us step_max=816us copy_max=1404us copy_avg=83us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=529(+10/s 80KB/s forced0KB) refresh=100135/88098/110416us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=16820px2(=一屏的 7.3%) flush=21/s(累计1467) fmax=120x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=114 tx_bytes=2501 tx_fail=0 last_err=0 done=114 done_fail=0 pending=0 txring=23 | rx_frames=1613 rx_bytes=23802 rx_foreign=1 overflow=0 gap_rx=39ms
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 894rpm 88.0C 64.0C
+SRC-Hz rpm=4.0 cool=0.0 intake=1.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=1060ms door=-ms vin=-ms | src turn=none door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=10ms seen=479 seq_gap=2 miss=6 offset=2850001ms
+vanraw: ok=853 bad=0 age=53ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+loop: n=76726 in 5000ms (15345/s) max=22ms stall=0 | link rx bytes=24727 frames=1671 | stage=21us@data | txprobe=20390us | log drain=33176 drop=0 dropped=0 blocked=102 ring=0/8192 hwm=2516
+rgb: vsync=2378(+43/s) wrap=2378(+43/s) swap=549(+10/s) flush=1510 blit_max=1404us step_max=816us copy_max=1404us copy_avg=112us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=549(+10/s 100KB/s forced0KB) refresh=98704/86885/114022us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=26258px2(=一屏的 11.3%) flush=22/s(累计1510) fmax=121x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=118 tx_bytes=2593 tx_fail=0 last_err=0 done=118 done_fail=0 pending=0 txring=23 | rx_frames=1684 rx_bytes=24857 rx_foreign=1 overflow=0 gap_rx=0ms
+rgb: vsync=2464(+43/s) wrap=2464(+43/s) swap=569(+10/s) flush=1562 blit_max=1404us step_max=816us copy_max=1404us copy_avg=69us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=569(+10/s 96KB/s forced0KB) refresh=100125/88353/109213us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=28KB
+rgb: 脏区/s inv=14716px2(=一屏的 6.3%) flush=26/s(累计1562) fmax=72x39(一屏的 1.2%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=123 tx_bytes=2697 tx_fail=0 last_err=0 done=123 done_fail=0 pending=0 txring=23 | rx_frames=1743 rx_bytes=25726 rx_foreign=1 overflow=0 gap_rx=8ms
+rgb: vsync=2550(+43/s) wrap=2550(+43/s) swap=589(+10/s) flush=1605 blit_max=1404us step_max=816us copy_max=1404us copy_avg=111us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=589(+10/s 100KB/s forced0KB) refresh=100057/85987/114065us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KBrgb: 脏区/s inv=26258px2(=一屏的 11.3%) flush=22/s(累计1605) fmax=121x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=127 tx_bytes=2789 tx_fail=0 last_err=0 done=127 done_fail=0 pending=0 txring=23 | rx_frames=1799 rx_bytes=26540 rx_foreign=1 overflow=0 gap_rx=17ms
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 888rpm 88.0C 64.0C
+SRC-Hz rpm=5.0 cool=0.0 intake=1.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=1016ms door=-ms vin=-ms | src turn=none door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=24ms seen=529 seq_gap=2 miss=6 offset=2850002ms
+vanraw: ok=932 bad=0 age=36ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+loop: n=76665 in 5000ms (15333/s) max=35ms stall=0 | link rx bytes=26935 frames=1821 | stage=33us@data | txprobe=20484us | log drain=35946 drop=0 dropped=0 blocked=110 ring=0/8192 hwm=2516
+rgb: vsync=2637(+44/s) wrap=2637(+44/s) swap=609(+10/s) flush=1647 blit_max=1404us step_max=816us copy_max=1404us copy_avg=119us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=609(+10/s 100KB/s forced0KB) refresh=100003/85730/114028us fullrb=0/s bounce=19MB/s 模式=局部刷新 psram=7282KB heap=28KBrgb: 脏区/s inv=26258px2(=一屏的 11.3%) flush=22/s(累计1647) fmax=121x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=132 tx_bytes=2893 tx_fail=0 last_err=0 done=132 done_fail=0 pending=0 txring=23 | rx_frames=1869 rx_bytes=27583 rx_foreign=1 overflow=0 gap_rx=12ms
+rgb: vsync=2723(+43/s) wrap=2723(+43/s) swap=629(+10/s) flush=1694 blit_max=1404us step_max=816us copy_max=1404us copy_avg=95us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=629(+10/s 100KB/s forced0KB) refresh=100666/87045/111535us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=28KB
+rgb: 脏区/s inv=22202px2(=一屏的 9.6%) flush=23/s(累计1694) fmax=120x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=136 tx_bytes=2985 tx_fail=0 last_err=0 done=136 done_fail=0 pending=0 txring=23 | rx_frames=1945 rx_bytes=28729 rx_foreign=1 overflow=0 gap_rx=15ms
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 903rpm 86.0C 64.0C
+SRC-Hz rpm=4.0 cool=0.0 intake=1.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=412ms door=-ms vin=-ms | src turn=van door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=23ms seen=579 seq_gap=2 miss=6 offset=2850004ms
+vanraw: ok=1019 bad=0 age=37ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+loop: n=76215 in 5000ms (15243/s) max=23ms stall=0 | link rx bytes=29495 frames=1992 | stage=22us@data | txprobe=21020us | log drain=38028 drop=0 dropped=0 blocked=116 ring=0/8192 hwm=2516
+rgb: vsync=2809(+43/s) wrap=2809(+43/s) swap=649(+10/s) flush=1740 blit_max=1404us step_max=816us copy_max=1404us copy_avg=126us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=649(+10/s 124KB/s forced0KB) refresh=99938/86598/114403us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=32545px2(=一屏的 14.1%) flush=25/s(累计1740) fmax=127x78(一屏的 4.2%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=89C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=140 tx_bytes=3077 tx_fail=0 last_err=0 done=140 done_fail=0 pending=0 txring=23 | rx_frames=2004 rx_bytes=29600 rx_foreign=1 overflow=0 gap_rx=96ms
+rgb: vsync=2895(+43/s) wrap=2895(+43/s) swap=669(+10/s) flush=1788 blit_max=1404us step_max=816us copy_max=1404us copy_avg=142us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=669(+10/s 140KB/s forced0KB) refresh=98800/89404/113818us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=41875px2(=一屏的 18.1%) flush=25/s(累计1788) fmax=140x78(一屏的 4.7%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=88C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=145 tx_bytes=3181 tx_fail=0 last_err=0 done=145 done_fail=0 pending=0 txring=23 | rx_frames=2071 rx_bytes=30560 rx_foreign=1 overflow=0 gap_rx=23ms
+rgb: vsync=2981(+43/s) wrap=2981(+43/s) swap=689(+10/s) flush=1835 blit_max=1404us step_max=816us copy_max=1404us copy_avg=88us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=689(+10/s 90KB/s forced0KB) refresh=100498/89881/113285us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=19510px2(=一屏的 8.4%) flush=23/s(累计1835) fmax=120x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=89C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=149 tx_bytes=3273 tx_fail=0 last_err=0 done=149 done_fail=0 pending=0 txring=23 | rx_frames=2142 rx_bytes=31606 rx_foreign=1 overflow=0 gap_rx=27ms
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 894rpm 89.0C 64.0C
+SRC-Hz rpm=4.0 cool=0.0 intake=1.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=4205ms door=-ms vin=-ms | src turn=none door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=10ms seen=629 seq_gap=2 miss=6 offset=2850007ms
+vanraw: ok=1103 bad=0 age=10ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+loop: n=74283 in 5000ms (14856/s) max=25ms stall=0 | link rx bytes=32010 frames=2165 | stage=24us@data | txprobe=20551us | log drain=40802 drop=0 dropped=0 blocked=124 ring=0/8192 hwm=2516
+rgb: vsync=3068(+44/s) wrap=3068(+43/s) swap=709(+10/s) flush=1884 blit_max=1404us step_max=816us copy_max=1404us copy_avg=72us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=709(+10/s 84KB/s forced0KB) refresh=100008/87948/113664us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=17335px2(=一屏的 7.5%) flush=22/s(累计1884) fmax=121x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=89C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=154 tx_bytes=3377 tx_fail=0 last_err=0 done=154 done_fail=0 pending=0 txring=23 | rx_frames=2202 rx_bytes=32482 rx_foreign=1 overflow=0 gap_rx=96ms
+rgb: vsync=3154(+43/s) wrap=3154(+43/s) swap=729(+10/s) flush=1930 blit_max=1404us step_max=816us copy_max=1404us copy_avg=107us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=729(+10/s 104KB/s forced0KB) refresh=99979/88319/112410us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=26695px2(=一屏的 11.5%) flush=23/s(累计1930) fmax=121x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=89C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=158 tx_bytes=3469 tx_fail=0 last_err=0 done=158 done_fail=0 pending=0 txring=23 | rx_frames=2265 rx_bytes=33413 rx_foreign=1 overflow=0 gap_rx=19ms
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 892rpm 89.0C 64.0C
+SRC-Hz rpm=2.0 cool=2.0 intake=1.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=159ms door=-ms vin=-ms | src turn=van door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=23ms seen=679 seq_gap=2 miss=6 offset=2850007ms
+vanraw: ok=1181 bad=0 age=95ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+loop: n=76837 in 5000ms (15367/s) max=22ms stall=0 | link rx bytes=34221 frames=2315 | stage=21us@data | txprobe=20513us | log drain=42883 drop=0 dropped=0 blocked=130 ring=0/8192 hwm=2516
+rgb: vsync=3240(+43/s) wrap=3240(+43/s) swap=749(+10/s) flush=1975 blit_max=1404us step_max=816us copy_max=1404us copy_avg=83us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=749(+10/s 80KB/s forced0KB) refresh=99435/86573/112130us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=28KB
+rgb: 脏区/s inv=16820px2(=一屏的 7.3%) flush=21/s(累计1975) fmax=120x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=89C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=162 tx_bytes=3561 tx_fail=0 last_err=0 done=162 done_fail=0 pending=0 txring=23 | rx_frames=2326 rx_bytes=34311 rx_foreign=1 overflow=0 gap_rx=33ms
+rgb: vsync=3326(+43/s) wrap=3326(+43/s) swap=769(+10/s) flush=2027 blit_max=1404us step_max=816us copy_max=1404us copy_avg=147us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=769(+10/s 144KB/s forced0KB) refresh=99967/86425/114737us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=41437px2(=一屏的 17.9%) flush=26/s(累计2027) fmax=121x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=89C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=167 tx_bytes=3665 tx_fail=0 last_err=0 done=167 done_fail=0 pending=0 txring=23 | rx_frames=2400 rx_bytes=35437 rx_foreign=1 overflow=0 gap_rx=3ms
+rgb: vsync=3412(+43/s) wrap=3412(+43/s) swap=789(+10/s) flush=2072 blit_max=1404us step_max=816us copy_max=1404us copy_avg=73us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=789(+10/s 84KB/s forced0KB) refresh=99968/88721/113232us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=13279px2(=一屏的 5.7%) flush=23/s(累计2072) fmax=69x39(一屏的 1.1%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=89C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=171 tx_bytes=3757 tx_fail=0 last_err=0 done=171 done_fail=0 pending=0 txring=23 | rx_frames=2458 rx_bytes=36252 rx_foreign=1 overflow=0 gap_rx=5ms
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 894rpm 89.0C 64.0C
+SRC-Hz rpm=3.0 cool=2.0 intake=0.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=3958ms door=-ms vin=-ms | src turn=none door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=10ms seen=729 seq_gap=2 miss=6 offset=2850007ms
+vanraw: ok=1265 bad=0 age=55ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+loop: n=75496 in 5000ms (15099/s) max=23ms stall=0 | link rx bytes=36643 frames=2480 | stage=22us@data | txprobe=20578us | log drain=45650 drop=0 dropped=0 blocked=142 ring=0/8192 hwm=2516
+rgb: vsync=3499(+43/s) wrap=3499(+43/s) swap=809(+10/s) flush=2119 blit_max=1404us step_max=816us copy_max=1404us copy_avg=68us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=809(+10/s 88KB/s forced0KB) refresh=99476/88606/110327us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=13716px2(=一屏的 5.9%) flush=24/s(累计2119) fmax=69x39(一屏的 1.1%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=89C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=176 tx_bytes=3861 tx_fail=0 last_err=0 done=176 done_fail=0 pending=0 txring=23 | rx_frames=2529 rx_bytes=37298 rx_foreign=1 overflow=0 gap_rx=36ms
+rgb: vsync=3585(+43/s) wrap=3585(+43/s) swap=829(+10/s) flush=2163 blit_max=1404us step_max=816us copy_max=1404us copy_avg=74us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=829(+10/s 88KB/s forced0KB) refresh=100012/93415/111175us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=13716px2(=一屏的 5.9%) flush=24/s(累计2163) fmax=69x39(一屏的 1.1%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=89C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=180 tx_bytes=3953 tx_fail=0 last_err=0 done=180 done_fail=0 pending=0 txring=23 | rx_frames=2598 rx_bytes=38308 rx_foreign=1 overflow=0 gap_rx=0ms
+SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 897rpm 89.0C 63.0C
+SRC-Hz rpm=2.0 cool=2.0 intake=0.0 speed=0.0
+SRC-VAN turn=-- low=van pos=van door=idle vin=-
+SRC-VAN age lights=137ms door=-ms vin=-ms | src turn=van door=van vin=none | alert=none beeps=0 muted | buzz safety=0
+link: locked tick_age=14ms seen=779 seq_gap=2 miss=6 offset=2850001ms
+vanraw: ok=1358 bad=0 age=16ms
+obd-ble: state=ready peer=aa:bb:cc:12:22:33 conn=1 drop=0 connects=1 cs=1/1 radio=balance win=1 cap=1 fails=0 lastFail=0x00
+loop: n=76515 in 5001ms (15299/s) max=22ms stall=0 | link rx bytes=39238 frames=2656 | stage=21us@data | txprobe=20555us | log drain=47725 drop=0 dropped=0 blocked=148 ring=0/8192 hwm=2516
+rgb: vsync=3671(+43/s) wrap=3671(+43/s) swap=849(+10/s) flush=2210 blit_max=1404us step_max=816us copy_max=1404us copy_avg=70us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=849(+10/s 84KB/s forced0KB) refresh=101321/92253/113050us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=17257px2(=一屏的 7.4%) flush=22/s(累计2210) fmax=120x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=89C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=184 tx_bytes=4045 tx_fail=0 last_err=0 done=184 done_fail=0 pending=0 txring=23 | rx_frames=2669 rx_bytes=39359 rx_foreign=1 overflow=0 gap_rx=19ms
+rgb: vsync=3757(+43/s) wrap=3757(+43/s) swap=869(+10/s) flush=2253 blit_max=1404us step_max=816us copy_max=1404us copy_avg=91us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=869(+10/s 80KB/s forced0KB) refresh=101265/96318/113109us fullrb=0/s bounce=18MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=16898px2(=一屏的 7.3%) flush=21/s(累计2253) fmax=121x78(一屏的 4.0%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=87C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=189 tx_bytes=4149 tx_fail=0 last_err=0 done=189 done_fail=0 pending=0 txring=23 | rx_frames=2743 rx_bytes=40475 rx_foreign=1 overflow=0 gap_rx=40ms
+rgb: vsync=3843(+43/s) wrap=3844(+44/s) swap=889(+10/s) flush=2299 blit_max=1404us step_max=816us copy_max=1404us copy_avg=80us swap_wait_max=8120us phase_max=23190us timeout=0 fb=1/0 catchup=889(+10/s 80KB/s forced0KB) refresh=99952/87698/114396us fullrb=0/s bounce=19MB/s 模式=局部刷新 psram=7282KB heap=29KB
+rgb: 脏区/s inv=17366px2(=一屏的 7.5%) flush=21/s(累计2299) fmax=127x78(一屏的 4.2%) 单屏=230400px2
+206 dash ok  spd=  0% rpm= 13% coolant=89C face=idle/idle | role=SLAVE last=LEFT/rpm+coolant
+espnow: tx_frames=193 tx_bytes=4241 tx_fail=0 last_err=0 done=193 done_fail=0 pending=0 txring=23 | rx_frames=2815 rx_bytes=41534 rx_foreign=1 overflow=0 gap_rx=5ms

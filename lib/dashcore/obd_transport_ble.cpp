@@ -22,6 +22,7 @@
 #ifndef OBD_BLE_FORCE_RANDOM_ADDR_TYPE
 #define OBD_BLE_FORCE_RANDOM_ADDR_TYPE 0
 #endif
+// ★ 建连超时的编译期初值现在定义在**头文件**里（运行期 `t` 切换要用它当初值）。
 
 ObdTransportBle* ObdTransportBle::s_self_ = nullptr;
 
@@ -264,17 +265,52 @@ bool ObdTransportBle::start() {
   client_ = NimBLEDevice::createClient();
   if (client_ == nullptr) return false;
   client_->setClientCallbacks(new ObdBleClientCb(), true);
-  client_->setConnectTimeout(15);             // 秒（8 → 15：读数头慢，别过早放弃）
-  // ★★ 连接参数**显式给全 6 个**（2026-09-27 车上：`status=13` = `BLE_HS_ETIMEOUT`
-  //   ⇒ "连接请求发出去了、但对端没在超时内被连上"）。
-  //   后两个参数是**发起连接时用的扫描间隔/窗口** —— 它们才是关键：
-  //   NimBLE 默认拿主扫描的那组（100ms 间隔 / 80ms 窗口）去连，节奏偏密；
-  //   给一组"窗口=间隔"的快速扫描（40ms/40ms）+ 标准连接间隔（30~50ms）+
-  //   监督超时 4 秒，这对一个慢速 K 线适配器的射频前端友好得多。
-  //   ★ 单位：`itvl`/`scan*` 是 1.25ms？—— 不：NimBLE 这里 **minInterval/maxInterval
-  //     是 1.25ms 单位**、`timeout` 是 10ms 单位，而 `scanInterval/scanWindow` 也是
-  //     1.25ms 单位；下面 24/40 = 30/50ms、400 = 4s、32/32 = 40ms/40ms。
+  // ==========================================================================
+  // ★★★★ 2026-09-29 凌晨：**`reason=13` 的根因就是下面这一行的单位写错了。**
+  //
+  //   原文是（保留在此对账）：
+  //       client_->setConnectTimeout(15);   // 秒（8 → 15：读数头慢，别过早放弃）
+  //
+  //   **那个注释是错的：`setConnectTimeout()` 收的是毫秒，不是秒。**
+  //   证据（`NimBLEClient.h` 的声明 + `NimBLEClient.cpp:584` 的实现）：
+  //       void setConnectTimeout(uint32_t time);          // 头
+  //       void NimBLEClient::setConnectTimeout(uint32_t time) { m_connectTimeout = time; }
+  //       NimBLEClient::NimBLEClient(...) : m_connectTimeout{30000},   // ★ 默认 30000 **毫秒**
+  //   而 `m_connectTimeout` 直接当**毫秒**用：
+  //       ble_gap_connect(ownAddrType, peerAddr, m_connectTimeout, &m_connParams, cb, arg);
+  //   且 `ble_gap_connect(duration_ms)` 内部是
+  //       ble_npl_time_ms_to_ticks(duration_ms, &duration_ticks);
+  //
+  //   ⇒ 传 15 = **建连超时 15 毫秒**（不是 15 秒，比库默认的 30000ms 小了 2000 倍）。
+  //   ⇒ 主机的建连计时器 **15ms 就到点** ⇒ 发 `LE Create Connection Cancel`
+  //     ⇒ 控制器回 `UNKNOWN_CONN_ID` ⇒ 库走
+  //       `ble_gap.c:2632 → ble_gap_master_connect_cancelled()`，把 `status` 填成
+  //       **`BLE_HS_ETIMEOUT` = 13** ⇒ 我们日志里的 `onConnectFail reason=13`。
+  //
+  //   ★ 全部现象因此一次说通（这些是**实测**，不是推理）：
+  //     | 现象 | 实测值 | 用"15ms 超时"解释 |
+  //     |---|---|---|
+  //     | 失败延迟**恒定** | 16 / 17 / 18 ms | ≈ 15ms 计时器 + 调度余量 ✔ |
+  //     | 换 3000ms 就能连上 | 433ms 完成，150 秒零掉线 | 15ms 根本来不及完成建连 ✔ |
+  //     | 换回 30000ms 又全败 | 130 次全败 | 只有 1.5 个扫描周期的窗口 ✔ |
+  //     | 假头 `40:ab:…` 却连得上 | — | 它广播密，15ms 里**碰巧**抓得到 ✔ |
+  //     | 真头（**2~5 秒一次**广播）全败 | WinRT 实测 | 15ms 里几乎不可能抓到 ✔ |
+  //     | 地址类型/占用/内存/共存全都不是 | 各有实测 | 与它们本来无关 ✔ |
+  //   ★ 为什么"扫得到对端"却"连不上"曾经看起来矛盾：**扫描是持续听，建连只有一个 15ms 的窗**。
+  //     这条不对称正是这个 bug 最难看出来地方。
+  // ==========================================================================
+  //   现在：`setConnectTimeout` 只在这一处调用，值取
+  //     `connect_timeout_ms_`（编译期初值 `OBD_BLE_CONNECT_TIMEOUT_MS`，运行期串口 `t` 可改），
+  //   0 表示"回库默认 30000ms"。
+  client_->setConnectTimeout(connectTimeoutMs());
+  // ★ 连接参数**显式给全 6 个**。★ 单位（NimBLE 口径，别记错）：
+  //   `itvl`/`scanInterval`/`scanWindow` 是 **1.25ms** 单位，`timeout` 是 **10ms** 单位；
+  //   下面 24/40 = 30/50ms、400 = 4s、32/32 = 40ms/40ms。
   client_->setConnectionParams(24, 40, 0, 400, 32, 32);
+  // ★★ 单位同样的坑：`setConnectRetries()` 收的是**重试次数**（不是毫秒），默认 3。
+  //   库在 `rc == BLE_HS_HCI_ERR(0x3E)` 时自动重试这么多次
+  //   （`NimBLEClient.cpp:1063`）—— 那是**另一个**原因码，与 13 不是一条路，
+  //   所以次数本身不是本次根因；这里保持默认并写明单位，免得下次又被误读。
   client_->setConnectRetries(3);
 
   scan_ = NimBLEDevice::getScan();
