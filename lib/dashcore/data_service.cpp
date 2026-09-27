@@ -46,6 +46,10 @@ VehicleState VehicleDataService::update(uint32_t now_ms) {
   status_.rpm_age_ms = UINT32_MAX;
   status_.coolant_age_ms = UINT32_MAX;
   status_.intake_age_ms = UINT32_MAX;
+  status_.outside_age_ms = UINT32_MAX;    // 2026-09-27:外界/油温(VAN,§4.8)
+  status_.oil_temp_age_ms = UINT32_MAX;
+  status_.outside = FieldSource::Sim;
+  status_.oil_temp = FieldSource::Sim;
 
   // 2) K 线 OBD:转速 / 水温 / 进气温度(高优先级,按字段独立超时:
   //    转速断了不影响水温继续用 OBD,反之亦然)
@@ -99,6 +103,35 @@ VehicleState VehicleDataService::update(uint32_t now_ms) {
     state_.rpm = van_.rpm();
     status_.rpm = FieldSource::Van;
     status_.rpm_age_ms = now_ms - van_.lastUpdateMs();
+  }
+
+  // 3b) VAN 温度（2026-09-27 新增，VAN-PROTOCOL §4.8）—— 水温来自 `0x8A4.data[2]`、
+  //     外界温度来自 `0x8A4.data[6]`、油温来自 `0x4FC.data[7]`，**全是广播**，
+  //     不需要任何请求。
+  //
+  //     ★ 优先级口径：**OBD 已经拿到就留着 OBD**（`== Sim` 才填），与本节 3) 的转速
+  //       同一条规矩，也与 4) 的链路段同一条规矩 —— 加这一段**没有改动任何既有优先级**，
+  //       只是多了一个"比 Sim 强、比 OBD 弱"的来源。
+  //       为什么让 OBD 优先：本车 EDC16 的 `0105`/`010F` 是**同一台 ECU 的直读值**，
+  //       而 VAN 上这两格是**BSI 转发的显示量**（`8A4.json` 原文："I guess this must
+  //       come out of the ECU via the BSI"）⇒ 同源、但 OBD 那条链更短。
+  //     ★ 判据用**温度族自己的时间戳**（`tempLastMs()` / `oilTempLastMs()`），
+  //       绝不借 `lastUpdateMs()`（那是车速/转速的）—— 见 van_source.h 的同名说明。
+  //     ★ **没有进气温度**：外部包体定义全库搜过，零命中（§4.8.4）⇒ 这一格只能靠 OBD。
+  if (van_.coolantFresh(now_ms) && status_.coolant == FieldSource::Sim) {
+    state_.coolant_c = van_.coolantC();
+    status_.coolant = FieldSource::Van;
+    status_.coolant_age_ms = now_ms - van_.tempLastMs();
+  }
+  if (van_.outsideFresh(now_ms) && status_.outside == FieldSource::Sim) {
+    state_.outside_c = van_.outsideC();
+    status_.outside = FieldSource::Van;
+    status_.outside_age_ms = now_ms - van_.tempLastMs();
+  }
+  if (van_.oilTempFresh(now_ms) && status_.oil_temp == FieldSource::Sim) {
+    state_.oil_temp_c = van_.oilTempC();
+    status_.oil_temp = FieldSource::Van;
+    status_.oil_temp_age_ms = now_ms - van_.oilTempLastMs();
   }
 
   // 4) 链路（从板侧，2026-09-23 新增）—— ★ 只在"这一格本来要落到 Sim"时接手。

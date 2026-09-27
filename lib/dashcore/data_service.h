@@ -57,6 +57,14 @@ struct DataSourceStatus {
   FieldSource low_beam        = FieldSource::None;
   FieldSource door            = FieldSource::None;
   FieldSource vin             = FieldSource::None;
+
+  // ★★ 2026-09-27:下面两格与上面那批**语义不同** —— 它们**参与**优先级
+  //    (OBD > Van > Link > Sim),因为 VAN 与 OBD 都有这个量。
+  //    详见 `data_service.cpp` 的 3b) 段注释与 `vehicle_state.h` 的同名说明。
+  FieldSource outside  = FieldSource::None;   // 外界温度(0x8A4.data[6])
+  FieldSource oil_temp = FieldSource::None;   // 机油温度(0x4FC.data[7])
+  uint32_t outside_age_ms  = UINT32_MAX;
+  uint32_t oil_temp_age_ms = UINT32_MAX;
   uint32_t lights_age_ms = UINT32_MAX;   // 0x4FC 最近一帧的年龄
   uint32_t door_age_ms   = UINT32_MAX;   // 门信号相对基线的**最近一次变化**的年龄
                                          // (★ 不是"最近一帧"——门是边沿信号,见 .cpp 第 5 段)
@@ -106,7 +114,8 @@ struct LinkData {
 
 // 多源数据合并服务。
 // 优先级:车速 Van > Obd > Sim;转速 Obd > Van > Sim;
-//         **水温/进气温度只有 Obd > Sim**(这两项 VAN 帧里没有,没有第二来源);
+//         **水温 Obd > Van > Sim**;外界温度/机油温度 Obd > Van > Sim;
+//         **进气温度仍然只有 Obd > Sim**(VAN 上没有这一项,§4.8.4);
 //         油量/挡位 Sim。
 // 高优先级源超过 3 秒无新数据自动回退下一源(行车中拔线/OBD 断连不黑屏)。
 //
@@ -128,6 +137,11 @@ struct LinkData {
 // ★ 进气温度(010F)与水温走同一套规则,但它**没有 VAN 备份源** ——
 //   206 的 VAN 上没有这一项。所以 OBD 一断,它就回到假数据值,
 //   表现是"弧停在某个位置不动",而不是黑屏或乱跳。
+//
+// ★★ 2026-09-27 更正上面这条"水温没有 VAN 备份源"的老口径:**是错的**。
+//   水温在 `0x8A4.data[2]` 上广播(`raw − 39`),外界温度在 `0x8A4.data[6]`,
+//   机油温度在 `0x4FC.data[7]` —— 三条经外部包体定义核实(§4.8)。
+//   ⇒ **只有进气温度**没有 VAN 备份源。新增三格走 `Obd > Van > Link > Sim`。
 class VehicleDataService {
 public:
   // obd_transport: 接 ELM327 的那条链路（串口见 `ObdTransportSerial`，

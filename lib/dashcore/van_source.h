@@ -109,6 +109,34 @@ static const uint32_t kIndicatorHoldMs = 600u;
 static const uint8_t kVanLightLen = 11u;
 static const uint8_t kVanVinLen   = 17u;
 
+// ---------------- 温度字段(0x8A4 / 0x4FC,2026-09-27 外部定义核实,见 VAN-PROTOCOL §4.8) ----------------
+// ★★ 为什么可以不用 OBD:水温和外界温度是 `0x8A4` 的**广播字段**(周期 500 ms、
+//    不要 ACK),油温在 `0x4FC` 里。三者都在我们已经在收的那段舒适段 VAN 上。
+//    **但进气温度不在** —— 外部库 64 个包体定义逐个搜过,零命中(§4.8.4)。
+//
+// 标定公式来自 morcibacsi/psa_van_bus_packet_descriptions 的 `8A4.json` / `4FC_1.json`
+// (**307 的逆向结果**),本车尚未标定 ⇒ 先把公式与下标写死,数值上车复核(§4.8.5)。
+static const uint16_t kTempIden   = 0x8A4;   // Dashboard:水温 + 外界温度
+static const uint8_t  kCoolantOffset = 2;    // data[2]
+static const uint8_t  kOutsideOffset = 6;    // data[6]
+static const float    kCoolantBias   = 39.0f;  // ℃ = raw − 39
+static const float    kOutsideBase   = 0x50;   // ℃ = (raw − 0x50) / 2
+static const float    kOutsideDiv    = 2.0f;
+
+static const uint8_t  kOilTempOffset = 7;    // 0x4FC.data[7]
+static const float    kOilTempBias   = 40.0f;  // ℃ = raw − 40
+
+// ★ `0xFF` 是**哨兵值,不是温度**。`8A4.json` 原文:
+//   "Coolant temperature 0x3C = (60-39) = 21 degrees / **FF until key set to Ignition**"。
+//   我们自己的切片里就见过 `data[2]` 恒为 `0xFF`(2026-09-22,当时只是通电没点火)。
+//   ⇒ 若照公式算会得到 216 ℃,一个"看着像异常高温"的假值 —— 必须挡掉。
+static const uint8_t kVanTempInvalid = 0xFFu;
+
+// 温度帧的**过期窗口**。`0x8A4` 周期 500 ms(外部定义),`0x4FC` 实测 4.7/s。
+// 取 3 s = 6 个周期:与 data_service 里 OBD 那套"3 秒无新数据就回退"同一个量级,
+// 但**判据必须用本族自己的时间戳**(别借车速的 lastUpdateMs —— 见 .cpp 的说明)。
+static const uint32_t kVanTempStaleMs = 3000u;
+
 // VIN 缓冲长度:17 位 + '\0'。**17 是 VIN 的硬长度**(§4.7:17 字节 == 17 位字符,
 // 这本身就是"不用跟别的族拼"的证据),所以按它定长。
 static const uint8_t kVanVinChars = 17u;
@@ -183,6 +211,35 @@ public:
   const char* vin() const { return vin_; }
   uint32_t vinLastMs() const { return vin_ms_; }
 
+  // ---------------- 温度(0x8A4 水温/外界,0x4FC 油温) ----------------
+  // `hasXxx()` = **收到过一个可用值**;`raw` 为 `0xFF` 时**不置位**(哨兵值,见 kVanTempInvalid),
+  // 也不会把上一次的好值改成坏值 —— 只是这一帧不刷新时间戳。
+  //
+  // ★ 这三个各自带时间戳,不共用 `lastUpdateMs()`(那是车速/转速的)。
+  //   这条纪律在 data_service 的灯位那段已经踩过一次(见其 .cpp 注释)。
+  bool  hasCoolant() const { return coolant_valid_; }
+  bool  hasOutside() const { return outside_valid_; }
+  bool  hasOilTemp() const { return oil_temp_valid_; }
+  float coolantC() const { return coolant_c_; }
+  float outsideC() const { return outside_c_; }
+  float oilTempC() const { return oil_temp_c_; }
+  uint32_t tempLastMs() const { return temp_ms_; }      // 0x8A4 最近一帧
+  uint32_t oilTempLastMs() const { return oil_ms_; }    // 0x4FC 最近一帧
+
+  // 带**过期窗口**的现状 —— 上层该用这一组,别用裸 `hasXxx()`。
+  bool coolantFresh(uint32_t now_ms) const {
+    return coolant_valid_ && temp_ms_ != 0u &&
+           (uint32_t)(now_ms - temp_ms_) < kVanTempStaleMs;
+  }
+  bool outsideFresh(uint32_t now_ms) const {
+    return outside_valid_ && temp_ms_ != 0u &&
+           (uint32_t)(now_ms - temp_ms_) < kVanTempStaleMs;
+  }
+  bool oilTempFresh(uint32_t now_ms) const {
+    return oil_temp_valid_ && oil_ms_ != 0u &&
+           (uint32_t)(now_ms - oil_ms_) < kVanTempStaleMs;
+  }
+
   // 实车帧格式与默认常量不符时,先用这个在运行时改,确认后写回常量
   // ★ 语义见 onPacket():speed_offset 指向**单字节**车速,scale 只做乘法
   //   (默认 2.56f ⇒ 1 计数 = 2.56 km/h,见 .cpp 的实测定标说明)。
@@ -231,4 +288,16 @@ private:
   char vin_[kVanVinBuf] = {0};
   bool vin_valid_ = false;
   uint32_t vin_ms_ = 0;
+
+  // ---- 温度 ----
+  // ★ 有效位与时间戳**按族分开**:`0x8A4` 带水温+外界温度(同一帧,共用一个时刻),
+  //   `0x4FC` 带油温(另一族、另一个时刻)。
+  float coolant_c_ = 0.0f;
+  float outside_c_ = 0.0f;
+  float oil_temp_c_ = 0.0f;
+  bool coolant_valid_ = false;
+  bool outside_valid_ = false;
+  bool oil_temp_valid_ = false;
+  uint32_t temp_ms_ = 0;    // 0x8A4
+  uint32_t oil_ms_ = 0;     // 0x4FC
 };

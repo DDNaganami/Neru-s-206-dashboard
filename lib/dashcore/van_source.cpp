@@ -43,9 +43,37 @@ static bool printableAscii(const uint8_t* p, uint8_t n) {
 }
 
 void VanSource::onPacket(const VanPacket& pkt) {
-  // ---- 0x4FC:灯位域 (data[5]) + 门状态位 (data[1]) ----
-  // ★ 一帧同时带这两样(§4.6 的关键旁证就是"门测试期间 data[5] 完全没动"),
-  //   所以一次判长度、一次解,别写成两个分支各判一次。
+  // ---- 0x8A4:Dashboard 广播 —— 水温 + 外界温度(VAN-PROTOCOL §4.8) ----
+  // ★ 为什么单独一支、且在 0x4FC 之前:`0x8A4` 与 `0x4FC` 是**两个不同的族**,
+  //   但温度字段分布在两族里(水/外界在 8A4,油温在 4FC)。这里各自解析、
+  //   各自打时间戳,互不影响。
+  if (pkt.iden == kTempIden) {
+    bool any = false;
+    if (kCoolantOffset < pkt.len) {
+      const uint8_t raw = pkt.data[kCoolantOffset];
+      // 哨兵 `0xFF` = 钥匙未到点火档 ⇒ **这一帧不产生有效水温**
+      // (见 van_source.h 的 kVanTempInvalid;照公式算会得到 216 ℃ 的假高温)。
+      if (raw != kVanTempInvalid) {
+        coolant_c_ = (float)raw - kCoolantBias;
+        coolant_valid_ = true;
+        any = true;
+      }
+    }
+    if (kOutsideOffset < pkt.len) {
+      const uint8_t raw = pkt.data[kOutsideOffset];
+      if (raw != kVanTempInvalid) {
+        outside_c_ = ((float)raw - kOutsideBase) / kOutsideDiv;
+        outside_valid_ = true;
+        any = true;
+      }
+    }
+    if (any) temp_ms_ = pkt.rx_ms;
+    return;   // 0x8A4 不是车速/转速帧
+  }
+
+  // ---- 0x4FC:灯位域 (data[5]) + 门状态位 (data[1]) + 油温 (data[7]) ----
+  // ★ 一帧同时带这三样(§4.6 的关键旁证就是"门测试期间 data[5] 完全没动"),
+  //   所以一次判长度、一次解,别写成三个分支各判一次。
   if (pkt.iden == kLightIden) {
     // `data[5]` 需要 n ≥ 6;按 §3 的实测 n = 11,这里只挡"短到读不到"的帧
     // (与车速/转速同一套 `offset < len` 判据,不另立规矩)。
@@ -74,6 +102,15 @@ void VanSource::onPacket(const VanPacket& pkt) {
         door_base_ = d;
       } else if (d != door_base_) {
         door_change_ms_ = pkt.rx_ms;   // 相对基线的**活动**
+      }
+    }
+    // 机油温度(§4.8)。`0x4FC` 的实测 n = 11 ⇒ data[7] 恒可读,长度判据只挡短帧。
+    if (kOilTempOffset < pkt.len) {
+      const uint8_t raw = pkt.data[kOilTempOffset];
+      if (raw != kVanTempInvalid) {
+        oil_temp_c_ = (float)raw - kOilTempBias;
+        oil_temp_valid_ = true;
+        oil_ms_ = pkt.rx_ms;
       }
     }
     return;   // 0x4FC 不是车速/转速帧,不必再往下走
