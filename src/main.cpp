@@ -3168,7 +3168,7 @@ void loop() {
 #endif
 
   loop_stage("render");   // ★ 归因重点：这一支是"上一帧渲染已过 200ms"的大块
-  if (now - last_ui_ms >= 200) {
+  if (now - last_ui_ms >= 100) {   // [EXPERIMENT 2026-09-28: 200 -> 100ms (10Hz) to falsify the "content rate = jank" hypothesis; revert or keep per owner eyes]
     last_ui_ms = now;
     // ---- 系统状态层（2026-09-24）：先备好这一拍的输入，再做两件事 ----
     // ① 把这一拍的车状态存进 `st_state_cache`（`sys_inputs_build()` 读它取车速/转速）；
