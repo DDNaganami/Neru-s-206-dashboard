@@ -52,6 +52,13 @@ Usage
   & $py tools\\bt-obd\\obd-ble-sim.py --control sim-control.txt
       (then:  Set-Content sim-control.txt 'rpm=3000'; Add-Content ... 'speed=60')
 
+★ LIMITATION (measured 2026-09-28, Windows 11 + Intel): this GATT server accepts
+  ONE connection per process run. Once the central goes away (board reset, board
+  reflash) every later connect attempt fails with BLE_HS_ETIMEOUT (0x0D) even
+  though the advertisement is still up -- and stop/start advertising does NOT fix
+  it. So: **restart this script before every board (re)boot.** If the board cannot
+  connect, the first thing to rule out is "is this sim instance already spent?".
+
 Fault injection (to exercise the dash's fallback paths):
   --drop-after 20     stop advertising after 20 s   (adapter "unplugged")
   --kill-after 45     stop notifying after 45 s     (adapter alive but mute)
@@ -286,6 +293,7 @@ class Sim:
         self.provider = None
         self.elm = Elm327(args)
         self.subscribers = 0
+        self._had_client = False
         self.notifies = 0
         self.writes = 0
         self.errors = 0
@@ -307,9 +315,43 @@ class Sim:
         except Exception:
             pass
 
+    def _on_adv_status(self, sender, args):
+        # Windows can silently stop advertising (status -> STOPPED/ABORTED); without
+        # this line a peripheral that stopped advertising looks exactly like a
+        # central that cannot connect (every attempt just times out).
+        try:
+            self.loop.call_soon_threadsafe(log, "advertising status -> %s" % args.status)
+        except Exception:
+            pass
+
     def _set_subs(self, n):
         self.subscribers = n
         log("client %s  (subscribed clients now %d)" % ("subscribed" if n else "unsubscribed", n), self.args.quiet)
+        # ★ Windows' peripheral role does not reliably accept a SECOND connection on
+        # the same GattServiceProvider: after the central goes away (board reset,
+        # board reflash) every later connect attempt times out with 0x0D while the
+        # advertisement is still up. Measured on this machine: fresh process ->
+        # connects in ~10 s; same process after one client left -> never again.
+        # Re-arming (stop + start advertising) is the cheap workaround.
+        if n == 0 and self._had_client:
+            self.loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self.rearm()))
+        if n > 0:
+            self._had_client = True
+
+    async def rearm(self):
+        await asyncio.sleep(1.0)
+        try:
+            self.provider.stop_advertising()
+            await asyncio.sleep(0.5)
+            adv = self.api["GattServiceProviderAdvertisingParameters"]()
+            adv.is_discoverable = True
+            adv.is_connectable = True
+            self.provider.start_advertising_with_parameters(adv)
+            await asyncio.sleep(0.5)
+            log("re-armed advertising after the client left (status=%s)" % self.provider.advertisement_status)
+        except Exception as e:
+            self.errors += 1
+            log("re-arm failed: %s" % e)
 
     # -- setup -------------------------------------------------------------
     async def setup(self):
@@ -353,6 +395,7 @@ class Sim:
         # start_advertising(), StartAdvertising(params) -> start_advertising_with_parameters().
         self.provider.start_advertising_with_parameters(adv)
         self.advertising = True
+        self.provider.add_advertisement_status_changed(self._on_adv_status)
         # The very first status can be ABORTED for a moment before it settles on
         # STARTED; read it again after the stack has caught up.
         await asyncio.sleep(1.0)
@@ -553,6 +596,7 @@ async def main_async(args, api):
             await asyncio.sleep(args.seconds)
         else:
             print("running. Ctrl+C to stop.")
+    print("NOTE: one connection per run -- restart this script before each board (re)boot.")
             while True:
                 await asyncio.sleep(1.0)
     except (KeyboardInterrupt, asyncio.CancelledError):

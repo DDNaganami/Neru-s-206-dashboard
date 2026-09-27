@@ -1105,9 +1105,47 @@ static void link_log_master_ready() {
 }
 #endif  // LINK_ROLE == 1
 
-// 主循环每圈调一次；**不是"主板 + OBD_BLE"的构建里它什么都不做**。
+#if (LINK_ROLE != 1) && OBD_BLE
+// 从板那一侧的对应行（2026-09-28 深夜新增）：**与 PHY 的启动绑在一起**。
+//
+// 为什么必须搬家：从板从这一版起也过启动闸门（见 `link_start_gate_tick`），
+// PHY 由闸门启 ⇒ 这句"就绪"不能留在 `setup()` 里，否则会打出"就绪"而 PHY 还没起
+// —— 而那正是这条日志存在的意义（它要能和"链路到底起没起"对上账）。
+// ★ 文本**逐字**沿用 `setup()` 里原来那两句（判据行不能因为搬家而变，UART 档也一样）。
+static void link_log_slave_ready() {
+#if LINK_PHY_ESP_NOW
+  dash_logf("link: 从板侧就绪(§5, LINK_ROLE=0) %s ch=%u (no pins) @%u%s"
+            " —— 收主板的 TICK/DATA，发 HELLO(每 5s 直到收到对端)+STATUS(2Hz,§3)\n",
+            g_link_phy.phyName(), (unsigned)g_link_phy.channel(), g_link_phy.baud(),
+            kLinkPhyTail());
+#else
+  dash_logf("link: 从板侧就绪(§5, LINK_ROLE=0) TX=GPIO%d RX=GPIO%d @%u 8N1%s"
+            " —— 收主板的 TICK/DATA，发 HELLO(每 5s 直到收到对端)+STATUS(2Hz,§3)\n",
+            (int)g_link_phy.txPin(), (int)g_link_phy.rxPin(), (unsigned)dashlink::kLinkBaud,
+            g_link_phy.online() ? " —— 真 PHY(UART0)"
+                                : " —— PHY 是空壳(这份固件没编 -DLINK_PHY_UART)");
+#endif
+}
+#endif  // (LINK_ROLE != 1) && OBD_BLE
+
+// 主循环每圈调一次；**没编 `OBD_BLE` 的构建里它什么都不做**。
+//
+// ★★★ 2026-09-28 深夜（桌面 A/B 实测之后修）：闸门原来只装在主板
+//   （条件 `#if LINK_ROLE == 1 && OBD_BLE`），而分工 v2 已经把 BLE 挪到**从板**
+//   ⇒ 从板（`LINK_ROLE=0`）**根本没有安静窗口**：它的 PHY 在 `setup()` 里一行就起了，
+//   BLE 只能靠"运行期优先权"去抢射频，而实测**抢不到**：
+//     · ESP-NOW 在跑 ⇒ 140 秒里 **277/277** 次连接全败，错误码 `0x0D`（与车上逐字相同）；
+//     · 只把 PHY 关掉（`-DLINK_PHY_ESP_NOW=0`）⇒ **几秒内连上**，而且整条 PID 链都通
+//       （`SRC … rpm=obd coolant=obd intake=obd`）。
+//   证据与判据行：`docs/BLE-OBD.md` §14.5 / §14.6。
+//   ⇒ 条件改成**按"有没有编 BLE"判定**：谁背 BLE，谁的链路 PHY 就让路。
+//   ★ 代价（与主板那一档同一个口径，如实记）：这 15s 里**从板收不到主板的 TICK/DATA**
+//     ⇒ 左屏进"数据不可信"（`link_time` 的三级超时）+ 用模拟值；到点一律开闸。
+//   ★ 主板那一支当前**仍被 `setup()` 里那段"ESP-NOW 先起"的实验绕过**
+//     （那是另一单的判据实验，本单不动它）：主板带 BLE 的构建里，闸门这一次
+//     `begin()` 会被 PHY 自己的幂等守卫吃掉 ⇒ 那档的行为与改之前**一字未变**。
 static void link_start_gate_tick(uint32_t now) {
-#if LINK_ROLE == 1 && OBD_BLE
+#if OBD_BLE
   // 状态放在函数里（编译期不需要它时一个字节都不占）
   static bool     inited       = false;
   static bool     started      = false;
@@ -1128,7 +1166,13 @@ static void link_start_gate_tick(uint32_t now) {
   //   （`write()` 只碰内存，但"环里有帧而 PHY 没起"会白丢帧、把 `tx_drop` 计数弄脏）。
   link_tx_task_start_once();
 #endif
+#if LINK_ROLE == 1
   link_log_master_ready();
+#else
+  // ★ 从板那一侧的行现在也在这里（原来在 `setup()` 里，见它的说明）：
+  //   "就绪"必须与 PHY 的**启动**同时发生，否则那句话会骗人。
+  link_log_slave_ready();
+#endif
   // ★★★★ 2026-09-28 深夜：这里**恢复成原样**（闸门负责启链路 PHY）。
   //   上面那段"只报窗口过去、不重复 begin"是我一次**错误的修复**留下的，
   //   已随 `setup()` 那处一起回滚 —— 原因见 `setup()` 里那段长注释
@@ -2883,7 +2927,21 @@ void setup() {
   //   —— 契约 §0 的引脚口径本来就不分角色（link_phy_pins.h）。
   //   ★ 没有 `LINK_PHY_UART` 的构建（pcpreview / esp32dev）走空壳 `LinkPhyNull`：
   //     `online()` 报 false、`availableForWrite()` 报 0 ⇒ 链路静默，不卡主循环。
+#if OBD_BLE
+  // ★★★ 2026-09-28 深夜（桌面 A/B 实测之后）：**PHY 的启动挪进启动闸门**
+  //   （`link_start_gate_tick`，主循环开头调）。从板从分工 v2 起就是**背 BLE 的那块**
+  //   ⇒ 必须"先让 BLE 把连接建起来、再让链路占射频"。
+  //   实测依据（同一块板、同一个桌面假诊断头，唯一变量就是 PHY）：
+  //     ESP-NOW 在跑 ⇒ 140 秒 277/277 次连接全败（`0x0D`）；
+  //     只把 PHY 关掉   ⇒ 几秒内连上，且 `SRC … rpm=obd coolant=obd intake=obd`。
+  //   见 docs/BLE-OBD.md §14.5/§14.6。
+  //   ★ 代价如实记（与主板那一档同口径）：这 15s 里从板收不到主板的 TICK/DATA
+  //     ⇒ 左屏"数据不可信"+模拟值；`LinkStartGate::kWaitMaxMs` 到点一律开闸。
+  //   ★ "从板侧就绪"那一行也一起搬走了（`link_log_slave_ready`）—— 它必须跟着
+  //     PHY 的启动打，否则会打出"就绪"而 PHY 还没起。
+#else
   g_link_phy.begin(false);
+#endif
   g_link_rx.setLocalRole(dashlink::kLocalRole);
   g_link_time.reset();
   // ★ 2026-09-27：从板**也发**了（HELLO + STATUS，见 `link_slave_tick()`）。
@@ -2901,18 +2959,10 @@ void setup() {
   //   PHY** 分档（"真 PHY(UART0)" / "真 PHY(ESP-NOW)" / "空壳"）。UART 那一档打出来的
   //   字符串**逐字节与改之前相同**（见 kLinkPhyTail() 那段）；无线那一档另有
   //   `espnow: …` 那几行（信道 / 学到对端 MAC）补上"引脚"之外的信息。
-#if LINK_PHY_ESP_NOW
-  dash_logf("link: 从板侧就绪(§5, LINK_ROLE=0) %s ch=%u (no pins) @%u%s"
-            " —— 收主板的 TICK/DATA，发 HELLO(每 5s 直到收到对端)+STATUS(2Hz,§3)\n",
-            g_link_phy.phyName(), (unsigned)g_link_phy.channel(), g_link_phy.baud(),
-            kLinkPhyTail());
-#else
-  dash_logf("link: 从板侧就绪(§5, LINK_ROLE=0) TX=GPIO%d RX=GPIO%d @%u 8N1%s"
-            " —— 收主板的 TICK/DATA，发 HELLO(每 5s 直到收到对端)+STATUS(2Hz,§3)\n",
-            (int)g_link_phy.txPin(), (int)g_link_phy.rxPin(), (unsigned)dashlink::kLinkBaud,
-            g_link_phy.online() ? " —— 真 PHY(UART0)"
-                                : " —— PHY 是空壳(这份固件没编 -DLINK_PHY_UART)");
-#endif
+  // ★ 2026-09-28 深夜：原来在这里的"link: 从板侧就绪 …"那一行（两种 PHY 说法各一句）
+  //   已经搬到 `link_log_slave_ready()` —— 从板现在也过启动闸门、PHY 由闸门启，
+  //   所以"就绪"必须跟着 PHY 的**启动**打（见那个函数与 `link_start_gate_tick()`）。
+  //   两句话的文本逐字未改。
 #endif
   // 主题:先默认值(由 dash_ui_init 兜底),再尝试用 flash 里的主题文件覆盖。
   // 加载失败不影响启动 —— 降级到默认主题继续跑。
@@ -3027,9 +3077,12 @@ void loop() {
   loop_stage("van");     // ★ 步骤②归因：以下各阶段标记只为把长圈归因，不改变行为
 #if LINK_PHY_ESP_NOW
   probe_start_once();    // ★ 选项(a) 可行性探针：20ms 定时器回调的实际节拍（见它的说明）
-  // ★★ 主板上带 BLE 的构建里，这个任务与 PHY **一起**由启动闸门拉起（见它上面那段）；
-  //   其余构建（从板 / 有线档 / pcpreview）在这里照旧立刻建 ⇒ 行为一字未变。
-#if !(LINK_ROLE == 1 && OBD_BLE)
+  // ★★ 带 BLE 的构建里，这个任务与 PHY **一起**由启动闸门拉起（见它上面那段）；
+  //   其余构建（有线档 / pcpreview / 没编 BLE 的那两档）在这里照旧立刻建
+  //   ⇒ 行为一字未变。
+  //   ★ 2026-09-28 深夜：条件从 `!(LINK_ROLE == 1 && OBD_BLE)` 改成 `!OBD_BLE`
+  //     —— 从板现在也过闸门（它才是背 BLE 的那块），理由见 `link_start_gate_tick`。
+#if !OBD_BLE
   link_tx_task_start_once();   // ★★ 选项(a)：建互斥量 +（主板上）建 TICK 发送任务
 #endif
   meas_sink_register_once();   // ★★ 测量帧的到达钩子：时间戳打在射频收到包那一刻
