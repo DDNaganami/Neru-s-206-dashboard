@@ -329,6 +329,13 @@ void ObdTransportBle::tick(uint32_t now_ms) {
   //   ★ 仲裁器仍要每圈推进（上面那行），否则占用的窗口不会按超时释放。
   if (inhibited_) {
     if (client_ && client_->isConnected()) client_->disconnect();
+    // ★★ 2026-09-28：**还要把已经占着的射频立刻放掉**。
+    //   `wantsRadio()` 里已经加了 `!inhibited_`（否则仲裁器会继续替它抢），
+    //   但如果抑制**打开的那一刻**仲裁器正处在 hold 窗口里，那一窗口会一直占到
+    //   `kHoldMaxMs` 到点（从板 4 秒）才放 —— 于是"敲下 o 之后还要等最多 4 秒"
+    //   射频才真的让出去。验证/观察时这 4 秒很容易被误读成"抑制没生效"。
+    //   ⇒ 显式让仲裁器进入"不想要"的状态并释放。
+    applyRadioArbitration(now_ms);
     backoff_ms_ = 0;
     return;
   }

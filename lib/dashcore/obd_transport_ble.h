@@ -118,7 +118,15 @@ public:
   // "现在需要射频吗"：★ **扫到过对端** 且还没 ready。
   //   为什么要 `peer_valid_`：台面上根本没有诊断头时（peer 从没扫到），
   //   状态机也会一直在扫+退避重连 ⇒ 那种"忙"抢射频是**纯白抢**，会平白压低链路。
-  bool     wantsRadio() const { return peer_valid_ && !ready(); }
+  //   ★★ 2026-09-28 修正：**抑制期间必须返回 false**。
+  //     原来没判 `inhibited_` —— 后果实测：敲 `o` 打开抑制之后，状态行里
+  //     仍然是 `radio=BT` 且 `win/cap` 继续涨，**射频并没有真的让出去**。
+  //     于是那个抑制开关做了两件自相矛盾的事：`tick()` 里不扫不连（所以不会连上），
+  //     但仲裁器那边又一直替它抢射频（所以链路/显示照样被压）。
+  //     ⇒ 那是这个诊断开关的**致命缺陷**：用它判"横纹是不是射频造成的"时，
+  //       射频其实还占着；用它判"BLE 独占能不能连上"时，BLE 又没在尝试。
+  //       两个结论都会是错的。修法就是这一句。
+  bool     wantsRadio() const { return peer_valid_ && !ready() && !inhibited_; }
 
 private:
   friend class ObdBleScanCb;
