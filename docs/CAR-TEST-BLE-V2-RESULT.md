@@ -589,6 +589,33 @@ SRC speed=van rpm=obd coolant=obd intake=obd | v=0.0km/h 894rpm 89.0C 64.0C
 但主板的 `rx_frames` 在涨、且 `trust: sim-fallback` ⇒ 从板走的是**屏上模拟数据回退**。
 这条与 BLE 无关，但它解释了从板上"看起来有数据"的来源。
 
+### ⑤.14 ★ 收工时的硬件状态（2026-09-29 凌晨，明天从这里接着做）
+
+| 项 | 状态 |
+|---|---|
+| **从板**（COM8，`role=SLAVE`） | 已刷 **含本次修复** 的 `esp32s3-rgb-slave-obdtest`，`firmware.bin` = **1,708,592 B**；**当前正连着真头**并持续在读 OBD（`rpm/coolant/intake` 三源都是 `obd`，`fails=0`）|
+| **主板**（COM7，`role=MASTER`） | `esp32s3-rgb-master-now`，`OBD_BLE=0`（**分工已定：主板不读 OBD，只做链路主发**）|
+| 真诊断头 | 在台面、通电、广播正常（`AA:BB:CC:12:22:33` / `OBDBLE`，广播间隔 2~5 秒）|
+| 编译期档位 | `OBD_BLE_CONNECT_TIMEOUT_MS=0`（= 库默认 30000ms，正确量级）；`OBD_BLE_FORCE_RANDOM_ADDR_TYPE=0`；停扫等待 600ms（默认）|
+| 运行期可调 | 串口 `t` 切建连超时 {3000, 30000, 1000, 10000}；串口 `o` 切射频抑制 |
+
+★ **明天要做的两件事**（车主已定：只做第 2 件）：
+1. ~~把主板也刷成能读 OBD~~ —— **不做**，分工维持"从板读 OBD"。
+2. **按修复后的固件重跑车上验证单**（`docs/HANDOFF-CAR-TEST-BLE-V2.md`）。
+   预期变化：§3.2 的 `等了 XXXXms` 应从 **15000** 掉到 **1000 左右**，
+   左屏"模拟值 + 数据不可信"的窗口也从 15 秒缩到约 1 秒。
+   ★ 交接单 §1 的镜像尺寸与 commit 已过期（它写的是 `d66d743` / `1,707,120 B`），
+     重跑前要更新成当前值（从板 `1,708,592 B`）。
+
+★ 本轮**没做**、也不算欠账的三件（都是"决定去留"而不是"没做完"）：
+`scan_->setActiveScan(true)`（B 方案留下的主动扫描）、
+`platformio.ini` 里两个诊断 env（`-obdtest` / `-b10ble`）、
+以及那次未复现的"主板 + BLE 起不来"。
+
+★ 台面辅助脚本在 `C:\temp`（**不在仓库里**，是临时件，明天还能用）：
+`bt-scan-inventory.py`（列现场 FFF0 设备）、`bt-adv-type.py`（看广播类型/可连性/稀疏度）、
+`bt-hold-dongle.py`（笔记本占用 A/B）。
+
 
 
 
