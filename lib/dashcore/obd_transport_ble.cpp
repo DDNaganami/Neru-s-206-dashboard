@@ -87,9 +87,22 @@ void ObdTransportBle::pushBytes(const uint8_t* d, size_t n) {
 
 // 扫到一个广播：只认**服务 UUID**（名字是广播里的可选字段，不牢靠）。
 void ObdTransportBle::onDiscovered(const NimBLEAdvertisedDevice* d) {
-  if (d == nullptr || want_peer_) return;
+  if (d == nullptr) return;
   if (!d->haveServiceUUID()) return;
   if (!d->isAdvertisingService(NimBLEUUID(kServiceUuid))) return;
+
+  // ★★★ 2026-09-28：**已经就绪时直接忽略**（原来这里挡的是 `want_peer_`，那个语义不对）。
+  //
+  //   原来的写法是 `if (want_peer_) return;` —— 本意是"地址已经拿到了，别重复处理"。
+  //   但 `want_peer_` 的含义其实是"**下一拍去连**"，它在**成功连上之前永远不会被清掉**
+  //   ⇒ 于是这条早退等价于"**一旦扫到过就再也不更新地址**"：
+  //     · 重扫那条路（`kRescanAfterFails`）把 `want_peer_` 清成 false 才能进来一次，
+  //       命中之后又被置 true ⇒ 之后**再不刷新**；
+  //     · 而真正该早退的条件是"**已经连上/就绪了**"（那才是不需要再扫的状态）。
+  //   ⇒ 改成判 `ready()`。连上之后不再反复重建地址对象（省 CPU），
+  //     而"没连上"期间每次扫描命中都会把**地址与地址类型**刷新成最新的。
+  if (ready()) return;
+
   // ★★ 存**整个地址对象**（含地址类型）。实测教训：`aa:bb:cc:12:22:33` 是
   //   随机静态地址，若存成字符串再按 `BLE_ADDR_PUBLIC` 重建 ⇒ 连接永远失败，
   //   而日志只有 `conn=0`（看起来像"设备不在/被手机占着"），极易误判。
@@ -231,6 +244,26 @@ void ObdTransportBle::tick(uint32_t now_ms) {
 
   if (ready()) { backoff_ms_ = 0; return; }        // 好了，什么都不做
 
+  // ---------------------------------------------------------------------------
+  // ★★★ 2026-09-28：**射频抑制**（诊断开关，串口 `o` 切换）
+  //
+  //   为什么需要它：BLE 连不上时这段状态机是**每 ~600ms 撞一次、每次占射频最长 8s**
+  //   的节奏（`cs` 计数一路涨、`win/cap` 也在涨）⇒ 射频几乎一直挂在 BT 这边，
+  //   而 ESP-NOW 链路与**面板弹跳缓冲的填充**都要吃饭。副板出现过
+  //   "横纹 + 图案上移"，正是带宽被抢的症状。
+  //   ⇒ 没有这个开关时，要判"横纹是不是射频造成的"只能**重新刷一版关掉 BLE 的固件**，
+  //     而刷机要几十秒、还会打断现场观察，**判据与变量一起动了也分不清**。
+  //     有了它：敲一个字符就能把射频占用的**唯一变量**开/关，屏前直接 A/B。
+  //
+  //   ★ 放在 `ready()` 早退**之后**、一切射频动作**之前**：已连上时不受影响
+  //     （连上了就继续用），只在"还在尝试"这条路上生效。
+  //   ★ 仲裁器仍要每圈推进（上面那行），否则占用的窗口不会按超时释放。
+  if (inhibited_) {
+    if (client_ && client_->isConnected()) client_->disconnect();
+    backoff_ms_ = 0;
+    return;
+  }
+
   // 退避：别把射频时间片全占了（ESP-NOW 那条链路还要吃饭）
   if (backoff_ms_ == 0) backoff_ms_ = 500;
   if ((uint32_t)(now_ms - last_try_ms_) < backoff_ms_) return;
@@ -286,7 +319,7 @@ void ObdTransportBle::tick(uint32_t now_ms) {
     ++cs_attempts;
     ++cs_calls;
     if (connectNow()) { ++connects_; backoff_ms_ = 0; return; }
-    backoff_ms_ = (backoff_ms_ < 8000u) ? (backoff_ms_ * 2u) : 8000u;
+    backoff_ms_ = (backoff_ms_ < kRetryBackoffMaxMs) ? (backoff_ms_ * 2u) : kRetryBackoffMaxMs;
 
     // ★★★ 2026-09-28：**连败若干次之后，把地址丢掉、重新扫**。
     //
@@ -331,7 +364,7 @@ void ObdTransportBle::tick(uint32_t now_ms) {
       last_slow_scan_ms_ = now_ms;
       scan_->start(2000, false, false);
     }
-    backoff_ms_ = (backoff_ms_ < 8000u) ? (backoff_ms_ * 2u) : 8000u;
+    backoff_ms_ = (backoff_ms_ < kRetryBackoffMaxMs) ? (backoff_ms_ * 2u) : kRetryBackoffMaxMs;
   }
 }
 

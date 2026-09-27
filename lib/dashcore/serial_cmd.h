@@ -42,6 +42,12 @@ enum class SerialCmd : uint8_t {
   Reinit,
   Inject,
   Wire,
+  // ★★ 2026-09-28：**射频抑制开关**（判"横纹是不是射频抢占造成的"）。
+  //   选 `o` 而不是别的字母：它是唯一一个"无线电"语义上说得通、又**还没被占用**的
+  //   （`w` 已经是 RF 测速了）。★ 与 `i` / `w` **逐字同一个口径**：这里只说
+  //   "这个字符**有可能**是那条命令"，真正的动作由调用方按编译开关决定；
+  //   没装 BLE 的构建里恒返回 false ⇒ 这个字符照旧进回放路径（行为一个字节不变）。
+  RadioInhibit,
 };
 
 // `i` 后面那一位数字（"注入几次"）的解析：不是 '1'..'9' 就用 `dflt`。
@@ -72,6 +78,10 @@ inline SerialCmd serial_cmd_classify(char c) {
     //   为什么值得占一个字母：下一单要在 10 分钟内量出"丢包/间隔/抖动"，
     //   而现场不可能为了开一次测量重刷固件 —— 敲一个字符就开跑。
     case 'w': return SerialCmd::Wire;
+    // ★★ `o` = **射频抑制开关**（2026-09-28 新增）—— 口径与 `i` / `w` 完全相同：
+    //   认不认得它、要不要动，由调用方按 `OBD_BLE` 决定；没装 BLE 的构建里
+    //   调用方返回 false ⇒ 这个字符照旧进回放路径，串口行为一个字节都没变。
+    case 'o': return SerialCmd::RadioInhibit;
     default:  return SerialCmd::None;
   }
 }

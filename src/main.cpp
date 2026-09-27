@@ -1600,6 +1600,21 @@ static bool serial_cmd_handle(char c, char* line, uint8_t& len) {
     case SerialCmd::Reinit:
       reinit_from_serial();
       return true;
+    case SerialCmd::RadioInhibit:
+      // ★★★ 2026-09-28：**射频抑制开关** —— 判"横纹/图案上移是不是射频抢占造成的"。
+      //   敲一下切换；抑制期间 BLE 不再扫/不再连，占用的窗口按超时自然释放
+      //   （已连上的连接不受影响）。★ 只在**装了 BLE 的构建**里有意义：
+      //   没装 BLE 的构建里 `g_obd_ble` 恒未启动，切了也不产生任何差别
+      //   ⇒ 那颗字节照旧返回 false 走回放路径（与 `i` / `w` 同一口径，行为不变）。
+#if defined(OBD_BLE) && (OBD_BLE == 1)
+      g_obd_ble.setInhibited(!g_obd_ble.inhibited());
+      dash_logf("obd-ble: 射频抑制 = %s（%s）\n",
+                g_obd_ble.inhibited() ? "开" : "关",
+                g_obd_ble.inhibited() ? "不再扫/不再连;占用窗口按超时释放" : "恢复尝试连接");
+      return true;
+#else
+      return false;
+#endif
     case SerialCmd::Inject:
       // ★★ 临时故障注入（**默认构建里恒为 false**，见下面那一段）。
       //   ★ 开了注入时，这里只**记下**"下一位是次数"，真正的动作在下一颗字节
@@ -3406,14 +3421,17 @@ void loop() {
     //     `win` = 一共抢过几次、`cap` = 其中被 8s 上限掐断几次（策略见 radio_arbiter.h）。
     //     判据：`win` 涨而 `conn` 一直 0 + `cap` 也在涨 ⇒ BLE 反复抢、每次都被上限掐掉
     //     ⇒ 共存这一招**没解决问题**，要上"让出 VANRAW / 拉长连接间隔"那几条（见提交说明）。
+    // ★ 抑制标志必须进去：开了 `o` 之后这一行要能一眼看出"现在是被抑制的"，
+    //   否则"按了没反应"和"按了但状态行没变"分不清（判据要落在同一行里）。
     dash_logf("obd-ble: state=%s peer=%s conn=%u drop=%lu connects=%lu cs=%lu/%lu"
-              " radio=%s win=%lu cap=%lu\n",
+              " radio=%s win=%lu cap=%lu%s\n",
               g_obd_ble.stateName(), g_obd_ble.peerText(),
               (unsigned)g_obd_ble.connected(), (unsigned long)g_obd_ble.dropped(),
               (unsigned long)g_obd_ble.connects(),
               (unsigned long)g_obd_ble.csAttempts(), (unsigned long)g_obd_ble.csCalls(),
               g_obd_ble.radioHeld() ? "BT" : "balance",
-              (unsigned long)g_obd_ble.radioWindows(), (unsigned long)g_obd_ble.radioCapped());
+              (unsigned long)g_obd_ble.radioWindows(), (unsigned long)g_obd_ble.radioCapped(),
+              g_obd_ble.inhibited() ? " **射频抑制=开(串口 o 切换)**" : "");
 #endif
 #if VAN_SNIFF
     van_sniff_report(now);
