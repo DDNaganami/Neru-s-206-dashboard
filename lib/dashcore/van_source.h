@@ -123,14 +123,38 @@ static const float    kCoolantBias   = 39.0f;  // ℃ = raw − 39
 static const float    kOutsideBase   = 0x50;   // ℃ = (raw − 0x50) / 2
 static const float    kOutsideDiv    = 2.0f;
 
-static const uint8_t  kOilTempOffset = 7;    // 0x4FC.data[7]
+// ★★ 下标是**逐个核过的**（别照抄我第一版的 `data[7]`，那是错的）：
+//   外部 `4FC_1.json` 的 bytes 数组按线上顺序逐条列了 Byte 0..Byte 10，
+//   与我们实测载荷同构、可逐字节对齐：
+//     idx:  0     1     2  3      4     5     6      7      8      9     10
+//     含义: Byte0 车门  保养剩里程 变速箱 Byte5 机油温 油量%  机油位  ?     LPG
+//   实测（两份切片）：`C0 00 01 2C F0 00 00 00 …` ⇒ **`data[6]` = 机油温度**。
+// ★★★ 但**本车这一格恒为 `0x00`**（两份切片共 9 帧，无一例外；对照 `data[5]`
+//   灯光位域是活的：切片 B 读到 `08` = 近光）。按公式 `0x00 − 40 = −40 ℃`。
+//   ⇒ 现实结论：**这台 1.4 HDi 的 BSI 不在 `4FC` 里报机油温度**（传感器能买到，
+//     但这条总线上没有它的数值）。所以这一格**永远不会新鲜**，UI 不该指望它。
+//   要真的显示机油温度，只能走 OBD 的厂商专用 PID（mode 22）—— 标准 PID 里没有油温。
+//   ★ 别把它删掉：`data[6]` 本身是对的，换一台车/换一块 BSI 就可能真有值；
+//     留着的代价只是"永远不置位"，而写错下标的代价是**显示油量当油温**。
+static const uint8_t  kOilTempOffset = 6;    // data[6],不是 data[7]（data[7] 是油量%）
 static const float    kOilTempBias   = 40.0f;  // ℃ = raw − 40
 
-// ★ `0xFF` 是**哨兵值,不是温度**。`8A4.json` 原文:
-//   "Coolant temperature 0x3C = (60-39) = 21 degrees / **FF until key set to Ignition**"。
-//   我们自己的切片里就见过 `data[2]` 恒为 `0xFF`(2026-09-22,当时只是通电没点火)。
-//   ⇒ 若照公式算会得到 216 ℃,一个"看着像异常高温"的假值 —— 必须挡掉。
-static const uint8_t kVanTempInvalid = 0xFFu;
+// ★★ 哨兵值**两格不一样**，这是实测出来的，别想当然（2026-09-28 修）：
+//   · 水温：`0xFF`。`8A4.json` 原文 "FF until key set to Ignition"。
+//   · 外界温度：**`0x00`**。依据是**同一份 JSON 的示例帧**：
+//       `8A4 W00 8F 03 3C 1A 6E 90 7D`
+//         data[2] = 0x3C = 21 ℃（水温示例）
+//         data[6] = 0x7D = 22.5 ℃（外界温度示例）
+//     而**未到点火档**的帧里这两格是 `data[2]=FF` / `data[6]=00`
+//     （我们三份切片实测：`AF 01 FF 03 00 00 00`）。
+//   ⇒ 若只挡 `0xFF`，会把 `0x00` 当成有效值算成 **−40 ℃** 并显示出去 —— 比不显示更糟。
+//   ★ 这条正是"外部示例帧要和实测帧一起看"的价值：单看那个公式推不出 0x00 是哨兵。
+static const uint8_t kVanTempInvalid      = 0xFFu;   // 水温的哨兵
+static const uint8_t kVanOutsideInvalid   = 0x00u;   // 外界温度的哨兵（另一套！）
+// 机油温度的哨兵**也是 `0x00`** —— 而且本车这一格**恒为 `0x00`**（§4.8.1b：
+// 两份切片 9 帧全是 0，而同帧 `data[5]` 灯光位域是活的）⇒ 按公式会算出 **−40 ℃**。
+// 所以本车机油温度**永远不置位**；留常量是为了"换台车可能有值"时不至于显示错值。
+static const uint8_t kOilTempInvalid      = 0x00u;
 
 // 温度帧的**过期窗口**。`0x8A4` 周期 500 ms(外部定义),`0x4FC` 实测 4.7/s。
 // 取 3 s = 6 个周期:与 data_service 里 OBD 那套"3 秒无新数据就回退"同一个量级,

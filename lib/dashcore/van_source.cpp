@@ -61,7 +61,10 @@ void VanSource::onPacket(const VanPacket& pkt) {
     }
     if (kOutsideOffset < pkt.len) {
       const uint8_t raw = pkt.data[kOutsideOffset];
-      if (raw != kVanTempInvalid) {
+      // ★ 外界温度的哨兵是 **0x00**（与水温的 0xFF **不是同一套**）——
+      //   依据见 van_source.h 的 kVanOutsideInvalid 注释（示例帧 + 实测帧对照）。
+      //   只挡 0xFF 的话，0x00 会被算成 −40 ℃ 并当成有效值送上去。
+      if (raw != kVanOutsideInvalid) {
         outside_c_ = ((float)raw - kOutsideBase) / kOutsideDiv;
         outside_valid_ = true;
         any = true;
@@ -104,10 +107,12 @@ void VanSource::onPacket(const VanPacket& pkt) {
         door_change_ms_ = pkt.rx_ms;   // 相对基线的**活动**
       }
     }
-    // 机油温度(§4.8)。`0x4FC` 的实测 n = 11 ⇒ data[7] 恒可读,长度判据只挡短帧。
+    // 机油温度(§4.8)。`0x4FC` 的实测 n = 11 ⇒ `data[6]` 恒可读,长度判据只挡短帧。
+    // ★ 哨兵是 **`0x00`** —— **本车这一格恒为 `0x00`**（两份切片 9 帧无一例外），
+    //   按公式会算出 **−40 ℃** 并标成有效，比不显示更糟（见 van_source.h 的 kOilTempInvalid）。
     if (kOilTempOffset < pkt.len) {
       const uint8_t raw = pkt.data[kOilTempOffset];
-      if (raw != kVanTempInvalid) {
+      if (raw != kOilTempInvalid) {
         oil_temp_c_ = (float)raw - kOilTempBias;
         oil_temp_valid_ = true;
         oil_ms_ = pkt.rx_ms;

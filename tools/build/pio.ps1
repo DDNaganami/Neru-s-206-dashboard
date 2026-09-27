@@ -1,102 +1,141 @@
-﻿<#
-  pio.ps1 —— 笔记本上跑 PlatformIO 的**唯一入口**（把踩过的环境坑全固化成一处）
+<#
+  pio.ps1 -- the ONLY entry point for running PlatformIO on the laptop
+             (every environment trap this machine has is baked in here)
 
-  为什么要有它（2026-09-27 一天之内踩了四个坑，每个都能浪费半小时）：
+  WHY THIS SCRIPT EXISTS -- 7 traps, each one cost half an hour when it was hit:
 
-  1. **必须用 PlatformIO 自己的 venv python**
-     `C:\.platformio\penv\Scripts\python.exe`
-     ★ 这台机器上还有另一个 python（`...\pythoncore-3.14-64\python.exe`），
-       它**装了 platformio 6.2.0 但没装 esptool/intelhex** ⇒ 编 `esp32s3` 时看不出来
-       （不打包 bin），一到要生成 `bootloader.bin` 就报
-       `ModuleNotFoundError: No module named 'intelhex'`。
-       ★ 而 `tool-esptoolpy/esptool.py` 只有 `#!/usr/bin/env python`，
-         它会去 PATH 上找 python ⇒ **把 penv 的 Scripts 放进 PATH 最前**也一样重要。
+  1. MUST use PlatformIO's own venv python:
+       C:\.platformio\penv\Scripts\python.exe
+     There is another python on this machine (...\pythoncore-3.14-64\python.exe)
+     that has platformio 6.2.0 but NOT esptool/intelhex.  Building `esp32s3` looks
+     fine (no bin packing), but the moment bootloader.bin is needed it fails with
+     `ModuleNotFoundError: No module named 'intelhex'`.
+     Also: tool-esptoolpy/esptool.py has a bare `#!/usr/bin/env python` shebang and
+     resolves python from PATH -> penv\Scripts must come FIRST on PATH.
 
-  2. **中文用户名会把宿主机工具链打死**（GCC/ld/as）
-     症状**看着像链接失败、其实是连中间 .o 都写不出来**：
-       `Fatal error: can't create C:\Users\<中文>\AppData\Local\Temp\ccXXXX.o`
-       `ld.exe: cannot find .../crt2.o / -lstdc++ / -lmingw32 ...`（一连串）
-     修法：**只给编译器一个 ASCII 的 TMP**（GCC 优先读 `TMP`，其次 `TEMP`）：
-       `$env:TMP='C:\temp'`，并且**不要再设 `$env:TEMP`** ——
-       TEMP 一改，Python 的用户 site-packages 就 import 不到（见坑 3）。
-     ★ 工具链本身也搬到了 `C:\mingw64`（winget 装的那份在带中文的 WinGet 路径下）。
+  2. A non-ASCII username kills the host toolchain (GCC/ld/as).
+     The symptom LOOKS like a link failure but is really "cannot write the .o":
+       Fatal error: can't create C:\Users\<cjk>\AppData\Local\Temp\ccXXXX.o
+       ld.exe: cannot find .../crt2.o / -lstdc++ / -lmingw32 ...
+     Fix: give the compiler an ASCII-only TMP (GCC reads TMP before TEMP):
+       TMP=C:\temp   and do NOT set TEMP (see trap 3).
+     The toolchain itself also lives at C:\mingw64.
 
-  3. **别改用户级的 `TEMP`**。曾经把它指到 `C:\temp` 求 ASCII，结果
-     `intelhex` 直接 import 不到（用户 site-packages 的解析跟着变）。
-     只改 `TMP` 就够，GCC 认它。
+  3. NEVER change the user-level TEMP.  Pointing it at C:\temp for ASCII broke
+     `import intelhex` (user site-packages resolution follows TEMP).
+     Setting TMP alone is enough -- GCC honours it.
 
-  4. **构建目录要 ASCII**：`C:\206dash-build`
-     （仓库在 `C:\Users\张九思\...` 里，路径带中文）。
+  4. The build directory must be ASCII: C:\206dash-build
+     (the repo lives under C:\Users\<cjk>\...).
 
-  5. ★★ **pioarduino 那几档还得从 ASCII 镜像编**（2026-09-27 实测）
-     pioarduino 平台自己的构建脚本（`platforms/espressif32@src-*/builder/frameworks/
-     arduino.py` → `pioarduino-build.py`）在**中文路径**下解不出 `FRAMEWORK_DIR`：
-       `TypeError: argument should be a str or an os.PathLike object where
-        __fspath__ returns a str, not <class 'NoneType'>`
-     ⇒ 用 pioarduino 的档（`esp32s3-rgb*`）要从**纯 ASCII 的镜像**编：
-       `robocopy C:\Users\张九思\206Dash\Neru-s-206-dashboard C:\206dash-repo /MIR /XD .git .pio`
-       然后在 `C:\206dash-repo` 里编（实测：编译 SUCCESS，128 秒）。
-     （官方 `espressif32` 的档 —— `esp32s3` / `esp32dev` —— 在原路径能编，不用镜像。）
+  5. The pioarduino environments must be built from an ASCII MIRROR.
+     pioarduino's own build script cannot resolve FRAMEWORK_DIR under a CJK path:
+       TypeError: argument should be a str or an os.PathLike object where
+        __fspath__ returns a str, not <class 'NoneType'>
+     So for the esp32s3-rgb* environments:
+       robocopy <repo> C:\206dash-repo /MIR /XD .git .pio
+     and build inside C:\206dash-repo.  (The official espressif32 envs --
+     esp32s3 / esp32dev -- build fine in the original path.)
 
-  用法（在仓库里的任意 PowerShell 里；**pio 的参数要整串用引号包起来**）：
-    .\tools\build\pio.ps1 -Cmd 'test -e native'
-    .\tools\build\pio.ps1 -Cmd 'run -e esp32s3-rgb'
-    .\tools\build\pio.ps1 -Cmd 'run -e esp32s3 -t upload --upload-port COM7'
+  6. PYTHONIOENCODING=utf-8 is NOT optional -- without it an UPLOAD CRASHES
+     HALFWAY AND BRICKS THE SCREEN (measured 2026-09-28; cost: one board black
+     for ~15 minutes plus one 10-minute timeout).
+     Symptom: `pio run -t upload` connects, runs the stub, starts writing
+     bootloader.bin -- and then:
+       UnicodeEncodeError: 'gbk' codec can't encode character '\u2591'
+     Root cause is neither the board nor USB: this machine's ANSI code page is
+     936 (GBK) and esptool draws its write progress bar with U+2591 (the light
+     shade block).  Encoding stdout as GBK throws, the upload thread dies in the
+     middle of writing the bootloader, so the boot region is erased but not
+     rewritten => the board is dark and the serial port is completely silent (the
+     chip is alive and USB still enumerates, there is just no firmware to run).
+     NOTE: `[Console]::OutputEncoding = UTF8` below does NOT help -- that only
+     changes the .NET side; the python subprocess follows PYTHONIOENCODING and
+     the machine ANSI code page.  Those are two different things here.
+     Setting it before spawning the child (step 4.5 below) is the fix.
+     RECOVERY after being bitten: no shorting, no manual download mode --
+     just flash again (the chip is fine; a reflash rewrites 0x00000000).
 
-  ★★ **两块 2.8C 真正跑的是哪一档**（编错会被代码里的闸门拦下 —— 那正是闸门的用处）：
-    · 主板（右屏）= `esp32s3-rgb-master-now`
-    · 从板（左屏）= `esp32s3-rgb-slave-now`
-    这两个是**无线档**（ESP-NOW，`LINK_PHY_UART=0`）+ 自己的分区表
-    `partitions-s3-now.csv`。而 `esp32s3` 是**有线链路**档 ⇒ 它与 `VAN_RX_PIN=44`
-    不能共存（`lib/dashcore/van_phy_gpio.cpp` 里那道 `#error` 就是拦这个）。
+  7. THIS FILE IS DELIBERATELY PURE ASCII, and that is now a rule.
+     Measured 2026-09-28: after an edit tool rewrote this file as BOM-less
+     UTF-8, Windows PowerShell 5.1 (the one this harness invokes as
+     `powershell -File`) parsed it as ANSI/GBK; the block comment was no longer
+     recognised AS a comment and the whole body was EXECUTED as code:
+       Missing ')' in function parameter list
+       The term '<cjk text>' is not recognized as a cmdlet ...
+     So: a BOM-less UTF-8 .ps1 is not a cosmetic problem, the script simply does
+     not run.  Keeping this file ASCII makes the encoding question moot.
+     The long-form Chinese notes that used to live here are in docs/BUILD-ENV.md.
+     If you ever DO add non-ASCII text back, save with a UTF-8 BOM and verify:
+       [IO.File]::ReadAllBytes($p)[0..2]   # must be EF BB BF
 
-  ★ 为什么是 `-Cmd '整串'` 而不是直接 `pio.ps1 run -e esp32s3`：
-    PowerShell 会把 `-e` 当成**本脚本自己的参数名**（报 "parameter name 'e' is
-    ambiguous"，匹配到 `-ErrorAction`），而 `--` 分隔符在 `-File` 调用下也不吃。
-    整串传参绕开这一切，也不用管谁在解析引号。
+  USAGE (from any PowerShell; ALWAYS quote the whole -Cmd argument):
+     .\tools\build\pio.ps1 -Cmd 'test -e native'
+     .\tools\build\pio.ps1 -Cmd 'run -e esp32s3-rgb'
+     .\tools\build\pio.ps1 -Cmd 'run -e esp32s3 -t upload --upload-port COM7'
 
-  退出码：透传 pio 的退出码（0 成功）。
+  WHICH ENVIRONMENT THE TWO 2.8C BOARDS ACTUALLY RUN:
+     master (right screen) = esp32s3-rgb-master-now
+     slave  (left  screen) = esp32s3-rgb-slave-now
+  Both are wireless (ESP-NOW, LINK_PHY_UART=0) with their own partition table
+  partitions-s3-now.csv.  `esp32s3` is the WIRED-link env and cannot coexist with
+  VAN_RX_PIN=44 (the #error in lib/dashcore/van_phy_gpio.cpp guards exactly that).
+
+  WHY `-Cmd '<one string>'` instead of passing pio arguments directly:
+  PowerShell would treat `-e` as a parameter of THIS script ("parameter name 'e'
+  is ambiguous", matching -ErrorAction), and `--` does not help under -File.
+  One string sidesteps all of it.
+
+  Exit code: pio's exit code is passed through (0 = success).
 #>
 param(
   [Parameter(Mandatory = $true, Position = 0)][string]$Cmd,
-  [switch]$DryRun     # 只打印环境与将要执行的命令，不真跑
+  [switch]$DryRun     # only print env + the command that would run
 )
 
 $ErrorActionPreference = 'Continue'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 
-# ---- 1. python：优先 PlatformIO venv ----
+# ---- 1. python: prefer the PlatformIO venv ----
 $py = 'C:\.platformio\penv\Scripts\python.exe'
 if (-not (Test-Path $py)) {
-  Write-Host "★ 找不到 PlatformIO 的 venv python: $py" -ForegroundColor Red
-  Write-Host "  （没有它就没有 intelhex/esptool，打包 bin 会失败）" -ForegroundColor Yellow
+  Write-Host "ERROR: PlatformIO venv python not found: $py" -ForegroundColor Red
+  Write-Host "       (without it there is no intelhex/esptool; bin packing fails)" -ForegroundColor Yellow
   exit 2
 }
 
-# ---- 2. PATH：penv 的 Scripts（给 esptool.py 的 shebang 用）+ mingw64（宿主机编译器） ----
+# ---- 2. PATH: penv Scripts (for esptool.py's shebang) + mingw64 (host compiler) ----
 $penvScripts = Split-Path $py -Parent
 $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
 $user = [Environment]::GetEnvironmentVariable('Path', 'User')
 $env:Path = "$penvScripts;C:\mingw64\bin;$machine;$user"
 
-# ---- 3. 临时目录：只改 TMP（GCC 认它），**不动 TEMP**（Python 要用真的那个） ----
+# ---- 3. temp dir: set TMP only (GCC honours it), leave TEMP alone (python needs it) ----
 if (-not (Test-Path 'C:\temp')) { New-Item -ItemType Directory -Force -Path 'C:\temp' | Out-Null }
 $env:TMP = 'C:\temp'
 Remove-Item Env:TEMP -ErrorAction SilentlyContinue
 
-# ---- 4. 构建目录：纯 ASCII ----
+# ---- 4. build dir must be ASCII ----
 if (-not $env:PLATFORMIO_BUILD_DIR) { $env:PLATFORMIO_BUILD_DIR = 'C:\206dash-build' }
 
+# ---- 4.5 python stdout MUST be utf-8 (trap 6 above) ----
+# Without this, esptool's progress bar (U+2591) raises UnicodeEncodeError under the
+# machine's GBK code page, the upload thread dies mid-bootloader, and the board goes
+# dark with a silent serial port.  Must be PYTHONIOENCODING -- the
+# [Console]::OutputEncoding line above only affects the .NET side.
+$env:PYTHONIOENCODING = 'utf-8'
+
 Write-Host ("pio.py   : " + $py) -ForegroundColor DarkGray
-Write-Host ("TMP      : " + $env:TMP + "   (TEMP 故意不设)") -ForegroundColor DarkGray
+Write-Host ("TMP      : " + $env:TMP + "   (TEMP deliberately unset)") -ForegroundColor DarkGray
 Write-Host ("build dir: " + $env:PLATFORMIO_BUILD_DIR) -ForegroundColor DarkGray
 Write-Host ("cmd      : pio " + $Cmd) -ForegroundColor DarkGray
 Write-Host ""
 if ($DryRun) { exit 0 }
 
-# ---- 5. 在仓库根跑（脚本在 tools\build\ 下，上两级就是仓库根） ----
-# ★ `-Cmd '整串'` 按空格切开再传（pio 的参数里没有带空格的值，除了路径 —— 真遇到
-#   带空格的路径，那一次就手动 set 环境自己跑，别把这个脚本搞复杂）。
+# ---- 5. run from the repo root (this script lives in tools\build\, so two levels up) ----
+# Split the single -Cmd string on whitespace.  No pio argument contains a space
+# except paths; if a path with spaces ever shows up, set the environment by hand
+# for that one run rather than complicating this script.
 $pioArgv = @($Cmd -split '\s+' | Where-Object { $_ })
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Push-Location $repoRoot
