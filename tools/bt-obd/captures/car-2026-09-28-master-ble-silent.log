@@ -1,0 +1,22 @@
+﻿# Car test capture 2 (section 7.2 attempt): MASTER board flashed with -DOBD_BLE=1, 2026-09-28 laptop side.
+# Port COM7 (MASTER), firmware esp32s3-rgb-master-now rebuilt WITH BLE (firmware.bin 1709984,
+# factory.bin 1775520 -- both verified CHANGED from the no-BLE sizes 1497072 / 1562608).
+# Verdict: board goes SILENT right after the ROM stage. Reproduced twice, including a full
+# factory flash (0x0, hash verified). No application line is ever printed.
+# Lines below are the COMPLETE output of a 22 s capture after an esptool hard reset.
+
+ESP-ROM:esp32s3-20210327
+rst:0x15 (USB_UART_CHIP_RESET),boot:0xb (SPI_FAST_FLASH_BOOT)
+# ^^ that is all. No `boot: reason=`, no `obd:`, no `psram :`, nothing from the app.
+# For contrast, the SAME board with -DOBD_BLE=0 boots fine and prints the full banner
+# (see car-2026-09-28-pre-master.log).
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0xb (SPI_FAST_FLASH_BOOT)
+Saved PC:0x4037f5fe
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce2820,len:0x10cc
+load:0x403c8700,len:0xc2c
+load:0x403cb700,len:0x30c0
+entry 0x403c88b8
