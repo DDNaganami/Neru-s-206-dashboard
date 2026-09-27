@@ -1,0 +1,29 @@
+﻿# Car test capture 1: SLAVE board, section 3.2 "key to ON" 60 s window, 2026-09-28 laptop side.
+# Port COM8 (SLAVE), firmware esp32s3-rgb-slave-obdtest (BLE + gate).
+# Verdict: section 3.2 FAILURE branch -- the gate opened on the 15 s cap, BLE never connected.
+# Lines below are verbatim from the board (UTF-8); nothing rewritten.
+
+obd-ble: ← connect() 受理=1 立即返回耗时=0ms rssi=-70 内部free=81KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+SRC speed=sim rpm=sim coolant=sim intake=sim | v=186.5km/h 1283rpm 90.5C 31.5C
+obd-ble: state=connecting peer=aa:bb:cc:12:22:33 conn=0 drop=0 connects=0 cs=5/5 radio=balance win=1 cap=1 fails=5 lastFail=0x0D
+link: 启动闸门开了 —— BLE 没连上(到 15s 上限:仪表优先,不再等 OBD),等了 15000ms ⇒ 现在启链路 PHY(射频让出来了)
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-70 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+espnow: tx_frames=28 tx_bytes=600 tx_fail=0 last_err=0 done=28 done_fail=0 pending=0 txring=0 | rx_frames=112 rx_bytes=1688 rx_foreign=0 overflow=0 gap_rx=12ms
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-70 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+espnow: tx_frames=32 tx_bytes=692 tx_fail=0 last_err=0 done=32 done_fail=0 pending=0 txring=0 | rx_frames=185 rx_bytes=2770 rx_foreign=0 overflow=0 gap_rx=58ms
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-70 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+SRC speed=van rpm=van coolant=van intake=link | v=0.0km/h 902rpm 83.0C 34.0C
+link: locked tick_age=39ms seen=48 seq_gap=3 miss=5 offset=8423ms
+obd-ble: state=connecting peer=aa:bb:cc:12:22:33 conn=0 drop=0 connects=0 cs=8/8 radio=balance win=1 cap=1 fails=8 lastFail=0x0D
+espnow: tx_frames=37 tx_bytes=796 tx_fail=0 last_err=0 done=37 done_fail=0 pending=0 txring=0 | rx_frames=240 rx_bytes=3547 rx_foreign=0 overflow=0 gap_rx=58ms
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-70 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+espnow: tx_frames=41 tx_bytes=888 tx_fail=0 last_err=0 done=41 done_fail=0 pending=0 txring=0 | rx_frames=312 rx_bytes=4612 rx_foreign=0 overflow=0 gap_rx=49ms
+obd-ble: ← connect() 受理=1 立即返回耗时=1ms rssi=-70 内部free=29KB（★ 异步：结果看 onConnect / onConnectFail）
+obd-ble: onConnectFail reason=0x0D ← ★ 这才是真错误码
+SRC speed=van rpm=van coolant=van intake=link | v=0.0km/h 911rpm 84.0C 34.0C
+espnow: tx_frames=182 tx_bytes=4076 tx_fail=0 last_err=0 done=170 done_fail=12 pending=0 txring=0 | rx_frames=2373 rx_bytes=35131 rx_foreign=0 overflow=0 gap_rx=4ms

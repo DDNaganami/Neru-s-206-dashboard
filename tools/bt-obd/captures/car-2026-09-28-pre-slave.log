@@ -1,0 +1,16 @@
+﻿# Bench (pre-test) capture A: SLAVE board boot, 2026-09-28, laptop side, section 3.1.
+# Port COM8, firmware esp32s3-rgb-slave-obdtest (BLE + gate), captured after an RTS reset.
+# Result: role=SLAVE and the BLE-mount line are both present -> section 3.1 slave criterion PASS.
+# src: C:\temp\boot-slave.log (raw board output, UTF-8), lines kept verbatim.
+
+ESP-ROM:esp32s3-20210327
+rst:0x15 (USB_UART_CHIP_RESET),boot:0xb (SPI_FAST_FLASH_BOOT)
+link: 从板侧就绪(§5, LINK_ROLE=0) ESP-NOW ch=6 (no pins) @1000000—— 真 PHY(ESP-NOW) —— 收主板的 TICK/DATA，发 HELLO(每 5s 直到收到对端)+STATUS(2Hz,§3)
+ESP-ROM:esp32s3-20210327
+rst:0x15 (USB_UART_CHIP_RESET),boot:0xb (SPI_FAST_FLASH_BOOT)
+boot: reason=UNKNOWN n=83 (raw=11) up=242ms | prev=UNKNOWN (raw=11) prev_up=100min | hb=22 | role=SLAVE
+obd: BLE 那条路已挂上(目标服务 FFF0 / 通知 FFF1 / 写 FFF2) —— start() 推迟到显示初始化之后
+layout: role=SLAVE last=LEFT/rpm+coolant slots=[RIGHT/speed+intake | LEFT/rpm+coolant]
+obd: BLE start() = 1  heap=82KB(面板之后)
+obd: heap_caps 内部 free 144→82 KB(掉 61) largest 91→41 KB | PSRAM free 7287→7287 KB(掉 0)
+obd: 从板角色 ⇒ 射频占用上限 4000ms（压久了左屏会掉进"数据不可信"）

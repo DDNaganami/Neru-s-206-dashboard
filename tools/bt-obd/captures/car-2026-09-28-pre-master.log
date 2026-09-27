@@ -1,0 +1,18 @@
+﻿# Bench (pre-test) capture B: MASTER board boot, 2026-09-28, laptop side, section 3.1.
+# Port COM7, firmware esp32s3-rgb-master-now (no BLE), captured after an esptool hard reset.
+# Result: role=MASTER and "obd: 本机未启用(-DOBD_SERIAL=0,-DOBD_BLE=0)" -> section 3.1 master criterion PASS.
+# Note: only an esptool reset brought this board back to life here; a bare RTS pulse did not.
+# src: C:\temp\boot-master.log (raw board output, UTF-8), lines kept verbatim.
+
+boot: reason=UNKNOWN n=9 (raw=11) up=239ms | prev=UNKNOWN (raw=11) prev_up=100min | hb=17 | role=MASTER
+obd: 本机未启用(-DOBD_SERIAL=0,-DOBD_BLE=0) —— 分工 v2 下这正是主板该有的样子(进气由从板经链路回传)
+link: 主板侧就绪 ESP-NOW ch=6 (no pins) @1000000—— 真 PHY(ESP-NOW)
+layout: role=MASTER last=RIGHT/speed+intake slots=[LEFT/rpm+coolant | RIGHT/speed+intake]
+link: 首次收到从板帧(STATUS, role=0)
+ESP-ROM:esp32s3-20210327
+rst:0x15 (USB_UART_CHIP_RESET),boot:0xb (SPI_FAST_FLASH_BOOT)
+boot: reason=UNKNOWN n=10 (raw=11) up=239ms | prev=UNKNOWN (raw=11) prev_up=100min | hb=17 | role=MASTER
+obd: 本机未启用(-DOBD_SERIAL=0,-DOBD_BLE=0) —— 分工 v2 下这正是主板该有的样子(进气由从板经链路回传)
+link: 主板侧就绪 ESP-NOW ch=6 (no pins) @1000000—— 真 PHY(ESP-NOW)
+layout: role=MASTER last=RIGHT/speed+intake slots=[LEFT/rpm+coolant | RIGHT/speed+intake]
+link: 首次收到从板帧(STATUS, role=0)
