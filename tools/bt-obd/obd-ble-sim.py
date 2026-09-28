@@ -552,11 +552,22 @@ async def selftest(args, api):
             for s in adv.data_sections:
                 print("  ad section    : type=0x%02X len=%d" % (s.data_type, s.data.length))
             hit = SERVICE_UUID in uuids
-            print("  VERDICT       : %s" % ("FFF0 is in the advertisement -> the board's PASSIVE scan will see it"
-                                            if hit else
-                                            "FFF0 NOT in the advertisement -> board would never find us"))
+            # ★★ 2026-09-29 订正：这里原来打的是
+            #   "VERDICT: FFF0 NOT in the advertisement -> board would never find us"。
+            #   那句话**是错的，而且误导过一次判断**：
+            #     · 本机 watcher **看不到自己的广播**（Windows 会滤掉本机地址）
+            #       ⇒ 这里列出来的每一条都是**邻居设备**的广播，不是我们这个 sim 的；
+            #     · 于是 "FFF0 NOT in the advertisement" 必然出现，却被读成
+            #       "Windows 把服务 UUID 放进 scan response" ⇒ 有人据此去改固件
+            #       （`setActiveScan(true)`）。**那个结论没有被这条自检证明过。**
+            #   ⇒ 现在只报观察、不下判决："我们这条广播里到底有没有 FFF0"只能由**对端**判
+            #     （板子的 `onDiscovered` / `isAdvertisingService` 命中）。
+            print("  NOTE          : this host CANNOT see its own advertisement (Windows filters")
+            print("                  the local address), so every device listed here is a")
+            print("                  NEIGHBOUR, not this sim. Judgement about OUR advertisement")
+            print("                  must come from the peer (board onDiscovered hit).")
             if hit:
-                done.set()
+                print("                  (a neighbour happens to carry %s)" % SERVICE_UUID)
         except Exception as e:
             print("watcher handler error: %s %s" % (type(e).__name__, e))
 

@@ -221,6 +221,52 @@ python tools\bt-obd\obd-ble-sim.py --mode idle --rpm 2400 --coolant 90 --intake 
 
 ---
 
+## 9. 主动扫描（`setActiveScan(true)`）的去留 —— **桌面侧的判定**（2026-09-29）
+
+> 这一行是 B 方案留下的实验改动，`f0e3214` 明确写"去留需桌面侧决定"。判定的结论是：
+
+**① 今天重跑车上验证单时：先别动它。** 今天要验的是"修好的建连超时"，
+一次只改一个变量 —— 现在镜像里是"主动扫描 + 修好的超时"，也正是台面上**连上真头**
+（`real-dongle-CONNECTED` / `unitsfix-default-timeout`）的那一版。
+
+**② 车上跑完之后，用下面 5 分钟的台面 A/B 决定它**，判据与配方都写好了。
+
+### 9.1 当初为什么要它 —— 以及那个理由为什么站不住
+
+- 当初的依据是 `obd-ble-sim.py --selftest` 打出来的
+  `VERDICT: FFF0 NOT in the advertisement -> board would never find us`，
+  据此认为"Windows 把服务 UUID 放进 scan response ⇒ 被动扫描永远匹配不上"。
+- ★ **那句话是工具自己的 bug**：本机 watcher **看不到自己的广播**（Windows 会滤掉本机地址），
+  所以它逐条打的其实是**邻居设备**的广播 —— "FFF0 不在广播里"必然出现，与我们的广播无关。
+  该判决已从工具里删掉（改成只报观察、并写明判据只能来自对端）。
+- ⇒ **"被动扫描匹配不上"这条结论从未被证据支持**；真正让所有连接失败的是
+  **15ms 建连超时**（`setConnectTimeout` 单位写错，见 `CAR-TEST-BLE-V2-RESULT.md` ⑤.11）。
+
+### 9.2 现在手上有的两侧证据
+
+| 事实 | 证据 |
+|---|---|
+| **真头**的 FFF0 **在广播包里** | 车上**被动**固件打出 `state=connecting peer=aa:bb:cc:12:22:33`（`isAdvertisingService(FFF0)` 命中 ⇒ 只能来自 ADV_IND） |
+| 被动固件连**假头**失败 | 本执行单 §8 实测（假头 66 秒 `subs=0 cmd=0`）—— ★ 但那时超时还是 15ms，**不能**把失败归因给扫描模式 |
+| 主动固件（超时仍 15ms）能连假头 | B 方案实测 —— 最可能只是"假头广播密，15ms 窗口里偶尔抓得到" |
+| 修好超时 + 主动 | 真头连上、`timeout=3000` 那版 150 秒零掉线、默认档 19 次 `ready` |
+
+### 9.3 A/B 配方（5 分钟，台面；真头要能供电/在被读到的地方）
+
+1. 从板改回被动：`lib/dashcore/obd_transport_ble.cpp` 里 `scan_->setActiveScan(true)` → `false`，
+   重编 `esp32s3-rgb-slave-obdtest` 并刷入。
+   ★ **必须验证镜像真的重编**（`firmware.bin` 大小/时间戳变化 + 编译输出里编了
+   `obd_transport_ble.cpp.o`）—— 别只看 `[SUCCESS]`。
+2. 抓 60 秒（用 `tools/serial-capture/watch-utf8.ps1`）。
+3. 判据：
+   - ✅ `obd-ble: 特征已配齐（FFF1 已订阅 / FFF2 可写）⇒ state=ready` 出现，
+     且 `state=ready … conn=1 fails=0` 维持 ≥60 秒 ⇒ **回被动**（少一次 SCAN_REQ/RSP 往返，
+     对共存预算更友好，也回到原来的测试配置）；
+   - ❌ 不出现（而主动那版能）⇒ **保留主动**，并把"为什么真头也需要主动"查清再定
+     （那时它就是一条真结论，不再是 B 方案的副产品）。
+
+---
+
 ## 附：本单涉及的文件
 
 | 文件 | 作用 |
