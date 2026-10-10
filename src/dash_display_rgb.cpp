@@ -307,6 +307,8 @@ static const size_t kPanelInitCount = sizeof(kPanelInit) / sizeof(kPanelInit[0])
 // 双缓冲状态
 // ------------------------------------------------------------
 static esp_lcd_panel_handle_t g_panel = nullptr;
+static uint32_t g_fb_count = 0;   // 2026-10-10: 原先是 dash_display_init() 的局部变量，
+                                   //   创建段搬进 panel_create() 之后它得在两处可见 ⇒ 升为文件级。
 static lv_display_t* g_left = nullptr;
 static lv_display_t* g_right = nullptr;
 static uint8_t* g_fb[2] = {nullptr, nullptr};   // 驱动分配的**两块**整屏 fb(PSRAM)
@@ -1327,56 +1329,19 @@ static void pan_guard_reinit(void*) {
   dash_display_panel_reinit("guard");
 }
 
-void dash_display_init() {
-  // ---- ① 先把 RST/CS 那两颗扩展口的片子叫醒(TCA9554)----
-  tca9554_begin();
-  tca9554_set(BUZZER_EXIO_BIT, false);
-  // 复位脉冲:低 20ms → 高 → **等 250ms** 再发第一条命令。
-  // ★★ 2026-09-29 改（原来 10/50ms，照例程 ST7701_Reset()）：
-  //   ST7701 这一类面板"复位释放 → 吃第一条命令"通常要求 **≥120ms** 的等稳，
-  //   而 50ms 只在**面板本来就初始化好**的热复位下勉强够用；冷上电时它是从零
-  //   开始（内部电荷泵/PLL 要建立）⇒ 前几条初始化命令可能被吃掉 ⇒ 屏上就是
-  //   横纹 + 图像上移，而且**不会自己回来**（要重跑这 41 步）。
-  //   ⇒ 现在给足：低 20ms（>10µs 的要求，留足余量）+ 等 250ms（>120ms 的要求）。
-  //   ★ 代价只有 ~210ms 开机时间；换来的是"冷启动和热复位一样稳"。
-  tca9554_set(LCD_RST_EXIO_BIT, false); delay(20);
-  tca9554_set(LCD_RST_EXIO_BIT, true);  delay(250);
-  dash_logf("panel: 复位时序 RST低=20ms → 高等=250ms（2026-09-29：冷启动横纹/上移的对策）\n");
-
-  // ---- ② 3 线 SPI:只用来写初始化命令,不进画 ----
-  //   SCLK=GPIO2 / MOSI(SDA)=GPIO1,SPI2_HOST、模式 0、40MHz(例程的取值)。
-  //   ★ CS 由 EXIO3 手动拉(下面 tca9554_set),所以这里 spics_io_num = -1:
-  //     填成某个 GPIO 的话,驱动会去动一根**没接屏**的脚,而真正的 CS 一直浮着
-  //     —— 症状同样是全黑。
-  spi_bus_config_t buscfg = {};
-  buscfg.mosi_io_num = RGB_PIN_INIT_SDA;
-  buscfg.miso_io_num = -1;
-  buscfg.sclk_io_num = RGB_PIN_INIT_SCLK;
-  buscfg.quadwp_io_num = -1;
-  buscfg.quadhd_io_num = -1;
-  buscfg.max_transfer_sz = 64;
-  esp_err_t berr = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
-  if (berr != ESP_OK) {
-    dash_logf("rgb: 3线SPI 总线初始化失败 err=%d\n", (int)berr);
-  }
-  spi_device_interface_config_t devcfg = {};
-  devcfg.command_bits = 1;      // ← 第 9 位:0=命令 / 1=数据
-  devcfg.address_bits = 8;      // ← 后 8 位:内容
-  devcfg.mode = 0;
-  devcfg.clock_speed_hz = 40 * 1000 * 1000;
-  devcfg.spics_io_num = -1;     // CS 在 EXIO3 上(见上)
-  devcfg.queue_size = 1;
-  esp_err_t derr = spi_bus_add_device(SPI2_HOST, &devcfg, &g_spi);
-  if (derr != ESP_OK) {
-    dash_logf("rgb: 3线SPI 设备注册失败 err=%d\n", (int)derr);
-  }
-  tca9554_set(LCD_CS_EXIO_BIT, false);   // CS 低:开始收命令
-  delay(10);
-  panel_init_sequence();
-  tca9554_set(LCD_CS_EXIO_BIT, true);    // CS 高:命令写完就不再用 SPI 了
-  delay(10);
-
-  // ---- RGB 并口 ----
+// ============================================================================
+// panel_create() —— 面板创建段（2026-10-10 从 dash_display_init() 里**原样**搬出）
+//   为什么抽出来（实测判据，同一次故障、同一块屏）:
+//     · 只重写面板寄存器                ✗
+//     · + rgb 外设重启 / 重配时钟        ✗
+//     · **按复位键（完整启动）**          ✓
+//   ⇒ 缺的正是这一段：esp_lcd_new_rgb_panel() 从零建对象（两块 450KB fb、bounce buffer、
+//     DMA 描述符、按 cfg 重装 LCD_CAM 寄存器）+ 取回 fb + 复位双缓冲/脏区状态。
+//   ⇒ 抽成一份实现后，"全量重建"（del + panel_create）与开机走**同一条路**，
+//     不会再出现"开机能救、命令救不了"这种分叉。
+//   ★ 语义与原代码逐字一致：失败时打日志并留下 g_panel == nullptr，调用方据此判断。
+// ============================================================================
+static void panel_create(void) {
   esp_lcd_rgb_panel_config_t cfg = {};
   // ★ 18MHz 走 PLL160M(160/18≈8.89,分频器带小数部分,能凑准)。
   //   换了 pclk 记得一起看这一行:30MHz 也在这个源上试过(见文件头第 3 块)。
@@ -1450,13 +1415,12 @@ void dash_display_init() {
   esp_lcd_panel_init(g_panel);
 
   // ---- 拿到**两块** framebuffer 的地址(旧栈没有这个 API,见文件头)----
-  uint32_t fb_count = 0;
   err = esp_lcd_rgb_panel_get_frame_buffer(g_panel, 2, (void**)&g_fb[0], (void**)&g_fb[1]);
   if (err != ESP_OK || g_fb[0] == nullptr || g_fb[1] == nullptr) {
     dash_logf("rgb: 取 framebuffer 失败 err=%d(拿不到双缓冲就没法无撕裂)\n", (int)err);
     g_fb[0] = g_fb[1] = nullptr;
   } else {
-    fb_count = 2;
+    g_fb_count = 2;
     // 驱动用 `heap_caps_aligned_calloc` 分配 ⇒ 两块都是**全 0(黑)**。
     // 两块 fb 的收敛不靠"是不是完整"这个标记,而靠"每次刷新补拷上一次的脏区"
     // (见 pend_step):第一次整屏刷新之后,空闲时间里就会把整屏一小段一小段补进另一块。
@@ -1471,6 +1435,60 @@ void dash_display_init() {
     g_dmg_overflow = false;
     rows_reset();
   }
+}
+
+void dash_display_init() {
+  // ---- ① 先把 RST/CS 那两颗扩展口的片子叫醒(TCA9554)----
+  tca9554_begin();
+  tca9554_set(BUZZER_EXIO_BIT, false);
+  // 复位脉冲:低 20ms → 高 → **等 250ms** 再发第一条命令。
+  // ★★ 2026-09-29 改（原来 10/50ms，照例程 ST7701_Reset()）：
+  //   ST7701 这一类面板"复位释放 → 吃第一条命令"通常要求 **≥120ms** 的等稳，
+  //   而 50ms 只在**面板本来就初始化好**的热复位下勉强够用；冷上电时它是从零
+  //   开始（内部电荷泵/PLL 要建立）⇒ 前几条初始化命令可能被吃掉 ⇒ 屏上就是
+  //   横纹 + 图像上移，而且**不会自己回来**（要重跑这 41 步）。
+  //   ⇒ 现在给足：低 20ms（>10µs 的要求，留足余量）+ 等 250ms（>120ms 的要求）。
+  //   ★ 代价只有 ~210ms 开机时间；换来的是"冷启动和热复位一样稳"。
+  tca9554_set(LCD_RST_EXIO_BIT, false); delay(20);
+  tca9554_set(LCD_RST_EXIO_BIT, true);  delay(250);
+  dash_logf("panel: 复位时序 RST低=20ms → 高等=250ms（2026-09-29：冷启动横纹/上移的对策）\n");
+
+  // ---- ② 3 线 SPI:只用来写初始化命令,不进画 ----
+  //   SCLK=GPIO2 / MOSI(SDA)=GPIO1,SPI2_HOST、模式 0、40MHz(例程的取值)。
+  //   ★ CS 由 EXIO3 手动拉(下面 tca9554_set),所以这里 spics_io_num = -1:
+  //     填成某个 GPIO 的话,驱动会去动一根**没接屏**的脚,而真正的 CS 一直浮着
+  //     —— 症状同样是全黑。
+  spi_bus_config_t buscfg = {};
+  buscfg.mosi_io_num = RGB_PIN_INIT_SDA;
+  buscfg.miso_io_num = -1;
+  buscfg.sclk_io_num = RGB_PIN_INIT_SCLK;
+  buscfg.quadwp_io_num = -1;
+  buscfg.quadhd_io_num = -1;
+  buscfg.max_transfer_sz = 64;
+  esp_err_t berr = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
+  if (berr != ESP_OK) {
+    dash_logf("rgb: 3线SPI 总线初始化失败 err=%d\n", (int)berr);
+  }
+  spi_device_interface_config_t devcfg = {};
+  devcfg.command_bits = 1;      // ← 第 9 位:0=命令 / 1=数据
+  devcfg.address_bits = 8;      // ← 后 8 位:内容
+  devcfg.mode = 0;
+  devcfg.clock_speed_hz = 40 * 1000 * 1000;
+  devcfg.spics_io_num = -1;     // CS 在 EXIO3 上(见上)
+  devcfg.queue_size = 1;
+  esp_err_t derr = spi_bus_add_device(SPI2_HOST, &devcfg, &g_spi);
+  if (derr != ESP_OK) {
+    dash_logf("rgb: 3线SPI 设备注册失败 err=%d\n", (int)derr);
+  }
+  tca9554_set(LCD_CS_EXIO_BIT, false);   // CS 低:开始收命令
+  delay(10);
+  panel_init_sequence();
+  tca9554_set(LCD_CS_EXIO_BIT, true);    // CS 高:命令写完就不再用 SPI 了
+  delay(10);
+
+  // ---- RGB 并口 ----
+  panel_create();
+  if (g_panel == nullptr) return;   // 失败日志已在 panel_create 里打过（与原行为一致）
 
   // ---- 两个 lv_display:单屏版本先都画到同一块屏上 ----
   //   ★ 第二块屏到货后,把 g_right 换成它自己的 flush(见文件头"双屏出路");
@@ -1526,7 +1544,7 @@ void dash_display_init() {
                 (unsigned)RGB_PIXEL_CLOCK_HZ, 16);
   dash_logf("rgb: 双framebuffer num_fbs=%u fb0=%p fb1=%p(各 %uKB PSRAM) "
             "on_vsync=已注册\n",
-                (unsigned)fb_count, (void*)g_fb[0], (void*)g_fb[1],
+                (unsigned)g_fb_count, (void*)g_fb[0], (void*)g_fb[1],
                 (unsigned)(RGB_FB_BYTES / 1024u));
   // ★★ 本轮最关键的一行日志:换帧到底靠什么生效(有 bounce / 没 bounce 是天壤之别)
 #if RGB_BOUNCE_LINES > 0
