@@ -13,6 +13,38 @@
 想要"像原生窗口"（无地址栏）：`run.bat --app-window`。
 换端口 / 不自动开浏览器：`run.bat --port 8899 --no-open`。
 
+## 打包成可执行文件（一个 exe，双击即用）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\app\build-exe.ps1 -OneFile
+# → tools\app\dist\206Dash-Workbench.exe   （约 8.8MB，单文件，不需要装 Python）
+```
+
+用法（双击也行，双击时自动找仓库、自动开浏览器）：
+
+```
+206Dash-Workbench.exe                       # 自动找仓库 + 打开浏览器
+206Dash-Workbench.exe --app-window          # 无地址栏窗口（更像原生应用）
+206Dash-Workbench.exe --repo <仓库路径>      # 明确指定仓库（找不到仓库时用）
+206Dash-Workbench.exe --port 8899 --no-open
+```
+
+设计上的三条（都实测过，见 §"验过什么"）：
+
+1. **界面文件内嵌在 exe 里**（`--add-data`）⇒ **没有仓库也能打开界面**；
+   仓库只在"构建 / 烧写 / 编辑器 / 预览"这些真需要它的地方才用到。
+2. **exe 自己找仓库**：`--repo` > 环境变量 `DSH_206DASH_REPO` > 从 exe 位置往上找
+   （标志是同时存在 `platformio.ini` 与 `tools/app`）> 从当前目录往上找 > 本机默认路径。
+   找不到会在界面右下角明说"没找到仓库"，不装作正常。
+3. **用 `--console` 而不是 `--noconsole`**：日志本身就是这个工具的一部分；
+   退出走界面右下角的**「退出应用」**按钮（`POST /api/quit`），不需要去找那个黑窗口。
+
+★ 需要 `pip install pyinstaller`（这台机器上装在项目 venv 里，版本 6.22.3）。
+★ exe **默认不进仓库**（`.gitignore` 里忽略了 `tools/app/dist/`）：它是构建产物，
+  换一台机器重打一次更干净。真要同步到笔记本再双击：
+  `git add -f tools/app/dist/206Dash-Workbench.exe`。
+★ Windows SmartScreen 可能对"没有签名的新 exe"弹一次警告 —— 选"仍要运行"即可。
+
 ## 六项能力对应到哪里
 
 | 能力 | 在哪 | 说明 |

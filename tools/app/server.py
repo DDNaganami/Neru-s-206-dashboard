@@ -39,7 +39,52 @@ from urllib.parse import urlparse, parse_qs
 # 路径与环境（照抄仓库里那套"能编过"的配方，见 docs 与 tools/build/pio.ps1）
 # ---------------------------------------------------------------------------
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(os.path.dirname(APP_DIR))          # .../Neru-s-206-dashboard
+# ★ 打包成 exe 之后（`sys.frozen`）`__file__` 指向解包出来的临时目录，
+#   所以"应用自己的三个文件"要分两种情况找：
+#     · 开发态：就在 APP_DIR 里；
+#     · exe 态：PyInstaller 用 --add-data 把它们放在 sys._MEIPASS 下的 tools/app。
+FROZEN = getattr(sys, "frozen", False)
+BUNDLE_DIR = getattr(sys, "_MEIPASS", APP_DIR)
+APP_FILES_DIR = (os.path.join(BUNDLE_DIR, "tools", "app")
+                 if os.path.isdir(os.path.join(BUNDLE_DIR, "tools", "app")) else APP_DIR)
+
+
+def find_repo(explicit=None):
+    """找仓库根目录（需要它来服务编辑器/预览页、构建、烧写）。
+
+    顺序（都可解释，别乱改）：
+      1. 命令行 `--repo`（打包成 exe 之后最可靠的写法）；
+      2. 环境变量 `DSH_206DASH_REPO`；
+      3. 从"应用自己所在的位置"往上找：仓库的标志是**同时**有 `platformio.ini`
+         与 `tools/app` 目录 —— 只认目录名会把别的东西认成仓库；
+      4. 从当前工作目录往上找（有人在仓库里双击 exe 的情形）；
+      5. 本机默认路径（开发机上那个）。
+    找不到就返回 None —— 界面仍然能打开（应用文件是内嵌的），
+    但"构建/烧写/编辑器"会明说"没找到仓库"。
+    """
+    cands = []
+    if explicit:
+        cands.append(explicit)
+    if os.environ.get("DSH_206DASH_REPO"):
+        cands.append(os.environ["DSH_206DASH_REPO"])
+    here = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
+    for base in (here, os.getcwd()):
+        p = base
+        for _ in range(6):                       # 往上最多找 6 层
+            cands.append(p)
+            p = os.path.dirname(p)
+            if not p or p == os.path.dirname(p):
+                break
+    cands.append(os.path.join(os.path.expanduser("~"), "206Dash", "Neru-s-206-dashboard"))
+    cands.append(r"C:\Users\张九思\206Dash\Neru-s-206-dashboard")
+    for c in cands:
+        if c and os.path.isfile(os.path.join(c, "platformio.ini")) and \
+           os.path.isdir(os.path.join(c, "tools", "app")):
+            return os.path.abspath(c)
+    return None
+
+
+REPO = find_repo(None) or os.getcwd()
 SCRATCH = r"C:\206dash-scratch"                           # ASCII 路径的镜像/工具链（可选）
 # 平台核心目录：先看环境变量（谁设的听谁的），再试本机那个 ASCII 镜像，
 # 最后退回官方的 ~/.platformio —— 这样这套东西换一台机器也能跑。
@@ -223,6 +268,27 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_file(self, path, ctype):
+        data = open(path, "rb").read()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_app_file(self, name):
+        """应用自己的文件（index.html / app.css / app.js / check-app.js）：
+        先看仓库，再看 exe 内嵌的那一份 —— 这样**没有仓库也能打开界面**。"""
+        for d in (os.path.join(REPO, "tools", "app"), APP_FILES_DIR):
+            p = os.path.join(d, name)
+            if os.path.isfile(p):
+                ct = {"html": "text/html; charset=utf-8",
+                      "js": "application/javascript; charset=utf-8",
+                      "css": "text/css; charset=utf-8"}.get(name.rsplit(".", 1)[-1], "application/octet-stream")
+                return self._send_file(p, ct)
+        return self._json({"ok": False, "error": "app file not found: %s" % name}, 404)
+
     def _body(self):
         n = int(self.headers.get("Content-Length") or 0)
         if n <= 0:
@@ -239,9 +305,19 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
+        # 应用自己的文件先走内嵌/仓库那份（exe 在没有仓库时也能开界面）
+        m = re.fullmatch(r"/tools/app/(index\.html|app\.css|app\.js|README\.md)", u.path)
+        if m:
+            return self._serve_app_file(m.group(1))
         if u.path == "/api/health":
-            return self._json({"ok": True, "repo": REPO, "pio": pio_python(),
-                               "proxy": PROXY, "time": time.strftime("%H:%M:%S")})
+            # `repo_ok` 是**判据**：仓库里得有 platformio.ini。
+            #   exe 在没有仓库时照样能开界面（应用文件是内嵌的），但"构建/烧写/编辑器"
+            #   会打不开 —— 所以这个字段要如实报，别让用户猜。
+            repo_ok = os.path.isfile(os.path.join(REPO, "platformio.ini"))
+            return self._json({"ok": True, "repo": REPO, "repo_ok": repo_ok,
+                               "frozen": FROZEN, "exe": sys.executable if FROZEN else "",
+                               "pio": pio_python(), "proxy": PROXY,
+                               "time": time.strftime("%H:%M:%S")})
         if u.path == "/api/ports":
             return self._json(list_ports())
         if u.path == "/api/bins":
@@ -281,6 +357,11 @@ class Handler(SimpleHTTPRequestHandler):
                                        str(b.get("path", ""))))
         if u.path == "/api/preview":
             return self._json(do_preview())
+        if u.path == "/api/quit":
+            # 打包成 exe 之后没有 Ctrl+C 可用（尤其 --noconsole），所以给界面一个"退出"按钮。
+            self._json({"ok": True, "bye": "服务即将退出"})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
         return self._json({"ok": False, "error": "unknown endpoint"}, 404)
 
     def _upload(self):
@@ -309,18 +390,26 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--no-open", action="store_true")
+    ap.add_argument("--repo", default=None, help="仓库根目录（打包成 exe 之后建议显式给）")
     ap.add_argument("--app-window", action="store_true",
                     help="用 Chrome/Edge 的 --app 打开（无地址栏，像原生窗口）")
     a = ap.parse_args()
+
+    global REPO
+    if a.repo:
+        REPO = os.path.abspath(a.repo)
+    if not os.path.isfile(os.path.join(REPO, "platformio.ini")):
+        print("★ 注意：%s 看起来不是仓库根目录（没有 platformio.ini）——" % REPO)
+        print("  「配色 / 图片 / 预览」这些页会打不开；用 --repo <仓库路径> 指定一下。")
 
     url = "http://127.0.0.1:%d/tools/app/index.html" % a.port
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
 
     print("=" * 66)
-    print("206Dash 开发台")
+    print("206Dash 开发台%s" % ("（打包版）" if FROZEN else ""))
     print("  仓库 : %s" % REPO)
     print("  地址 : %s" % url)
-    print("  停止 : Ctrl+C")
+    print("  停止 : %s" % ("界面右下角「退出应用」" if FROZEN else "Ctrl+C（或界面里的「退出应用」）"))
     print("=" * 66)
 
     if not a.no_open:

@@ -68,11 +68,16 @@ async function api(path, body) {
 async function initServer() {
   try {
     const h = await api('/api/health');
-    $('#p-srv').textContent = '服务：' + (h.ok ? '在线' : '异常');
+    $('#p-srv').textContent = '服务：' + (h.ok ? '在线' : '异常') + (h.frozen ? '（打包版）' : '');
     $('#p-srv').className = 'pill ' + (h.ok ? 'on' : 'off');
-    $('#p-repo').textContent = h.repo;
+    $('#p-repo').textContent = h.repo + (h.frozen ? '  ·  exe: ' + h.exe : '');
+    $('#p-repo').title = '本地服务只监听 127.0.0.1；只服务这个仓库目录';
+    if (!h.repo_ok) {
+      $('#f-status').innerHTML = '<span class="bad">没找到仓库</span>：' +
+        '构建/烧写/编辑器用不了 —— 用 <code>--repo &lt;仓库路径&gt;</code> 启动';
+    }
   } catch (e) {
-    $('#p-srv').textContent = '服务：离线（用 tools/app/run.bat 启动）';
+    $('#p-srv').textContent = '服务：离线（用 tools/app/run.bat 或那个 exe 启动）';
     $('#p-srv').className = 'pill off';
   }
 }
@@ -267,5 +272,12 @@ function initBuild() {
   initBuild();
   $('#b-board').onclick = () => boardStatus($('#ota-host').value.trim() || '192.168.4.1');
   $('#b-bins').onclick = refreshBins;
+  $('#b-quit').onclick = async () => {
+    if (!confirm('退出 206Dash 开发台？（本地服务会停掉，页面随后失效）')) return;
+    try { await api('/api/quit', {}); } catch (e) { /* 服务已经把连接断了，正常 */ }
+    document.body.innerHTML =
+      '<div style="padding:40px;font:16px system-ui;color:#e8eaf0">已退出。' +
+      '想再用就重新双击那个 exe（或 tools\\app\\run.bat）。</div>';
+  };
   $('#b-ports').click();
 })();
