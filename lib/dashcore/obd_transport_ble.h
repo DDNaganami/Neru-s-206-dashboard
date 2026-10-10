@@ -185,7 +185,9 @@ private:
   //   —— `getService()` / `subscribe()` 都要等对端应答（走 `taskWait` 那一族），
   //   在 NimBLE 任务上下文里同步等容易把自己等死。
   //   返回 true ⇒ `ready()` 成立；false ⇒ 调用方断开重来。
+public:   // 2026-10-10: 仅供独立任务 disco_task_entry 调用
   bool attachCharacteristics();
+private:
   void applyRadioArbitration(uint32_t now_ms);          // 射频优先权的**过渡**处理
   void setCoexPreference(bool ble_first);               // 真去调 IDF（过渡时才调）
 

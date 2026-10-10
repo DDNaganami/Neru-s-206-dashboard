@@ -1,6 +1,51 @@
 #include "obd_transport_ble.h"
 
 #if defined(ARDUINO) && defined(OBD_BLE)
+#include <freertos/task.h>   // 2026-10-10: 发现服务搬到独立任务（见 disco_task_entry）
+
+// ---------------------------------------------------------------------------
+// 2026-10-10: move "discover service / get characteristics / subscribe" OFF the
+// main loop and into its own task.
+//
+// Why this is mandatory (measured on the bench, slave board, two connects in a row):
+//   running these three steps in the main loop blocked it for 1905ms / 1761ms
+//   (`loop: stalled ...`), split as: get characteristics 1281ms, service discovery
+//   299ms, subscribe 179ms -- all of them wait for the peer (ATT round trips).
+//   The display timing was disturbed at the same instant (`vsync=+120/s`,
+//   `bounce=52MB/s` against a normal 43/s and 18MB/s) and the panel could lose
+//   frame sync => permanent streaks + image offset (exactly the owner's report).
+//   Pinned to core 0 (the Arduino loop runs on core 1), the main loop now only
+//   sets a flag and never blocks -- not even the 0.4s stall-triggered self-heal
+//   in src/main.cpp is needed for this path any more.
+//
+// NOTE why not in the onConnect callback (the earlier trade-off): that callback
+//   runs in the NIMBLE task context, where synchronously waiting for the peer can
+//   deadlock itself. A separate task is not the NimBLE task => safe.
+// Handover to the main loop is one byte (result: 0 idle / 1 ok / 2 fail) plus a
+//   pending flag; notify_/write_ are written by THIS task before result is set.
+// ---------------------------------------------------------------------------
+static TaskHandle_t s_disco_task = nullptr;
+static volatile bool    s_disco_pending = false;
+static volatile uint8_t s_disco_result  = 0;   // 0=idle 1=ok 2=failed
+
+static void disco_task_entry(void* arg) {
+  ObdTransportBle* self = static_cast<ObdTransportBle*>(arg);
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if (!s_disco_pending) continue;
+    const bool ok = self->attachCharacteristics();   // blocks THIS task, not the loop
+    s_disco_result  = ok ? 1u : 2u;
+    s_disco_pending = false;
+  }
+}
+
+static void disco_kick(ObdTransportBle* self) {
+  if (s_disco_task == nullptr) {
+    xTaskCreatePinnedToCore(disco_task_entry, "obd-disco", 4096, self, 1, &s_disco_task, 0);
+  }
+  s_disco_pending = true;
+  if (s_disco_task != nullptr) xTaskNotifyGive(s_disco_task);
+}
 
 #include "dash_log.h"
 // ★ 射频共存那两行要用 IDF 的 API。**头文件叫 `esp_coexist.h`**（不是 `esp_coex.h`）
@@ -438,11 +483,18 @@ void ObdTransportBle::tick(uint32_t now_ms) {
   //        要么撞上了库那三条前置检查（`NimBLEClient.cpp` 开头），要么控制器没回事件。
   // ---------------------------------------------------------------------------
   if (conn_ && notify_ == nullptr) {
-    if (attachCharacteristics()) { backoff_ms_ = 0; return; }
-    // 特征没配齐 ⇒ 断开重来（下一拍会走下面的重连，退避照旧）
-    if (client_) client_->disconnect();
-    onDisconnected();
-    return;
+    // 2026-10-10：特征配齐在独立任务里跑（见上面 disco_* 那段）。
+    //   主循环这一拍只做不阻塞的两件事：唤醒任务 / 读结果。
+    if (!s_disco_pending && s_disco_result == 0u) { disco_kick(this); return; }
+    if (s_disco_result == 1u) { s_disco_result = 0u; backoff_ms_ = 0; return; }
+    if (s_disco_result == 2u) {
+      s_disco_result = 0u;
+      // 特征没配齐 ⇒ 断开重来（下一拍会走下面的重连，退避照旧）
+      if (client_) client_->disconnect();
+      onDisconnected();
+      return;
+    }
+    return;   // 发现进行中：本拍到此为止，别去碰 client_
   }
   if (connect_pending_) {
     if ((uint32_t)(now_ms - connect_started_ms_) < kAsyncConnectTimeoutMs) return;  // 还在进行中
