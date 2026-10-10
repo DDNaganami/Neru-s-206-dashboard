@@ -1655,14 +1655,26 @@ bool dash_display_panel_reinit(const char* why) {
   tca9554_set(LCD_RST_EXIO_BIT, false); delay(20);
   tca9554_set(LCD_RST_EXIO_BIT, true);  delay(250);
 
-  // ---- ② 重跑 41 步初始化（CS 由 EXIO3 手动拉；不重做 SPI 总线初始化）----
+  // ---- ② 外设侧重启（★★ 2026-10-10 新增：这一步原来是缺的，而它正是"修不好"的原因）----
+  //   实测判据（主板 / 速度表，当天）：
+  //     · 只重写面板寄存器 + 重发一帧（原来的 ①+②+③）⇒ 横纹+偏移**照旧**；
+  //     · 完整重刷（整条显示通路重建）⇒ **立刻干净**。
+  //   ⇒ 坏的东西在**我们这一侧**：LCD_CAM/RGB 外设的时序与 DMA 扫描状态，不是面板的寄存器。
+  //     所以这里把外设也重启一遍：`restart()` 让扫描从第 0 行重来，
+  //     `set_pclk()` 把像素时钟重配一次（重配时钟会让外设重新对齐时序）。
+  //   ★ 为什么不用 `esp_lcd_panel_reset()/init()` 做全量重建：IDF 的 `rgb_panel_init()`
+  //     会**再分配一次** bounce buffer（19KB 量级）⇒ 每修一次漏一块。
+  //     先走"重启 + 重配时钟"；真不够再升级到全量重建（届时必须一并处理 bounce 的归属）。
+  //   ★ 日志里会多一段 `rgb 外设重启`：下次复现时，先看这行判断走的是哪条路径。
+  esp_lcd_rgb_panel_restart(g_panel);
+  esp_lcd_rgb_panel_set_pclk(g_panel, RGB_PIXEL_CLOCK_HZ);
   tca9554_set(LCD_CS_EXIO_BIT, false);
   delay(10);
   panel_init_sequence();
   tca9554_set(LCD_CS_EXIO_BIT, true);
   delay(10);
 
-  // ---- ③ 重发当前 framebuffer（见上面那段"为什么不能省"）----
+  // ---- ④ 重发当前 framebuffer（见上面那段"为什么不能省"）----
   if (g_fb[g_front] != nullptr) {
     esp_lcd_panel_draw_bitmap(g_panel, 0, 0, (int)THEME_DISPLAY_RES, 1, g_fb[g_front]);
   }
@@ -1675,7 +1687,7 @@ bool dash_display_panel_reinit(const char* why) {
   g_panel_guard.noteReinit(millis());
   g_panel_guard.setShadow(g_exio_out);      // 影子没变，但同步一次（幂等）
 
-  dash_logf("panel: reinit by %s (#%u, %ums; 41 步 + 重发 fb%u; vsync 计数不回零)\n",
+  dash_logf("panel: reinit by %s (#%u, %ums; rgb 外设重启 + 41 步 + 重发 fb%u; vsync 计数不回零)\n",
             tag, (unsigned)g_panel_reinit_n, (unsigned)(millis() - t0),
             (unsigned)g_front);
   return true;
