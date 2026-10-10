@@ -56,6 +56,30 @@ void handleRoot() {
   if (s_server != nullptr) s_server->send_P(200, "text/html; charset=utf-8", kPage);
 }
 
+// ★ 2026-09-29：`GET /status` —— 给"206Dash 开发台"那个本地应用看的。
+//   为什么要它：应用要能一眼说清"连上的是哪块板、跑的是哪个槽、还剩多少 RAM"，
+//   而不是让用户去数串口日志。返回 JSON，字段都是**叶子值**（不序列化任何活对象）。
+//   ★ 这条只在 OTA 模式下存在（AP 只在 OTA 模式起）⇒ 平时不占任何东西。
+void handleStatus() {
+  if (s_server == nullptr) return;
+  const esp_partition_t* run  = esp_ota_get_running_partition();
+  const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
+#if defined(LINK_ROLE) && (LINK_ROLE == 1)
+  const char* role = "MASTER";
+#else
+  const char* role = "SLAVE";
+#endif
+  char body[320];
+  snprintf(body, sizeof(body),
+           "{\"fw\":\"%s %s\",\"role\":\"%s\",\"running\":\"%s\",\"target\":\"%s\","
+           "\"ota_ready\":%s,\"heap_kb\":%u,\"uptime_ms\":%lu,\"ota_mode\":true}",
+           __DATE__, __TIME__, role,
+           run ? run->label : "?", next ? next->label : "(none)",
+           (next && next != run) ? "true" : "false",
+           (unsigned)(ESP.getFreeHeap() / 1024u), (unsigned long)millis());
+  s_server->send(200, "application/json; charset=utf-8", body);
+}
+
 // 上传回调（分片进来；每片都要写进另一个 OTA 槽）。
 void handleUpload() {
   if (s_server == nullptr) return;
@@ -172,7 +196,16 @@ void ota_wifi_run() {
   }
 
   s_server = new WebServer(80);
+  // ★★ 2026-09-29：**必须开 CORS** —— 否则"206Dash 开发台"（跑在 http://127.0.0.1）
+  //   没法把固件 POST 到 http://192.168.4.1/update（跨源被浏览器拦下），
+  //   也没法读 /status。`enableCORS(true)` 会带上 Access-Control-Allow-Origin: *
+  //   并处理 OPTIONS 预检。
+  //   ★ 安全口径（写清楚）：这条 AP 只在 OTA 模式下存在、最长 10 分钟、无外网出口，
+  //     所以"*"在这里的暴露面就是"同一个热点里的人能刷这次固件" —— 与板子自带的
+  //     上传页等价（那个页面本来也是开放的）。要更紧就加 `-DDASH_OTA_AP_PASS`。
+  s_server->enableCORS(true);
   s_server->on("/", HTTP_GET, handleRoot);
+  s_server->on("/status", HTTP_GET, handleStatus);
   s_server->on("/update", HTTP_POST, handleUpdateDone, handleUpload);
   s_server->onNotFound(handleRoot);
   s_server->begin();

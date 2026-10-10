@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>206Dash 开发台</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header>
+  <h1>206Dash 开发台</h1>
+  <span class="pill" id="p-srv">服务：检测中…</span>
+  <span class="pill" id="p-board">开发板：未连接</span>
+  <span class="sp"></span>
+  <span class="dim" id="p-repo"></span>
+</header>
+
+<nav id="nav"></nav>
+
+<main id="main">
+
+  <!-- ============ 总览 ============ -->
+  <section id="tab-home">
+    <div class="grid">
+      <div class="card">
+        <h2>今天要做什么<span class="tag">按顺序做，不会白做</span></h2>
+        <p>① <b>配对开发板</b>：看下面「开发板连接」。<br>
+           ② <b>改外观</b>：主题配色 → 图片素材（都在本应用里，改完能导出 <code>assets.bin</code>）。<br>
+           ③ <b>写进板子</b>：素材走「文件与烧写」（USB）；固件走「无线刷写」（WiFi，不用线）。<br>
+           ④ <b>看效果</b>：预览表盘（宿主机跑一遍，落帧后看）。</p>
+        <div class="row">
+          <button class="act ghost" data-go="ota">去无线刷写</button>
+          <button class="act ghost" data-go="theme">去配色</button>
+          <button class="act ghost" data-go="files">去写素材</button>
+          <button class="act ghost" data-go="preview">去看预览</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>开发板连接<span class="tag">无线刷写/状态</span></h2>
+        <p>要让开发板认得你，先把电脑的 WiFi 切到开发板的热点：
+          <code>206dash-SLAVE</code>（从板）或 <code>206dash-MASTER</code>（主板）——
+          热点只在开发板进了 OTA 模式之后才存在（串口敲 <code>u</code>）。</p>
+        <div class="row">
+          <button class="act" id="b-board">检测开发板</button>
+          <span class="dim" id="board-hint">点一下，看 http://192.168.4.1/status 通不通</span>
+        </div>
+        <div class="kv" id="board-kv"></div>
+      </div>
+
+      <div class="card">
+        <h2>可烧的固件<span class="tag">.pio/build/&lt;env&gt;/firmware.bin</span></h2>
+        <div class="row">
+          <button class="act ghost" id="b-bins">刷新列表</button>
+          <span class="dim">带 <code>-ota</code> 的档才能无线刷</span>
+        </div>
+        <div class="kv" id="bins-kv"></div>
+      </div>
+
+      <div class="card">
+        <h2>开发功能（预留）</h2>
+        <p>这一栏是给后面加东西留的位置：加了新页面/新动作，改 <code>tools/app/app.js</code>
+          顶部那张 <code>TABS</code> 表即可（名字 + 图标 + 渲染函数）。</p>
+        <ul class="tools">
+          <li>串口日志监视（实时）</li>
+          <li>VAN 抓帧 / 回放控制</li>
+          <li>主题 A/B 对比、批量导出</li>
+          <li>固件参数档位切换（超时 / 扫描模式 …）</li>
+          <li>构建历史与体积趋势</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 无线刷写 ============ -->
+  <section id="tab-ota">
+    <div class="grid">
+      <div class="card">
+        <h2>无线刷写固件<span class="tag">WiFi OTA</span></h2>
+        <p>前提：这块开发板刷的是带 OTA 的档（<code>esp32s3-rgb-slave-ota</code> /
+          <code>esp32s3-rgb-master-ota</code>，一次性 USB 刷），并且已经进了 OTA 模式
+          （串口敲 <code>u</code>，板子会起热点）。</p>
+        <div class="row">
+          <label class="f">固件来源
+            <select id="ota-src">
+              <option value="built">用已构建的（下面列表）</option>
+              <option value="file">从本机选文件…</option>
+            </select>
+          </label>
+          <label class="f">已构建的固件
+            <select id="ota-bin"></select>
+          </label>
+          <label class="f" id="ota-filewrap" style="display:none">选文件
+            <input type="file" id="ota-file" accept=".bin">
+          </label>
+        </div>
+        <div class="row">
+          <label class="f">开发板地址
+            <input type="text" id="ota-host" value="192.168.4.1">
+          </label>
+          <button class="act" id="b-ota">开始上传</button>
+          <button class="act ghost" id="b-ota-check">先检测一下</button>
+        </div>
+        <div class="bar"><i id="ota-bar"></i></div>
+        <pre class="log" id="ota-log"></pre>
+        <p class="note">★ 上传期间不要断电。旧固件在另一个槽里，所以传失败也不会变砖；
+          10 分钟没人上传，板子自己退回正常固件。</p>
+      </div>
+
+      <div class="card">
+        <h2>怎么做（一页说明）</h2>
+        <p>1. 串口敲 <code>u</code> → 板子重启进 OTA 模式（屏会黑，这是故意的）。<br>
+           2. 电脑 WiFi 切到 <code>206dash-SLAVE</code> / <code>206dash-MASTER</code>。<br>
+           3. 回本页 → 选固件 → 「开始上传」→ 二三十秒。<br>
+           4. 板子自动重启成新版；把 WiFi 切回来即可。</p>
+        <p class="dim">不用本应用也行：连上热点后浏览器开 <code>http://192.168.4.1/</code>，
+          板子自己有一个上传页（手机最方便）。</p>
+        <p class="note">★ 上传用的是浏览器直连开发板 —— 如果浏览器拦了（跨域/网络），
+          把板子自带的那页当备份路径。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 主题配色 / 图片 / 预览（同源 iframe） ============ -->
+  <section id="tab-theme">
+    <div class="row"><b>主题配色</b>
+      <span class="dim">原来那个页面，原样收进来（同源，改动都在同一个仓库里）</span>
+      <span class="sp" style="flex:1"></span>
+      <button class="act ghost" id="b-theme-open">新窗口打开</button>
+    </div>
+    <iframe class="frame" id="fr-theme" src="/tools/theme-editor/index.html"></iframe>
+  </section>
+
+  <section id="tab-image">
+    <div class="row"><b>图片素材</b>
+      <span class="dim">导出 <code>image.bin</code> / <code>assets.bin</code> 就在这一页里</span>
+      <span class="sp" style="flex:1"></span>
+      <button class="act ghost" id="b-image-open">新窗口打开</button>
+    </div>
+    <iframe class="frame" id="fr-image" src="/tools/theme-editor/image-editor.html"></iframe>
+  </section>
+
+  <section id="tab-preview">
+    <div class="row"><b>预览表盘</b>
+      <span class="dim">宿主机跑一遍 UI（不接板子），落帧后在这里看</span>
+      <button class="act" id="b-preview">运行预览（约 40 秒）</button>
+      <button class="act ghost" id="b-preview-open">新窗口打开</button>
+    </div>
+    <iframe class="frame" id="fr-preview" src="/preview/preview.html"></iframe>
+    <pre class="log" id="preview-log" style="max-height:160px"></pre>
+  </section>
+
+  <!-- ============ 文件与烧写 ============ -->
+  <section id="tab-files">
+    <div class="grid">
+      <div class="card">
+        <h2>读一个 bin / json<span class="tag">先看清再写</span></h2>
+        <div class="row">
+          <input type="file" id="f-bin" accept=".bin,.json">
+          <span class="dim" id="f-info">选一个文件</span>
+        </div>
+        <pre class="log" id="f-head" style="max-height:120px"></pre>
+        <p class="dim">尺寸对照：<code>theme</code> 分区只有 16 KB（<code>theme.json</code> 别超 4 KB）、
+          <code>image</code> 分区 8 MB。<code>assets.bin</code> 是"一个文件装两块分区"的容器，
+          所以它从 <code>0x210000</code> 起写。</p>
+      </div>
+
+      <div class="card">
+        <h2>写进开发板（USB）<span class="tag">素材用这条</span></h2>
+        <div class="row">
+          <label class="f">串口
+            <select id="f-port"></select>
+          </label>
+          <label class="f">写到哪块
+            <select id="f-kind">
+              <option value="assets">assets.bin → theme(+image)</option>
+              <option value="theme">theme.json → theme</option>
+              <option value="image">image.bin → image</option>
+            </select>
+          </label>
+          <button class="act ghost" id="b-ports">刷新串口</button>
+          <button class="act" id="b-flash">烧写</button>
+        </div>
+        <p class="note">★ 认板子看 <code>role=</code>，别靠 COM 号；烧错分区不会报错，
+          只会"屏上什么都没变"。</p>
+        <pre class="log" id="flash-log"></pre>
+      </div>
+
+      <div class="card">
+        <h2>构建固件<span class="tag">需要 PlatformIO</span></h2>
+        <div class="row">
+          <label class="f">环境
+            <select id="b-env"></select>
+          </label>
+          <button class="act" id="b-build">开始构建</button>
+          <span class="dim">构建完可以直接去「无线刷写」</span>
+        </div>
+        <pre class="log" id="build-log" style="max-height:200px"></pre>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <span id="f-status">就绪</span>
+  <span class="sp" style="flex:1"></span>
+  <span>本地服务只监听 127.0.0.1，只服务本仓库目录</span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
