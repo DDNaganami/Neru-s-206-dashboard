@@ -14,6 +14,7 @@
 //   pcpreview 的宿主机桩不定义 —— 于是同一份 main.cpp 两端都能编。
 #if defined(ARDUINO)
 #include <esp_partition.h>
+#include <esp_ota_ops.h>
 #include <esp_system.h>  // esp_reset_reason()/ESP_RST_* —— 开机那行 `boot: reason=…`
 #include <esp_timer.h>   // 上电示位标(见 g_boot_stage / beacon_cb)
 #define DASH_DEVICE_SELFTEST 1
@@ -2791,6 +2792,27 @@ void setup() {
   //   项目里踩过好几次"以为在测 A，其实镜像没重编"的坑（见 platformio.ini 的注释）。
   //   ★ 只加一行、只在 setup()（`src/` 不参与 native/pcpreview 构建）⇒ 不影响别的档。
   dash_logf("fw: build %s %s\n", __DATE__, __TIME__);
+
+  // ★★★★ 2026-10-10：**当前运行槽**（A/B 分区的那一半）。
+  //   为什么非要有这一行：时间戳只说"这是哪一版源码"，**不说"板子从哪个槽启动"** ——
+  //   而无线刷写（OTA）到底成没成，判据正是这个：上传成功 → 自动重启 →
+  //   本行从 `app0 @0x010000` 变成 `app1 @0xa70000`，同时 OTA 横幅里的"目标槽"翻过来。
+  //   ⇒ 现场排查不必连 WiFi、不必读 /status：插上 USB 看这一行就够了（docs/OTA.md §5）。
+  //   ★ 只读分区元数据，不写、不改；`esp_ota_get_running_partition()` 在旧分区表上也安全。
+  {
+    const esp_partition_t* rp = esp_ota_get_running_partition();
+    if (rp) dash_logf("boot: slot=%s @0x%06x\n", rp->label, (unsigned)rp->address);
+  }
+
+  // ★★★ 2026-09-29：**尽早摁住面板复位**（车主报的"上电横纹 + 图像上移、复位就好"）。
+  //   位置就是理由：面板的 RST/CS 挂在 TCA9554 上，而那颗扩展器**上电默认是高阻**
+  //   ⇒ 越早把 RST 摁低，那段"RST 浮空 + RGB 并口也在浮"的窗口就越短。
+  //   I²C 只用 GPIO15/7，不依赖显示/PSRAM/LVGL ⇒ 可以放在这里（握手行之后）。
+  //   机制、以及对"冷启动犯、热复位不犯"的解释：见 dash_display_early_reset_hold()。
+  //   ★ 非 DASH_DISPLAY_RGB 的构建里这个调用整个不存在（声明也在同一个门里）。
+#if defined(DASH_DISPLAY_RGB)
+  dash_display_early_reset_hold();
+#endif
 
   // ★★ 复位原因 + 复位次数（2026-09-24，第 ③ 层防线的取证手段，见 boot_note 那段说明）。
   //   ★ 为什么紧跟在握手行之后：它是"这一板**为什么**从这一行开始"的唯一记录，

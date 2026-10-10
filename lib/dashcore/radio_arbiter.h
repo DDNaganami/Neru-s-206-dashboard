@@ -49,7 +49,15 @@ struct LinkStartGate {
   //   · 同时它是"从板还能忍多久"的账：从板上 `tick_age > 3s` 就回退 Sim 并挂
   //     "数据不可信"角标 ⇒ 这 15 秒里从板是**模拟数据状态**（如实记在文档里，
   //     不假装它是零代价）。
-  static constexpr uint32_t kWaitMaxMs = 15000u;
+  //   ★★★ 2026-09-29：**可被 `-DLINK_GATE_WAIT_MAX_MS=N` 覆盖** —— 这是给
+  //     "从板横纹/上移"那件事做 A/B 用的诊断旋钮：设成 0 则闸门立刻开
+  //     （链路 PHY 像以前那样马上起），**而 BLE 仍然开着** ⇒ 能把
+  //       「BLE 自己占的 RAM/CPU」 与 「我把 PHY 挪到屏已经在跑之后才起」
+  //     这两个因素**分开**判。默认值不变（15000）⇒ 不改宏时行为逐字节相同。
+#ifndef LINK_GATE_WAIT_MAX_MS
+#define LINK_GATE_WAIT_MAX_MS 15000u
+#endif
+  static constexpr uint32_t kWaitMaxMs = LINK_GATE_WAIT_MAX_MS;
 
   // 返回 true = 现在可以启动链路 PHY 了。
   //   · 没有 BLE 这一路（`OBD_BLE=0`：有线档 / 从板 / pcpreview）⇒ **立刻开**，

@@ -796,15 +796,50 @@ static void tca9554_write(uint8_t reg, uint8_t val) {
 }
 
 static void tca9554_begin() {
+  // ★★ 2026-09-29：**幂等** —— 现在有两个调用点：setup() 最开头的
+  //   `dash_display_early_reset_hold()`（尽早摁住面板复位）与显示初始化。
+  //   第二次进来只当"总线已经建好了"，不再 `Wire.begin()`（重复 begin 会把
+  //   总线重来一遍，而那颗芯片的输出锁存**同时挂着 RST/CS** ⇒ 能少碰就少碰）。
+  static bool s_i2c_up = false;
+  if (s_i2c_up) return;
   Wire.begin(15, 7);                  // SDA=GPIO15, SCL=GPIO7
   tca9554_write(TCA9554_REG_CONFIG, 0x00);   // 8 个口全设成输出(例程 TCA9554PWR_Init(0x00))
+  // ★ 输出寄存器从 `g_exio_out`（初值 0 = **RST 低、CS 低**）写起：
+  //   "一上来就把面板摁在复位里"是**故意**的，见 early_reset_hold 的说明。
   tca9554_write(TCA9554_REG_OUTPUT, g_exio_out);
+  s_i2c_up = true;
 }
 
 static void tca9554_set(uint8_t bit, bool high) {
   if (high) g_exio_out |= (uint8_t)(1u << bit);
   else      g_exio_out &= (uint8_t)~(1u << bit);
   tca9554_write(TCA9554_REG_OUTPUT, g_exio_out);
+}
+
+// ============================================================================
+// ★★★ 2026-09-29：**尽早摁住面板复位**（车主报"上电后横纹 + 图像上移，复位就没了"）
+// ============================================================================
+//   为什么必须有它 —— 这是"冷启动犯、热复位不犯"这条现象的机制：
+//     ① 面板的 RST/CS **不在 GPIO 上**，在 TCA9554 的 EXIO1/EXIO3 上，
+//        而那颗 I²C 扩展器**上电默认是输入（高阻）**；
+//     ② 所以从"整块板通电"到"我们的代码第一次写扩展器"之间那 **~300ms**，
+//        面板的 RST 是**浮空的**，同时 RGB 并口的 DE/PCLK/HSYNC/VSYNC 也还没被
+//        驱动配置（也在浮） ⇒ 面板可能被这段乱时序带进一个奇怪状态，
+//        表现就是**横纹 + 帧起始相位漂移（图像上移）**；
+//     ③ **热复位**（板上的 RST 键 / esptool 复位 / 刷机）时扩展器一直有电、
+//        上一轮写进去的电平还锁着 ⇒ 没有这段悬浮窗口 ⇒ 同一份固件**不犯**。
+//   做法：setup() **最开头**就把扩展器叫醒并把 RST 摁低（I²C 只用到 GPIO15/7，
+//   不依赖面板/PSRAM/LVGL 任何东西，所以可以最早做）；显示初始化那一步再放开，
+//   并且给一个**更宽的复位+等稳时序**（见 `dash_display_init` 里那段）。
+//   ★ 它只碰 EXIO 的输出寄存器（走既有的影子寄存器那一份实现），
+//     不碰 PCLK / bounce / num_fbs / 引脚 —— 与"不要做"清单一致。
+//   ★ 位置必须在 `tca9554_set()` **之后**（这个文件里没有前向声明，写前面编不过 ——
+//     2026-09-29 就是这么栽了一分钟）。
+void dash_display_early_reset_hold() {
+  tca9554_begin();
+  tca9554_set(LCD_RST_EXIO_BIT, false);
+  dash_logf("panel: 早期复位保持 —— LCD_RST 已摁低(EXIO1)，等显示初始化再放开"
+            "（冷启动横纹/上移的对策，2026-09-29）\n");
 }
 
 // ============================================================
@@ -1296,9 +1331,17 @@ void dash_display_init() {
   // ---- ① 先把 RST/CS 那两颗扩展口的片子叫醒(TCA9554)----
   tca9554_begin();
   tca9554_set(BUZZER_EXIO_BIT, false);
-  // 复位脉冲:低 10ms → 高 → 等 50ms(例程 ST7701_Reset() 的时序)
-  tca9554_set(LCD_RST_EXIO_BIT, false); delay(10);
-  tca9554_set(LCD_RST_EXIO_BIT, true);  delay(50);
+  // 复位脉冲:低 20ms → 高 → **等 250ms** 再发第一条命令。
+  // ★★ 2026-09-29 改（原来 10/50ms，照例程 ST7701_Reset()）：
+  //   ST7701 这一类面板"复位释放 → 吃第一条命令"通常要求 **≥120ms** 的等稳，
+  //   而 50ms 只在**面板本来就初始化好**的热复位下勉强够用；冷上电时它是从零
+  //   开始（内部电荷泵/PLL 要建立）⇒ 前几条初始化命令可能被吃掉 ⇒ 屏上就是
+  //   横纹 + 图像上移，而且**不会自己回来**（要重跑这 41 步）。
+  //   ⇒ 现在给足：低 20ms（>10µs 的要求，留足余量）+ 等 250ms（>120ms 的要求）。
+  //   ★ 代价只有 ~210ms 开机时间；换来的是"冷启动和热复位一样稳"。
+  tca9554_set(LCD_RST_EXIO_BIT, false); delay(20);
+  tca9554_set(LCD_RST_EXIO_BIT, true);  delay(250);
+  dash_logf("panel: 复位时序 RST低=20ms → 高等=250ms（2026-09-29：冷启动横纹/上移的对策）\n");
 
   // ---- ② 3 线 SPI:只用来写初始化命令,不进画 ----
   //   SCLK=GPIO2 / MOSI(SDA)=GPIO1,SPI2_HOST、模式 0、40MHz(例程的取值)。
@@ -1605,9 +1648,12 @@ bool dash_display_panel_reinit(const char* why) {
   }
   const uint32_t t0 = millis();
 
-  // ---- ① 复位脉冲（与初始化逐字同一套时序：低 10ms → 高 → 等 50ms）----
-  tca9554_set(LCD_RST_EXIO_BIT, false); delay(10);
-  tca9554_set(LCD_RST_EXIO_BIT, true);  delay(50);
+  // ---- ① 复位脉冲（时序与初始化**逐字同一套**：低 20ms → 高 → 等 250ms）----
+  //   ★ 2026-09-29：这条路径（串口 `r` / 守护自动恢复）也一起放宽 ——
+  //     它就是"现场把面板救回来"的那条路，时序必须与开机那次一样宽，
+  //     否则会出现"开机救得回来、按 r 救不回来"这种自相矛盾的行为。
+  tca9554_set(LCD_RST_EXIO_BIT, false); delay(20);
+  tca9554_set(LCD_RST_EXIO_BIT, true);  delay(250);
 
   // ---- ② 重跑 41 步初始化（CS 由 EXIO3 手动拉；不重做 SPI 总线初始化）----
   tca9554_set(LCD_CS_EXIO_BIT, false);

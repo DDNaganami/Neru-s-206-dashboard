@@ -66,6 +66,17 @@ bool dash_display_preview_boot_hold(void);
 //   "写没写对"由驱动自己那行 `buzz: exio 0xXX -> 0xXX (mask 0x01…)` 自证。
 #if defined(DASH_DISPLAY_RGB)
 void dash_buzzer_set(bool on, void* ctx);
+
+// ---- ★★★ 2026-09-29：**尽早摁住面板复位**（冷启动横纹/上移的对策）
+//
+// 车主报："转速表上电后怎么又出现横纹和偏移了"，而**复位一次就消失**。
+// 机制（详见 .cpp 里的长注释）：面板的 RST/CS 在 TCA9554（I²C 扩展器）上，
+// 那颗芯片**上电默认输入=高阻** ⇒ 从"通电"到"我们第一次写扩展器"之间那 ~300ms，
+// 面板的 RST 是浮的；热复位时扩展器一直有电、电平还锁着 ⇒ 没有这段窗口。
+// ⇒ 这个函数在 `setup()` **最开头**调：把扩展器叫醒并把 RST 摁低，
+//   显示初始化那一步再放开（并给更宽的复位+等稳时序）。
+// ★ 只碰 EXIO 的输出寄存器，不碰 PCLK / bounce / num_fbs / 引脚。
+void dash_display_early_reset_hold();
 #endif
 
 // ---- 只给 `[env:esp32s3-rgb]`（真屏那一份构建）用的**面板健康守护**出口

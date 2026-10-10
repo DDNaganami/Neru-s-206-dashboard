@@ -46,6 +46,12 @@ robocopy $repo $copy /E /XD .git .pio /NJH /NJS /NP      # 退出码 1/3 = 成�
 $env:PYTHONPATH='C:\Users\张九思\206Dash\.pio-pylibs'
 $env:PLATFORMIO_CORE_DIR='C:\206dash-scratch\pio-core-mix'
 $env:PATH='C:\206dash-scratch\zigbin;' + $env:PATH
+$env:PYTHONUTF8='1'          # ★ 不能省 —— 不设它，构建会以两种面目失败（2026-10-10 实测，各烧掉一次构建）：
+                             #   ① [checkprogsize] UnicodeDecodeError: 'gbk' codec can't decode byte 0x85 ...
+                             #      镜像其实**已经生成好**，只是末尾的尺寸检查用 GBK 去解码产物里的 UTF-8 中文
+                             #   ② TypeError: argument should be a str or an os.PathLike object where
+                             #      __fspath__ returns a str, not 'NoneType' —— 同一个病在配置阶段发作：7 秒就失败
+                             #   ⇒ 判据看 [SUCCESS] 那一行，别只看退出码（成功时 pio 也可能返回 1）
 
 python -m platformio test -e native                 # 宿主机单元测试，不烧板
 python -m platformio run -e pcpreview -t exec       # 本机渲双屏 BMP，Ctrl+C 后打开 preview/preview.html

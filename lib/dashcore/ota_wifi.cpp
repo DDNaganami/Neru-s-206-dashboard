@@ -139,12 +139,19 @@ bool ota_wifi_supported() { return true; }
 void ota_wifi_request() {
   s_magic   = kMagic;
   s_request = kReqOn;
-  dash_logf("ota: 收到 `u` ⇒ 重启进 OTA 模式（只起 AP，链路/OBD 都不启动）\n");
+  // ★ 2026-09-29：把**写进去的值**打出来 —— "标志没生效"这类问题只能靠两端对账：
+  //   这一行 vs 开机那行（take_request 里）的 magic/req 必须一致。
+  dash_logf("ota: 收到 `u` ⇒ 置标志 magic=0x%08X req=%u ⇒ 重启进 OTA 模式\n",
+            (unsigned)s_magic, (unsigned)s_request);
   delay(200);
   ESP.restart();
 }
 
 bool ota_wifi_take_request() {
+  // ★ 无论认不认，都把开机读到的值打出来（RTC_NOINIT 在**断电**后会丢，
+  //   这一行就是"这次开机到底是不是带着标志上来的"的唯一证据）。
+  dash_logf("ota: 开机检查标志 magic=0x%08X req=%u（期望 0x%08X / %u）\n",
+            (unsigned)s_magic, (unsigned)s_request, (unsigned)kMagic, (unsigned)kReqOn);
   if (s_magic != kMagic) return false;          // 冷启动：RTC 内存是垃圾值
   if (s_request != kReqOn) return false;
   s_request = kReqOff;                          // 只认一次，见头文件那段说明
@@ -160,6 +167,12 @@ void ota_wifi_run() {
             run ? run->label : "?", (unsigned)(run ? run->address : 0u),
             next ? next->label : "(无)", (unsigned)(next ? next->address : 0u),
             (unsigned)(next ? (next->size / 1024u) : 0u));
+  // ★★★★ 2026-09-29：**必须自己 drain**。这个项目的日志是"先入环形缓冲、由主循环的
+  //   `dash_log_drain()` 往 USB 推"的 —— 而 OTA 模式**永远不会进 loop()**
+  //   （它在 setup() 里就接管了）⇒ 不 drain 的话，这里所有的日志都排在环里出不去。
+  //   实测代价：车主和我都以为"敲了 u 什么都没打"，其实日志全卡在缓冲里 ——
+  //   真正的现象是"**OTA 那段挂住了**"，但被误读成"命令没生效"，白追了两轮。
+  dash_log_drain();
   if (next == nullptr || next == run) {
     dash_logf("ota: ★ 这张分区表没有第二个 OTA 槽 ⇒ 无线刷写不可用。"
               "先用 USB 刷一次带 OTA 的分区表（见 docs/OTA.md）\n");
@@ -216,10 +229,27 @@ void ota_wifi_run() {
 
   // ③ 非阻塞地服务请求，直到超时。★ `delay(2)` 是必需的：它让出 CPU 给空闲任务，
   //    否则任务看门狗会把这块板子当死机复位（我们此刻还没进 loop()）。
-  const uint32_t deadline = millis() + (uint32_t)DASH_OTA_TIMEOUT_MS;
+  const uint32_t deadline  = millis() + (uint32_t)DASH_OTA_TIMEOUT_MS;
+  const uint32_t t_enter   = millis();
+  uint32_t       last_beat = t_enter;
   for (;;) {
     s_server->handleClient();
+    // ★ 日志排空（理由见上面 slot 那行后面那段）：OTA 模式没有 loop()，
+    //   不显式 drain 就看不到任何东西。
+    dash_log_drain();
     delay(2);
+    // ★★ 2026-09-29：**2 秒心跳**。为什么需要它：进 OTA 模式要**重启**，而重启会让
+    //   USB-Serial-JTAG 重新枚举 ⇒ 抓包很可能正好错过"开机那几行"（今天连栽两次，
+    //   两次都只拿到 ROM 横幅）。有了心跳，"现在到底在不在 OTA 模式、AP 起来没有、
+    //   收到多少字节"随时可读，不用再去追那一瞬间。
+    if ((uint32_t)(millis() - last_beat) >= 2000u) {
+      last_beat = millis();
+      dash_logf("ota: 等在 OTA 模式 %us（AP=%s `%s`，已收 %u B，heap=%uKB，剩 %us 超时）\n",
+                (unsigned)((millis() - t_enter) / 1000u), ap_ok ? "up" : "down", ssid,
+                (unsigned)s_written, (unsigned)(ESP.getFreeHeap() / 1024u),
+                (unsigned)((int32_t)(deadline - millis()) > 0
+                               ? (unsigned)((deadline - millis()) / 1000u) : 0u));
+    }
     if ((int32_t)(millis() - deadline) >= 0) {
       dash_logf("ota: 超时（%u 分钟没有任何上传）⇒ 重启回正常固件\n",
                 (unsigned)(DASH_OTA_TIMEOUT_MS / 60000u));

@@ -54,11 +54,13 @@ ota: 这一档支持无线刷写 —— 串口敲 `u` 即重启进 OTA 模式（
    ```
 3. 重启后（约 2 秒）应当看到：
    ```
-   ota: 当前槽 ota_0 @0x010000 | 目标槽 ota_1 @0xa70000 (2048 KB)
-   ota: AP `206dash-SLAVE` 开放(无密码) 起来了=1  IP=http://192.168.4.1/  heap 166→… KB
+   ota: 当前槽 app0 @0x010000 | 目标槽 app1 @0xa70000 (2048 KB)
+   ota: AP `206dash-SLAVE` 开放(无密码) 起来了=1  IP=http://192.168.4.1/  heap 163→114 KB
    ota: 等上传…（10 分钟没人来就自己退回正常固件）
    ota: 手机连上 `206dash-SLAVE` → 浏览器开 http://192.168.4.1/ → 选 firmware.bin
    ```
+   ★ 上面打的是**分区标签**（`partitions-s3-now-ota.csv` 里那两行就叫 `app0` / `app1`），
+   不是 `ota_0` / `ota_1` —— 文档以前写错了，上板核验时以板子打的这行为准。
 4. 手机：连 WiFi **`206dash-SLAVE`**（主板是 `206dash-MASTER`）→ 浏览器开
    **http://192.168.4.1/** → 选 `firmware.bin` → 上传。
    - 选**对的那块板**的固件：从板 = `esp32s3-rgb-slave-ota`，主板 = `esp32s3-rgb-master-ota`；
@@ -85,22 +87,54 @@ ota: 这一档支持无线刷写 —— 串口敲 `u` 即重启进 OTA 模式（
 - **两个槽都会用**：这次写 ota_1，下次就写 ota_0（A/B 轮换）——日志里那行
   `当前槽 …| 目标槽 …` 每次都会告诉你。
 
-## 5. 首次上板核验清单（★ 必做，桌面侧没板子所以没验）
+## 5. 上板核验清单（★ 2026-10-10 台面走通；判据都在下面）
 
-按顺序做，每步都有判据：
+**第 0 步就是判据行**：正常固件开机时会打一行
+`boot: slot=app0 @0x010000`（= 当前运行槽的**分区标签 + 起始地址**）。
+⇒ 无线刷成功之后这一行会变成 `app1 @0xa70000`。
+**不用连 WiFi、不用读 `/status`：插上 USB 看这一行就知道"板子上跑的到底是哪个槽"。**
+（`fw: build …` 那行只说"哪一版源码"，不说"哪个槽" —— 两行要一起看。）
 
 1. **USB 刷 `esp32s3-rgb-slave-ota`** → 开机日志必须有
-   `ota: 这一档支持无线刷写 …`（有 = 这一档真的带 OTA 代码）。
-2. 串口敲 `u` → 应看到 `ota: 收到 u ⇒ 重启进 OTA 模式` + 重启。
-3. 重启后必须看到 **`ota: 当前槽 ota_0 @0x010000 | 目标槽 ota_1 @0xa70000 (2048 KB)`**
-   - ★ 如果这里打的是 `当前槽 app0 … | 目标槽 (无)` 或 `★ 这张分区表没有第二个 OTA 槽`，
-     说明**分区表没刷进去**（只刷了 app）⇒ 重刷一次，并确认 `partitions.bin` 也跟着写了。
-4. 手机连 `206dash-SLAVE`、开 `http://192.168.4.1/` → 页面出得来。
-5. 传一个**故意改过版本**的 `firmware.bin`（例如改一行开机日志）→
-   串口出现进度 + `写入成功`，板子重启，**新日志行出现** ⇒ 全链路通。
-6. **回滚验证**：再敲一次 `u`，这次日志里目标槽应当是 `ota_0`（A/B 轮换）⇒ 再传一次，
-   应当又回到另一槽。这一条验的是"下次升级还有地方写"。
+   `ota: 这一档支持无线刷写 …`（有 = 这一档真的带 OTA 代码）。✅ 已验
+2. 串口敲 `u` → 重启进 OTA 模式，横幅按顺序出现：
+   `开机检查标志 magic=0x20607A00 req=1` → `当前槽 app0 @0x010000 | 目标槽 app1 @0xa70000 (2048 KB)`
+   → `AP \`206dash-SLAVE\` 起来了=1 IP=http://192.168.4.1/`。✅ 已验
+3. 分区表真的进去了：横幅里的两个槽必须是 `app0 @0x010000` / `app1 @0xa70000`（各 2048 KB）。
+   - ★ 如果打的是 `目标槽 (无)` 或 `★ 这张分区表没有第二个 OTA 槽`，
+     说明**只刷了 app、没刷分区表** ⇒ 重刷一次，并确认 `partitions.bin` 也跟着写了。✅ 已验（USB 首次刷入）
+4. 电脑/手机连 `206dash-SLAVE`、开 `http://192.168.4.1/` → 页面出得来，
+   `GET /status` 回 JSON 且带 `Access-Control-Allow-Origin: *`。✅ 已验
+5. 传 `esp32s3-rgb-slave-ota` 的 `firmware.bin`（**不是** `firmware.factory.bin`）→
+   串口出进度、板子自己重启 ⇒ **`boot: slot=app1 @0xa70000`** ⇒ 全链路通。
+6. **轮换验证**：再敲一次 `u`，横幅里的目标槽应当翻成 `app0` ⇒ 再传一次又翻回去。
+   这一条验的是"下次升级还有地方写"。
 7. 主板照做一遍（`206dash-MASTER`）。
+
+### 5.1 ★ 从电脑上做同一件事：`tools/serial-capture/ota-cycle.ps1`
+
+台面上踩到的两个坑**都不在板子上，在电脑这一侧**（脚本里已修掉，别再踩）：
+
+1. **"连上了" ≠ "能通"**：Windows 会**立刻**报 `SSID=206dash-SLAVE`，而网卡还没拿到 IP
+   （板子的 DHCP 慢半拍）。这时 `/status` 超时、POST 连 `/update` 都到不了 ——
+   `app1` 一个字节都没写（读回来全是 `0xFF`），可客户端只给一句
+   `Unable to connect to the remote server`，看着像板子的错。
+   ⇒ **判据要等真的地址（`192.168.4.x`），不是等 SSID。**
+2. **Windows 会自己"回家"**：家里那张 profile 是 `auto` ⇒ 它随时可能切回有网的那张，
+   上传就断在半路。⇒ 上传期间把家里那张改成 `connection_mode=manual`，最后再改回 `auto`。
+3. **HTTP 响应丢了 ≠ 上传失败**：`Update` 收完立刻 `ESP.restart()`，
+   回复可能死在路上（板子重启会掐掉连接）。⇒ 判据是重启后的 `boot: slot=app1`
+   （或 OTA 横幅里"当前槽/目标槽"翻过来），**不是** curl / 浏览器的返回码。
+
+一条命令走完全程（进 OTA → 连 AP → 上传 → 验槽 → 恢复网络）。
+★ **必须是一个进程**：板子的 SoftAP 没有外网，agent 分步做的话自己会断网
+（那次 `DeepSeek API request failed` 就是这么来的）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\serial-capture\ota-cycle.ps1 -Port COM8
+#   可选：-Bin <firmware.bin>  -Ap 206dash-SLAVE  -HomeAp MikamoNeru
+```
+
 
 ## 6. 相关文件
 
@@ -109,8 +143,9 @@ ota: 这一档支持无线刷写 —— 串口敲 `u` 即重启进 OTA 模式（
 | `partitions-s3-now-ota.csv` | A/B 两槽分区表（★ 里面记着两个踩过的坑：文件顺序必须升序、app 偏移要 64KB 对齐）|
 | `lib/dashcore/ota_wifi.h/.cpp` | OTA 服务：AP + 上传页 + `Update` 写入；`u` 的入口与"取一次"标志 |
 | `lib/dashcore/serial_cmd.h` | `u` → `SerialCmd::Ota`（口径与 `o`/`t` 相同：没编 OTA 的构建里恒 false）|
-| `src/main.cpp` | `setup()` 开头读标志 → `ota_wifi_run()`（在显示/VAN/链路/BLE **之前**，所以射频干净、RAM 最多）|
+| `src/main.cpp` | `setup()` 开头读标志 → `ota_wifi_run()`（在显示/VAN/链路/BLE **之前**，所以射频干净、RAM 最多）；`boot: slot=…` 判据行（哪个槽在跑）|
 | `platformio.ini` | `[env:esp32s3-rgb-slave-ota]` / `[env:esp32s3-rgb-master-ota]` |
+| `tools/serial-capture/ota-cycle.ps1` | 电脑侧一条命令走完 OTA 全程（见 §5.1）；★ 这个文件必须保持**纯 ASCII** |
 
 ## 7. 为什么是"按需重启进入"，而不是常驻一个网页服务
 
