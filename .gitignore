@@ -18,12 +18,10 @@ __pycache__/
 *.pyc
 
 # ★ PyInstaller 产物（tools/app/build-exe.ps1 生成）
-#   默认都不提交：exe 是 **8.8MB 的构建产物**，而且它绑的是"打包时那台机器的
-#   Python/PyInstaller"，换一台机器重打一次更干净（一条命令，见 tools/app/README.md）。
-#   ★ 真要让笔记本拉下来就能双击：`git add -f tools/app/dist/206Dash-Workbench.exe`
-#     （-f 是因为下面这两行；这是个需要车主点头的决定，所以默认不做。）
+#   ★ 2026-09-29 车主决定：**exe 进仓库**（这样笔记本拉下来就能双击，不用装 PyInstaller）。
+#     所以 `dist/` **不**忽略 —— 它现在是仓库里的一份文件，重打之后正常提交即可。
+#     下面的忽略只挡重新打包时冒出来的中间产物（build/ 与 .spec 每次都不一样、没有价值）。
 tools/app/build/
-tools/app/dist/
 tools/app/*.spec
 
 # ★ 钥匙类文件绝不允许进仓库（2026-09-21：有一次私钥被放进了 tools/ 共享目录，靠人工发现）
