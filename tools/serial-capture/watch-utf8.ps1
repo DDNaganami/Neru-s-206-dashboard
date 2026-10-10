@@ -58,7 +58,12 @@ if (-not $opened) { "OPEN-FAILED on $Port after 20s"; exit 2 }
 
 $dir = Split-Path -Parent $Out
 if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force $dir | Out-Null }
-$fs = [System.IO.File]::Create($Out)
+# * 2026-10-10: long-run (soak) captures must be READABLE WHILE THEY RUN.
+#   `[System.IO.File]::Create` opens with FileShare.None, so a soak log could not be
+#   tailed by anybody else -- exactly what you need when a fault appears after hours and
+#   you want to know what the board was doing at that moment. Share for reading instead.
+$fs = New-Object System.IO.FileStream($Out, [System.IO.FileMode]::Create,
+        [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
 $buf = New-Object byte[] 4096
 $sw = [Diagnostics.Stopwatch]::StartNew()
 
