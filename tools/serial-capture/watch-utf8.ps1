@@ -19,6 +19,12 @@
 #      into the file. Now: close -> retry up to ~60s -> keep writing to the SAME
 #      file and insert a marker line where the gap was.
 #
+#   3. "THE FILE IS EMPTY" IS NOT ALWAYS "THE BOARD IS DEAD" (2026-10-10): the log goes
+#      over NATIVE USB-CDC on these boards, and after an esptool session that ended with a
+#      plain `--after hard-reset` the chip can stay parked in the ROM stub: the app never
+#      reaches loop(), the log ring is never drained, and the port opens but stays silent.
+#      Reset with `--before usb-reset --after hard-reset` (or re-flash) BEFORE hunting a bug.
+#
 # *** THIS FILE MUST STAY PURE ASCII. Windows PowerShell 5.1 reads a BOM-less
 #   .ps1 with the OEM/ANSI codepage (GBK here), so Chinese comment bytes get
 #   mis-decoded -- and a stray byte can become a '}' or a quote and break the

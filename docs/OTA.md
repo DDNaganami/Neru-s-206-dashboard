@@ -133,6 +133,17 @@ ota: 这一档支持无线刷写 —— 串口敲 `u` 即重启进 OTA 模式（
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\serial-capture\ota-cycle.ps1 -Port COM8
 #   可选：-Bin <firmware.bin>  -Ap 206dash-SLAVE  -HomeAp MikamoNeru
+
+★ **板子"没声音"时先看这一条（2026-10-10 实测，烧掉半小时）**：这两块板的串口是**原生 USB-CDC**
+（设备管理器里是 `VID_303A&PID_1001`）。用 esptool 复位时**必须**带 `--before usb-reset`：
+
+```powershell
+python -m esptool --chip esp32s3 --port COM9 --before usb-reset --after hard-reset read-mac
+```
+
+少了 `--before usb-reset`（只写 `--after hard-reset`）会把板子留在 ROM stub 里出不来 ——
+现象是**串口一个字节都没有**：app 根本没进 `loop()`，而日志是"进 `loop()` 才排空"的环形缓冲，
+所以**连开机横幅都看不到**，非常像板子坏了。真出事时先跑上面这条复位，不行再重刷。
 ```
 
 
