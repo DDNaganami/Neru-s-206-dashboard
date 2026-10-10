@@ -57,6 +57,15 @@ enum class SerialCmd : uint8_t {
   //     真正动不动由调用方按 `OBD_BLE` 决定；没装 BLE 的构建里恒返回 false
   //     ⇒ 这个字符照旧进回放路径，串口行为一个字节都没变。
   ConnectTimeout,
+  // ★★★★ 2026-09-29：**无线刷写**（`u` = "update"）。敲一下 ⇒ 置 RTC 标志 + 重启，
+  //   开机时进"只起 AP + 上传页"的 OTA 模式（`lib/dashcore/ota_wifi.*`）。
+  //   为什么值得占一个字母：车主每次试车都要"笔记本 + USB + 编译"，而车库里既没网络
+  //   也没主机 ⇒ 手机连板子自己的 AP 就能刷。**按需**进入（不是常驻 HTTP 服务），
+  //   所以稳态一个字节的 RAM 都不占。
+  //   ★ 口径与 `o` / `t` 完全相同：这里只说"这个字符**有可能**是那条命令"，
+  //     动不动作由调用方按 `DASH_OTA` 决定；没编 OTA 的构建里恒 false
+  //     ⇒ 这个字符照旧进回放路径，串口行为一个字节都没变。
+  Ota,
 };
 
 // `i` 后面那一位数字（"注入几次"）的解析：不是 '1'..'9' 就用 `dflt`。
@@ -94,6 +103,9 @@ inline SerialCmd serial_cmd_classify(char c) {
     // ★★★★ `t` = **建连超时切换**（2026-09-29 凌晨新增，口径与 `o` 完全相同）。
     //   实测 3000ms 连得上真头、30000ms 连不上，机制未清 ⇒ 现场要能当场试。
     case 't': return SerialCmd::ConnectTimeout;
+    // ★★★★ `u` = **无线刷写**（2026-09-29 新增，口径与 `o` / `t` 完全相同）：
+    //   有 OTA 的构建里置标志 + 重启；没编 OTA 的构建里恒 false（照旧进回放路径）。
+    case 'u': return SerialCmd::Ota;
     default:  return SerialCmd::None;
   }
 }

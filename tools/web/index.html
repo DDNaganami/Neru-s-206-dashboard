@@ -273,6 +273,29 @@ $env:PYTHONPATH='C:\Users\Public\206dash\.pio-core\packages\tool-esptoolpy;C:\Us
     而且写偏了有可能会压掉旁边那个只有 16 KB 的 <code>theme</code> 区，所以偏移别凭记忆填。
   </p>
 
+  <h2>固件升级：现在可以无线（手机连板子的热点）</h2>
+  <p class="hint">
+    <b>2026-09-29 新增。</b>上面那几条刷的是<b>素材</b>（配色 / 图片，走 USB）；
+    这条刷的是<b>固件本身</b>，<b>不需要数据线、不需要笔记本</b> —— 车库里也能升。
+  </p>
+  <ol style="line-height:1.8">
+    <li><b>一次性</b>（只做一次，USB）：把板子刷成带 OTA 的档 ——
+      从板 <code>esp32s3-rgb-slave-ota</code>、主板 <code>esp32s3-rgb-master-ota</code>。
+      这一次会顺带把<b>新的 A/B 分区表</b>写进去；<b>主题 / 图片 / 静音设置都还在</b>
+      （那张表把 <code>theme 0x210000</code>、<code>image 0x254000</code> 等偏移<b>一个都没动</b>）
+      ⇒ 上面 ⓪①② 那几条 esptool 命令<b>照旧有效</b>。</li>
+    <li><b>以后每次</b>：串口敲一个小写 <code>u</code> ⇒ 板子重启进 OTA 模式，
+      起一个热点 <code>206dash-SLAVE</code> / <code>206dash-MASTER</code>。</li>
+    <li>手机连那个热点 → 浏览器开 <code>http://192.168.4.1/</code> → 选
+      <code>firmware.bin</code> → 上传。约二三十秒，传完板子自己重启成新版。</li>
+  </ol>
+  <p class="hint">
+    ★ 进 OTA 模式之后<b>不会卡住</b>：10 分钟没人上传就自己退回正常固件；
+    上传失败也<b>不会变砖</b>（旧固件还在另一个槽里）。
+    ★ OTA 期间<b>两块屏是黑的</b>、链路与 OBD 不工作（这是刻意的：射频让给 WiFi、RAM 留最多），升完自动恢复。
+    ★ 细节、判据、上板核验清单：<code>docs/OTA.md</code>。
+  </p>
+
   <h2>预览看不到什么（别被预览误导）</h2>
   <p>
     ③④ 两页放的是宿主机落下来的帧，它们能证明的是"<b>该画的东西画出来了、位置 / 配色 / 亮灭对不对、

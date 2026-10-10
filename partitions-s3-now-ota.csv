@@ -1,0 +1,64 @@
+# ESP32-S3 N16R8 partition table -- OTA-CAPABLE variant of partitions-s3-now.csv.
+#
+# WHY A FOURTH TABLE (and why the other three are untouched):
+#   partitions-s3-now.csv gives the app ONE 2 MB `factory` slot and says in its own
+#   header "NO OTA HERE" -- with a single slot there is nowhere to write a new image
+#   while the old one is running, so wireless flashing is impossible by construction.
+#   This file keeps EVERYTHING ELSE byte-identical and only turns the app into an
+#   A/B pair, which is the minimum change that makes OTA possible.
+#
+# WHAT IS DELIBERATELY UNCHANGED (do not move these -- the web editor prints them):
+#   nvs   @0x9000   (so the mute flag / boot counters survive)
+#   theme @0x210000 (0x4000)
+#   spiffs@0x214000 (0x40000)
+#   image @0x254000 (0x800000)  <- the 8 MB asset partition
+#   coredump @0xa54000 (0x10000)
+#   => a board reflashed with this table keeps its assets, its theme and its NVS.
+#
+# WHERE THE SECOND SLOT LIVES: 0xa64000 (right after coredump). The layout only
+#   reaches 0xa64000 = 10.39 MB of 16 MB, so 5.61 MB was free; ota_1 takes 2 MB of it
+#   and 3.61 MB stays unallocated. No existing partition had to shrink.
+#
+# WHY BOTH SLOTS ARE 2 MB: IDF refuses to start an update whose image does not fit
+#   the target slot, and the two OTA slots must be EQUAL SIZE. The ESP-NOW images are
+#   1.50 MB (master) / 1.71 MB (slave, with NimBLE) => 2 MB is the smallest slot pair
+#   that fits both, and it is exactly what the old `factory` slot already was.
+#
+# WHY THERE IS NO `factory` ANY MORE: A/B updating needs two OTA slots. With a
+#   factory + one ota slot, `esp_ota_get_next_update_partition()` can only hand back
+#   the slot that is currently running (writing to the running partition is rejected).
+#   With a blank otadata the IDF bootloader boots ota_0 -- the same precedent as
+#   partitions-s3.csv (ota_0 + ota_1, no factory), which those boards have booted from
+#   for weeks. `otadata` @0xe000 was already reserved and unused.
+#
+# ★ THE ONE-TIME COST: this table must be written over USB once (a normal
+#   `pio run -e <ota env> -t upload` writes bootloader + partition table + app).
+#   After that every further update can go over WiFi. The app stays at 0x10000, so the
+#   first OTA-capable flash does not move the firmware either.
+#
+# NOTE: keep this file pure ASCII -- PlatformIO's CSV reader decodes it with the
+#   system codepage (GBK on Chinese Windows); non-ASCII comments break the build.
+#
+# ★★ WHY app1 IS THE LAST LINE (踩过的坑之一): `gen_esp32part.py` validates the table
+#   **in file order** and refuses anything that is not strictly ascending:
+#     "CSV Error at line 47: Partitions overlap. Partition sets offset 0x210000.
+#      Previous partition ends 0xc64000"
+#   ⇒ the two OTA slots are NOT adjacent in the file (ota_0 sits at the bottom,
+#     ota_1 uses the free tail after coredump), so ota_1 must be written last.
+#     Order does not matter semantically -- ota_0/ota_1 are found by subtype.
+#
+# ★★ WHY 0xa70000 AND NOT 0xa64000 (踩过的坑之二): **app partitions must be 64 KB
+#   aligned** (`0x10000`). coredump ends at 0xa64000, which is NOT aligned:
+#     "Partition app1 invalid: Offset 0xa64000 is not aligned to 0x10000"
+#   ⇒ round up to 0xa70000 (167 x 0x10000). The 48 KB gap before it is wasted on
+#     purpose: rounding is cheaper than moving any of the partitions above.
+#
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x200000,
+theme,    data, 0x40,    0x210000, 0x4000,
+spiffs,   data, spiffs,  0x214000, 0x40000,
+image,    data, 0x41,    0x254000, 0x800000,
+coredump, data, coredump,0xa54000, 0x10000,
+app1,     app,  ota_1,   0xa70000, 0x200000,

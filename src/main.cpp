@@ -23,6 +23,10 @@
 #if defined(OBD_BLE)
 #include "obd_transport_ble.h"      // ObdTransportBle：走 BLE 诊断头（见 docs/BLE-OBD.md）
 #endif
+// ★★★★ 2026-09-29：**无线刷写**（串口 `u` → 重启进 OTA 模式，见 docs/OTA.md）。
+//   头文件自己带 `#if defined(ARDUINO) && defined(DASH_OTA)` 守卫 ⇒ 别的构建
+//   连这一层都编不到，行为与加它之前逐字节相同。
+#include "ota_wifi.h"
 #include "dash_display.h"
 #include "dash_ui.h"
 #include "alerts.h"       // 告警层:只用已解字段(超速/红区/门/转向灯忘关)
@@ -1731,6 +1735,17 @@ static bool serial_cmd_handle(char c, char* line, uint8_t& len) {
 #else
       return false;
 #endif
+    case SerialCmd::Ota:
+      // ★★★★ 2026-09-29：**无线刷写**。这里只做两件事：置 RTC 标志 + 重启；
+      //   真正的 AP + 上传页在 `ota_wifi.cpp` 的 `ota_wifi_run()` 里、由 setup() 开头调。
+      //   为什么不在主循环里现起服务：稳态 RAM 与射频共存都伤不起（见那个头文件的说明）。
+      //   ★ 与 `o` / `t` 同一口径：没编 `DASH_OTA` 的构建里返回 false。
+#if defined(DASH_OTA)
+      dashcore::ota_wifi_request();   // 不返回（内部 ESP.restart()）
+      return true;
+#else
+      return false;
+#endif
     case SerialCmd::Inject:
       // ★★ 临时故障注入（**默认构建里恒为 false**，见下面那一段）。
       //   ★ 开了注入时，这里只**记下**"下一位是次数"，真正的动作在下一颗字节
@@ -2806,6 +2821,19 @@ void setup() {
   //   车上是没有 USB 主机的,阻塞等待会让每次上电都白等几秒。
 #if defined(DASH_DEVICE_SELFTEST)
   print_selftest("上电");
+#endif
+
+  // ★★★★ 2026-09-29：**无线刷写模式**（串口敲过 `u` ⇒ 上一次开机尾置了 RTC 标志）。
+  //   位置是**刻意**的：放在这里 = 显示 / VAN / 链路 / BLE **一个都还没初始化**
+  //   ⇒ OTA 期间射频是空的（ESP-NOW 与 SoftAP 不会抢频道）、内部 RAM 最多
+  //     （带上限的实测：这里还有 ~166KB，而带 BLE 稳态只剩 ~29KB）。
+  //   ★ `ota_wifi_run()` **不返回**：上传成功或超时都 `ESP.restart()` 回正常固件。
+  //   ★ 没编 `DASH_OTA` 的构建里这段整个不存在（头文件带守卫）⇒ 行为不变。
+#if defined(DASH_OTA)
+  if (dashcore::ota_wifi_take_request()) {
+    dashcore::ota_wifi_run();       // ★ 永不返回
+  }
+  dash_logf("ota: 这一档支持无线刷写 —— 串口敲 `u` 即重启进 OTA 模式（见 docs/OTA.md）\n");
 #endif
 
   // ★ 示位标定时器:立刻起,1 Hz(**在 setup 一开头就起**,因为它存在的意义
