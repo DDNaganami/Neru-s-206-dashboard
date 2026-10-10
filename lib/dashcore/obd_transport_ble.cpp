@@ -674,10 +674,23 @@ bool ObdTransportBle::connectNow() {
 bool ObdTransportBle::attachCharacteristics() {
   if (client_ == nullptr || !client_->isConnected()) return false;
 
+  // ** 2026-10-10: measure the three blocking steps separately.
+  //   Measured on the bench (slave, first connect to an ELM327): right after
+  //   `onConnect ok (1827ms after the request)` the main loop was stuck for
+  //   `loop: stalled 1905ms` -- i.e. these 1.9s are essentially THIS function:
+  //   getService() runs a full ATT service discovery (several round trips) and
+  //   subscribe() waits for one more reply. They block our own main loop, which is
+  //   exactly what the comment above traded for ("worst case a few hundred ms" --
+  //   the real number turned out to be ~2s, so it is measured now instead of guessed).
+  //   With the numbers the next decision is: move this off the main loop, or rely on
+  //   the stall-triggered panel self-heal in src/main.cpp.
+  const uint32_t t_disc0 = (uint32_t)millis();
   NimBLERemoteService* svc = client_->getService(NimBLEUUID(kServiceUuid));
+  const uint32_t t_disc1 = (uint32_t)millis();
   if (svc == nullptr) return false;
   NimBLERemoteCharacteristic* n = svc->getCharacteristic(NimBLEUUID(kNotifyUuid));
   NimBLERemoteCharacteristic* w = svc->getCharacteristic(NimBLEUUID(kWriteUuid));
+  const uint32_t t_char1 = (uint32_t)millis();
   if (n == nullptr || w == nullptr) return false;
 
   // 订阅通知：回调只往环里塞字节（分片到达由 ObdSource 那边按 \r 切行处理）
@@ -689,6 +702,9 @@ bool ObdTransportBle::attachCharacteristics() {
   notify_ = n;
   write_  = w;
   dash_logf("obd-ble: 特征已配齐（FFF1 已订阅 / FFF2 可写）⇒ state=ready\n");
+  dash_logf("obd-ble:   计时 发现服务=%lums 取特征=%lums 订阅=%lums（这三步阻塞主循环）\n",
+            (unsigned long)(t_disc1 - t_disc0), (unsigned long)(t_char1 - t_disc1),
+            (unsigned long)((uint32_t)millis() - t_char1));
   return true;
 }
 

@@ -1986,6 +1986,10 @@ static uint32_t g_loop_last_report_ms = 0;
 static uint32_t g_loop_prev_ms = 0;    // 上一圈的时刻（探测要的 `millis()` 差值）
 static const uint32_t kLoopStallMs        = 200u;    // 打一行的阈值（任务书给的数）
 static const uint32_t kLoopStallReportMs  = 5000u;   // 摘要周期（与 SRC 那一行同一个节拍）
+// ★★★★ 2026-10-10：**大停顿 ⇒ 面板自愈**的两个常数（理由见 loop_probe_begin 里那一段）。
+static const uint32_t kPanelHealStallMs  = 1000u;   // 秒级停顿才动面板（不是报告用的 200ms）
+static const uint32_t kPanelHealMinGapMs = 30000u;  // 自愈节流：一次故障只修一次
+static uint32_t g_panel_heal_last_ms = 0;
 
 // 探测行里的 `prev=`：**这一次运行是"上一次怎么结束"之后的**，而上一次是
 // 看门狗/PANIC 复位还是断电，跟"这一次会不会卡"直接相关 ⇒ 一行里带上。
@@ -2073,6 +2077,26 @@ static void loop_probe_begin(uint32_t now) {
               (unsigned long)rs.bytes_read, (unsigned long)rs.crc_err,
               (unsigned long)rs.bad_len, (unsigned long)rs.noise_bytes,
               (unsigned long)spent, resetReasonShort());
+  }
+  // ★★★★ 2026-10-10：**秒级停顿之后，把面板重初始化一次**。
+  //   为什么：台面实测（soak 日志，从板）——BLE **首次**建连那一圈，主循环被卡住
+  //   `loop: stalled 1905ms`，同一时刻显示节拍被扰动（`vsync=+120/s`、`bounce=52MB/s`，
+  //   正常 43/s、18MB/s）；主板（无 BLE）同一条件下 0 次停顿。车主看到的正是"只有转速表
+  //   那块、挂很久才出现横纹+图像上移，而且 `r` 之前不自愈" —— 与"那一圈把面板时序冲坏、
+  //   面板从此丢掉同步"完全一致。
+  //   所以这里不是"定时盲目自愈"，而是**被实测异常触发**的自愈：只在真的卡了 1 秒以上时
+  //   才花 ~400ms 重跑面板初始化（`dash_display_panel_reinit()`，与串口 `r` 同一个入口、
+  //   同一份实现）。阈值另取 1000ms：200ms 是"报告"阈值，正常抖动偶尔也会破，不能拿它动手。
+  //   节流 30s：一次故障只修一次；真故障会自己再触发，不会来回折腾。
+  if (dt >= kPanelHealStallMs) {
+    if ((uint32_t)(now - g_panel_heal_last_ms) >= kPanelHealMinGapMs) {
+      g_panel_heal_last_ms = now;
+#if defined(DASH_DISPLAY_RGB)
+      dash_logf("panel: 大停顿 %lums ⇒ 自愈重初始化（阈值 %lums）\n",
+                (unsigned long)dt, (unsigned long)kPanelHealStallMs);
+      dash_display_panel_reinit("loop stall");
+#endif
+    }
   }
   if (dt > g_loop_max_ms) g_loop_max_ms = dt;
   g_loop_prev_ms = now;
