@@ -223,6 +223,80 @@ def do_flash(port, kind, path):
     return {"ok": ok, "out": out[-6000:], "offset": hex(off)}
 
 
+def http_json(url, timeout=6):
+    """GET one small JSON document (the board's /status). Never raises: the board is
+    expected to be unreachable while it reboots, and that is not an error here."""
+    import urllib.request
+    # 直连，别走 proxy：板子在 192.168.4.1/局域网，proxy 一旦被环境变量打开就会
+    #  把请求劫走（实测报 TLSV1_ALERT_INTERNAL_ERROR）—— 这是"读不到板子"的一个真坑。
+    _op = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with _op.open(url, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:
+        return {"_error": str(e)}
+
+
+def board_status(host):
+    """Read the board's own bookkeeping: fw / role / running slot / target slot."""
+    h = (host or "192.168.4.1").strip().replace("http://", "").strip("/")
+    st = http_json("http://%s/status" % h, timeout=5)
+    st["_host"] = h
+    return st
+
+
+def serial_send(port, text):
+    """Write one command to a board's serial port.
+
+    Why PowerShell and not pyserial: this app is stdlib-only on purpose, and on Windows a
+    COM port needs a real DCB setup -- System.IO.Ports.SerialPort does that for us.
+    DTR/RTS are held LOW so opening the port does not reset the board (on these native
+    USB-CDC boards a reset also parks the chip in the ROM stub, see docs/OTA.md 5.1).
+    """
+    if not re.fullmatch(r"COM\d+", port or ""):
+        return {"ok": False, "error": "bad port (want COM<n>)"}
+    ps = ("$p=New-Object System.IO.Ports.SerialPort '%s',115200,'None',8,'One';"
+          "$p.DtrEnable=$false;$p.RtsEnable=$false;$p.Open();Start-Sleep -Milliseconds 500;"
+          "try{$p.DiscardInBuffer();$p.Write(\"%s`r`n\");Start-Sleep -Milliseconds 300;$p.Close()}"
+          "catch{Write-Error $_;exit 1}"
+          ) % (port, text)
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                            "-Command", ps], capture_output=True, timeout=30)
+        _err = (r.stderr or b"").decode("utf-8", "replace")
+        return {"ok": r.returncode == 0 and "Error" not in _err and "Exception" not in _err, "port": port,
+                "err": (r.stderr or b"").decode("utf-8", "replace")[-200:]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def ota_verify(host, port, before, timeout_s=70):
+    """Decide whether an upload REALLY landed, using the board's own bookkeeping.
+
+    Why this endpoint exists (learned the hard way, 2026-10-10): `Update` restarts the
+    board the moment the write completes, which can kill the HTTP reply in flight -- so a
+    failed upload response does NOT mean a failed write, and a browser cannot tell.
+    The board's own answer is authoritative: re-enter OTA mode (serial `u`) and read
+    /status; if `running`/`target` swapped over, the image went into the other slot.
+    """
+    t0 = time.time()
+    sent = serial_send(port, "u") if port else {"ok": False, "error": "no port given"}
+    deadline = t0 + max(5, int(timeout_s))
+    last = None
+    while time.time() < deadline:
+        time.sleep(2.0)
+        st = board_status(host)
+        if st.get("ota_mode"):
+            run_slot, tgt = st.get("running"), st.get("target")
+            return {"ok": True, "waited_ms": int((time.time() - t0) * 1000),
+                    "before": before or "", "running": run_slot, "target": tgt,
+                    "fw": st.get("fw"), "flipped": bool(before) and run_slot != before,
+                    "status": st, "serial": sent}
+        last = st
+    return {"ok": False, "waited_ms": int((time.time() - t0) * 1000),
+            "error": "/status 没在 %ss 内回来（板子还在 OTA 模式吗？热点连上了吗？）" % timeout_s,
+            "last": last, "serial": sent}
+
 def do_preview():
     """跑宿主机预览（pcpreview）若干秒，生成 preview/frames/*，然后收工。"""
     frames = os.path.join(REPO, "preview", "frames")
@@ -318,6 +392,8 @@ class Handler(SimpleHTTPRequestHandler):
                                "frozen": FROZEN, "exe": sys.executable if FROZEN else "",
                                "pio": pio_python(), "proxy": PROXY,
                                "time": time.strftime("%H:%M:%S")})
+        if u.path == "/api/board-status":
+            return self._json(board_status((q.get("host") or [""])[0]))
         if u.path == "/api/ports":
             return self._json(list_ports())
         if u.path == "/api/bins":
@@ -355,6 +431,9 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path == "/api/flash":
             return self._json(do_flash(str(b.get("port", "")), str(b.get("kind", "")),
                                        str(b.get("path", ""))))
+        if u.path == "/api/ota-verify":
+            return self._json(ota_verify(str(b.get("host", "")), str(b.get("port", "")),
+                                       str(b.get("before", "")), int(b.get("timeout_s", 70) or 70)))
         if u.path == "/api/preview":
             return self._json(do_preview())
         if u.path == "/api/quit":

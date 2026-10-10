@@ -162,6 +162,41 @@ function initOta() {
     upload(host, file, label);
   };
 
+  // ---- 上传后自动验槽（2026-10-10）--------------------------------------------
+  // 为什么必须有这一步：板子 Update 收完立刻重启 ⇒ HTTP 回执可能死在路上，浏览器
+  // **无法**区分"写进去了但回复丢了"和"压根没写进去"。唯一可信的判据是板子自己的账：
+  // 串口 `u` 重新进 OTA 模式，再读 /status —— running/target 翻转过来才算真的换了槽。
+  // 这两件事由本地服务代做（浏览器打不到串口，也读不到重启后的板子），见 /api/ota-verify。
+  async function verifySlot(host, replied) {
+    const port = (($('#ota-port') && $('#ota-port').value.trim()) || 'COM8');
+    logTo('#ota-log', replied
+      ? '\n★ 自动验槽：串口发 u → 读 /status，用 running/target 翻转当判据…\n'
+      : '\n★ 自动验槽（回执不可信，所以直接问板子）…\n', true);
+    setStatus('自动验槽…');
+    try {
+      const before = await api('/api/board-status?host=' + encodeURIComponent(host));
+      const r = await api('/api/ota-verify', {
+        method: 'POST',
+        body: JSON.stringify({ host, port, before: (before && before.running) || '' }),
+      });
+      if (!r.ok) {
+        logTo('#ota-log', '✗ 验槽没结论：' + (r.error || '') + '\n' +
+          '  （板子还在 OTA 模式吗？电脑连上热点了吗？串口 ' + port + ' 选对了吗？）\n', true);
+        setStatus('验槽未完成');
+        return;
+      }
+      const flip = r.flipped
+        ? '★ 槽已轮换：' + r.before + ' → ' + r.running + ' ⇒ 这次真的写进去了 ✓'
+        : '⚠ 槽没变（还是 ' + r.running + '）⇒ 这次多半没写进去';
+      logTo('#ota-log', flip + '\n  现在 running=' + r.running + ' target=' + r.target +
+        ' fw=' + (r.fw || '?') + '（验了 ' + (r.waited_ms / 1000).toFixed(1) + 's）\n' +
+        '  ★ 板子现在停在 OTA 模式：不传固件它会在 10 分钟后自己退回正常固件。\n', true);
+      setStatus(r.flipped ? '验槽通过：已换槽' : '验槽：槽没变');
+    } catch (e) {
+      logTo('#ota-log', '验槽出错：' + e + '\n', true);
+      setStatus('验槽出错');
+    }
+  }
   function upload(host, file, label) {
     const url = `http://${host}/update`;
     logTo('#ota-log', `→ POST ${url}\n  文件 ${label} (${human(file.size)})\n`, false);
@@ -181,13 +216,13 @@ function initOta() {
       setStatus('上传结束');
       $('#ota-bar').style.width = '100%';
       if (xhr.status === 200 && /OK/.test(xhr.responseText || '')) {
-        logTo('#ota-log', '★ 板子正在重启成新版；30 秒后可以点「检测开发板」看新版本号\n', true);
+        logTo('#ota-log', '★ 板子正在重启成新版。注意：收完就重启，回执丢了也不代表没写进去 —— 下面用板子自己的账验。\n', true);
       }
     };
     xhr.onerror = () => {
-      logTo('#ota-log', '★ 请求失败：多半是没连上板子的热点，或浏览器拦了跨域请求。\n' +
+      logTo('#ota-log', '★ 请求失败 —— 但**这不等于没写进去**：板子收完固件会立刻重启，回复常常死在那一瞬。\n' +
         '  备份路径：连上热点后直接开 http://192.168.4.1/ 用板子自带的上传页。\n', true);
-      setStatus('上传失败');
+      setStatus('上传失败？先验槽');
     };
     xhr.send(fd);
   }

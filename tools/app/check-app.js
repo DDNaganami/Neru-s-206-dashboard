@@ -54,7 +54,7 @@ for (const g of new Set(gos)) say(tabs.includes(g), `data-go="${g}" 不是任何
 
 // ⑤ 服务端兑现的接口，外壳里用到的都应当在 server.py 里有对应路由
 const srv = fs.readFileSync(path.join(dir, 'server.py'), 'utf8');
-const eps = new Set([...js.matchAll(/['"`](\/api\/[a-z]+)/g)].map((m) => m[1]));
+const eps = new Set([...js.matchAll(/['"`](\/api\/[a-z-]+)/g)].map((m) => m[1]));
 console.log('⑤ 外壳用到的接口：' + [...eps].join(', '));
 for (const e of eps) say(srv.includes('"' + e + '"'), `server.py 里没有 ${e} 这条路由`);
 
