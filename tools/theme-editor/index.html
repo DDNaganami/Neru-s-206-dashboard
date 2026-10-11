@@ -757,6 +757,16 @@ function buildControls() {
   syncers.push(slider(g3, "最低 ℃", () => T.coolant_min_c, v => T.coolant_min_c = v, 0, 120, 1));
   syncers.push(slider(g3, "最高 ℃", () => T.coolant_max_c, v => T.coolant_max_c = v, 60, 160, 1));
 
+    // ★★ 2026-10-11: **进气量程** —— 原先只有上面那组水温，进气没有对应控件
+    //   （车主当场发现："为什么有水温表量程调整、对应的进气温度表就没有量程了"）。
+    //   两侧本来就是对称的：固件 dash_ui.cpp:1104/1107 两个量各自换算、默认 0~80；
+    //   编辑器的换算（本文件 325/328）也读 T.intake_*；固件解析缺的四个键已由 7a9c1b0 补上。
+    //   缺的只是这一组控件 ⇒ 补上。滑杆范围按"环境温度 → 堵车热浸"给窗口：
+    //   最低 -20~60（含默认 0）、最高 40~140（含默认 80）。
+    const g4 = group("进气量程");
+    syncers.push(slider(g4, "最低 ℃", () => T.intake_min_c, v => T.intake_min_c = v, -20, 60, 1));
+    syncers.push(slider(g4, "最高 ℃", () => T.intake_max_c, v => T.intake_max_c = v, 40, 140, 1));
+
   // ---- 数字读数 ----
   const g5 = group("数字读数（转速/速度/水温）");
   const r = T.readout;
