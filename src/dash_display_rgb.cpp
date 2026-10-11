@@ -1681,6 +1681,13 @@ bool dash_display_panel_rebuild(const char* why) {
   }
   g_panel_ready = true;
   const bool ok = dash_display_panel_reinit("rebuild");
+  // ★★ 2026-10-10 实测补上：重建之后**必须要求一次整屏重绘**。
+  //   原因：del + panel_create 会重新分配两块 fb（驱动分配出来是全 0=黑），而 LVGL 认为
+  //   "没变的地方不用重画" ⇒ 只有会变的数字画回去、静态的表盘周边留在黑底上（实测现象）。
+  //   ① 立起"待整屏补拷"标志（两块 fb 收敛）；② 让 LVGL 把当前屏整块判脏。
+  //   ★ lv_obj_invalidate(lv_screen_active()) 在本文件里已有同类用法（见下面渲染期断言那段）。
+  g_pend_full = true;
+  lv_obj_invalidate(lv_screen_active());
   dash_logf("panel: rebuild by %s (%ums; del + panel_create + reinit=%d)\n",
             tag, (unsigned)(millis() - t0), (int)ok);
   return ok;
