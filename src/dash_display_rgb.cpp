@@ -1658,6 +1658,34 @@ lv_display_t* dash_display_right() { return g_right; }
 //     只是这里指定的是 front 那一块）。450KB 的搬运由驱动做（bounce），
 //     这一行本身只是登记一次换帧请求 ⇒ 不阻塞、也不闪。
 // ============================================================
+// ============================================================================
+// dash_display_panel_rebuild() —— 全量重建（2026-10-10）
+//   顺序刻意与开机一致：del 掉旧对象 → panel_create()（同一份创建实现）→ 再补 RST/41 步/
+//   重发那一套（就是 dash_display_panel_reinit 做的事）。
+//   ★ esp_lcd_panel_del() 会把它分配的 fb / bounce buffer 一并释放 ⇒ 不会每修一次漏一块。
+//   ★ 判据：日志末尾必须出现 del + panel_create + reinit=1，否则说明没走全量这条路。
+// ============================================================================
+bool dash_display_panel_rebuild(const char* why) {
+  const char* const tag = (why != nullptr) ? why : "?";
+  if (g_spi == nullptr) {
+    dash_logf("panel: rebuild skipped (SPI 没起来)\n");
+    return false;
+  }
+  const uint32_t t0 = millis();
+  if (g_panel != nullptr) { esp_lcd_panel_del(g_panel); g_panel = nullptr; }
+  g_panel_ready = false;
+  panel_create();
+  if (g_panel == nullptr) {
+    dash_logf("panel: rebuild 失败 (panel_create 没建成，见上一行)\n");
+    return false;
+  }
+  g_panel_ready = true;
+  const bool ok = dash_display_panel_reinit("rebuild");
+  dash_logf("panel: rebuild by %s (%ums; del + panel_create + reinit=%d)\n",
+            tag, (unsigned)(millis() - t0), (int)ok);
+  return ok;
+}
+
 bool dash_display_panel_reinit(const char* why) {
   const char* const tag = (why != nullptr) ? why : "?";
   if (!g_panel_ready || g_panel == nullptr || g_spi == nullptr) {

@@ -1699,6 +1699,15 @@ static bool serial_cmd_handle(char c, char* line, uint8_t& len) {
     case SerialCmd::Beep:
       beep_test_from_serial();
       return true;
+    case SerialCmd::Rebuild:
+#if defined(DASH_DISPLAY_RGB)
+      // 2026-10-10: 全量重建（del + panel_create）。与 r 的区别：r 只重写面板寄存器；
+      //   这一条连面板对象一起重建 —— 实测那种"只重写寄存器修不好"的横纹/偏移要靠它。
+      dash_display_panel_rebuild("cmd R");
+#else
+      dash_logf("panel: rebuild 需要 DASH_DISPLAY_RGB 构建\n");
+#endif
+      return true;
     case SerialCmd::Reinit:
       reinit_from_serial();
       return true;

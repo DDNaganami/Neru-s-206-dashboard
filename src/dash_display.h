@@ -90,6 +90,10 @@ void dash_display_early_reset_hold();
 //     判据/周期/计数全在 `lib/dashcore/panel_guard.*`（宿主机逐条钉着），
 //     这里只把四个注入回调接上真硬件。
 //   · `dash_display_panel_reinit()`：**重跑 ST7701 的初始化序列 + 重发当前 framebuffer**
+// 2026-10-10: 全量重建 —— del 掉面板对象再走 panel_create()（与开机同一条创建路径）。
+//   为什么要有它：实测只重写面板寄存器 ✗、加 rgb 外设重启也 ✗，而按复位键（完整启动）✓
+//   ⇒ 缺的正是创建那一段；这条命令就是"用软件按一次复位键"。
+bool dash_display_panel_rebuild(const char* why);
 //     —— 串口命令 `r` 与守护的自动恢复都走这一条。
 //     ★ 它**不碰** PCLK / bounce / num_fbs / 引脚（那些是"不要做"清单上的东西）。
 //

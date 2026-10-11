@@ -66,6 +66,7 @@ enum class SerialCmd : uint8_t {
   //     动不动作由调用方按 `DASH_OTA` 决定；没编 OTA 的构建里恒 false
   //     ⇒ 这个字符照旧进回放路径，串口行为一个字节都没变。
   Ota,
+  Rebuild,   // 2026-10-10: R = 面板全量重建（del + panel_create），"用软件按一次复位键"
 };
 
 // `i` 后面那一位数字（"注入几次"）的解析：不是 '1'..'9' 就用 `dflt`。
@@ -106,6 +107,7 @@ inline SerialCmd serial_cmd_classify(char c) {
     // ★★★★ `u` = **无线刷写**（2026-09-29 新增，口径与 `o` / `t` 完全相同）：
     //   有 OTA 的构建里置标志 + 重启；没编 OTA 的构建里恒 false（照旧进回放路径）。
     case 'u': return SerialCmd::Ota;
+  case 'R': return SerialCmd::Rebuild;
     default:  return SerialCmd::None;
   }
 }
