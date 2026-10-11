@@ -763,9 +763,9 @@ function buildControls() {
     //   编辑器的换算（本文件 325/328）也读 T.intake_*；固件解析缺的四个键已由 7a9c1b0 补上。
     //   缺的只是这一组控件 ⇒ 补上。滑杆范围按"环境温度 → 堵车热浸"给窗口：
     //   最低 -20~60（含默认 0）、最高 40~140（含默认 80）。
-    const g4 = group("进气量程");
-    syncers.push(slider(g4, "最低 ℃", () => T.intake_min_c, v => T.intake_min_c = v, -20, 60, 1));
-    syncers.push(slider(g4, "最高 ℃", () => T.intake_max_c, v => T.intake_max_c = v, 40, 140, 1));
+    const g4i = group("进气量程");   // ★ 不能叫 g4：同一个 buildControls() 里下面还有一个 g4（开机动画）
+    syncers.push(slider(g4i, "最低 ℃", () => T.intake_min_c, v => T.intake_min_c = v, -20, 60, 1));
+    syncers.push(slider(g4i, "最高 ℃", () => T.intake_max_c, v => T.intake_max_c = v, 40, 140, 1));
 
   // ---- 数字读数 ----
   const g5 = group("数字读数（转速/速度/水温）");
