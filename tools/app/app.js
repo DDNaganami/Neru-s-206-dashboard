@@ -11,6 +11,7 @@
 const TABS = [
   { id: 'home',    title: '总览' },
   { id: 'ota',     title: '无线刷写' },
+  { id: 'board',   title: '开发板状态' },
   { id: 'theme',   title: '主题配色' },
   { id: 'image',   title: '图片素材' },
   { id: 'preview', title: '预览表盘' },
@@ -229,6 +230,36 @@ function initOta() {
 }
 
 /* ---- 文件：读 + 烧 -------------------------------------------------------*/
+/* ---- 开发板状态：读板子自己的 /status（服务端代读，绕开浏览器跨域/私网限制） ---- */
+function initBoard() {
+  const hostEl = $('#b-host'), out = $('#b-out'), autoEl = $('#b-auto');
+  let timer = null;
+  async function refresh() {
+    out.textContent = '读取中…';
+    try {
+      const s = await api('/api/board-status?host=' + encodeURIComponent(hostEl.value.trim() || '192.168.4.1'));
+      if (!s || s._error) {
+        out.textContent = '读不到：' + ((s && s._error) || '空响应') + '\n' +
+          '（板子进了 OTA 模式吗？电脑 WiFi 连上 206dash-… 热点了吗？）';
+        return;
+      }
+      out.textContent =
+        '固件        : ' + (s.fw || '?') + '\n' +
+        '角色        : ' + (s.role || '?') + '\n' +
+        '运行槽      : ' + (s.running || '?') + '     目标槽: ' + (s.target || '?') + '\n' +
+        'OTA 就绪    : ' + (s.ota_ready ? '是' : '否') + '     OTA 模式: ' + (s.ota_mode ? '是' : '否') + '\n' +
+        '内部 RAM    : ' + (s.heap_kb != null ? s.heap_kb + ' KB 可用' : '?') + '\n' +
+        '已运行      : ' + Math.round((s.uptime_ms || 0) / 1000) + ' 秒\n' +
+        '★ PSRAM/复位原因要固件报才有（/status 现在是这些字段）—— 需要我就加。';
+    } catch (e) { out.textContent = '出错：' + e; }
+  }
+  $('#b-refresh').onclick = refresh;
+  autoEl.onchange = () => {
+    if (timer) { clearInterval(timer); timer = null; }
+    if (autoEl.checked) timer = setInterval(refresh, 5000);
+  };
+  refresh();
+}
 function initFiles() {
   $('#f-bin').onchange = async (e) => {
     const f = e.target.files[0];
@@ -304,6 +335,7 @@ function initBuild() {
   refreshBins();
   initOta();
   initFiles();
+initBoard();
   initBuild();
   $('#b-board').onclick = () => boardStatus($('#ota-host').value.trim() || '192.168.4.1');
   $('#b-bins').onclick = refreshBins;

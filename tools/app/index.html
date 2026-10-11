@@ -153,6 +153,17 @@
   </section>
 
   <!-- ============ 文件与烧写 ============ -->
+  <section id="tab-board">
+    <h2>开发板状态</h2>
+    <p>读板子自己的 <code>/status</code>（由本地服务代读，避免浏览器跨域/私网限制）。
+       板子要在 <b>OTA 模式</b>、且电脑 WiFi 已连上它的热点。</p>
+    <p>
+      <label>板子地址 <input id="b-host" value="192.168.4.1" size="14"></label>
+      <button id="b-refresh" class="act">刷新</button>
+      <label><input type="checkbox" id="b-auto"> 每 5 秒自动刷新</label>
+    </p>
+    <pre id="b-out"></pre>
+  </section>
   <section id="tab-files">
     <div class="grid">
       <div class="card">
