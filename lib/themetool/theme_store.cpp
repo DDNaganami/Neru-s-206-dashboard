@@ -269,6 +269,13 @@ bool theme_parse_json(const char* json, uint32_t len, Theme& t) {
     if (keyIs(k, klen, "face_bg_idle"))    { if (s.uintVal(&u)) t.face_bg_idle = u; return true; }
     if (keyIs(k, klen, "face_bg_redline")) { if (s.uintVal(&u)) t.face_bg_redline = u; return true; }
     if (keyIs(k, klen, "face_ink"))        { if (s.uintVal(&u)) t.face_ink = u; return true; }
+    // ★★ 2026-10-11: 量程键（原先只有结构体默认值 60~130 / 0~80，主题里根本没法调 ——
+    //   编辑器那份"水温量程"是 face-stages.js 里的**硬编码副本**，所以只有水温、且改了也不生效）。
+    //   加进这里之后 theme.json 才能真正决定量程，两个量的写法逐字对称。
+    if (keyIs(k, klen, "coolant_min_c"))   { if (s.number(&d)) t.coolant_min_c = (float)d; return true; }
+    if (keyIs(k, klen, "coolant_max_c"))   { if (s.number(&d)) t.coolant_max_c = (float)d; return true; }
+    if (keyIs(k, klen, "intake_min_c"))    { if (s.number(&d)) t.intake_min_c  = (float)d; return true; }
+    if (keyIs(k, klen, "intake_max_c"))    { if (s.number(&d)) t.intake_max_c  = (float)d; return true; }
     if (keyIs(k, klen, "coolant_min_c"))   { if (s.number(&d)) t.coolant_min_c = (float)d; return true; }
     if (keyIs(k, klen, "coolant_max_c"))   { if (s.number(&d)) t.coolant_max_c = (float)d; return true; }
     if (keyIs(k, klen, "intake_min_c"))    { if (s.number(&d)) t.intake_min_c = (float)d; return true; }
