@@ -231,6 +231,48 @@ function initOta() {
 
 /* ---- 文件：读 + 烧 -------------------------------------------------------*/
 /* ---- 开发板状态：读板子自己的 /status（服务端代读，绕开浏览器跨域/私网限制） ---- */
+/* ---- 预览页内联（不再用 iframe）：取回 /preview/preview.html 再注入 ----
+   ★ 两个必须处理的点（不处理必踩）:
+     ① `innerHTML` 注入的 <script> **不会执行** ⇒ 要手动重建 <script> 元素；
+     ② 那个页面住在 /preview/ 下，它的相对路径（frames/l_0001.bmp）搬进本页会指错
+        ⇒ 注入前把相对字面量补成 /preview/… 前缀。
+   ★ 另外把它的 CSS 作用域化到 #pv-host：它里面有 body/h2/figure 这种通用选择器，
+     不隔离会把整个外壳的样式带跑。 */
+function initPreviewInline() {
+  const host = $('#pv-host');
+  if (!host) return;
+  async function load() {
+    host.textContent = '载入预览页…';
+    try {
+      const html = await (await fetch('/preview/preview.html', { cache: 'no-store' })).text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const css = [...doc.querySelectorAll('style')].map((s) => s.textContent).join('\n');
+      const scoped = css.replace(/(^|\})\s*([^{}@]+)\{/g, (m, close, sel) => {
+        const s = sel.split(',').map((x) => '#pv-host ' + x.trim()).join(', ');
+        return close + '\n' + s + '{';
+      });
+      doc.querySelectorAll('.navstrip').forEach((n) => n.remove());   // 单独打开用的导航条，外壳里不要
+      const scripts = [...doc.querySelectorAll('script')];
+      scripts.forEach((s) => s.remove());
+      host.innerHTML = '<style>' + scoped + '</style>' + doc.body.innerHTML;
+      for (const s of scripts) {
+        const el = document.createElement('script');
+        if (s.getAttribute('src')) {
+          const src = s.getAttribute('src');
+          el.src = src.charAt(0) === '/' ? src : '/preview/' + src;
+        } else {
+          el.textContent = (s.textContent || '')
+            .replace(/(['"])(frames\/)/g, '$1/preview/$2')
+            .replace(/(['"])(preview-28c\.html|preview\.html)/g, '$1/preview/$2');
+        }
+        host.appendChild(el);
+      }
+    } catch (e) { host.textContent = '预览页载入失败：' + e; }
+  }
+  window.__pvReload = load;   // 给外壳里"跑完预览后刷新"那条接线用（原来直接改 iframe.src）
+  const b = $('#b-pv-reload'); if (b) b.onclick = load;
+  load();
+}
 function initBoard() {
   const hostEl = $('#b-host'), out = $('#b-out'), autoEl = $('#b-auto');
   let timer = null;
@@ -318,7 +360,7 @@ function initBuild() {
     const r = await api('/api/preview', {});
     logTo('#preview-log', (r.out || '') + `\n落帧 ${r.frames} 张\n`, false);
     setStatus(r.ok ? '预览完成' : '预览没出帧');
-    $('#fr-preview').src = '/preview/preview.html?t=' + Date.now();
+    if (window.__pvReload) window.__pvReload();   // 内联版：重取预览页（等价于原来换 iframe.src + 缓存戳）
   };
   $('#b-preview').onclick = runPreview;
   $('#b-preview-open').onclick = () => window.open('/preview/preview.html', '_blank');
@@ -336,6 +378,7 @@ function initBuild() {
   initOta();
   initFiles();
 initBoard();
+initPreviewInline();
   initBuild();
   $('#b-board').onclick = () => boardStatus($('#ota-host').value.trim() || '192.168.4.1');
   $('#b-bins').onclick = refreshBins;
