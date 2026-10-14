@@ -172,3 +172,47 @@ PowerShell 会把 `-e` 当成**脚本自己的参数名**（报 "parameter name 
 $py = 'C:\.platformio\penv\Scripts\python.exe'
 & $py -c "from platformio.project.config import ProjectConfig; c=ProjectConfig(r'<repo>\platformio.ini'); c.validate(); print(c.get('env:esp32s3-rgb-slave-b10ble','build_flags'))"
 ```
+
+## 坑 8 ★★ — 系统 `python` 是**商店假 python**：退出码 0、零输出
+
+**2026-10-14 实测**（代价：一整轮 A/B 白跑）：
+
+```powershell
+(Get-Command python).Source
+# C:\Users\<用户名>\AppData\Local\Microsoft\WindowsApps\python.exe   ← 不是真解释器
+```
+
+那是 Windows 的"应用执行别名"占位：**不打印、不报错、退出码 0**。
+于是 `python -m platformio run -e pcpreview -t exec` 会"成功"返回，而**一个字节都没产出**
+—— 落的帧还是上一次的旧文件。
+
+★ 后果特别阴：**"前后两轮产物完全一样"会被读成"A/B 没有差异"**（本轮就差点这么报）。
+⇒ 两条纪律：
+
+1. **只用** `tools/build/pio.ps1 -Cmd '…'`（写死了 venv python 全路径），或
+   `& C:\206dash-scratch\pio-core-mix\penv\Scripts\python.exe -m platformio …`。
+   **别用**裸 `python` —— 连 `README.md` §构建 里那几行 `python -m platformio` 在这台机器上也**跑不通** ✗。
+2. **判据看产物，不看退出码**：跑完先确认落下来/编出来的文件**时间戳或哈希变了**
+   （帧看 `preview/frames/l_0030.bmp` 的 mtime；镜像看 `[SUCCESS]` 行）。
+   ★ 这与"pio 成功时也可能返回 1"是同一个病的两面。
+
+## 环境现状（2026-10-14 实测，与本文旧写法有出入）
+
+| 路径 | 在不在 | 说明 |
+|---|---|---|
+| `C:\.platformio\penv\Scripts\python.exe` | ✓ | `tools/build/pio.ps1` 用的那套 |
+| `C:\206dash-scratch\pio-core-mix\penv\Scripts\python.exe` | ✓ | `docs/LINK-TWO-BOARD.md` §构建 用的那套 |
+| `C:\206dash-scratch\now-vanraw` | ✓ | **在用的 ASCII 镜像**（`-now` 两档；`ota-cycle.ps1` 里写死了它的固件路径） |
+| `C:\206dash-scratch\now` | ✓ | 另一份镜像（`README.md` §构建 里的 `$copy` 例子） |
+| `C:\206dash-repo` | ✗ **已不存在** | 坑 5 里那个镜像名是旧的 |
+| `C:\206dash-build` | ✗ **已不存在** | 坑 4 里的 `PLATFORMIO_BUILD_DIR` 现在是按需创建 |
+
+★ 同步命令（本轮实测可用）：`robocopy $repo $copy /E /XD .git .pio /NJH /NJS /NP`
+—— 退出码 **1/3 = 成功**、**≥8 = 失败**；`/E` 不删目标里多余的文件（要镜像式删才用 `/MIR`）。
+
+★★ **CJK 路径 + 无 BOM 的 `.ps1` 会把路径本身也解析坏**（坑 7 的延伸）：本轮
+`robocopy` 报 **退出码 16**（"没有复制任何文件"）就是这么来的 —— 脚本里的
+`C:\Users\张九思\…` 被 Windows PowerShell 5.1 按 GBK 读成了乱码路径。
+⇒ 脚本里**不要写字面 CJK 路径**，用 `Join-Path $env:USERPROFILE '206Dash\Neru-s-206-dashboard'`；
+脚本正文**保持纯 ASCII**（与 `tools/build/pio.ps1` 同一条规矩）。
+

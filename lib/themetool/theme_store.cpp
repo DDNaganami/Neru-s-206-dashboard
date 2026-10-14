@@ -276,10 +276,7 @@ bool theme_parse_json(const char* json, uint32_t len, Theme& t) {
     if (keyIs(k, klen, "coolant_max_c"))   { if (s.number(&d)) t.coolant_max_c = (float)d; return true; }
     if (keyIs(k, klen, "intake_min_c"))    { if (s.number(&d)) t.intake_min_c  = (float)d; return true; }
     if (keyIs(k, klen, "intake_max_c"))    { if (s.number(&d)) t.intake_max_c  = (float)d; return true; }
-    if (keyIs(k, klen, "coolant_min_c"))   { if (s.number(&d)) t.coolant_min_c = (float)d; return true; }
-    if (keyIs(k, klen, "coolant_max_c"))   { if (s.number(&d)) t.coolant_max_c = (float)d; return true; }
-    if (keyIs(k, klen, "intake_min_c"))    { if (s.number(&d)) t.intake_min_c = (float)d; return true; }
-    if (keyIs(k, klen, "intake_max_c"))    { if (s.number(&d)) t.intake_max_c = (float)d; return true; }
+    // ★ 2026-10-14：这四条原先又抄了一遍（与上面四条逐字相同的死代码 —— 前面已 return true，永远执行不到）。行为上无害，只删。
     if (keyIs(k, klen, "boot_fade_ms"))        { if (s.uintVal(&u)) t.boot_fade_ms = u; return true; }
     if (keyIs(k, klen, "boot_sweep_start_ms")) { if (s.uintVal(&u)) t.boot_sweep_start_ms = u; return true; }
     if (keyIs(k, klen, "boot_stagger_ms"))     { if (s.uintVal(&u)) t.boot_stagger_ms = u; return true; }
