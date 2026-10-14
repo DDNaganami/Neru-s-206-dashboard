@@ -1,58 +1,181 @@
-/* 206Dash 开发台 —— 只看这个文件就能改外观。没有外部依赖（离线可用）。 */
+/* ============================================================================
+ * 206Dash 表盘助手 —— 外观只看这一个文件。没有外部依赖（离线可用）。
+ *
+ * 设计系统（改外观从这里下手，别到处写死数值）：
+ *   颜色  --bg/--surface/--surface-2/--line/--fg/--muted/--accent/--ok/--warn/--bad
+ *   间距  --sp-1..--sp-6（4/8/12/16/24/32）      圆角 --radius-sm/--radius/--radius-lg
+ *   字号  --fs-xs..--fs-xl                       层次 --shadow / --ring
+ *   组件  .card 卡片 / .btn 按钮（primary|ghost|lg）/ .chip 状态条 /
+ *         .bcard 大选择卡 / .purpose 一句话说明 / .stepn 步骤序号 / details.dis 折叠区
+ * ==========================================================================*/
 :root{
-  --bg:#14161a; --panel:#1b1e24; --panel2:#22262e; --line:#2e333d;
-  --fg:#e8eaf0; --dim:#9aa3b2; --acc:#4da3ff; --ok:#39c46b; --warn:#e0a53a; --bad:#e05a5a;
+  /* 颜色 */
+  --bg:#0f1116;
+  --surface:#171a21;
+  --surface-2:#1e222b;
+  --surface-3:#262b36;
+  --line:#2b3140;
+  --fg:#eef1f7;
+  --muted:#98a2b3;
+  --accent:#4da3ff;
+  --accent-ink:#04121f;
+  --ok:#3ec46d;
+  --warn:#e2a83c;
+  --bad:#e26a6a;
+  /* 间距 */
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px;
+  /* 圆角 */
+  --radius-sm:8px; --radius:12px; --radius-lg:16px;
+  /* 字号 */
+  --fs-xs:12px; --fs-sm:13px; --fs-md:14px; --fs-lg:16px; --fs-xl:20px;
+  /* 层次 */
+  --shadow:0 1px 2px rgba(0,0,0,.35), 0 8px 24px rgba(0,0,0,.18);
+  --ring:0 0 0 3px rgba(77,163,255,.30);
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
 body{background:var(--bg);color:var(--fg);
-  font:14px/1.55 system-ui,"Segoe UI","Microsoft YaHei",sans-serif;display:flex;flex-direction:column}
+  font:var(--fs-md)/1.55 system-ui,"Segoe UI","Microsoft YaHei",sans-serif;
+  display:flex;flex-direction:column}
+a{color:var(--accent)}
 
-header{display:flex;align-items:center;gap:14px;padding:10px 16px;background:var(--panel);
-  border-bottom:1px solid var(--line);flex:0 0 auto}
-header h1{font-size:16px;margin:0;font-weight:600}
+/* ---- 顶栏 / 页签 ---------------------------------------------------------*/
+header{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-3) var(--sp-5);
+  background:var(--surface);border-bottom:1px solid var(--line);flex:0 0 auto}
+header h1{font-size:var(--fs-lg);margin:0;font-weight:650;letter-spacing:.2px}
 header .sp{flex:1}
-.pill{font-size:12px;color:var(--dim);border:1px solid var(--line);border-radius:99px;padding:2px 10px}
+.pill{font-size:var(--fs-xs);color:var(--muted);border:1px solid var(--line);
+  border-radius:99px;padding:3px 11px;white-space:nowrap}
 .pill.on{color:var(--ok);border-color:#265c3b}
 .pill.off{color:var(--warn);border-color:#5c4a26}
 
-nav{display:flex;gap:4px;padding:0 12px;background:var(--panel);border-bottom:1px solid var(--line);
-  flex:0 0 auto;overflow-x:auto}
-nav button{background:none;border:0;border-bottom:2px solid transparent;color:var(--dim);
-  padding:10px 14px;cursor:pointer;font:inherit;white-space:nowrap}
+nav{display:flex;gap:var(--sp-1);padding:0 var(--sp-4);background:var(--surface);
+  border-bottom:1px solid var(--line);flex:0 0 auto;overflow-x:auto}
+nav button{background:none;border:0;border-bottom:2px solid transparent;color:var(--muted);
+  padding:var(--sp-3) var(--sp-5);cursor:pointer;font:inherit;font-weight:600;white-space:nowrap}
 nav button:hover{color:var(--fg)}
-nav button.sel{color:var(--fg);border-bottom-color:var(--acc)}
+nav button.sel{color:var(--fg);border-bottom-color:var(--accent)}
+nav button:focus-visible{outline:none;box-shadow:var(--ring)}
 
-main{flex:1;overflow:auto;padding:16px;min-height:0}
+main{flex:1;overflow:auto;padding:var(--sp-5);min-height:0}
 section{display:none}
 section.sel{display:block}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
-.card h2{margin:0 0 8px;font-size:14px;color:var(--fg)}
-.card h2 .tag{font-size:11px;color:var(--dim);font-weight:400;margin-left:8px}
-.card p{margin:6px 0;color:var(--dim)}
-.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
-label.f{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dim)}
-button.act{background:var(--acc);color:#06121f;border:0;border-radius:7px;padding:8px 14px;
-  font:inherit;font-weight:600;cursor:pointer}
-button.act:hover{filter:brightness(1.1)}
-button.act.ghost{background:var(--panel2);color:var(--fg);border:1px solid var(--line)}
-button.act:disabled{opacity:.5;cursor:not-allowed}
-select,input[type=text],input[type=file]{background:var(--panel2);color:var(--fg);
-  border:1px solid var(--line);border-radius:7px;padding:7px 9px;font:inherit;max-width:100%}
-pre.log{background:#0e1013;border:1px solid var(--line);border-radius:8px;padding:10px;
-  max-height:280px;overflow:auto;font:12px/1.5 Consolas,"Cascadia Mono",monospace;
-  white-space:pre-wrap;color:#c8d0dd;margin:8px 0 0}
+
+/* ---- 一句话说明 / 提示条 -------------------------------------------------*/
+.purpose{margin:0 0 var(--sp-4);font-size:var(--fs-lg);color:var(--fg)}
+.purpose::after{content:"";display:block;width:44px;height:3px;border-radius:99px;
+  background:var(--accent);margin-top:var(--sp-2);opacity:.8}
+.banner{display:none;margin:0 0 var(--sp-4);padding:var(--sp-3) var(--sp-4);
+  border:1px solid #5c4a26;background:#241d10;color:var(--warn);
+  border-radius:var(--radius);font-size:var(--fs-md)}
+.banner.on{display:block}
+
+/* ---- 布局 / 卡片 ---------------------------------------------------------*/
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:var(--sp-4)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  padding:var(--sp-4);margin:0 0 var(--sp-4);box-shadow:var(--shadow)}
+.grid .card{margin:0}
+.card h2{margin:0 0 var(--sp-2);font-size:var(--fs-lg);font-weight:650;
+  display:flex;align-items:center;gap:var(--sp-2)}
+.card h2 .tag{font-size:var(--fs-xs);color:var(--muted);font-weight:400}
+.card h3{margin:0 0 var(--sp-2);font-size:var(--fs-md);font-weight:650;color:var(--fg)}
+.card p{margin:var(--sp-2) 0;color:var(--muted)}
+.row{display:flex;flex-wrap:wrap;gap:var(--sp-2);align-items:center;margin:var(--sp-3) 0}
+.row:last-child{margin-bottom:0}
+.row .sp{flex:1}
+.stepn{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;
+  border-radius:50%;background:var(--surface-3);border:1px solid var(--line);
+  color:var(--accent);font-size:var(--fs-sm);font-weight:700;flex:0 0 auto}
+label.f{display:flex;flex-direction:column;gap:var(--sp-1);font-size:var(--fs-xs);color:var(--muted)}
+label.chk{display:flex;align-items:center;gap:var(--sp-2);font-size:var(--fs-sm);color:var(--muted)}
+code{background:#0d1015;border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:var(--fs-xs)}
+.ok{color:var(--ok)} .bad{color:var(--bad)} .dim{color:var(--muted)}
+
+/* ---- 按钮 ---------------------------------------------------------------*/
+.btn{background:var(--surface-2);color:var(--fg);border:1px solid var(--line);
+  border-radius:var(--radius-sm);padding:9px 16px;font:inherit;font-weight:600;cursor:pointer;
+  transition:filter .12s,border-color .12s,background .12s}
+.btn:hover{filter:brightness(1.15)}
+.btn:focus-visible{outline:none;box-shadow:var(--ring)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.btn.ghost{background:var(--surface-2);color:var(--fg)}
+.btn.lg{font-size:var(--fs-lg);padding:14px 32px;border-radius:var(--radius)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+
+/* ---- 两块板的状态条 -----------------------------------------------------*/
+.chips{display:flex;flex-wrap:wrap;gap:var(--sp-3);align-items:center}
+.chips .sp{flex:1}
+.chip{display:flex;align-items:center;gap:var(--sp-2);background:var(--surface-2);
+  border:1px solid var(--line);border-radius:99px;padding:6px 14px;font-size:var(--fs-sm)}
+.chip b{font-weight:650}
+.chip .st{font-size:var(--fs-xs);border-radius:99px;padding:1px 9px;border:1px solid var(--line)}
+.chip .st.on{color:var(--ok);border-color:#265c3b;background:#12251a}
+.chip .st.off{color:var(--muted);border-color:var(--line)}
+.chip .fw{color:var(--muted);font-size:var(--fs-xs)}
+
+/* ---- 第 1 步：两块大卡片 -------------------------------------------------*/
+.bcards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:var(--sp-3);
+  margin-top:var(--sp-2)}
+.bcard{display:flex;flex-direction:column;gap:var(--sp-2);text-align:left;cursor:pointer;
+  background:var(--surface-2);border:1px solid var(--line);border-radius:var(--radius-lg);
+  padding:var(--sp-5);font:inherit;color:var(--fg)}
+.bcard b{font-size:var(--fs-xl);font-weight:700}
+.bcard .dim{font-size:var(--fs-sm)}
+.bcard:hover{border-color:#3c465c}
+.bcard:focus-visible{outline:none;box-shadow:var(--ring)}
+.bcard.sel{border-color:var(--accent);background:#16243a;box-shadow:var(--ring)}
+.bcard.sel::after{content:"已选中";align-self:flex-start;font-size:var(--fs-xs);
+  color:var(--accent);border:1px solid var(--accent);border-radius:99px;padding:1px 9px}
+
+/* ---- 升级状态 / 进度 ----------------------------------------------------*/
+.fwstatus{margin:var(--sp-3) 0 0;padding:var(--sp-3);border-radius:var(--radius-sm);
+  background:var(--surface-2);border:1px solid var(--line);color:var(--fg)}
+.fwstatus.ok{border-color:#265c3b;color:var(--ok)}
+.fwstatus.bad{border-color:#5c2a2a;color:var(--bad)}
+.fwstatus.busy{border-color:#2a4a6b;color:var(--accent)}
+.bar{height:8px;background:var(--surface-2);border-radius:99px;overflow:hidden;margin:var(--sp-4) 0 0}
+.bar>i{display:block;height:100%;width:0;background:var(--accent);transition:width .15s}
+
+/* ---- 折叠区（高级） -----------------------------------------------------*/
+details.dis{margin:0 0 var(--sp-4);border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--surface);padding:var(--sp-2) var(--sp-4) var(--sp-4)}
+details.dis>summary{cursor:pointer;padding:var(--sp-3) 0;color:var(--muted);
+  font-size:var(--fs-sm);font-weight:600;list-style:none}
+details.dis>summary::-webkit-details-marker{display:none}
+details.dis>summary::before{content:"▸ ";color:var(--accent)}
+details.dis[open]>summary::before{content:"▾ "}
+details.dis>summary:hover{color:var(--fg)}
+details.dis .card{margin-bottom:0}
+details.dis>.card{margin-top:var(--sp-3)}
+
+/* ---- 表盘屏内的二级页签 / 面板 ------------------------------------------*/
+.subnav{display:flex;gap:var(--sp-2);margin:0 0 var(--sp-4);flex-wrap:wrap}
+.subnav button{background:var(--surface-2);border:1px solid var(--line);color:var(--muted);
+  border-radius:99px;padding:8px 18px;font:inherit;font-weight:600;cursor:pointer}
+.subnav button:hover{color:var(--fg)}
+.subnav button.sel{background:var(--accent);border-color:transparent;color:var(--accent-ink)}
+.panel{display:none}
+.panel.sel{display:block}
+.frame{width:100%;height:calc(100vh - 290px);min-height:420px;border:1px solid var(--line);
+  border-radius:var(--radius);background:#fff}
+
+/* ---- 键值 / 日志 / 提示 -------------------------------------------------*/
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px var(--sp-3);font-size:var(--fs-sm);
+  margin-top:var(--sp-2);word-break:break-word}
+.kv b{color:var(--muted);font-weight:400}
+pre.log{background:#0d1015;border:1px solid var(--line);border-radius:var(--radius-sm);
+  padding:var(--sp-3);max-height:280px;overflow:auto;
+  font:var(--fs-xs)/1.5 Consolas,"Cascadia Mono",monospace;
+  white-space:pre-wrap;color:#c8d0dd;margin:var(--sp-3) 0 0}
 pre.log:empty{display:none}
-.bar{height:8px;background:var(--panel2);border-radius:99px;overflow:hidden;margin:8px 0 0}
-.bar>i{display:block;height:100%;width:0;background:var(--acc);transition:width .15s}
-.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:13px}
-.kv b{color:var(--dim);font-weight:400}
-.frame{width:100%;height:calc(100vh - 190px);border:1px solid var(--line);border-radius:10px;background:#fff}
-.note{font-size:12px;color:var(--warn)}
-.ok{color:var(--ok)} .bad{color:var(--bad)} .dim{color:var(--dim)}
-code{background:#0e1013;border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12px}
-ul.tools{margin:6px 0 0 18px;padding:0;color:var(--dim)}
-ul.tools li{margin:3px 0}
-footer{flex:0 0 auto;padding:6px 16px;border-top:1px solid var(--line);background:var(--panel);
-  display:flex;gap:12px;align-items:center;font-size:12px;color:var(--dim)}
+pre#b-out{background:#0d1015;border:1px solid var(--line);border-radius:var(--radius-sm);
+  padding:var(--sp-3);white-space:pre-wrap;font:var(--fs-xs)/1.5 Consolas,"Cascadia Mono",monospace;
+  color:#c8d0dd;margin:var(--sp-2) 0 0}
+pre#b-out:empty{display:none}
+.note{font-size:var(--fs-xs);color:var(--warn)}
+
+/* ---- 页脚 ---------------------------------------------------------------*/
+footer{flex:0 0 auto;padding:var(--sp-2) var(--sp-5);border-top:1px solid var(--line);
+  background:var(--surface);display:flex;gap:var(--sp-3);align-items:center;
+  font-size:var(--fs-xs);color:var(--muted)}
+footer .sp{flex:1}

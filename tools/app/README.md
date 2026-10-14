@@ -1,8 +1,9 @@
-# 206Dash 开发台（`tools/app/`）—— 一个窗口里把"设计 → 构建 → 烧写 → 预览"做完
+# 206Dash 表盘助手（`tools/app/`）—— 一个窗口里把"设计 → 构建 → 烧写 → 预览"做完
 
 > 2026-09-29 新增。车主："把之前的网页端独立成一个应用程序。"
-> 它把原来散在四个页面 + 一堆命令行里的活收进**一个本地应用**：
-> **① 无线刷写开发板 ② 主题配色 ③ 图片素材 ④ 导出/读取 bin ⑤ 预览表盘 ⑥ 预留开发功能**。
+> 2026-10-15 改版。车主："the client is still not suitable for a user, too complex
+> —— simplify the flow and beautify the UI." ⇒ 七个页签收成**三个屏**，
+> 刷固件变成**看得见的三步**，术语换成人话（技术值收进「高级」）。
 
 ## 怎么启动
 
@@ -40,21 +41,26 @@ powershell -ExecutionPolicy Bypass -File tools\app\build-exe.ps1 -OneFile
    退出走界面右下角的**「退出应用」**按钮（`POST /api/quit`），不需要去找那个黑窗口。
 
 ★ 需要 `pip install pyinstaller`（这台机器上装在项目 venv 里，版本 6.22.3）。
-★ exe **默认不进仓库**（`.gitignore` 里忽略了 `tools/app/dist/`）：它是构建产物，
-  换一台机器重打一次更干净。真要同步到笔记本再双击：
-  `git add -f tools/app/dist/206Dash-Workbench.exe`。
+★ `tools/app/dist/206Dash-Workbench.exe` **是仓库里的一份文件**（`.gitignore` 只忽略
+  `tools/app/build/` 与 `*.spec`）—— 重打之后按正常流程提交即可。
 ★ Windows SmartScreen 可能对"没有签名的新 exe"弹一次警告 —— 选"仍要运行"即可。
 
-## 六项能力对应到哪里
+## 三个屏，能力一项没少
 
-| 能力 | 在哪 | 说明 |
+车主只干四件事：① 刷固件 ② 改颜色 ③ 换图片 ④ 看效果。所以顶栏就是三个屏：
+
+| 屏 | 收进来的东西 | 一句话 |
 |---|---|---|
-| ① **WiFi OTA 开发板** | 「无线刷写」页 | 电脑 WiFi 切到板子的热点 → 选固件 → 上传。**前提**：板子刷的是 `-ota` 档并已进 OTA 模式（串口敲 `u`）。见 `docs/OTA.md` |
-| ② **主题颜色设计** | 「主题配色」页 | 原来的 `tools/theme-editor/index.html` 原样收进来（同源 iframe），功能一行没改 |
-| ③ **图片上传/编辑** | 「图片素材」页 | 同上，`image-editor.html`：导入图片、生成 `image.bin` / `assets.bin` |
-| ④ **导出/读取 bin** | 「文件与烧写」页 | 读本地 `assets.bin` / `theme.json` / `image.bin`（大小 + 头部十六进制），并用 USB 写进对应分区 |
-| ⑤ **预览表盘** | 「预览表盘」页 | 一键跑宿主机预览（`pcpreview`，约 40 秒落帧），然后在这里看 |
-| ⑥ **预留开发功能** | 「总览」页 + `app.js` 顶部 `TABS` | 加一个页签 = 加一条 `TABS` 记录 + 一个 `<section id="tab-<id>">`；后端加动作按 `server.py` 里那套白名单写法 |
+| ① **刷固件** | 原「无线刷写」+「开发板状态」 | 三步：选哪块表（**转速表（左）/ 速度表（右）**两张卡片）→ 固件（自动挑最新的那个）→ 一个「开始升级」按钮（上传 + 重启 + 确认成功都在它后面） |
+| ② **表盘** | 原「主题配色」+「图片素材」+「预览表盘」 | 二级页签切三块；两个编辑器仍是**同源 iframe**（`tools/theme-editor/*.html` 一行没改），预览仍是 `initPreviewInline()` 那套注入 |
+| ③ **工具** | 原「文件与烧写」+「总览」里的零碎 | USB 写素材、读固件文件；「构建新固件」收进「高级」（车主不需要知道 env 是什么） |
+
+技术值一个没删，只是都收进「高级」折叠区：固件来源（本机选文件）、板子地址、板子串口、
+板子返回的原始 `/status`（含 `heap_kb` 这类字段）、原始固件列表、原始日志、构建档位（env）。
+车主看不懂的词（OTA / 热点 / 槽位 / running / target / env / bin / slave / master）
+**只允许出现在「高级」里** —— 这一条由静态闸门看着（见下）。
+
+后端一行没改：所有 `/api/*` 路由与白名单照旧（界面可以藏，能力不许丢）。
 
 ## 为什么是"本地服务 + 网页应用"，而不是 Electron / 安装包
 
@@ -91,8 +97,13 @@ powershell -ExecutionPolicy Bypass -File tools\app\build-exe.ps1 -OneFile
 node tools/app/check-app.js
 ```
 它钉的是"我在这台机器上点不了浏览器"时最容易漏的几件事：
-`app.js` 用到的每个 `#id` 在 `index.html` 里存在、每个页签有对应 `<section>`、
-iframe 的 `src` 文件真实存在、`data-go` 指向存在的页签、用到的 `/api/*` 在 `server.py` 里真有路由。
+`app.js` 用到的每个 `#id` 在 `index.html` 里存在、顶栏就是三个屏且每屏有对应 `<section>`、
+iframe 的 `src` 文件真实存在、`data-go` 指向存在的屏、用到的 `/api/*` 在 `server.py` 里真有路由、
+**32 个能力控件一个都没丢**（构建/烧写/列串口/固件列表/板子状态/确认升级成功/预览/两个编辑器/退出），
+以及**三步流程与去术语**（两张板卡 + 一个「开始升级」按钮；「高级」以外不许出现那批术语）。
+
+> 改版前它断言"页签 ≥ 6 个"。七页签收成三屏之后这条必然红 —— 所以是**改成"恰好 3 个屏"并补上
+> 上面那几条**，不是把门槛调低。静态检查的覆盖面只许变宽。
 
 ## 已知注意
 
