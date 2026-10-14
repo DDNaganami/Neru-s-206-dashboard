@@ -1,3 +1,10 @@
+// HOST_LROUNDF_TOPLEVEL (2026-10-14): 宿主构建（pcpreview/native）的 clang 头里没有 lroundf 的
+//   声明 ⇒ 在最顶部给一个等价实现。★ 位置就是理由：上一版插在 esp_partition.h 那组包含里，
+//   而那一组在设备门内 ⇒ 宿主档根本看不到（同一个错犯了两次，这次放到文件最顶、任何门之外）。
+//   设备档（ARDUINO）完全不编这一段。
+#if !defined(ARDUINO)
+static inline long lroundf(float v) { return (long)(v >= 0.0f ? (v + 0.5f) : (v - 0.5f)); }
+#endif
 #include <Arduino.h>
 #include <string.h>     // memcmp:pcpreview 的注入快照比对(设备侧也编,无副作用)
 #include "dash_log.h"   // 日志默认打 USB-CDC+UART0;带链路 PHY 的构建只打 USB-CDC(见文件头)
