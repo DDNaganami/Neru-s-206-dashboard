@@ -27,8 +27,14 @@
 
 1. **主板 10 小时记录收口**（见 §1）：与 10-11 那夜对齐量级后再下"是不是缓解了"的结论。
 2. **② 的 A/B 不在 PCLK 上** —— 方向已排除，见 §5 ★★（差点白刷一轮）。
-3. **量程上板验证**：进气量程改成明显不同的值（如 `0~120`）传到板上 ⇒ 看右屏副表弧进度是否跟着变
-   （车主眼睛，随时可做）。
+3. **量程验证**：★ **宿主机半场已验证**（2026-10-15 凌晨，`pcpreview` 三臂 A/B，用 `THEME_FILE` 换主题）：
+   只改四个量程键就**真的改变像素** —— **294/300 帧有差异**（最大 4,421 px = 1.92% 画布，差异集中在
+   表盘区，如 `l_0010` 的 bbox `x170-381 y71-407`、最大通道差 713）；**对照臂**只改 `bg_color`
+   ⇒ 229,832 px 几乎整屏变（证明主题确实被加载、A/B 有效）；每臂日志里有
+   `theme: 已加载 (119 字节)` / `(43 字节)`，与两份主题文件字节数逐位对上。
+   证据：`C:\206dash-scratch\ab\{A,B,C}\` + `ab-run*.log`；工具见 §8 的 `theme-ab` 两条。
+   **剩下的是设备半场**：主题要真进板子的主题分区（`0x210000`）并由面板画出来 —— 得用从板 COM8
+   （左屏=水温，空闲）+ 车主的眼睛；主板 COM9 还在跑 10 小时记录，别动。
 4. **② 的"安全时机自愈"**：只有车测也犯才需要（要用**不释放内存**的重建，见 §4）。
 5. ~~左右映射对调~~ **✓ 已修**：`lib/dashcore/dash_role_layout.h:118-120` 的 `themeIndexForScreen()`；
    用户已在预览页确认 ✓。
@@ -118,8 +124,28 @@
 - 主题量程四键解析：`lib/dashcore/theme_store.cpp`（`theme_parse_json` 根级键链）
 - 编辑器量程控件：`tools/theme-editor/index.html:756`（水温）/ `:766`（进气）
 - 预览帧：`preview/frames/`；校验：`tools/theme-editor/check-preview-frame.js`
+- 主题 A/B（宿主机验证"改了主题到底有没有生效"）：`tools/theme-editor/theme-ab.ps1`
+  （编译一次 + 三臂各跑 42 s + 自动比对；★ **别用 `pio run -t exec`** —— 预览程序跑完 150 帧
+  **不会自己退出**，会把后面几臂全堵死）+ `theme-ab-diff.js`（逐像素比，报差异数/包围盒/最大通道差）
 - 串口脚本：`tools/serial-capture/{ota-cycle,soak-report,watch-utf8}.ps1`；日志都落 `C:\206dash-scratch\`
 - 构建：镜像目录 `C:\206dash-scratch\now-vanraw`（中文路径编不了；**它不是 git 仓库，是拷贝** ⇒
-  改完仓库要同步过去）；**必须带 `PYTHONUTF8=1`**（否则 `checkprogsize` 解码 gbk 报错）；
+  改完仓库要同步过去，`robocopy $repo $copy /E /XD .git .pio`，**1/3=成功、≥8=失败**）；
+  **必须带 `PYTHONUTF8=1`**（否则 `checkprogsize` 解码 gbk 报错）；刷写还要 `PYTHONIOENCODING=utf-8`
+  （不设会让 upload 中途崩、板子变黑——`docs/BUILD-ENV.md` 坑 6）；
   pcpreview 的 `lroundf` 兜底在 `src/main.cpp` **文件最顶部**
+- ★★ **入口别用裸 `python`**：这台机器上它指向 `…\WindowsApps\python.exe`（商店占位），
+  **不打印不报错、退出码 0** ⇒ 一整轮"跑完了"其实什么都没产出。只用
+  `tools/build/pio.ps1 -Cmd '…'` 或 `& C:\206dash-scratch\pio-core-mix\penv\Scripts\python.exe -m platformio …`。
+  **判据永远看产物（mtime/哈希/`[SUCCESS]`），不看退出码**（pio 成功时也可能返回 1）。
+- ★ harness 的 shell 是 **Windows PowerShell 5.1**（不是 pwsh 7）⇒ 三条连带：
+  ① 自己写的 `.ps1` **必须纯 ASCII**（无 BOM 的 UTF-8 会被按 GBK 读，连 `C:\Users\张九思\…` 这种
+  字面路径都会解析坏 ⇒ robocopy 报 16）；② `*> log` 会**吞掉原生命令的 stderr**（gcc 的原话就没了）
+  ⇒ 用 `cmd /c "… > log 2>&1"`；③ `$ErrorActionPreference='Stop'` 会把原生命令的**第一条 stderr**
+  当终止错误、把构建掐死 ⇒ 用 `'Continue'` + 显式判据。
+- ★ 掐死/中断过的 pcpreview 会留下 `program.exe` 占着文件 ⇒ 下一次链接报
+  **"拒绝访问"**（日志里只有这一行）⇒ 先 `Get-Process program | Stop-Process -Force`。
+- 构建环境事实（2026-10-14 实测）：`C:\.platformio\penv\…`（pio.ps1 用）与
+  `C:\206dash-scratch\pio-core-mix\penv\…`（本轮用）**两套都在**；
+  `C:\206dash-repo`、`C:\206dash-build` **已不存在**（文档旧写法）；
+  镜像在用的是 `now-vanraw`（`-now` 两档）与 `now`。
 - 工具输出闸门：`maxInlineBytes: 50000` 在 `dsh-base/cordis.patch.yml`（**宿主平面，预设改不了** ✗）
