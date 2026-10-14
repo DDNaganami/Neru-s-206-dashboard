@@ -171,7 +171,7 @@ function initOta() {
   async function verifySlot(host, replied) {
     const port = (($('#ota-port') && $('#ota-port').value.trim()) || 'COM8');
     logTo('#ota-log', replied
-      ? '\n★ 自动验槽：串口发 u → 读 /status，用 running/target 翻转当判据…\n'
+      ? '\n★ 自动验槽：读 /status 判槽位；**板子若还没进 OTA 模式才会发 u**（进 OTA 模式 = 屏幕黑着，最长 10 分钟）\n'
       : '\n★ 自动验槽（回执不可信，所以直接问板子）…\n', true);
     setStatus('自动验槽…');
     try {

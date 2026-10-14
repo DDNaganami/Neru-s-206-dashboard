@@ -280,7 +280,17 @@ def ota_verify(host, port, before, timeout_s=70):
     /status; if `running`/`target` swapped over, the image went into the other slot.
     """
     t0 = time.time()
-    sent = serial_send(port, "u") if port else {"ok": False, "error": "no port given"}
+    # 2026-10-14: **已经在 OTA 模式就别再发 `u`** —— 发 `u` 会重启板子并把 10 分钟窗口
+    #   重新计时，屏幕因此多黑一轮（当天就是因为这条，车主对着黑屏等了很久）。
+    #   先读一次 /status：`ota_mode=true` 就跳过，并把它如实回给前端。
+    _pre = board_status(host)
+    _already = bool(_pre.get("ota_mode"))
+    if _already:
+        sent = {"ok": True, "skipped": True, "why": "board is already in OTA mode"}
+    elif port:
+        sent = serial_send(port, "u")
+    else:
+        sent = {"ok": False, "error": "no port given"}
     deadline = t0 + max(5, int(timeout_s))
     last = None
     while time.time() < deadline:
@@ -288,7 +298,7 @@ def ota_verify(host, port, before, timeout_s=70):
         st = board_status(host)
         if st.get("ota_mode"):
             run_slot, tgt = st.get("running"), st.get("target")
-            return {"ok": True, "waited_ms": int((time.time() - t0) * 1000),
+            return {"ok": True, "already_ota": _already, "waited_ms": int((time.time() - t0) * 1000),
                     "before": before or "", "running": run_slot, "target": tgt,
                     "fw": st.get("fw"), "flipped": bool(before) and run_slot != before,
                     "status": st, "serial": sent}
