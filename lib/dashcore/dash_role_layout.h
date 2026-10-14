@@ -116,7 +116,16 @@ inline uint8_t roleThemeIndex() {
 // ★ 判据：**末屏 = 本机角色该显示的那一屏**；另一屏 = 互补的那一套（今天被压住，
 //   第二块屏到货后自然成立）。
 inline uint8_t themeIndexForScreen(uint8_t s) {
+#if defined(DASH_DISPLAY_PREVIEW)
+  // 宿主机预览（pcpreview）：两块 lv_display **各装一屏、各落一份帧** ⇒ 索引就是"左右"，
+  //   不能再套 kScreenTop 那条**单屏 z 序**规则（那是设备上"本板屏 vs 互补屏"的规则）。
+  //   不这样分：pcpreview 是 SLAVE 档 ⇒ 内容被路由到 index 1 ⇒ l_ 帧里装的是车速+进气、
+  //   r_ 帧里装的是转速+水温 ⇒ 预览页左右与契约（左=转速+水温）相反。
+  //   ★ 只影响宿主机预览档：设备档不定义 DASH_DISPLAY_PREVIEW，这里的代码它看不到。
+  return s;
+#else
   return (s == kScreenTop) ? roleThemeIndex() : (uint8_t)(1u - roleThemeIndex());
+#endif
 }
 
 // 第 s 屏该用哪一套**表情槽位/表情图片角色**（`face_stages.h` 的

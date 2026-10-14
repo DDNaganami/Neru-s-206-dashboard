@@ -14,6 +14,12 @@
 //   pcpreview 的宿主机桩不定义 —— 于是同一份 main.cpp 两端都能编。
 #if defined(ARDUINO)
 #include <esp_partition.h>
+#include <math.h>          // lroundf()：宿主构建也得有
+// host_lroundf_fallback: 宿主构建（pcpreview/native）用的 clang 头里没有 lroundf 的声明，
+//   这里给一个等价实现；设备档（ARDUINO）完全不编这一段，行为逐字不变。
+#if !defined(ARDUINO)
+static inline long lroundf(float v) { return (long)(v >= 0.0f ? (v + 0.5f) : (v - 0.5f)); }
+#endif
 #include <esp_ota_ops.h>
 #include <esp_system.h>  // esp_reset_reason()/ESP_RST_* —— 开机那行 `boot: reason=…`
 #include <esp_timer.h>   // 上电示位标(见 g_boot_stage / beacon_cb)
@@ -2826,6 +2832,7 @@ void setup() {
   //   ★ 只加一行、只在 setup()（`src/` 不参与 native/pcpreview 构建）⇒ 不影响别的档。
   dash_logf("fw: build %s %s\n", __DATE__, __TIME__);
 
+#if defined(ARDUINO)   // ★ 宿主构建(pcpreview/native)没有 IDF 的分区 API —— 这段必须只在设备档编
   // ★★★★ 2026-10-10：**当前运行槽**（A/B 分区的那一半）。
   //   为什么非要有这一行：时间戳只说"这是哪一版源码"，**不说"板子从哪个槽启动"** ——
   //   而无线刷写（OTA）到底成没成，判据正是这个：上传成功 → 自动重启 →
@@ -2836,6 +2843,7 @@ void setup() {
     const esp_partition_t* rp = esp_ota_get_running_partition();
     if (rp) dash_logf("boot: slot=%s @0x%06x\n", rp->label, (unsigned)rp->address);
   }
+#endif
 
   // ★★★ 2026-09-29：**尽早摁住面板复位**（车主报的"上电横纹 + 图像上移、复位就好"）。
   //   位置就是理由：面板的 RST/CS 挂在 TCA9554 上，而那颗扩展器**上电默认是高阻**
