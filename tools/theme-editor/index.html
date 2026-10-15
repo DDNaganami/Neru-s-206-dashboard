@@ -146,14 +146,17 @@
               overflow:auto}
   #crop h3{margin:0 0 4px;font-size:15px}
   #crop .chint{color:var(--dim);font-size:12px;margin-bottom:10px;line-height:1.6}
-  #crop .cstage{position:relative;width:100%;max-width:460px;margin:0 auto;
-                background:#0a0b0f;border-radius:6px;overflow:hidden;touch-action:none;
-                user-select:none;cursor:move}
-  #crop canvas#cropcv{display:block;width:100%;height:auto}
+  #crop .cstage{position:relative;width:var(--crop-stage,460px);height:var(--crop-stage,460px);
+                margin:0 auto;background:#0a0b0f;border-radius:6px;overflow:hidden;
+                touch-action:none;user-select:none;cursor:move}
+  /* 画布与面板**同尺寸**（1 画布像素 = 1 CSS 像素）：框的 px 坐标才等于画面像素，
+     "框就是最后那一块"这句话在视觉上也成立。尺寸由 applyCropStageSize() 写进
+     内联 width/height（窗口矮时自动变小）。 */
+  #crop canvas#cropcv{display:block;width:100%;height:100%}
   /* 方框 = 保留区。框外用半透明黑压住（"框外丢掉"看得见）。 */
   #crop .cframe{position:absolute;border:2px solid var(--accent);
                 box-shadow:0 0 0 9999px rgba(0,0,0,.62);pointer-events:none}
-  #crop .cframe:after{content:"保留区（框外丢掉）";position:absolute;left:0;top:-20px;
+  #crop .cframe:after{content:attr(data-label);position:absolute;left:0;top:-20px;
                       color:var(--accent);font-size:11px;white-space:nowrap}
   #crop .crow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px}
   #crop .crow .grow{flex:1}
@@ -752,18 +755,23 @@
 <input type="file" id="file-theme" accept=".json,.bin,application/json,application/octet-stream" style="display:none">
 
 <!-- ============================================================
-     框选器（模态）：**方框内 = 保留区**，拖动平移、滚轮（或双指）缩放，
-     框外丢掉；确认后导出一张**主体居中、四周透明**的方图。
+     框选器（模态）—— **两种语义**，同一个组件、同一套平移/缩放数学：
+       · 表情（mode="face"）：**方框内 = 保留区**，框外丢掉（变透明）；确认后导出
+         一张**主体居中、四周透明**的方图 ⇒ 走既有 renderToTarget/contain 那条路
+         （只缩不放、保持比例、居中、RGB565A8、上限 320）。
+       · 背景（mode="bg"，2026-10-15 按车主反馈加）：**取景框（cover 语义）** ——
+         框内就是最终画面、图**必须盖满框**（不露底）、可用 JPEG、不要求 alpha；
+         确认后走既有 renderToTarget 的 **cover** 分支输出铺满 480×480 的背景。
+         ★ 与表情的差别是**语义**差别，不是开关：背景铺满整屏，所以不能"框外丢掉变透明"。
      ★ 它只动"进槽之前的像素"：产物仍交给既有的 renderToTarget()/ImageBlob
-       那条路（contain、只缩不放、保持比例、居中、RGB565A8、上限 320）。
-     ★ 只给**表情槽**用；背景不加框选。
+       那条路打包 —— 本组件不自己编码、不碰包头。
      ★ 合并成一个页面之后这里**只有这一份框选器**（原来两页各有一份，
        由 check-owner-mode.js 用同一张能力表对账；现在对账的是"壳里不许有第二份"）。
      ============================================================ -->
 <div id="crop">
   <div class="cbox">
-    <h3>框选表情图</h3>
-    <div class="chint">
+    <h3 id="crop-title">框选图片</h3>
+    <div class="chint" id="crop-hint">
       <b>方框里是要保留的部分</b>：拖动平移、滚轮（或双指）缩放 —— <b>框外丢掉</b>。<br>
       确认后得到一张<b>主体居中、四周透明</b>的方图，再交给既有的缩放路径
       （保持比例、只缩不放、居中，产物仍是 RGB565A8；上限 <b id="crop-max">320</b>，
@@ -771,12 +779,12 @@
     </div>
     <div class="cstage" id="crop-stage">
       <canvas id="cropcv"></canvas>
-      <div class="cframe" id="crop-frame"></div>
+      <div class="cframe" id="crop-frame" data-label="保留区（框外丢掉）"></div>
     </div>
     <div class="crow">
       <span class="owner-note">缩放</span>
       <input type="range" id="crop-zoom" min="100" max="800" value="100">
-      <span class="cout" id="crop-zoomv">100%</span>
+      <span class="cout" id="crop-zoomv">100%（刚好盖满）</span>
       <span class="grow"></span>
       <button id="crop-reset">复位</button>
     </div>
@@ -784,7 +792,7 @@
       <span class="cout" id="crop-info"></span>
       <span class="grow"></span>
       <button id="crop-cancel">取消</button>
-      <button id="crop-ok" class="primary">用框选结果</button>
+      <button id="crop-ok" class="primary">用这个结果</button>
     </div>
   </div>
 </div>
@@ -2059,23 +2067,88 @@ function askSlotFile(spec) {
   inp.click();
 }
 
+// ------------------------------------------------------------
+// 解码后的**像素级**检查（2026-10-15 车主给了 .webp 素材之后加的）
+//
+// 为什么格式级检查不够：WebP **可以**带 alpha，也可以全是 255 ——
+// 后缀叫 .webp 完全说明不了"它真有透明像素"。而表情槽要的是"能透出底下的背景"，
+// 一张全不透明的 WebP 打进 RGB565A8 就是**整块盖住背景**（而且不报错）。
+// 浏览器天然会解 WebP（`new Image()` 就行，**不自己写编解码**），
+// 所以这里解完顺手把 alpha 量一遍，再交给 asset-spec 的判据回答收不收。
+//
+// 返回 null = 读不出像素（浏览器也解不开 / canvas 被污染）⇒ 调用方当解码失败处理。
+function measureAlpha(img) {
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+  if (!w || !h) return null;
+  try {
+    const cv = document.createElement("canvas");
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext("2d", { willReadFrequently: true });
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0);
+    const d = ctx.getImageData(0, 0, w, h).data;
+    let minA = 255, maxA = 0, anyLt = false;
+    for (let i = 3; i < d.length; i += 4) {
+      const a = d[i];
+      if (a < minA) minA = a;
+      if (a > maxA) maxA = a;
+      if (a < 255) anyLt = true;
+    }
+    return { min: minA, max: maxA, anyTransparent: anyLt };
+  } catch (e) {
+    return null;
+  }
+}
+
 // 选/拖进来的图按**这一格**的规则入列：
-//   · 表情格 ⇒ 先 checkUpload（JPEG 会被拒），通过后**弹框选**
-//   · 背景格 ⇒ 不弹框选，直接走既有的 addFiles()（角色=背景，可 JPEG）
+//   · 表情格 ⇒ 先 checkUpload（JPEG 会被拒），通过后**弹框选**（框内=保留区，框外丢掉）
+//   · 背景格 ⇒ 先 checkUpload（可用 JPEG / WebP、不要求 alpha），通过后弹**取景框**
+//     （cover 语义：框内就是最终画面、图必须盖满框）
+//   ★ 2026-10-15 车主实测反馈：「主题背景图这边导入没有框选选项」——
+//     所以背景**也有**框选器了，但**不是**照抄表情那套：背景要铺满整屏 ⇒
+//     不能"框外丢掉变透明"，只能用 cover 取景（见 openCropper 的 mode 说明）。
+//   ★ 同一天车主又给了 .webp 素材 ⇒ 上传口支持 WebP（**新增的只有"进槽前的解码"**）：
+//     浏览器解码 → 量 alpha → 交给 asset-spec 的判据。容器格式一个字节没动。
 function sendFilesToSlot(spec, files) {
-  if (spec.face) {
-    ownerFaceFiles(files, spec);
+  const list = Array.from(files || []);
+  if (!list.length) return;
+  const f = list[0];
+  if (!/^image\//.test(f.type)) {
+    say("「" + f.name + "」不是图片格式。" +
+        (spec.face ? "表情请用带透明背景的 PNG（或带透明的 WebP）。"
+                   : "背景请用 PNG / JPG / WebP。"), "err");
     return;
   }
-  // 背景：不弹框选（背景要铺满整屏，没有"框外"）。
-  // ★ 这里**不能**在 addFiles() 之后立刻 say() 一句"已加入" —— 文件的解码是
-  //   异步的（img.onload 才 push），那句话会在图还没进列表时把 addFiles()
-  //   自己的结果提示**覆盖掉**（车主看到的是"已加入"而列表还是空的）。
-  //   所以背景这一条只说"该怎么期待"，结果由 addFiles() 自己报。
-  say("背景图正在加入（两屏共用）。背景不加框选 —— 它要铺满 " +
-      bgSideFor(curTarget) + "×" + bgSideFor(curTarget) + "，可用 JPEG；" +
-      "缩放方式 / 目标宽度在「高级 → 图片列表」里调。");
-  addFiles(files, spec.role);
+  // ① 格式级检查（后缀/MIME 认不认、这一槽要不要 alpha）—— asset-spec 是权威
+  const chk0 = AssetSpec.checkUpload(f.name, f.type, spec.role, curTarget);
+  if (!chk0.ok) { reportSlotUploadError(f, spec, chk0.errors); return; }
+  // ② 解码 + 像素级检查：**表情槽还要"真的有 alpha"**
+  const mode = spec.face ? "face" : "bg";
+  const img = new Image();
+  img.onload = () => {
+    const a = measureAlpha(img);
+    if (!a) {
+      say("✗ 「" + f.name + "」浏览器解不开这张图（或读不出像素）。" +
+          "请另存为 PNG / JPG / WebP 再试一次。", "err");
+      return;
+    }
+    // 把量到的 alpha 交给**同一份判据**回答收不收（规则的唯一权威仍是 asset-spec）
+    const chk = AssetSpec.checkUpload(f.name, f.type, spec.role, curTarget,
+                                      { alpha: { has: a.anyTransparent, min: a.min, max: a.max } });
+    if (!chk.ok) { reportSlotUploadError(f, spec, chk.errors); return; }
+    if (chk.warnings.length) say("⚠ 「" + f.name + "」：" + chk.warnings.join("\n"));
+    openCropper(img, f.name, spec, mode);
+  };
+  img.onerror = () => say("✗ 「" + f.name + "」浏览器解不开这张图。" +
+                          "请另存为 PNG / JPG / WebP 再传一次。", "err");
+  img.src = URL.createObjectURL(f);
+}
+
+// 上传被拒时**统一**这么说：理由（来自 asset-spec）+ 这一槽的出路
+function reportSlotUploadError(f, spec, errors) {
+  say("✗ 「" + f.name + "」不能用在「" + spec.label + "」上：\n" + errors.join("\n") +
+      (spec.face ? "\n★ 表情要透明背景，请用 PNG 或带透明的 WebP。" : ""), "err");
 }
 
 // 「清除」：把这个槽位上**所有**图删掉（同 role 多张时一次清干净 —— 车主说"清除"）
@@ -2414,39 +2487,221 @@ function ownerFaceFiles(files, slot) {
 }
 
 // ------------------------------------------------------------
-// 框选器：方框内 = 保留区；拖动平移、滚轮/双指缩放；框外丢掉。
-// 坐标约定（唯一一份）：画布坐标 = (ix,iy) + 源坐标·k，
-//   方框恒为居中正方形（边长 F），框内保留 ⇒ 源矩形 = ((F左上)-i)/k 起、边长 F/k。
-// ★ 产物是**方图**、**全透明打底**（表情必须带 alpha）、**主体居中**；
-//   之后交给**既有** renderToTarget()/buildPayload()/ImageBlob 那条路打包
-//   （它给 cfForRole() → RGB565A8，以及"只缩不放 + 上限"的那套尺寸规则）。
+// 框选器：**两种语义**（2026-10-15 车主实测反馈后加背景那一种）
+//
+//   ① 表情（mode="face"）：**方框内 = 保留区**，框外丢掉（丢成透明）。
+//      拖动平移、滚轮/双指缩放，确认后得到一张**主体居中、四周透明**的方图。
+//      之后交给**既有** renderToTarget()/contain 那条路打包（RGB565A8 + 只缩不放 + 上限）。
+//
+//   ② 背景（mode="bg"）：**取景框（cover 语义）** —— 方框内**就是最终画面**，
+//      图**必须盖满整个框**（不许露底）。可用 JPEG、不要求 alpha、产物铺满 480×480。
+//      ★ 与表情的差别不是"顺手加个开关"：背景要铺满整屏，所以不能"框外丢掉变透明"，
+//        也不能放大到盖住弧带之外还留白边。走的是**既有** renderToTarget 的 **cover** 分支。
+//
+// 坐标约定（唯一一份，两种模式共用）：
+//   画布坐标 = (ix,iy) + 源坐标·k；方框恒为**居中正方形**（边长 F，屏幕像素）；
+//   框内保留/取景 ⇒ 源矩形 = ((框左上)-i)/k 起、边长 F/k。
 // ------------------------------------------------------------
 let cropState = null;
 
-// slot = 这一张要进哪一格（车主模式的槽位清单里点/拖的那一格）
-function openCropper(img, name, slot) {
+// 输出边长：**框内那一片源图**能给出多少像素就多少，整屏/上限封顶。
+// ★ 用框的边长（不是"画布被缩放后的宽度"）算 —— 这两者在面板比图大时**不一样**，
+//   而"框内就是最终画面"这句里的"框内"指的是**框**，所以必须以框为准。
+// ★ 4 的倍数不是洁癖：进槽后 renderToTarget 还会再缩放一次（320→300 这种非整数比），
+//   边长对齐到 4 能让那一步的取整误差最小（背景还有"RGB565 偶数行"的老口径）。
+// ★ cropInfo()（给人看的预览数）与 cropRenderSquare()（真产物）**都调它** ——
+//   两处各算一份是"说 300 实际给 296"那类不一致的老根。
+function cropSideMax(s) {
+  if (!s) return 320;
+  return (s.mode === "bg") ? bgSideFor(curTarget) : ImageBlob.faceCanvasMaxFor(curTarget);
+}
+function cropSideOut(s) {
+  if (!s) return 8;
+  // ★ 也要夹住**源图短边**：k ≥ 1 时框内源像素 = F/k ≤ min(sw,sh)，
+  //   所以"源图本来就不够整屏"时输出不会超过源图（只缩不放）。
+  const raw = Math.min(s.F / s.k, cropSideMax(s), Math.min(s.sw, s.sh));
+  return Math.max(8, Math.floor(raw / 4) * 4);
+}
+
+// 打开框选器时的初始几何（**唯一一份**：openCropper 与「复位」都调它）
+//
+// ★★ 2026-10-15 车主报「表情导入位置不够居中」——根因就在这个函数的**第一版**：
+//    它把框开成 min(面板, 图片) 那么大，源图是正方形时**框 ≈ 整张图**，
+//    于是"框内那一片"就是整张图，主体在图里偏多少、产物里就偏多少；
+//    而且框已经占满画布 ⇒ **一点都拖不动**，车主想自己挪都挪不了。
+//
+//    现在这套几何是"从输出反推"的（三条约束同时成立）：
+//      ① 框内源像素 ≥ spanMin = 目标边长 × CROP_FILL（再对齐到 4）
+//         —— 低于它主体填不满画面，"居中不居中"根本看不出来
+//      ② 框装得进图（F/k ≤ min(sw,sh)）—— 否则框被夹住、拖不动
+//      ③ 框占到画面的 CROP_FILL 左右（0.8）—— 一打开就对准主体，四周留一圈裕量
+//
+//    输出分辨率仍然只由**框内那一片**算（cropSideOut）：
+//      框内源像素 = F/k，源图够大时它 ≥ spanMin，所以 480/320 的整屏口径照旧满足；
+//      源图偏小时它会变小，输出也跟着变小 —— "框内就是最终画面"这条优先，
+//      再由 cropConfirm() 把"这张底图不够整屏"如实说出来（而不是偷偷放大）。
+const CROP_FILL = 0.8;
+
+// 取景面板的边长（正方形）。放在 CSS 变量上是为了**一处调**：
+//   窗口矮的时候要自动变小，否则模态在笔记本屏上会撑出屏幕。
+// ★ 上限/下限都围着 480 这个口径定：背景要"整屏 480 且不放大"，就得让框在
+//   1:1 下至少看到 480 像素 ⇒ 面板不能小于 480（窗口实在太矮才让位，
+//   那时输出会小一点，页面会如实提示"这张底图取景后不够整屏"）。
+function cropStageSide() {
+  const el = document.documentElement;
+  const v = el && el.style && el.style.getPropertyValue
+    ? parseFloat(el.style.getPropertyValue("--crop-stage")) : NaN;
+  if (v && isFinite(v) && v >= 200) return Math.max(200, Math.min(520, v));
+  const win = (typeof window !== "undefined" && window.innerHeight) || 0;
+  if (win) return Math.max(200, Math.min(520, Math.max(480, Math.round(win * 0.52))));
+  return 480;
+}
+function applyCropStageSize() {
+  const side = cropStageSide();
+  if (document.documentElement && document.documentElement.style &&
+      document.documentElement.style.setProperty) {
+    document.documentElement.style.setProperty("--crop-stage", side + "px");
+  }
   const cv = document.getElementById("cropcv");
-  const stage = document.getElementById("crop-stage");
-  const panelW = Math.max(200, Math.min(460, stage.clientWidth || 460));
+  if (cv) { cv.style.width = side + "px"; cv.style.height = side + "px"; }
+  return side;
+}
+
+function cropFit(img, mode) {
   const sw = img.naturalWidth || img.width;
   const sh = img.naturalHeight || img.height;
-  const W = panelW;
-  const H = Math.round(panelW * (sh / sw));
-  cv.width = W; cv.height = H;
-  const F = Math.min(W, H);
-  cropState = { img: img, name: name, slot: slot || null, W: W, H: H, sw: sw, sh: sh, F: F,
-                k: Math.min(F / sw, F / sh), ix: 0, iy: 0, drag: null, pinch: null };
-  cropState.ix = (W - sw * cropState.k) / 2;
-  cropState.iy = (H - sh * cropState.k) / 2;
+  const m = Math.min(sw, sh);                       // 源图短边（决定框的缩放）
+  // ★ 取景面板是**正方形**（框也是正方形，两者对齐 ⇒ 框就是"你看到的那一块"）：
+  //   边长由 CSS 的 --crop-stage 给（applyCropStageSize() 按窗口算），
+  //   拿不到就退回 460。写成"跟着源的宽高比"会让框在宽的源图上被压小，
+  //   背景那条路就再也凑不出 480 像素的取景（实测过：460×345 的面板只能给 138）。
+  const side = cropStageSide();
+  const panelW = side, H = side;
+  const panelF = side;                              // 面板短边 = 框的最大边长
+  const target = (mode === "bg") ? bgSideFor(curTarget)
+                                 : ImageBlob.faceSizeRecommendedFor(curTarget);
+  const box = subjectBox(img);                      // 主体的不透明包围盒（可能为 null）
+  // ① 框内要装多少源像素（= 框内那一片的边长，也是输出的上限）
+  //    背景：要够**整屏**（480）—— 它是"整块画面"，框就是画面
+  //    表情：要够目标的 CROP_FILL（留一圈裕量），**并且不超过主体的 2 倍** ——
+  //         主体只有 120px 而框要 256px 时，框会把四周的透明留白一起框进去，
+  //         留白在原图里偏多少、产物里就偏多少 ⇒ 就是车主说的"不够居中"。
+  //         框收到主体 2 倍左右，主体才真的落在正中（边上还留一点呼吸位）。
+  let spanMin = target;
+  if (mode !== "bg") {
+    spanMin = target * CROP_FILL;
+    if (box) spanMin = Math.min(spanMin, Math.max(box.w, box.h) * 2);
+  }
+  spanMin = Math.max(32, Math.floor(spanMin / 4) * 4);
+  // ② 框的面板边长：① 已经说了"框内要看到多少源像素"，而框内源像素 = F/k。
+  //    k 最小取 1（不放大源图）⇒ F = min(面板短边, 框内要的像素)，此时 k=1、F/k=F。
+  //    源图比这个还小时（小底图），F 跟着源图短边走 —— 不放大、也不假装够大。
+  const F = Math.max(32, Math.min(panelF, spanMin, m));
+  // ③ 缩放：k ≥ F/短边 才算"图盖满框"（F ≤ 短边时这是 1，即 1:1 看全图）
+  const k = Math.max(1, Math.min(8, Math.max(F / sw, F / sh)));
+  const fx = (panelW - F) / 2, fy = (H - F) / 2;
+  const sxMid = box ? box.cx : sw / 2;
+  const syMid = box ? box.cy : sh / 2;
+  let ix = fx + F / 2 - sxMid * k;
+  let iy = fy + F / 2 - syMid * k;
+  // ② 夹住：框永远被图完整覆盖
+  const iw = sw * k, ih = sh * k;
+  ix = Math.min(fx, Math.max(fx + F - iw, ix));
+  iy = Math.min(fy, Math.max(fy + F - ih, iy));
+  return { sw: sw, sh: sh, W: panelW, H: H, F: F, k: k, kNative: 1,
+           kCover: Math.max(F / sw, F / sh), spanMin: spanMin,
+           ix: ix, iy: iy, box: box };
+}
 
+// 主体的不透明包围盒（源图坐标，容一点 alpha 噪声）。
+// ★ 用途只有一个：**打开框选器时把方框对准主体** —— 车主那句"不够居中"里最要紧的
+//   一半是"我一打开就看到一个偏的构图，还得自己拖"。没算出来（整图不透明 / 全透明 /
+//   图太大）就退回"图片中心"，与老行为一致。
+function subjectBox(img) {
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+  if (!w || !h) return null;
+  // 太大就别扫了（几十万像素的逐点扫描在主线程上是能感觉到的）：退回中心
+  if (w * h > 3000 * 3000) return null;
+  let cv;
+  try {
+    cv = document.createElement("canvas");
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext("2d", { willReadFrequently: true });
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0);
+    const d = ctx.getImageData(0, 0, w, h).data;
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+    const TH = 8;                       // 与框选器画棋盘格的阈值一致
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (d[(y * w + x) * 4 + 3] >= TH) {
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
+      }
+    }
+    if (x1 < 0) return null;
+    return { x0: x0, y0: y0, x1: x1, y1: y1,
+             cx: (x0 + x1 + 1) / 2, cy: (y0 + y1 + 1) / 2,
+             w: x1 - x0 + 1, h: y1 - y0 + 1 };
+  } catch (e) {
+    return null;                        // 跨域/读不出像素：退回中心，不拦着用
+  }
+}
+
+// slot = 这一张要进哪一格；mode = "face"（默认）| "bg"
+function openCropper(img, name, slot, mode) {
+  mode = (mode === "bg") ? "bg" : "face";
+  // ★ 取景面板是**正方形**（见 cropFit 的说明）：宽高都由 --crop-stage 定，
+  //   画布本身也是正方形 ⇒ 框就是"你看到的那一块"。
+  applyCropStageSize();
+  // ★ 几何**只有一份**：cropFit() 同时被这里与「复位」用（两处各算一份
+  //   就是"复位之后构图和刚打开不一样"那类不一致的老根）。
+  const fit = cropFit(img, mode);
+  const cv = document.getElementById("cropcv");
+  cv.width = fit.W; cv.height = fit.H;
+
+  cropState = { img: img, name: name, slot: slot || null, mode: mode,
+                W: fit.W, H: fit.H, sw: fit.sw, sh: fit.sh, F: fit.F,
+                k: fit.k, kNative: fit.kNative, kCover: fit.kCover,
+                ix: fit.ix, iy: fit.iy, drag: null, pinch: null };
+
+  const F = fit.F;
+  const fx = (fit.W - F) / 2, fy = (fit.H - F) / 2;
   const fr = document.getElementById("crop-frame");
-  fr.style.left = ((W - F) / 2) + "px";
-  fr.style.top = ((H - F) / 2) + "px";
+  fr.style.left = fx + "px";
+  fr.style.top = fy + "px";
   fr.style.width = F + "px";
   fr.style.height = F + "px";
 
-  document.getElementById("crop-max").textContent = String(ImageBlob.faceCanvasMaxFor(curTarget));
-  document.getElementById("crop-rec").textContent = String(ImageBlob.faceSizeRecommendedFor(curTarget));
+  // 两种模式的头两行文案不一样（"框外丢掉"只对表情成立）
+  const titleEl = document.getElementById("crop-title");
+  if (titleEl) titleEl.textContent = (mode === "bg") ? "背景取景（框内就是最终画面）" : "框选表情图";
+  // ★ 框上那行小标签也要跟着换口径：背景是**取景**（框内=最终画面），
+  //   不是"保留区/框外丢掉" —— 用错文案会让人以为背景也被裁成了透明。
+  //   标签走 data-label + CSS content:attr(data-label)（不用 :after 写死中文）。
+  const frEl = document.getElementById("crop-frame");
+  if (frEl) frEl.setAttribute("data-label",
+                              (mode === "bg") ? "取景区（框内就是画面）" : "保留区（框外丢掉）");
+  const hint = document.getElementById("crop-hint");
+  if (hint) {
+    hint.innerHTML = (mode === "bg")
+      ? "<b>方框里就是最终画面</b>（背景取景）：拖动平移、滚轮（或双指）缩放 —— " +
+        "<b>图始终盖满整个框</b>，不会露底。<br>确认后按 <b>cover</b> 输出一张铺满 " +
+        bgSideFor(curTarget) + "×" + bgSideFor(curTarget) +
+        " 的背景（可用 JPEG、不要求透明）。"
+      : "<b>方框里是要保留的部分</b>：拖动平移、滚轮（或双指）缩放 —— <b>框外丢掉</b>。<br>" +
+        "确认后得到一张<b>主体居中、四周透明</b>的方图，再交给既有的缩放路径" +
+        "（保持比例、只缩不放、居中，产物仍是 RGB565A8；上限 <b id=\"crop-max\">320</b>，" +
+        "推荐 <b id=\"crop-rec\">300</b>）。";
+  }
+  const maxEl = document.getElementById("crop-max");
+  if (maxEl) maxEl.textContent = String(ImageBlob.faceCanvasMaxFor(curTarget));
+  const recEl = document.getElementById("crop-rec");
+  if (recEl) recEl.textContent = String(ImageBlob.faceSizeRecommendedFor(curTarget));
   document.getElementById("crop").classList.add("on");
   cropSyncZoom();
   cropDraw();
@@ -2475,34 +2730,45 @@ function cropDraw() {
 function cropInfo() {
   const s = cropState;
   if (!s) return;
-  const side = Math.min(s.F / s.k, ImageBlob.faceCanvasMaxFor(curTarget));
-  const px = Math.max(8, Math.floor(side / 4) * 4);
+  const px = cropSideOut(s);
+  const modeNote = (s.mode === "bg")
+    ? "（背景取景：cover ⇒ 确认后就是框内这一片，边长对齐到 4）"
+    : "（上限 " + ImageBlob.faceCanvasMaxFor(curTarget) +
+      "，推荐 " + ImageBlob.faceSizeRecommendedFor(curTarget) + "）";
   document.getElementById("crop-info").textContent =
-    "源图 " + s.sw + "×" + s.sh + "　缩放 " + Math.round(s.k * 100) + "%　" +
-    "框内输出 " + px + "×" + px + "（上限 " + ImageBlob.faceCanvasMaxFor(curTarget) +
-    "，推荐 " + ImageBlob.faceSizeRecommendedFor(curTarget) + "）";
+    "源图 " + s.sw + "×" + s.sh + "　缩放 " +
+    Math.round(s.k / Math.max(s.kNative || 1,
+      Math.max(s.kCover || 1, (s.F || 0) / Math.min(s.sw, s.sh))) * 100) + "%　" +
+    "框内输出 " + px + "×" + px + "　" + modeNote;
 }
 
 function cropClampPan() {
   const s = cropState;
   if (!s) return;
   const w = s.sw * s.k, h = s.sh * s.k;
-  // ★ 目标：**方框永远被图覆盖**（框里不许出现页面底色）——
+  // ★ 目标：**方框永远被图完整覆盖**（框内不许出现底色）——
   //   即 [ix, ix+w] ⊇ [fx, fx+F]，其中 fx = (W-F)/2。于是
   //       ix ≤ fx          且      ix ≥ fx + F - w
-  //   （图比方框窄时下界反超上界，取上界 —— 那时图往左靠，框右侧露出一条
-  //    棋盘格；那一条本来就是"框外"，看得见反而对，别把它藏起来。）
+  //   ★ 2026-10-15：因为初始缩放改成了 **cover**（k ≥ kCover ⇒ w ≥ F、h ≥ F），
+  //     这两个界**总有解**，所以下界允许超过上界那种"图比框窄、露一条棋盘格"
+  //     的情况不再可能出现 —— 框内永远是图（这也正是"图必须覆盖整个框"那条口径）。
   const fx = (s.W - s.F) / 2, fy = (s.H - s.F) / 2;
   const loX = fx + s.F - w, hiX = fx;
   const loY = fy + s.F - h, hiY = fy;
-  s.ix = Math.min(hiX, Math.max(Math.min(loX, hiX), s.ix));
-  s.iy = Math.min(hiY, Math.max(Math.min(loY, hiY), s.iy));
+  s.ix = Math.min(hiX, Math.max(loX, s.ix));
+  s.iy = Math.min(hiY, Math.max(loY, s.iy));
 }
 
 function cropSetZoom(z, cx, cy) {
   const s = cropState;
   if (!s) return;
-  const k = Math.max(0.1, Math.min(8, z));
+  // ★ 下限 = **1:1**（kNative，图上 1 像素 = 画布 1 像素），但还**必须够盖满框**
+  //   （kGeom）。光看 "200%" 会让人以为放大了一倍，其实 1:1 才是"原始大小"——
+  //   所以百分比一律以 kNative 为 100%（见 cropSyncZoom）。
+  const kNative = s.kNative || 1;
+  const kGeom = Math.max(s.kCover || 1, (s.F || 0) / Math.min(s.sw, s.sh));
+  const kMin = Math.max(kNative, kGeom);
+  const k = Math.max(kMin, Math.min(kMin * 8, z));
   const wx = (cx - s.ix) / s.k, wy = (cy - s.iy) / s.k;
   s.k = k;
   s.ix = cx - wx * k;
@@ -2515,28 +2781,38 @@ function cropSetZoom(z, cx, cy) {
 function cropSyncZoom() {
   const s = cropState;
   if (!s) return;
-  const base = Math.min(s.F / s.sw, s.F / s.sh);
-  const pct = Math.max(100, Math.min(800, Math.round(s.k / base * 100)));
-  document.getElementById("crop-zoom").value = String(pct);
-  document.getElementById("crop-zoomv").textContent = pct + "%";
+  // 百分比 = 相对**1:1**的放大倍数；下限 100%（1:1）、上限 800%
+  const kNative = s.kNative || 1;
+  const kGeom = Math.max(s.kCover || 1, (s.F || 0) / Math.min(s.sw, s.sh));
+  const kMin = Math.max(kNative, kGeom);
+  const pct = Math.max(100, Math.min(800, Math.round(s.k / kMin * 100)));
+  const el = document.getElementById("crop-zoom");
+  el.min = "100";
+  el.max = "800";
+  el.value = String(pct);
+  document.getElementById("crop-zoomv").textContent =
+    (pct === 100 ? "100%（原始大小 1:1）" : pct + "%");
 }
 
+// 「复位」= 回到**打开时那个构图**（盖满 + 对准主体），不是回到"图片中心"
 function cropReset() {
   const s = cropState;
   if (!s) return;
-  s.k = Math.min(s.F / s.sw, s.F / s.sh);
-  s.ix = (s.W - s.sw * s.k) / 2;
-  s.iy = (s.H - s.sh * s.k) / 2;
+  const fit = cropFit(s.img, s.mode);       // ★ 与 openCropper 同一份几何
+  s.k = fit.k;
+  s.ix = fit.ix;
+  s.iy = fit.iy;
   cropSyncZoom();
   cropDraw();
 }
 
-// 框选 → 一张**方图**（主体居中、四周透明）
+// 框选 → 一张**方图**。
+//   mode="face"：全透明打底（表情必须带 alpha）、四周透明、主体居中
+//   mode="bg"  ：同样只取框内那一片（不透明底子由调用方按 cover 语义铺）
 function cropRenderSquare() {
   const s = cropState;
   if (!s) return null;
-  const cap = ImageBlob.faceCanvasMaxFor(curTarget);
-  const side = Math.max(8, Math.round(Math.min(s.F / s.k, cap)));
+  const side = cropSideOut(s);
   const out = document.createElement("canvas");
   out.width = side; out.height = side;
   const ctx = out.getContext("2d", { willReadFrequently: true });
@@ -2556,22 +2832,59 @@ function cropClose() {
 }
 
 function cropConfirm() {
+  const s = cropState;
+  if (!s) return;
   const sq = cropRenderSquare();
   if (!sq) return;
-  const slot = cropState.slot || ownerSlotSpecs()[1];   // 哪一格发起的就是哪一格
-  const name = (cropState.name || "face").replace(/\.[^.]+$/, "") + "-" + slot.label;
-  const w = pickDefaultSize(sq.width, slot.role);   // ★ 复用**既有**那条"只缩不放 + 上限"规则
+  const slot = s.slot || ownerSlotSpecs()[1];   // 哪一格发起的就是哪一格
+  const srcName = (s.name || "img").replace(/\.[^.]+$/, "");
+  const mode = s.mode;
   // 同 role 再进来一张 ⇒ 旧的同 role 条目挪到后面（设备按 order 最小取用，
   // 所以"刚换的那张"必须赢 —— 否则车主换了图却看不到变化）。
   items.forEach(i => { if (i.role === slot.role) i.order += 1; });
-  items.push({ id: nextId++, img: sq, name: name, role: slot.role, order: 0,
-               fit: "contain", w: w, h: w });
+
+  if (mode === "bg") {
+    // ---- 背景：**取景框（cover 语义）** ----
+    // 框内那一片就是最终画面；渲到整屏边长时走**既有** renderToTarget 的 cover 分支
+    // （源是正方形 ⇒ cover 与 contain 数值相同，但这条路与用户在「高级」里
+    //   手动选 cover 是**同一段代码**，不是第二套实现）。
+    const side = bgSideFor(curTarget);
+    // 输出边长 = 框内那一片的实际像素（**只缩不放**）：源图不够 480 时不放大
+    // —— 放大只会更糊，而且"看起来铺满了"会掩盖"这张底图本来就不够"。
+    const w = cropSideOut(s);
+    if (sq.width < side) {
+      say("⚠ 这张背景取景后只有 " + w + "×" + w + "（整屏要 " + side + "×" + side +
+          "）⇒ 弧带那一圈可能露出主题底色。换一张更大的图，或在「高级 → 图片列表」里调目标宽度。",
+          "warn");
+    }
+    items.push({ id: nextId++, img: sq, name: srcName + "-背景", role: slot.role,
+                 order: 0, fit: "cover", w: w, h: w });
+    cropClose();
+    render();
+    say("已取景并放进槽位「" + slot.label + "」：按 **cover** 输出 " + w + "×" + w +
+        "（图盖满整个框、不露底；可用 JPEG / WebP、不要求透明）。\n" +
+        "点「保存安装包」就把它连同配色打成一个 assets.bin。", "ok");
+    return;
+  }
+
+  // ---- 表情：框内=保留区，框外丢掉（透明） ----
+  const w = cropOutputSize(sq.width, slot.role);
+  items.push({ id: nextId++, img: sq, name: srcName + "-" + slot.label, role: slot.role,
+               order: 0, fit: "contain", w: w, h: w });
   cropClose();
   render();
   say("已框选并放进槽位「" + slot.label + "」：输出 " + sq.width + "×" + sq.height +
       "（四周透明、主体居中）⇒ 按 " + w + "×" + w + " 输出，产物 " +
       (cfForRole(slot.role) === ImageBlob.CF.RGB565A8 ? "RGB565A8（带透明）" : "RGB565") +
       "。\n点「保存安装包」就把它连同配色打成一个 assets.bin。", "ok");
+}
+
+// 表情进槽时的输出边长：**只缩不放** + 该目标板的推荐值（与 pickDefaultSize 同一套口径，
+// 单独写出来是因为框选产物已经是"框内源图"，不再走 pickDefaultSize 的取整分支）
+function cropOutputSize(naturalW, role) {
+  const cap = ImageBlob.faceSizeRecommendedFor(curTarget);
+  const w = Math.min(cap, Math.round(naturalW || cap));
+  return Math.max(8, Math.min(cap, Math.floor(w / 4) * 4));
 }
 
 function initCropper() {

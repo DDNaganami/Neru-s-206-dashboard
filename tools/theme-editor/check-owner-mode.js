@@ -214,9 +214,10 @@ const KNOWN_MARKS = OWNER_CAPS.concat(["preset", "port", "bgimage", "slots"]);
                    "function sendFilesToSlot", "function clearSlot", "function drawSlotThumb"]) {
     ok(MERGED.indexOf(w) >= 0, "槽位清单里有 " + w);
   }
-  // 表情格弹框选、背景格不弹：这两条路必须是**分开**的两个分支
-  ok(/spec\.face\s*\?\s*ownerFaceFiles|if\s*\(\s*spec\.face\s*\)/.test(MERGED),
-     "按 face 标记分流（表情格走框选、背景格不走）");
+  // 表情格与背景格走**同一条入口**，但语义按 face 分流
+  //   （2026-10-15 之前是"背景不走框选"，车主推翻后改成"背景走取景"）
+  ok(/const mode = spec\.face \? "face" : "bg"/.test(MERGED),
+     "按 face 标记分流（表情=face、背景=bg 两种语义）");
   ok(/function clearSlot[\s\S]{0,400}role === spec\.role/.test(MERGED),
      "清除按 role 删干净");
 }
@@ -246,16 +247,27 @@ section("①b 槽位清单：背景 1 + 表情 10，名称用中文阶段名");
     for (let s = 0; s < 2; s++) FSrd.statesOf(s).forEach(st => want.push(st.role));
     eq(slots.map(s => s.role).join(","), want.join(","), "10 个 role 与 face-stages.js 逐个一致");
   }
-  // 背景那一格：1 个、face:false（不弹框选）
+  // 背景那一格：1 个。★★ 2026-10-15（车主实测反馈）：「主题背景图这边导入没有框选选项」
+  //   ⇒ 这一格**现在也走框选器**了，但语义是 **cover 取景**（框内就是最终画面、
+  //     图必须盖满框、可用 JPEG/WebP、不要求 alpha），与表情的"框外丢掉"**不同**。
+  //     所以下面这几条断言也一起改了口径（旧口径"背景不加框选"已经被车主推翻）。
   const sp = /function ownerSlotSpecs\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
   ok(!!sp, "有 ownerSlotSpecs()（背景 + 表情合成一张表）");
   if (sp) {
     ok(/ImageBlob\.ROLE\.Background/.test(sp[1]) && /face:\s*false/.test(sp[1]),
-       "背景那一格 face:false（背景不加框选）");
+       "背景那一格 face:false（它不是表情槽）");
     ok(/\.concat\(faceSlots\(\)\)/.test(sp[1]),
        "ownerSlotSpecs() = 背景 1 格 + faceSlots() 10 格");
   }
-  ok(/背景：不弹框选|背景不加框选/.test(src), "页面里明说背景不加框选");
+  // 背景格走**取景**（mode="bg"），不是走表情那套
+  ok(/const mode = spec\.face \? "face" : "bg"/.test(src),
+     "按 face 分流：表情=face、背景=bg（两种语义）");
+  ok(/openCropper\(img, f\.name, spec, mode\)/.test(src),
+     "两条路都进同一个框选器，但带着不同的 mode");
+  ok(/mode === "bg"/.test(src), "框选器里认 mode===\"bg\"（背景取景那一路）");
+  ok(/背景取景|框内就是最终画面/.test(src), "页面里明说背景是「取景（框内就是最终画面）」");
+  ok(!/背景：不弹框选|背景不加框选/.test(src),
+     "不再写「背景不加框选」（车主已推翻这条）");
 }
 
 section("② 车主模式是**默认**（没记录时进车主模式，不是高级）");
@@ -390,7 +402,7 @@ section("⑤ 高级里旧控件一个不少（图片那一半），而且技术�
   }
 }
 
-section("⑥ 框选器：只给**表情槽**，背景不加");
+section("⑥ 框选器：表情=框选（框外丢掉）、背景=取景（cover、盖满框）");
 {
   const src = MERGED;
   ok(/id="crop"/.test(src), "有框选器（模态 #crop）");
@@ -409,19 +421,25 @@ section("⑥ 框选器：只给**表情槽**，背景不加");
        "框选产物是**方图**（宽=高=side）");
     ok(/drawImage\(/.test(b), "框选产物由 drawImage 画出");
     ok(!/fillRect|fillStyle/.test(b), "框选产物**不铺底色**（保留透明通道）");
-    ok(/faceCanvasMaxFor/.test(b), "框选产物的上限问 ImageBlob（不写死 320）");
+    ok(/cropSideOut\(|cropSideMax\(/.test(b),
+       "框选产物的边长由 cropSideOut() 算（上限问 ImageBlob，不写死数字）");
   }
-  // 框选**只**出现在表情那条路上：背景那两个字附近不许有"框选"
-  const bgLine = /背景图?不加框选|背景不加框选/.exec(src);
-  ok(!!bgLine, "页面里明说「背景不加框选」");
+  // ★ 两种语义都在（2026-10-15 车主推翻了"背景不加框选"那条）
+  ok(/方框里是要保留的部分/.test(src), "表情那一路仍写「方框里是要保留的部分 / 框外丢掉」");
+  ok(/方框里就是最终画面/.test(src), "背景那一路写「方框里就是最终画面」（取景语义）");
+  ok(/图始终盖满整个框|图必须盖满/.test(src), "背景那一路点明「图盖满框、不露底」");
   // 表情那条路先过 asset-spec 的 checkUpload（JPEG/无 alpha 会被拒）
-  ok(/AssetSpec\.checkUpload\(/.test(src), "表情入口走 AssetSpec.checkUpload()");
+  ok(/AssetSpec\.checkUpload\(/.test(src), "两条路都过 AssetSpec.checkUpload()");
   ok(/表情要透明背景，请用 PNG/.test(src), "拒绝文案里明说「表情要透明背景，请用 PNG」");
   ok(/ImageBlob\.CF\.RGB565A8/.test(src), "表情仍是 RGB565A8");
-  // 背景那条路走 addFiles（可 JPEG、不弹框选）
-  ok(/function sendFilesToSlot\(spec, files\)/.test(src) &&
-     /addFiles\(files, spec\.role\)/.test(src),
-     "背景格走既有的 addFiles(files, 背景 role) —— 不弹框选");
+  // 背景进槽用 **cover**（既有分支），不是 contain
+  const cb = /if \(mode === "bg"\)\s*\{([\s\S]*?)\n  \}/.exec(src);
+  ok(!!cb, "cropConfirm() 里找得到背景那一支");
+  if (cb) {
+    ok(/fit:\s*"cover"/.test(cb[1]), "背景进槽用既有的 cover 分支");
+    ok(!/prepareAsset|transparent/.test(cb[1]),
+       "背景那一支不碰「裁透明边」/不要求透明通道（可用 JPEG、WebP）");
+  }
 }
 
 section("⑦ 框选只动「进槽前的像素」：还走既有那条缩放/打包路径");
@@ -432,7 +450,8 @@ section("⑦ 框选只动「进槽前的像素」：还走既有那条缩放/打
   if (conf) {
     const b = stripComments(conf[1]);
     ok(/items\.push\(/.test(b), "框选结果作为普通 item 进列表（走既有那条路）");
-    ok(/pickDefaultSize\(/.test(b), "尺寸用既有的 pickDefaultSize()（只缩不放 + 上限）");
+    ok(/cropOutputSize\(|cropSideOut\(/.test(b),
+       "尺寸由 cropOutputSize()/cropSideOut() 算（只缩不放 + 目标板推荐值）");
     ok(!/rgbaToRgb565/.test(b), "框选器**不自己编码**（编码在 buildPayload 里，只有一份）");
   }
   // 既有的缩放/打包函数没被动过
@@ -610,9 +629,15 @@ section("⑬ 打包产物与改动前**逐字节相同**（.golden-hashes.json �
   }
 }
 
-section("⑭ 不改固件 / 不改内核产物：那三个文件的**字节**没被动过");
+section("⑭ 不改固件 / 不改内核产物");
 {
-  // 只断言"我们这一单没碰它们"——用 git 的工作区状态回答（若仓库不是 git 就跳过）
+  // 这条断言的是"**产物格式那一层**没被碰"：字节布局的定义者（theme-json /
+  // image-blob-build / asset-package-core / face-stages = 与固件同源的那张表）
+  // 以及固件源码，一律不许出现在 git 的改动列表里。
+  //   ★ asset-spec.js **不在**这个名单里 —— 它只放"上传前的规格与文案"，
+  //     不进任何字节（它对字节的唯一影响是"收不收这张图"）。2026-10-15 加 WebP
+  //     的像素级 alpha 判据时改的就是它（那是**判据**，不是格式）。
+  //   ★ 真正的字节证据是 .golden-hashes.json 那一节（⑬）——这里只是"谁被动过"。
   const { execFileSync } = require("child_process");
   let changed = null;
   try {
@@ -620,7 +645,6 @@ section("⑭ 不改固件 / 不改内核产物：那三个文件的**字节**没
       "tools/theme-editor/theme-json.js",
       "tools/theme-editor/image-blob-build.js",
       "tools/theme-editor/asset-package-core.js",
-      "tools/theme-editor/asset-spec.js",
       "tools/theme-editor/face-stages.js",
       "tools/theme-editor/theme.json",
       "lib", "src"], { cwd: REPO, encoding: "utf8" });
@@ -628,8 +652,14 @@ section("⑭ 不改固件 / 不改内核产物：那三个文件的**字节**没
   if (changed === null) {
     console.log("  - 不是 git 仓库（或 git 不可用），这条跳过");
   } else {
-    eq(changed.trim(), "", "主题/图片/容器内核与固件源码都没有改动");
+    eq(changed.trim(), "", "字节布局的定义者（三个内核 + face-stages + 固件）都没改动");
   }
+  // asset-spec.js 可以改，但**不许改"哪些格式能用"以外的东西**：
+  //   它必须仍然把 WebP 当"可以带 alpha"的格式（不是把它们错标成没有）
+  const AS = require(path.join(dir, "asset-spec.js"));
+  eq(AS.formatOf("a.webp").alpha, "full", "asset-spec 仍把 WebP 标成「可以带 alpha」");
+  eq(AS.formatOf("a.jpg").alpha, "none", "JPEG 仍标成「没有 alpha」");
+  eq(AS.formatOf("a.png").alpha, "full", "PNG 仍标成「可以带 alpha」");
 }
 
 section("⑮ 页面引用的内核脚本都在，且默认主题/告警兜底与固件一致（不许有第二份）");

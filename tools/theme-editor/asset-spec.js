@@ -453,8 +453,16 @@
   //   谁传错都只会拿到一条看得懂的错，不会再静默失效。
   //   两边那份编号表由 test-asset-spec.js 钉住（"编号 → 用途"必须与
   //   `ImageBlob.ROLE` 逐个对得上；这条以前**没有人钉过**，正是根因）。
+  //
+  //   ★★ 2026-10-15（车主给了 .webp 素材）：opts 是**解码后**的像素事实 ——
+  //     WebP **可以**带 alpha 也可以全不透明，"后缀叫 .webp"说明不了任何事。
+  //     所以页面解完图会量一遍 alpha 再传进来：
+  //         opts.alpha = { has: true|false, min, max }
+  //     这一层仍然在这里判：**"要不要 alpha"与"没有 alpha 怎么办"只有一份**
+  //     （页面那边只管量，不管判）。不传 opts 时行为与以前**一个字不差**
+  //     （格式级判断照旧），所以老调用点（命令行/文档/既有测试）不受影响。
   // ------------------------------------------------------------
-  function checkUpload(fileName, mime, roleId, targetId) {
+  function checkUpload(fileName, mime, roleId, targetId, opts) {
     var res = { ok: true, errors: [], warnings: [], format: null };
     var f = formatOf(fileName, mime);
     if (!f) {
@@ -487,6 +495,20 @@
                       "不透明的方图会把背景盖掉一整块" +
                       "（**弧压在表情上面**，所以它盖不住弧）。" +
                       "请改用带透明背景的 PNG。");
+      return res;
+    }
+    // ★ 像素级：格式**声称**支持 alpha，但解出来的像素全是 255 ⇒ 同样不行。
+    //   （PNG 也可能是全不透明的；WebP 更是常见 —— 有损转出来就丢了 alpha。）
+    if (box.alpha === "required" && opts && opts.alpha &&
+        opts.alpha.has === false) {
+      res.ok = false;
+      res.errors.push(f.label + " 解出来的**每个像素都是不透明的**（alpha 全是 255，" +
+                      "实测 min=" + opts.alpha.min + " / max=" + opts.alpha.max + "），" +
+                      "而这个用途（" + box.role.label + "）必须带 alpha —— " +
+                      "表情要透出底下的背景图，不透明的方图会把背景盖掉一整块" +
+                      "（**弧压在表情上面**，所以它盖不住弧）。" +
+                      "请改用带透明背景的 PNG，或者带透明的 WebP。");
+      return res;
     }
     if (box.alpha === "required" && f.id === "webp") {
       res.warnings.push("WebP 可以带 alpha，但有损模式的边缘会有半透明脏边；" +

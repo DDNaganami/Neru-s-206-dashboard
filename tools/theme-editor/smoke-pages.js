@@ -271,6 +271,7 @@ section("合并后的编辑器（index.html）在最小 DOM 桩里从头跑到�
 const results = {};
 {
   const page = "index.html";
+  const SOURCE = fs.readFileSync(path.join(dir, page), "utf8");
   let r = null;
   try {
     r = runPage(page);
@@ -338,6 +339,16 @@ const results = {};
       ok(doc.getElementById(saveId).getAttribute("data-ocap") === "save",
          tag + " 分区的「保存安装包」标记正确");
     }
+
+    // ---- ★ 2026-10-15：背景格也走框选器（取景语义），mode 必须是 "bg" ----
+    //   ★ 这一条**故意只在源码层查**：DOM 桩里没有 FileReader / 真 Image 解码，
+    //     硬塞假 File 只会测到桩自己的行为。真正"喂一张 WebP 进去看走哪条路"
+    //     的端到端判据在 check-webp.js（它起无头浏览器，用页面自己的
+    //     sendFilesToSlot 跑三种情形）。
+    ok(typeof r.sandbox.sendFilesToSlot === "function",
+       "页面里有 sendFilesToSlot()（两个槽位共用的入口）");
+    ok(/const mode = spec\.face \? "face" : "bg"/.test(SOURCE),
+       "入口按 face 分流：表情=face、背景=bg（背景也有框选，只是语义不同）");
     // 两个端口框同步同一个值（改一个，另一个跟着变）
     const p1 = doc.getElementById("owner-port");
     p1.value = "COM9";
