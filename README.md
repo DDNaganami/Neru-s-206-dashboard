@@ -102,6 +102,7 @@ python -m platformio run -e esp32s3-rgb-slave-now  -t upload --upload-port COM8 
 | `docs/LINK-LOOPBACK.md` | 单板回环（一块裸 S3，另一件事，与双板链路无关） |
 | `docs/RGB-PANEL-2.8C.md` | 2.8C 显示：bring-up 结论、笔刷/撕裂那些真话、蜂鸣器、构建环境 |
 | `docs/PREVIEW.md` | 预览页能证明什么、**不能**证明什么 |
+| `docs/WHEEL-REMOTE.md` | **未来构想（未开工）**：快拆盘喇叭盖里的第三块板（小屏 + 发声）走 ESP-NOW 与两块表联动（遥控切主题 / 阈值触发音频）；含**旋转体取电**、协议草案、气囊等风险清单、P0–P3 计划 |
 | `PINOUT.md` | 接线：VAN 三处取信号、开箱先量什么、抓帧盒怎么用 |
 | `PURCHASE.md` | 采购：清单、到货后的验证动作、别买 CAN-only |
 | `tools/web/index.html` | **网页统一入口（导航页）**：四张卡片 + 工作流顺序（配色 → 图片 → 刷写 → 预览）；`tools/web/open.bat` 同效 |
