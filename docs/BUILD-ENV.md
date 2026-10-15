@@ -229,3 +229,33 @@ $env:PLATFORMIO_BUILD_DIR = 'C:\206dash-scratch\final-builds\master'   # 每块�
 ```
 （同一天用这套拿到了 master/slave 双 `[SUCCESS]`，见 `ACCEPTANCE.md` 的 2026-10-15 一节。）
 
+## 坑 10 ★★★ — `platformio.ini` 的 `-D` 会**覆盖源码默认值**：改源文件可能等于白刷
+
+**2026-10-15 实测**（代价：一整轮刷机白跑）：
+
+**现象**：把 `src/dash_display_rgb.cpp` 里 `#ifndef RGB_BOUNCE_LINES` 的默认值 10 改成 20，
+native / pcpreview / esp32s3-rgb-slave-now 三项全 `[SUCCESS]`、上传也 `Hash of data verified` ✓，
+**但开机日志里 `rgb: bounce=10行/块(2块共18KB内部SRAM)` 一个字都没变 ✗** —— 板上跑的还是 10 行。
+
+**根因**：那个默认值在 `#ifndef` 守卫里，而 `platformio.ini` 的**每个 env 都显式带了**
+`-DRGB_BOUNCE_LINES=<N>` ⇒ `-D` 覆盖默认值，**源文件里那一行根本轮不到生效** ✗。
+（同一个宏的值被写在两个地方 ⇒ 只改一份就是白刷。）
+
+⇒ 两条纪律：
+
+1. **改档位要两处一起改**：源文件默认值 **+** 对应 env 的 `-D`（以及 `extends` 链上可能又被覆盖的
+   那一层，见上面「改 `platformio.ini` 的宏时要验一遍解析结果」那一节）。
+2. ★ **判据永远认开机日志里的那一行，不是看你改了哪个文件**：改 bounce 就看
+   `rgb: bounce=<N>行/块`；改绘制缓冲就看 `rgb: 编译期事实 … draw_buf=`；改 pclk 就看
+   `rgb: vsync=` 的每秒值。**日志里那个数没变 = 改动没生效**，别拿 `[SUCCESS]` 当"生效"的证明。
+
+★ 本条的直接出处 —— 对「**主板从不犯、从板反复犯**」的直接解释：
+
+| env | 板 | 2026-10-15 之前的 `-D` | 改档之后 |
+|---|---|---|---|
+| `[env:esp32s3-rgb-master-now]` | 主板（右屏） | **30**（`platformio.ini:461`） | 30 |
+| `[env:esp32s3-rgb-slave-now]` | 从板（左屏） | **10**（当时在 `platformio.ini:547`，现 `:558`） | **30** |
+
+⇒ 两块板跑的**一直不是同一个档**：主板 30 行、从板 10 行。同一份源码、同一个"横纹"问题，
+从板反复犯而主板从不犯 —— 差异就在这一行 `-D` 上，不在源码里。
+
