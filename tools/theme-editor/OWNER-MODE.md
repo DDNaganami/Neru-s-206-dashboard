@@ -1,0 +1,151 @@
+# 车主模式（2026-10-15）
+
+两个编辑器（`index.html` = 配色、`image-editor.html` = 图片）现在**默认进入车主模式**。
+
+这一页只回答三件事：**车主默认看到什么**、**框选怎么工作**、**为什么"产物逐字节兼容"这句话是可信的**。
+
+---
+
+## 1. 车主模式里有什么（默认）
+
+| 类别 | 控件 | 备注 |
+|---|---|---|
+| 预览 | 左右两块 480×480 画布 + 阶段预览下拉 | 既有画布，一个字没动 |
+| 配色 | **背景色**、**四条弧的点亮色**、**数字颜色** | 共 6 个色块；水温/进气的副表颜色、轨道色、单位色在「高级」里 |
+| 阈值 | **红区转速 rpm**、**超速 km/h** | 两个阈值**仍然生效**（弧染红 / 大数字变红 / 脸变红） |
+| 图片 | **表情图拖入**（拖进来就弹框选）+ 槽位下拉 | 槽位名是**中文阶段名**：怠速/巡航/运动/高转/红区、静止/市区/快速路/高速/超速 |
+| 产出 | **保存安装包（assets.bin）** + **一条**刷写命令 | **端口可改、偏移不让改**（写死 `0x210000`，取自分区表） |
+
+配色预设 3 个：**当前默认 / 夜间 / 浅底**。点一下就把颜色写进**当前主题状态**（导出的还是同一份 `theme.json`，不新造文件格式）。「当前默认」是从 `defaultTheme()` 取的，不是抄一份数字 —— 固件默认值改了它跟着走。
+
+### 高级里保住了什么（一个都没删）
+
+点顶栏的「高级」：
+
+* **主题页**：恢复默认 / 导入主题文件 / 导出主题文件、**主题 JSON 文本框**（只在高级里）、以及原来那一整面控件墙 ——
+  表情大小/底色/五官色、每条弧的起始角/结束角/半径/线宽/轨道色/轨道透明/涨幅反向、
+  水温量程/进气量程、数字与单位的颜色/字号/中心 y/显示开关、开机动画的 8 个毫秒、
+  告警那一组（超速/迟滞/红区/迟滞/转向忘关/门去抖/通用去抖/响一声/最短间隔/只报最高优先级）。
+* **图片页**：图片列表 + 用途/顺序/缩放方式（`contain`/`cover`/`stretch`）/裁透明边/目标宽度、
+  弧与读数的全部颜色编辑器、导出 theme.json / 读入 theme.json·assets.bin / 用固件默认、
+  导出 assets.bin、刷写那一栏（cmd + 复制 + 导出 C 数组 + 载入已有 bin）、占用（目标板 + 预算条）。
+
+两个模式**共用同一份状态**：切模式只切显隐，不产生第二份主题。模式选择记在
+`206dash.themeEditorMode` / `206dash.imageEditorMode`（与配色那份 `206dash.theme` **分开** ——
+本机偏好不进导出的主题）。
+
+---
+
+## 2. 框选器（只给表情槽）
+
+拖一张 PNG 进「表情图」→ 弹框选：
+
+* **方框内 = 保留区**；框外用半透明黑压住（"框外丢掉"看得见）。
+* **拖动 = 平移**（指针事件，鼠标与单指都走它）。
+* **滚轮 = 缩放**，以指针位置为不动点；**双指捏合**同样缩放（触摸屏）；下面的滑杆也能缩（100%..800%，100% = 刚好装下）。
+* 确认后导出一张**方图**：主体居中、**四周透明**（画布不铺底色 ⇒ 天然带 alpha）。
+* 上限/推荐值**问 `ImageBlob`**（480 档 320 / 300），页面里不写死。
+
+### 两条边界（这一单的重点）
+
+1. **框选只影响"进槽之前的像素"。** 产物是一张普通 `canvas`，之后走的是**既有**那条路：
+   `renderToTarget()`（contain、只缩不放、保持比例、居中）→ `ImageBlob.rgbaToRgb565A8()` → `ImageBlob.build()`。
+   框选器**不自己编码**，也不碰包头。镜像格式（RGB565A8）、320 上限、`image.bin`/`assets.bin` 的字节布局**一个字都没动**。
+2. **只给表情槽做框选。** 背景不加：背景要铺满 480×480，没有"框外"可丢。背景仍然走图片页的高级。
+
+### JPEG 会被拒绝
+
+规则与文案的唯一权威是 `asset-spec.js` 的 `checkUpload()`：表情槽 `alpha: "required"`，
+JPEG 没有 alpha ⇒ 报错，并且明确告诉车主 **「表情要透明背景，请用 PNG」**。
+
+### 跨页交接
+
+在主题页框选好的那张方图，会以一张 data URL 存进 `206dash.faceHandoff`，
+然后跳到图片页；图片页启动时接住它、按选好的 role 作为一条普通 item 进列表。
+**它只是一张待进槽的方图，不是第二份主题状态**（主题只有 `206dash.theme` 那一份）。
+
+---
+
+## 3. 「产物逐字节兼容」的证据
+
+**声明**：这一单没有改任何输出格式 —— `theme.json` / `image.bin` / `assets.bin` 的字节布局一律没动，
+`theme-json.js`、`image-blob-build.js`、`asset-package-core.js` 的产物与改动前**逐字节相同**。
+
+**证据**（可复跑，不是"我看着没改"）：
+
+```bash
+# 1) 产出/核对"打包产物指纹"（固定输入 → 三段打包 → SHA-256）
+node tools/theme-editor/make-golden-hashes.js            # 写入 .golden-hashes.json
+node tools/theme-editor/make-golden-hashes.js --print    # 只打印，不写文件
+
+# 2) 指纹比对（check-owner-mode.js 的第 ⑬ 节）
+node tools/theme-editor/check-owner-mode.js
+```
+
+指纹里各是什么：
+
+| 字段 | 含义 |
+|---|---|
+| `themeJsonSha256` | **主题页** `defaultTheme()` 按 `JSON.stringify({theme:T},null,2)` 序列化后的 SHA-256 |
+| `imageEditorThemeJsonSha256` | **图片页** `ARC_FALLBACK` 同样序列化后的 SHA-256 |
+| `imageBinSha256` | 固定图案（一张 RGB565 背景 + 一张 RGB565A8 表情）打成 `image.bin` 的 SHA-256 |
+| `assetsBinSha256` | 上面两者经 `AssetPackageCore.packBytes()` 合成容器的 SHA-256 |
+| `assetsBinImagePageThemeSha256` | 换用图片页那份主题再合成一遍的 SHA-256（两页都要在指纹里） |
+
+**改动前后的实测值完全相同**（这一单的收尾验证）：
+
+```
+themeJsonBytes                    2892
+themeJsonSha256                   2cf2c42432c211fb62aa05252a47ad7576278f2983e1f1bc5db67e3da439445b
+imageEditorThemeJsonBytes         1389
+imageEditorThemeJsonSha256        5fdfd1b262ec37038f74e8cb2d79b13c19dff11b17d8a8fee1c8ed4b8b5f2bdc
+imageBinBytes                     16524
+imageBinSha256                    24fc3c873d5c5641720f687f2edfd719d525db0f361ba23f357b40679dda783c
+assetsBinBytes                    295052
+assetsBinSha256                   63fe3276be21c5cebd1031dcfcdbab8ff1806dd19f2fb1869655863663293271
+assetsBinImagePageThemeBytes      295052
+assetsBinImagePageThemeSha256     c99766402ccf996923a7897c798929d465ca47f4130eea1a602cbe7be7e75351
+```
+
+★ **输入是算出来的**：主题字节从页面源码里把 `defaultTheme()` / `ARC_FALLBACK` 抠出来求值，
+图案是纯函数 —— 不读 `theme.json` / `local/*.bin` 那些本机文件，所以换台机器哈希也一样。
+
+★ 指纹**只能说明"这一段代码的产物没变"**：它证明不了"框选器写的像素对"。
+像素那一层的判据是 `smoke-pages.js`（页面能跑起来）+ `check-owner-mode.js` 第 ⑦ 节
+（框选结果确实作为普通 item 交给既有那条路）。
+
+---
+
+## 4. 这一单新增的测试（都进 CI/手工跑的那一套）
+
+| 脚本 | 判什么 |
+|---|---|
+| `check-owner-mode.js` | **能力表对账**：车主模式恰好那 9 类控件（多一个少一个都红）、高级里旧控件一个不少、JSON 只在高级、框选只给表情槽、预设写现有状态、**打包指纹未变**（第 ⑬ 节）、内核脚本都在且**没有第二份实现**、告警兜底逐字段对到 `alerts.h` |
+| `smoke-pages.js` | 用**最小 DOM 桩**把两个页面真的从头跑到尾（启动 + 改色 + 切模式 + 预设），抓"白屏类"运行时错误（TDZ、重复声明、`getElementById` 拿到 null） |
+| `make-golden-hashes.js` | 产出/刷新上面那份**产物指纹** |
+| `.golden-hashes.json` | 指纹的落地文件（check-owner-mode.js 拿它对账） |
+
+为什么值得有 `smoke-pages.js`：`syntax-check-pages.js` 只做语法检查，而这两个页面的故障
+大多是**运行时**的，表现都是"白屏 / 点了没反应"。这一单里它当场抓到过两个真问题：
+① 主题页少了 `asset-package-core.js` 的 `<script src>`（车主模式一进来就要用 `flashCommand`）；
+② 图片页在 `ARC_FALLBACK` 里找 `alerts`（那份兜底**故意没有** alerts 段 ——
+`test-theme-json.js` 用 `Object.keys().length` 钉着它只放底色+弧+读数色），
+于是红区/超速那两个滑块一建就抛错。两处都已修。
+
+---
+
+## 5. 告警分组的文案（蜂鸣器已删）
+
+固件 2026-10-15（`lib/dashcore/alerts.h` 文件头）**把蜂鸣器整个删了**（`buzzer.*`、
+`BeepPattern`、`muted()` 等），所以编辑器里那一组的文案改成
+「**告警阈值（蜂鸣器已删）**」，并写明：
+
+* **仍然生效**的是阈值本身：过超速 ⇒ 弧染红 + 大数字变红；进红区 ⇒ 脸变红；
+  门/转向忘关的去抖、只报最高优先级都照旧。
+* 「响一声 ms / 最短间隔 ms」两个字段**保留**（`theme.json` 的 `alerts` 段里既有的键，
+  `theme_store.cpp` 照旧解析、照旧钳制）—— 只是**已无消费方**（删字段会让已导出的主题文件
+  "看起来坏了"）。文案里点明这一点，免得车主以为"调了没反应"。
+* 静音开关（设备 `m` / 模拟页面 `M`）随之作废。
+
+**十个字段一个都没删**：`test-theme-json.js` 那一节仍然逐字段对 `alerts.h`（页面上那两个滑块的
+下限也照旧钉着 `kAlertsBeepMinMs`）。

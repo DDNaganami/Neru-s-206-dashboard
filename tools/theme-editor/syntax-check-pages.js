@@ -86,8 +86,12 @@ for (const file of pages) {
   // ★ 开合必须配对。这条是踩过坑才加的:曾经在页面中间多出一个 </script>,
   //   于是后面几百行 JS 全跑到标签外面去了 —— 表现是"页面空白",
   //   而按"每个 <script> 都能编译"的老检查**完全查不出来**(它们确实都能编译)。
+  // ★ 2026-10-15:闭标签允许带空白(`</script >`)—— HTML 合法,浏览器照收。
+  //   这条原来是 `/<\/script>/`,一个换行/空格的写法就会误报"开合不配对"
+  //   (index.html 里那段内联脚本就是这么被写上换行的)。收紧成"必须一模一样"
+  //   没有好处:它要抓的是"多一个/少一个",不是排版。
   const opens = (html.match(/<script\b/gi) || []).length;
-  const closes = (html.match(/<\/script>/gi) || []).length;
+  const closes = (html.match(/<\/script\s*>/gi) || []).length;
   if (opens !== closes) {
     fail++;
     console.log("  ✗ " + page + " 的 <script> 开合不配对:" + opens + " 个开、" + closes + " 个闭");

@@ -92,6 +92,77 @@
   .navstrip a.navback:hover{background:#246b91;color:#fff}
   /* 返回键与后面四个页面之间加一道竖线，视觉上分开「回入口」和「换页面」 */
   .navstrip .navsep{width:1px;height:16px;background:var(--line);margin:0 2px}
+
+  /* ============================================================
+     ★★ 2026-10-15：**车主模式**（本页**默认**进入）
+     ------------------------------------------------------------
+     为什么要有它：这一页原来是"把 theme.json 的每个字段都摊在左栏"，
+     车主打开它想做的只有几件事（改色、换表情图、刷进去），
+     却要在一面**设置墙**（角度/半径/字号/中心 y/开机毫秒/告警阈值）里找。
+
+     口径（这条别改）：
+       · 车主模式 = 只留 9 类控件（左右圆预览位、背景色、四条弧的点亮色、
+         数字颜色、红区转速、超速、表情图拖入）+ 一个「保存安装包」。
+       · **原有控件一个都不删**，全部搬进下面的 <details class="advanced">。
+         JSON 文本框**只在高级里**出现。
+       · 两个模式共用**同一份** T（主题状态）与**同一条**导出/刷写路径 ——
+         切模式只是显隐，不产生第二份状态（否则就是"两个真相"）。
+     ============================================================ */
+  .modebar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+           padding:10px 20px;border-bottom:1px solid var(--line);background:#171a22}
+  .modebar .modesw{display:flex;gap:6px}
+  .modebar .modesw button{padding:5px 12px;font-size:13px}
+  .modebar .modesw button.on{background:#1d4f6b;border-color:#2a6f96;font-weight:600}
+  .modebar .grow{flex:1}
+  .owner-note{color:var(--dim);font-size:12px}
+  details.advanced{margin:0;border-bottom:1px solid var(--line)}
+  details.advanced > summary{padding:12px 16px;color:var(--accent);font-size:13px;
+                             font-weight:600;letter-spacing:.04em;list-style:none}
+  details.advanced > summary::-webkit-details-marker{display:none}
+  details.advanced > summary:before{content:"▸ ";color:var(--dim)}
+  details.advanced[open] > summary:before{content:"▾ "}
+  details.advanced > .adv-body{padding:0 0 6px}
+  .advblock{border-top:1px dashed var(--line);padding:12px 16px}
+  .advblock > h3{font-size:12px;margin:0 0 8px;color:var(--dim);
+                 text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+  /* 表情图拖入区（车主模式里唯一的"图片"入口） */
+  .facedrop{border:1px dashed var(--line);border-radius:8px;padding:14px 12px;
+            text-align:center;color:var(--dim);font-size:12px;cursor:pointer;
+            background:#0e1016;line-height:1.7}
+  .facedrop.hot{border-color:var(--accent);background:#12202a;color:var(--text)}
+  .facedrop b{color:var(--text);font-weight:600}
+  .slotpick{display:flex;align-items:center;gap:8px;margin-top:8px}
+  .slotpick label{color:var(--dim);font-size:12px;flex:0 0 66px}
+  .slotpick select{flex:1;min-width:0;background:#0e1016;color:var(--text);
+                   border:1px solid var(--line);border-radius:4px;padding:4px 6px}
+  /* 框选器（模态）：方框内 = 保留区，拖动平移、滚轮缩放，框外丢掉 */
+  #crop{position:fixed;inset:0;background:rgba(6,8,12,.88);z-index:99;
+        display:none;align-items:center;justify-content:center;padding:20px}
+  #crop.on{display:flex}
+  #crop .cbox{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+              padding:14px 16px;max-width:640px;width:100%;max-height:calc(100vh - 40px);
+              overflow:auto}
+  #crop h3{margin:0 0 4px;font-size:15px}
+  #crop .chint{color:var(--dim);font-size:12px;margin-bottom:10px;line-height:1.6}
+  #crop .cstage{position:relative;width:100%;max-width:460px;margin:0 auto;
+                background:#0a0b0f;border-radius:6px;overflow:hidden;touch-action:none;
+                user-select:none;cursor:move}
+  #crop canvas#cropcv{display:block;width:100%;height:auto}
+  /* 方框 = 保留区。框外用半透明黑压住（"框外丢掉"看得见）。 */
+  #crop .cframe{position:absolute;border:2px solid var(--accent);
+                box-shadow:0 0 0 9999px rgba(0,0,0,.62);pointer-events:none}
+  #crop .cframe:after{content:"保留区（框外丢掉）";position:absolute;left:0;top:-20px;
+                      color:var(--accent);font-size:11px;white-space:nowrap}
+  #crop .crow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px}
+  #crop .crow .grow{flex:1}
+  #crop .crow input[type=range]{flex:1;min-width:120px}
+  #crop .cout{color:var(--dim);font-size:12px}
+  /* 高级里那个"保存安装包"的刷写命令行：**端口可改、偏移不可改** */
+  .flashline{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+  .flashline input[type=text]{flex:1;min-width:180px;background:#0e1016;color:var(--text);
+                              border:1px solid var(--line);border-radius:4px;padding:5px 7px;
+                              font:12px Consolas,monospace}
+  .flashline .port{width:88px}
 </style>
 </head>
 <body>
@@ -107,30 +178,170 @@
 </div></div>
 <header>
   <h1>206Dash 主题编辑器</h1>
-  <span class="hint">改完点「导出主题文件」，刷到设备的 theme 分区即可生效（固件不用重编译）</span>
+  <span class="hint">改完点「保存安装包」，刷到设备的 theme 分区即可生效（固件不用重编译）</span>
   <span class="grow"></span>
-  <button id="btn-default">恢复默认</button>
-  <button id="btn-import">导入主题文件</button>
-  <button id="btn-export" class="primary">导出主题文件</button>
+  <!-- ★ 原有的三个按钮**一个都没删**，只是搬进「高级」里（车主模式里不需要选文件）。 -->
+  <span class="hint" id="hdr-hint">高级里还有：导入/导出 theme.json、开机动画、全部旧控件</span>
 </header>
 
+<!-- ============================================================
+     ★★ 车主模式（本页**默认**进入）
+     只留 9 类控件 + 一个「保存安装包」；其余全部在下面的「高级」折叠区里。
+     ============================================================ -->
+<div class="modebar">
+  <span class="owner-note">模式</span>
+  <span class="modesw">
+    <button id="btn-mode-owner" class="on">车主模式</button>
+    <button id="btn-mode-adv">高级</button>
+  </span>
+  <span class="grow"></span>
+  <!-- ★ 预览尺寸（2026-09-27 新增）：只改**显示**大小，画布内部仍是 480×480。
+       放这里而不是放到左边控制栏，是因为它跟"配色"没关系、纯粹是看画面的方便程度。 -->
+  <span class="hint">预览尺寸</span>
+  <select id="zoom" style="background:#0e1016;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px">
+    <option value="240">小 · 240</option>
+    <option value="300" selected>中 · 300</option>
+    <option value="360">大 · 360</option>
+    <option value="480">原始 · 480</option>
+  </select>
+  <span class="hint">阶段预览</span>
+  <select id="stage" style="background:#0e1016;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px"></select>
+</div>
+
 <main>
-  <div class="left" id="controls"></div>
+  <!-- ============================================================
+       车主模式的左栏。**只显示这几类控件**：
+         背景色 / 四条弧的点亮色 / 数字颜色 / 红区转速 / 超速 / 表情图拖入
+         + 一个「保存安装包」。（左右圆预览在右栏，是既有画布 cv0/cv1。）
+       ★ 这几个控件的"身份标签"（`data-ocap`）是**静态写在 HTML 里的**，
+         不是 JS 拼出来的 —— 理由有两条：
+           ① 检查脚本 check-owner-mode.js 是解析源码来数这些标签的
+              （拼出来的标签它数不到，守卫就静默失效）；
+           ② 车主模式下"这一栏是哪几件东西"从此**一眼可读**，不用读 JS。
+         JS（buildOwnerControls）只负责把**当前主题的值**灌进去 + 接上事件。
+       ★ 高级里原有控件一个不少（见下面的 #advanced）。
+       ============================================================ -->
+  <div class="left" id="owner">
+    <section>
+      <h2>配色</h2>
+      <div class="note" style="color:var(--dim);margin:0 0 10px">
+        这四色与「② 图片」页是<b>同一份主题</b>（同一个 localStorage 键），不是两套状态。
+        要调角度 / 半径 / 线宽 / 字号那些几何，请展开顶栏的「高级」。
+      </div>
+      <div class="row" data-ocap="bg">
+        <label>背景色</label>
+        <input type="color" id="oc-bg"><input type="text" id="oc-bg-txt">
+      </div>
+      <div class="row" data-ocap="arc">
+        <label id="oc-arc0-lb">转速弧（外圈）</label>
+        <input type="color" id="oc-arc0"><input type="text" id="oc-arc0-txt">
+      </div>
+      <div class="row" data-ocap="arc">
+        <label id="oc-arc1-lb">怠速·红区 弧（内圈）</label>
+        <input type="color" id="oc-arc1"><input type="text" id="oc-arc1-txt">
+      </div>
+      <div class="row" data-ocap="arc">
+        <label id="oc-arc2-lb">车速弧（外圈）</label>
+        <input type="color" id="oc-arc2"><input type="text" id="oc-arc2-txt">
+      </div>
+      <div class="row" data-ocap="arc">
+        <label id="oc-arc3-lb">静止·超速 弧（内圈）</label>
+        <input type="color" id="oc-arc3"><input type="text" id="oc-arc3-txt">
+      </div>
+      <div class="row" data-ocap="digit">
+        <label>数字颜色</label>
+        <input type="color" id="oc-digit"><input type="text" id="oc-digit-txt">
+      </div>
+    </section>
+    <section>
+      <h2>红区 / 超速</h2>
+      <div class="row" data-ocap="redline">
+        <label>红区转速 rpm</label>
+        <input type="range" id="oc-redline" min="1000" max="12000" step="50">
+        <input type="number" id="oc-redline-n" min="1000" max="12000" step="50">
+      </div>
+      <div class="row" data-ocap="overspeed">
+        <label>超速 km/h</label>
+        <input type="range" id="oc-overspeed" min="0" max="300" step="1">
+        <input type="number" id="oc-overspeed-n" min="0" max="300" step="1">
+      </div>
+    </section>
+    <section>
+      <h2>表情图</h2>
+      <div class="note" style="color:var(--dim);margin:0 0 10px">
+        表情<b>必须带透明背景（PNG）</b>：JPEG 没有 alpha，会被拒绝（请另存为 PNG）。
+        拖进来会弹<b>框选</b>：方框内是要保留的部分，拖动平移、滚轮/双指缩放，
+        <b>框外丢掉</b>；确认后得到一张<b>主体居中、四周透明</b>的方图，
+        再走既有的缩放路径（只缩不放、保持比例、居中、RGB565A8）。
+        <b>背景不加框选</b>——背景要铺满 480×480，去「② 图片」页处理。
+      </div>
+      <div class="facedrop" id="oc-face-drop" data-ocap="face">
+        <b>把表情图拖到这里</b><br>（或点一下选文件）<br>PNG（带透明）· 松手就弹框选
+      </div>
+      <!-- 槽位用**中文阶段名**（从 face-stages.js 取，选项由 JS 填）：
+           左屏 怠速/巡航/运动/高转/红区；右屏 静止/市区/快速路/高速/超速 -->
+      <div class="slotpick">
+        <label>存进槽位</label>
+        <select id="oc-slot"></select>
+      </div>
+    </section>
+    <section>
+      <h2>保存安装包</h2>
+      <button id="btn-owner-save" class="primary" style="width:100%" data-ocap="save">保存安装包（assets.bin）</button>
+      <div class="flashline">
+        <span class="owner-note">端口</span>
+        <input type="text" class="port" id="owner-port" data-ocap="port">
+        <input type="text" id="owner-cmd" readonly>
+      </div>
+      <div class="note" style="color:var(--dim)">
+        只展示这一条刷写命令：<b>端口可改，偏移不让改</b>（写死 0x210000，取自分区表：
+        theme 分区 + 中间 spiffs + image 分区都在这个文件里，一条命令刷完两者）。
+        走的是现有 asset-package 内核（asset-package-core.js）。
+      </div>
+      <div class="note" style="color:var(--dim)">
+        3 个预设（当前默认 / 夜间 / 浅底）：点一下就把配色写进当前主题状态 ——
+        导出的还是同一份 theme.json，不新造格式。
+      </div>
+      <div id="owner-presets"></div>
+    </section>
+  </div>
+  <!-- 高级的左栏：原有控件（buildControls 生成）+ JSON 文本框，一个字都没删 -->
+  <div class="left" id="advanced" style="display:none">
+    <section>
+      <h2>主题文件</h2>
+      <div class="toolbar" style="margin:0">
+        <button id="btn-default">恢复默认</button>
+        <button id="btn-import">导入主题文件</button>
+        <button id="btn-export" class="primary">导出主题文件</button>
+      </div>
+      <div class="note" style="color:var(--dim)">
+        导出的还是原来那份 theme.json（格式一个字都没动）。
+        车主模式里那个「保存安装包」走的是**同一个**打包内核（asset-package-core.js）。
+      </div>
+    </section>
+    <details class="advanced" open>
+      <summary>主题 JSON（可手改，改完按「应用」）</summary>
+      <div class="advblock">
+        <textarea id="json"></textarea>
+        <div class="toolbar" style="margin-top:8px">
+          <button id="btn-apply">应用</button>
+          <button id="btn-copy">复制</button>
+        </div>
+      </div>
+    </details>
+    <!-- ★ 原有那一整面控件墙（由 buildControls() 生成）：角度/半径/线宽/字号/
+         中心 y/量程/开机毫秒/告警阈值 —— **一个都没删**，只是搬到了高级里。
+         ★ 它自己也包在 <details> 里：默认打开（老用户一进来还是那面墙），
+           但可以折起来，方便在高级里找那一组。 -->
+    <details class="advanced" open>
+      <summary>全部旧控件（角度 / 半径 / 字号 / 中心 y / 开机毫秒 / 告警阈值）</summary>
+      <div id="controls"></div>
+    </details>
+  </div>
   <div class="right">
-    <div class="toolbar">
-      <span class="hint" style="align-self:center">预览的是 480×480 基准画面（真屏若用 800×800 会等比放大）</span>
-      <span class="grow" style="flex:1"></span>
-      <!-- ★ 预览尺寸（2026-09-27 新增）：只改**显示**大小，画布内部仍是 480×480。
-           放这里而不是放到左边控制栏，是因为它跟"配色"没关系、纯粹是看画面的方便程度。 -->
-      <span class="hint" style="align-self:center">预览尺寸</span>
-      <select id="zoom" style="background:#0e1016;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px">
-        <option value="240">小 · 240</option>
-        <option value="300" selected>中 · 300</option>
-        <option value="360">大 · 360</option>
-        <option value="480">原始 · 480</option>
-      </select>
-      <span class="hint" style="align-self:center">阶段预览</span>
-      <select id="stage" style="background:#0e1016;color:var(--text);border:1px solid var(--line);border-radius:4px;padding:4px 6px"></select>
+    <div class="hint" id="owner-tip" style="color:var(--dim);font-size:12px;margin-bottom:10px">
+      预览的是 480×480 基准画面（真屏若用 800×800 会等比放大）。<br>
+      顺序：改色 → 把一张 PNG 拖进「表情图」→ 框选对齐 → 保存安装包。
     </div>
     <div class="hint" id="stage-info" style="color:var(--dim);font-size:12px;margin:-6px 0 12px"></div>
     <div class="previews">
@@ -144,7 +355,7 @@
       </div>
     </div>
 
-    <div class="anim">
+    <div class="anim" id="animblock">
       <div class="toolbar" style="margin-bottom:8px">
         <button id="btn-play">▶ 播放开机动画</button>
         <span class="hint" style="align-self:center" id="anim-info"></span>
@@ -156,27 +367,71 @@
     </div>
 
     <div id="status" class="status">就绪。</div>
-
-    <details>
-      <summary>主题 JSON（可手改，改完按「应用」）</summary>
-      <textarea id="json"></textarea>
-      <div class="toolbar" style="margin-top:8px">
-        <button id="btn-apply">应用</button>
-        <button id="btn-copy">复制</button>
-      </div>
-    </details>
   </div>
 </main>
 
+<!-- ============================================================
+     框选器（模态）：**方框内 = 保留区**，拖动平移、滚轮（或双指）缩放，
+     框外丢掉；确认后导出一张**主体居中、四周透明**的方图。
+     ★ 它只动"进槽之前的像素"：产物仍交给既有的 renderToTarget()/ImageBlob
+       那条路（contain、只缩不放、保持比例、居中、RGB565A8、上限 320）。
+     ★ 只给**表情槽**用；背景不加框选。
+     ============================================================ -->
+<div id="crop">
+  <div class="cbox">
+    <h3>框选表情图</h3>
+    <div class="chint">
+      <b>方框里是要保留的部分</b>：拖动平移、滚轮（或双指）缩放 —— <b>框外丢掉</b>。<br>
+      确认后得到一张<b>主体居中、四周透明</b>的方图，再交给下面那条既有的缩放路径
+      （保持比例、只缩不放、居中，产物仍是 RGB565A8；480 档最长边不超过
+      <b id="crop-max">320</b>，推荐 <b id="crop-rec">300</b>）。
+    </div>
+    <div class="cstage" id="crop-stage">
+      <canvas id="cropcv"></canvas>
+      <div class="cframe" id="crop-frame"></div>
+    </div>
+    <div class="crow">
+      <span class="owner-note">缩放</span>
+      <input type="range" id="crop-zoom" min="100" max="800" value="100">
+      <span class="cout" id="crop-zoomv">100%</span>
+      <span class="grow"></span>
+      <button id="crop-reset">复位</button>
+    </div>
+    <div class="crow">
+      <span class="cout" id="crop-info"></span>
+      <span class="grow"></span>
+      <button id="crop-cancel">取消</button>
+      <button id="crop-ok" class="primary">用框选结果</button>
+    </div>
+  </div>
+</div>
+
 <input type="file" id="file" accept=".json,application/json" style="display:none">
+<input type="file" id="file-face" accept="image/png,image/webp,image/jpeg" style="display:none">
 
 <!-- 表情阶段表:与 lib/dashcore/face_stages.h 同源(由 test-face-stages.js 对账)。
      阶段下拉框、以及"这一档该显示哪张表情"都来自它,不在这里重抄一遍。 -->
 <script src="face-stages.js"></script>
+<!-- ★ 2026-10-15（车主模式）新增三个引用：表情那张方图要打成 image 段
+     （image-blob-build.js）+ 上传前的规格检查（asset-spec.js）+ 合并容器的
+     纯字节内核（asset-package-core.js）。三份都是**共用文件引用**，
+     不是抄进本页 —— 抄一份就会出现"页面导出的 bin 刷上去不对而且不报错"。
+     ★ 加载顺序有讲究：asset-spec.js 要用 ImageBlob；asset-package-core.js 的
+       checkThemeContent 要用 theme-json.js 的那个全局 ⇒ 放在它们后面。 -->
+<script src="image-blob-build.js"></script>
+<script src="asset-spec.js"></script>
 <!-- 主题文件方言解析:固件接受 0xRRGGBB 颜色,而 JSON.parse 不认识 0x
      (参考文件 theme-default.json 全是这种写法)——
      少了这一层就是"固件读得进去、编辑器导入报语法错"。见 theme-json.js 的说明。 -->
 <script src="theme-json.js"></script>
+<!-- ★ 2026-10-15（车主模式）新增引用:合并容器(assets.bin)的**纯字节内核**。
+     车主模式里那个「保存安装包」调的就是它（packBytes / flashCommand）——
+     与「② 图片」页、命令行**同一份实现**，所以三处导出的 assets.bin 逐字节相同。
+     ★ 它必须是**独立文件引用**（不能把内核抄一份到本页）：
+       抄一份就会出现"页面导出的容器刷上去 image 段整块错位而且不报错"。
+     ★ 它要在 theme-json.js **之后**加载（内核里的 checkThemeContent 用那个全局）。
+     ★ 这个文件只用 Uint8Array/DataView,不碰 fs/path/Buffer/网络 ⇒ file:// 双击可用。 -->
+<script src="asset-package-core.js"></script>
 <script>
 "use strict";
 
@@ -196,6 +451,35 @@ if (typeof ThemeJson === "undefined") {
     '（下载时别只保存 HTML）</div>';
   throw new Error("theme-json.js missing");
 }
+// ★ 2026-10-15（车主模式）：「保存安装包」要用**内核**，所以这两份也得能找到。
+//   缺文件的表现与上面一样是"页面一片空白"，但原因不同（内核没加载）——
+//   所以这里逐个点名，并说清"它负责什么"，免得下次又是"下载时别只保存 HTML"式猜谜。
+if (typeof AssetPackageCore === "undefined") {
+  document.body.innerHTML =
+    '<div style="padding:40px;color:#ffb4b4;font:15px sans-serif">' +
+    '找不到 asset-package-core.js。<br><br>' +
+    '车主模式里的「保存安装包」用它把配色与图片合成一个 assets.bin' +
+    '（与「② 图片」页、命令行共用同一份内核）。<br>' +
+    '这个页面必须和 asset-package-core.js、theme-json.js 放在同一个目录里。</div>';
+  throw new Error("asset-package-core.js missing");
+}
+if (typeof ImageBlob === "undefined") {
+  document.body.innerHTML =
+    '<div style="padding:40px;color:#ffb4b4;font:15px sans-serif">' +
+    '找不到 image-blob-build.js。<br><br>' +
+    '车主模式里的表情图要打成 image 段（RGB565A8）就靠它 —— ' +
+    '上限、编码、包头全在那一份里（与「② 图片」页同一份）。<br>' +
+    '这个页面必须和 image-blob-build.js、asset-spec.js 放在同一个目录里。</div>';
+  throw new Error("image-blob-build.js missing");
+}
+if (typeof AssetSpec === "undefined") {
+  document.body.innerHTML =
+    '<div style="padding:40px;color:#ffb4b4;font:15px sans-serif">' +
+    '找不到 asset-spec.js。<br><br>' +
+    '车主模式里"表情必须带 alpha、JPEG 会被拒绝"这条判据与文案都来自它。<br>' +
+    '这个页面必须和 asset-spec.js、image-blob-build.js 放在同一个目录里。</div>';
+  throw new Error("asset-spec.js missing");
+}
 
 // ============================================================
 // 主题数据模型 —— 字段名必须与 lib/themetool/theme_store.cpp 完全一致,
@@ -204,6 +488,37 @@ if (typeof ThemeJson === "undefined") {
 // kind 的数字与 C 侧 ArcKind 一一对应,**只能往后加**(主题 JSON 里存的就是它):
 //   0=车速 1=转速 2=水温 3=进气温度
 const ARC_KIND_NAMES = ["车速", "转速", "水温", "进气温度"];
+
+// ============================================================
+// 车主模式的键与布局（放脚本顶部：下面各处都要用，**别挪到用它的那段之后**）
+//   ★ 这些全是"本机偏好 / 打包布局"，与主题格式无关：
+//     主题照旧只认 THEME_KEY 那一份，导出的 theme.json 一个字节都没变。
+// ============================================================
+const THEME_KEY_HINT = "206dash.theme";          // = 下面的 THEME_KEY（这里只用于文案）
+const PORT_KEY = "206dash.flashPort";            // 刷写端口（车主换电脑就要改）
+const HANDOFF_KEY = "206dash.faceHandoff";       // 框选好的表情 → 图片页（只传一张方图）
+
+// 「保存安装包」用的容器布局 —— 与「② 图片」页 coreForTarget() **同值**：
+//   theme 分区 0x210000（段长 0x4000）+ 中间 spiffs 0x40000 + image 分区 0x254000。
+//   ★ 偏移是**写死的正确值**（车主不让改），取自分区表；页面上那个输入框只允许改端口。
+const OWNER_LAYOUT = {
+  base: 0x210000,
+  themeSectionBytes: 0x4000,
+  spiffsBytes: 0x40000,
+  betweenLabels: ["spiffs"],
+  imageOffset: 0x254000 - 0x210000,
+  maxImageBytes: 8 * 1024 * 1024,                // S3 image 分区（480 档）
+  containerMin: 0x254000 - 0x210000,
+  containerMax: 0x254000 + 8 * 1024 * 1024 - 0x210000,
+  themePart: { offset: 0x210000, size: 0x4000, sizeText: "0x4000" },
+  imagePart: { offset: 0x254000, size: 8 * 1024 * 1024, sizeText: "0x800000" }
+};
+
+function ownerPort() {
+  let p = null;
+  try { p = localStorage.getItem(PORT_KEY); } catch (e) { p = null; }
+  return (p && p.trim()) ? p.trim() : "COM6";
+}
 
 function defaultTheme() {
   return {
@@ -815,19 +1130,29 @@ function buildControls() {
   // 字段名是历史遗留(JSON 键不能随便改):眨眼状态删掉后,它是"表情出现后的一拍收尾"
   syncers.push(slider(g4, "收尾时长", () => T.boot_face_blink_ms, v => T.boot_face_blink_ms = v, 1, 1000, 10));
 
-  // ---- 告警 / 蜂鸣器（2026-09-27 新增） ----
+  // ---- 告警阈值（2026-09-27 新增；★ 2026-10-15 按"蜂鸣器已删"改写文案） ----
   // ★ 为什么放在这一页：这几个数**跟着 theme.json 一起刷**（同一个分区、
-  //   同一条刷写路径、固件不用重编）—— 车主的要求是"蜂鸣器也能在编辑器里调"，
+  //   同一条刷写路径、固件不用重编）—— 车主的要求是"阈值也能在编辑器里调"，
   //   而拆成第二个文件/第二个页面只会多一条会走错的路径。
-  // ★ 它们**不进预览**：预览画的是弧和表情；蜂鸣器响不响由上面的
-  //   「阶段预览 + 注入」那套在**模拟页面**上验（按 M / 写 mute=1）。
-  const g6 = group("告警 / 蜂鸣器");
+  // ★★ 2026-10-15：**固件里的蜂鸣器已整个删掉**（lib/dashcore/alerts.h 的文件头
+  //   与 buzzer.h 的删除记录）。⇒ 这一组里**只有仍然生效的阈值**：
+  //     超速（弧染红 + 大数字变红）、红区（脸变红）、门/转向忘关的去抖、
+  //     以及"同时只报最高优先级"。
+  //   ★ 下面那两个"响一声 / 最短间隔"滑块**保留**（车主口径：不删功能）——
+  //     它们是 theme.json 的 alerts 段里既有的键，theme_store.cpp 照旧解析、
+  //     照旧钳制；**只是没有消费方了**（删字段会让已导出的主题文件看起来坏了）。
+  //     实车行为：不再有任何发声。文案里写明这一点，免得车主以为"调了没反应"。
+  // ★ 它们**不进预览**：预览画的是弧和表情；告警在**模拟页面**上验（那里有注入）。
+  const g6 = group("告警阈值（蜂鸣器已删）");
   const al = T.alerts;
   const alNote = document.createElement("div");
   alNote.className = "note";
   alNote.textContent =
-    "跟着 theme.json 一起刷进设备（同一个主题分区）。静音不在这里 —— " +
-    "按一下设备的 m（或模拟页面按 M），它记在本机、跨上电有效。";
+    "跟着 theme.json 一起刷进设备（同一个主题分区）。" +
+    "★ 蜂鸣器 2026-10-15 已从固件删除 ⇒ **设备不会再响**，" +
+    "下面「响一声 ms / 最短间隔 ms」两个滑块保留只是为了兼容老主题文件（它们已无消费方）。" +
+    "仍然生效的是阈值本身：过超速 ⇒ 弧染红 + 大数字变红；进红区 ⇒ 脸变红。" +
+    "静音开关（按设备 m / 模拟页面 M）也随之作废。";
   g6.appendChild(alNote);
   syncers.push(slider(g6, "超速 km/h", () => al.overspeed_kmh, v => al.overspeed_kmh = v, 0, 300, 1));
   syncers.push(slider(g6, "超速迟滞", () => al.overspeed_hyst_kmh, v => al.overspeed_hyst_kmh = v, 0, 50, 1));
@@ -839,8 +1164,8 @@ function buildControls() {
                       v => al.turn_signal_on_ms = v * 1000, 1, 600, 1));
   syncers.push(slider(g6, "门去抖 ms", () => al.door_debounce_ms, v => al.door_debounce_ms = v, 0, 10000, 10));
   syncers.push(slider(g6, "通用去抖 ms", () => al.debounce_ms, v => al.debounce_ms = v, 0, 10000, 10));
-  syncers.push(slider(g6, "响一声 ms", () => al.beep_ms, v => al.beep_ms = v, 1, 5000, 10));
-  syncers.push(slider(g6, "最短间隔 ms", () => al.beep_min_interval_ms, v => al.beep_min_interval_ms = v, 0, 60000, 100));
+  syncers.push(slider(g6, "响一声 ms（已无消费方）", () => al.beep_ms, v => al.beep_ms = v, 1, 5000, 10));
+  syncers.push(slider(g6, "最短间隔 ms（已无消费方）", () => al.beep_min_interval_ms, v => al.beep_min_interval_ms = v, 0, 60000, 100));
   syncers.push(check(g6, "同时只报最高优先级", () => al.only_highest || 0, v => al.only_highest = v));
   const alNote2 = document.createElement("div");
   alNote2.className = "note";
@@ -917,7 +1242,14 @@ function updateStageInfo() {
     el.textContent += "｜当前阶段：" + g.label + " · " + g.levels[st.level] +
                       "（" + FaceStages.stageValueText(st) + "）";
   }
-  el.textContent += "｜导入表情图请用「表情导入」页。";
+  // ★ 阶段名一律从 face-stages.js 的 GROUPS.levels 取（它与固件 face_stages.h 同源），
+  //   这里只把两屏各自的五个名字摊开 —— 不用 role 编号、不另造一套叫法。
+  const lefts = FaceStages.statesOf(0).map(x => x.label).join("/");
+  const rights = FaceStages.statesOf(1).map(x => x.label).join("/");
+  el.textContent += "｜" + FaceStages.screen(0).short + "屏（" + FaceStages.screen(0).gaugeLabel +
+                    "）：" + lefts + "；" + FaceStages.screen(1).short + "屏（" +
+                    FaceStages.screen(1).gaugeLabel + "）：" + rights + "。";
+  el.textContent += "｜导入表情图：车主模式里直接拖进左栏那个框（会弹框选）。";
 }
 
 // ---------------- 本机记忆：与图片编辑器共用同一份配色 ----------------
@@ -987,8 +1319,49 @@ function render() {
   document.getElementById("json").value = JSON.stringify({ theme: T }, null, 2);
   updateStageInfo();
   syncers.forEach(s => s.sync && s.sync());
+  renderOwner();                      // ★ 车主模式那几件控件也要跟着同步（一份状态，两处显隐）
   // 每次参数变化都存一份(约 2KB,代价可以忽略)—— 两页共用，也是防丢
   saveThemeToLocal();
+}
+
+// 车主模式控件的同步：值跟着 T 走，缩略图跟着刚框选的那张方图走。
+// ★ 它**不写任何状态**，只把 T 摊到界面上 —— 与高级那套 syncers 同一个职责。
+function renderOwner() {
+  if (!ownerControls) return;
+  ownerControls.bg.sync();
+  ownerControls.arcs.forEach(r => r.sync());
+  ownerControls.digit.sync();
+  ownerControls.redline.sync();
+  ownerControls.overspeed.sync();
+  if (ownerControls.drop) {
+    const face = document.getElementById("owner-face-thumb");
+    if (ownerFaceItems.length) {
+      if (!face) {
+        const t = document.createElement("canvas");
+        t.id = "owner-face-thumb";
+        t.width = 96; t.height = 96;
+        t.style.cssText = "margin-top:8px;border:1px solid var(--line);border-radius:6px;" +
+                          "background:#0a0b0f;image-rendering:auto";
+        ownerControls.drop.appendChild(t);
+        const cap = document.createElement("div");
+        cap.style.cssText = "color:var(--dim);font-size:11px;margin-top:4px";
+        cap.textContent = "已框选（四周透明、主体居中）";
+        ownerControls.drop.appendChild(cap);
+      }
+      const cv = document.getElementById("owner-face-thumb");
+      const ctx = cv.getContext("2d");
+      const it = ownerFaceItems[0];
+      const rgba = ownerRenderToTarget(it, it.w, it.h, true);
+      ctx.clearRect(0, 0, cv.width, cv.height);
+      if (rgba) {
+        const tmp = document.createElement("canvas");
+        tmp.width = it.w; tmp.height = it.h;
+        tmp.getContext("2d").putImageData(new ImageData(rgba, it.w, it.h), 0, 0);
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(tmp, 0, 0, cv.width, cv.height);
+      }
+    }
+  }
 }
 
 function renderAnim() {
@@ -1183,18 +1556,742 @@ function setupZoom() {
   });
 }
 
+// ============================================================
+// ★★ 车主模式（2026-10-15）—— 本页**默认**进入
+//
+// 车主原话拆出来的口径（逐条对应下面的代码）：
+//   ① 只显示：左右圆预览、背景色、四条弧颜色、数字颜色、红区转速、超速、
+//      表情图拖入、一个「保存安装包」。
+//   ② 表情图**拖入后弹框选**（不是直接 contain 贴上）：方框内 = 保留区，
+//      拖动平移、滚轮/双指缩放、**框外丢掉**；确认后导出**主体居中、四周透明**
+//      的方图，再交给**既有那条缩放路径**（只缩不放、保持比例、居中、RGB565A8、
+//      480 档最长边 ≤ 320）。
+//      ★ 框选只改"进槽之前的像素"：镜像格式、320 上限、打包内核一个字都没动。
+//   ③ 「保存安装包」调**现有** asset-package 内核 ⇒ 与现在逐字节兼容的 assets.bin；
+//      旁边只展示**一条**刷写命令（端口可改、偏移写死取自分区表）。
+//   ④ 原有全部控件搬进「高级」折叠区，一个都没删；JSON 只在高级里。
+//   ⑤ 3 个预设（当前默认 / 夜间 / 浅底）：点选后写进**现有主题状态** T，
+//      不新造文件格式（导出的还是同一份 theme.json）。
+//   ⑥ 颜色以本页为主入口；图片页也能改色，但它与本页共用同一个 localStorage 键。
+//
+// ★ 两个模式共用**同一个 T**：切模式只切显隐，不产生第二份状态。
+// ============================================================
+
+// ★ 车主模式里那几个控件的**身份标签**（HTML 的 `data-ocap`）。
+//   这张表就是"车主模式恰好有这几类控件"的**可执行定义**：
+//   tools/theme-editor/check-owner-mode.js 会拿它去页面里逐个对账 ——
+//   以后谁把这些控件删了/挪出车主模式，测试当场红。
+//   ★ 标签是**静态写在 HTML 里的**（见 #owner 那一段），不是 JS 拼出来的：
+//     拼出来的标签检查脚本数不到，而"数不到"会让这条守卫静默失效。
+const OWNER_CAPS = ["bg", "arc", "digit", "redline", "overspeed", "face", "save"];
+const OWNER_EXPECT = {
+  bg: 1,          // 背景色
+  arc: 4,         // 四条弧的点亮色（转速外弧 / 水温内弧 / 车速外弧 / 进气内弧）
+  digit: 1,       // 数字读数颜色
+  redline: 1,     // 红区转速
+  overspeed: 1,   // 超速
+  face: 1,        // 表情图拖入
+  save: 1         // 保存安装包
+};
+
+// 车主模式里要保留的弧：屏幕 / 弧序号 / 中文标签。
+// ★ 标签里的**阶段名**从 face-stages.js 取（它由 test-face-stages.js 与固件
+//   lib/dashcore/face_stages.h 逐字段对账）—— 这里不另造一套名字，也不用 role 编号。
+const OWNER_ARCS = [
+  { s: 0, i: 0, label: FaceStages.screen(0).gaugeLabel + "弧（外圈）" },
+  { s: 0, i: 1, label: FaceStages.stateLabel(0, "Idle") + "·" +
+                        FaceStages.stateLabel(0, "Redline") + " 弧（内圈）" },
+  { s: 1, i: 0, label: FaceStages.screen(1).gaugeLabel + "弧（外圈）" },
+  { s: 1, i: 1, label: FaceStages.stateLabel(1, "Idle") + "·" +
+                        FaceStages.stateLabel(1, "Overspeed") + " 弧（内圈）" }
+];
+
+// 表情槽 = 两屏各自的 5 个状态，**顺序与中文名都从 face-stages.js 来**
+//   （左屏 怠速/巡航/运动/高转/红区；右屏 静止/市区/快速路/高速/超速）
+function ownerSlots() {
+  const out = [];
+  for (let s = 0; s < 2; s++) {
+    FaceStages.statesOf(s).forEach(st => {
+      out.push({ side: s, key: st.key, role: st.role,
+                 label: FaceStages.screen(s).short + "屏 · " + FaceStages.screen(s).gaugeLabel +
+                        " · " + st.label });
+    });
+  }
+  return out;
+}
+
+// ------------------------------------------------------------
+// 车主模式那几个控件的**接线**（HTML 已经静态写好了，这里只灌值 + 接事件）
+//
+// ★ 为什么不在这里 createElement：那几个 `data-ocap` 身份标签必须**静态**
+//   写在 HTML 里，检查脚本才数得到（见 #owner 那段注释）。于是这一层很短：
+//   把当前主题的值填进去、把每次改动写回 T、然后 render()。
+// ★ 「一份状态，两处显隐」：这里**不新建**任何状态，改的都是 T 上既有的字段。
+// ------------------------------------------------------------
+let ownerControls = null;             // 车主模式那几个控件的引用（render() 靠它同步）
+let ownerLastPick = null;             // 最近一次框选好的表情（保存安装包时用得上）
+let ownerFaceItems = [];              // 车主模式里"已经进槽的表情"（跨页只传一张）
+
+// 一行"色块 + 色号"的接线（值从 get() 读，改动写回 set()）
+function ownerColorBind(id, labelId, label, get, set) {
+  const c = document.getElementById(id);
+  const t = document.getElementById(id + "-txt");
+  const lb = labelId ? document.getElementById(labelId) : null;
+  if (lb && label) lb.textContent = label;
+  if (!c || !t) return null;
+  const commit = (v) => { set(v); c.value = hex(v); t.value = hex(v); render(); };
+  c.addEventListener("input", () => commit(unhex(c.value)));
+  t.addEventListener("change", () => {
+    if (/^#?[0-9a-fA-F]{6}$/.test(t.value)) {
+      commit(unhex(t.value[0] === "#" ? t.value : "#" + t.value));
+    } else { t.value = hex(get()); }
+  });
+  return { c: c, t: t, sync: () => { c.value = hex(get()); t.value = hex(get()); } };
+}
+
+// 一行"滑杆 + 数字框"的接线
+function ownerSliderBind(id, get, set, min, max, step) {
+  const r = document.getElementById(id);
+  const n = document.getElementById(id + "-n");
+  if (!r || !n) return null;
+  const commit = (v) => {
+    v = Math.max(min, Math.min(max, v));
+    set(v); r.value = v; n.value = v; render();
+  };
+  r.addEventListener("input", () => commit(+r.value));
+  n.addEventListener("input", () => commit(+n.value));
+  return { r: r, n: n, sync: () => { r.value = get(); n.value = get(); } };
+}
+
+function buildOwnerControls() {
+  if (!document.getElementById("oc-bg")) return;
+
+  // ---- ① 配色：背景 / 四条弧的点亮色 / 数字 ----
+  const bg = ownerColorBind("oc-bg", null, null, () => T.bg_color, v => T.bg_color = v);
+  const arcs = [];
+  // ★ 用 forEach（不用 for...of）：四行是**静态**写在 HTML 里的，
+  //   这里只是按同一个顺序把值灌进去 —— 见 #owner 那段注释。
+  OWNER_ARCS.forEach((spec, k) => {
+    const a = T.screens[spec.s].arcs[spec.i];
+    if (!a) return;
+    const r = ownerColorBind("oc-arc" + k, "oc-arc" + k + "-lb", spec.label,
+                             () => a.value_color, v => a.value_color = v);
+    if (r) arcs.push(r);
+  });
+  const digit = ownerColorBind("oc-digit", null, null,
+                               () => T.readout.digit_color, v => T.readout.digit_color = v);
+
+  // ---- ② 红区 / 超速（蜂鸣器已删，这两个阈值**仍然生效**）----
+  const redline = ownerSliderBind("oc-redline", () => T.alerts.redline_rpm,
+                                  v => T.alerts.redline_rpm = v, 1000, 12000, 50);
+  const overspeed = ownerSliderBind("oc-overspeed", () => T.alerts.overspeed_kmh,
+                                    v => T.alerts.overspeed_kmh = v, 0, 300, 1);
+
+  // ---- ③ 表情图拖入（唯一的图片入口；拖进来 = 弹框选）----
+  const drop = document.getElementById("oc-face-drop");
+  if (drop && !drop.dataset.wired) {
+    drop.dataset.wired = "1";
+    drop.addEventListener("click", () => document.getElementById("file-face").click());
+    ["dragenter", "dragover"].forEach(ev =>
+      drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("hot"); }));
+    ["dragleave", "drop"].forEach(ev =>
+      drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("hot"); }));
+    drop.addEventListener("drop", e => ownerFaceFiles(e.dataTransfer.files));
+  }
+
+  // 槽位下拉：**中文阶段名**（选项从 face-stages.js 拼，不用 role 编号）
+  const slotSel = document.getElementById("oc-slot");
+  if (slotSel) {
+    slotSel.innerHTML = "";
+    ownerSlots().forEach((sl, i) => {
+      const o = document.createElement("option");
+      o.value = String(i);
+      o.textContent = sl.label;
+      if (sl.side === 0 && sl.key === "Idle") o.selected = true;
+      slotSel.appendChild(o);
+    });
+  }
+
+  // ---- ④ 保存安装包 + 那一条刷写命令（端口可改、偏移不给入口）----
+  const saveBtn = document.getElementById("btn-owner-save");
+  if (saveBtn && !saveBtn.dataset.wired) {
+    saveBtn.dataset.wired = "1";
+    saveBtn.addEventListener("click", saveOwnerPackage);
+  }
+  const port = document.getElementById("owner-port");
+  if (port) {
+    port.value = ownerPort();
+    if (!port.dataset.wired) {
+      port.dataset.wired = "1";
+      port.addEventListener("input", () => {
+        const p = port.value.trim() || "COM6";
+        try { localStorage.setItem(PORT_KEY, p); } catch (e) { /* 隐私模式忽略 */ }
+        updateOwnerFlash();
+      });
+    }
+  }
+
+  // ---- ⑤ 3 个预设（写进现有主题状态，不新造文件格式）----
+  const pre = document.getElementById("owner-presets");
+  if (pre && !pre.dataset.wired) {
+    pre.dataset.wired = "1";
+    buildPresetRow(pre);
+  }
+
+  ownerControls = { bg: bg, arcs: arcs, digit: digit, redline: redline,
+                    overspeed: overspeed, drop: drop, slot: slotSel, save: saveBtn,
+                    port: port, cmd: document.getElementById("owner-cmd") };
+  updateOwnerFlash();
+}
+
+// 那条刷写命令什么时候重算：启动时、端口改动时
+function updateOwnerFlash() {
+  const cmd = document.getElementById("owner-cmd");
+  if (!cmd) return;
+  // ★ 偏移**由布局常量给**（分区表的值），页面上没有可编辑的入口 —— 只给端口
+  cmd.value = AssetPackageCore.flashCommand(OWNER_LAYOUT, "assets.bin",
+                                            { chip: "esp32s3", port: ownerPort() });
+}
+
+
+// ------------------------------------------------------------
+// 3 个预设（当前默认 / 夜间 / 浅底）
+//   ★ 写进**现有主题状态** T（同一批字段：bg_color / 每条弧的 value_color /
+//     readout.digit_color），不新造任何文件格式。
+//   ★ "当前默认" 取 defaultTheme()，不是抄一份数字 —— 固件默认值改了它跟着走。
+//   ★ 预设**只动颜色**，不动角度/半径/量程/告警阈值（那些在高级里）。
+// ------------------------------------------------------------
+const PRESETS = [
+  { id: "default", label: "当前默认",
+    apply: function () {
+      const d = defaultTheme();
+      T.bg_color = d.bg_color;
+      T.screens.forEach((sc, s) => sc.arcs.forEach((a, i) => {
+        if (d.screens[s] && d.screens[s].arcs[i]) a.value_color = d.screens[s].arcs[i].value_color;
+      }));
+      T.readout.digit_color = d.readout.digit_color;
+    } },
+  { id: "night", label: "夜间",
+    // 深色底 + 低亮度弧：夜里不晃眼，但仍要能看清刻度
+    apply: function () {
+      T.bg_color = 0x05070C;
+      T.screens[0].arcs[0].value_color = 0xC23A3A;   // 转速：压暗的红
+      T.screens[0].arcs[1].value_color = 0x2E7D4F;   // 水温：压暗的绿
+      T.screens[1].arcs[0].value_color = 0x2F7FA8;   // 车速：压暗的青蓝
+      T.screens[1].arcs[1].value_color = 0xA9781F;   // 进气：压暗的橙
+      T.readout.digit_color = 0xC9D4E4;              // 数字：不用纯白（夜里刺眼）
+    } },
+  { id: "light", label: "浅底",
+    // 浅底图/白底图：数字与弧都要够深，否则看不见（这是车主换底图后最常踩的）
+    apply: function () {
+      T.bg_color = 0xE9ECF1;
+      T.screens[0].arcs[0].value_color = 0xB3261E;
+      T.screens[0].arcs[1].value_color = 0x1B7A45;
+      T.screens[1].arcs[0].value_color = 0x12558C;
+      T.screens[1].arcs[1].value_color = 0x9A5B00;
+      T.readout.digit_color = 0x101418;
+    } }
+];
+
+function buildPresetRow(parent) {
+  const row = document.createElement("div");
+  row.className = "row";
+  row.setAttribute("data-ocap", "preset");
+  const lb = document.createElement("label");
+  lb.textContent = "配色预设";
+  const box = document.createElement("div");
+  box.className = "kinds";
+  const btns = PRESETS.map(p => {
+    const b = document.createElement("button");
+    b.className = "tiny";
+    b.textContent = p.label;
+    b.addEventListener("click", () => {
+      p.apply();
+      render();                       // 立刻重画（render 里会把两个模式的控件都同步一遍）
+      say("已套用预设「" + p.label + "」（写进当前主题状态；" +
+          "不满意点「当前默认」可退回去）。", "ok");
+    });
+    box.appendChild(b);
+    return b;
+  });
+  row.append(lb, box);
+  parent.appendChild(row);
+  return { row: row, btns: btns };
+}
+
+// ------------------------------------------------------------
+// 表情图拖入：**先规格检查，再弹框选**
+//   ★ JPEG 一律拒绝，并明确说"表情要透明背景，请用 PNG"
+//     （规则与文案的唯一权威是 asset-spec.js 的 checkUpload()，这里只是照它说）
+//   ★ 只给**表情槽**做这套框选；背景不加框选（背景要铺满 480×480，没有"框外"）
+// ------------------------------------------------------------
+function ownerFaceFiles(files) {
+  const list = Array.from(files || []);
+  if (!list.length) return;
+  const f = list[0];
+  if (!/^image\//.test(f.type)) {
+    say("「" + f.name + "」不是图片格式。表情请用带透明背景的 PNG。", "err");
+    return;
+  }
+  const slot = ownerCurrentSlot();
+  const chk = AssetSpec.checkUpload(f.name, f.type, slot.role, "s3");
+  if (!chk.ok) {
+    say("✗ 「" + f.name + "」不能当表情图：\n" + chk.errors.join("\n") +
+        "\n★ 表情要透明背景，请用 PNG。", "err");
+    return;
+  }
+  const img = new Image();
+  img.onload = () => { openCropper(img, f.name); };
+  img.onerror = () => {
+    say("✗ 「" + f.name + "」浏览器解不开这张图。请另存为 PNG 再传一次。", "err");
+  };
+  img.src = URL.createObjectURL(f);
+}
+
+function ownerCurrentSlot() {
+  const slots = ownerSlots();
+  const i = ownerControls ? (+ownerControls.slot.value || 0) : 0;
+  return slots[i] || slots[0];
+}
+
+// ------------------------------------------------------------
+// 框选器（模态）
+//
+// 坐标约定（唯一一份，别在别处再换算一遍）：
+//   · 源图坐标 (0..sw, 0..sh)，(imgX, imgY) = 源图左上角映射到画布上的位置
+//   · 方框（画布坐标）恒为**居中正方形**，边长 F = min(W,H)
+//   · 缩放 k 只作用在源图上：画布坐标 = imgX + 源坐标·k
+//   · 方框内保留 ⇒ 源图取 [ (框左-imgX)/k , (框上-imgY)/k , F/k , F/k ]
+//
+// ★ 产物是一张**方图**：长 = k 换算出来的源边长（钳到目标板上限），
+//   画布**全透明**打底（表情必须带 alpha），主体居中。
+// ★ 上限/推荐值**问 ImageBlob**（不写死 320），确认后把方图记进 ownerLastPick，
+//   交给「保存安装包」按**既有** renderToTarget()/buildPayload() 那条路打包。
+// ------------------------------------------------------------
+let cropState = null;
+
+function faceTargetId() {
+  // 车主模式面向实车（480 档圆屏）。目标板在高级里可选，这里跟随它的 480 档。
+  return "s3";
+}
+
+function openCropper(img, name) {
+  const el = document.getElementById("crop");
+  const cv = document.getElementById("cropcv");
+  const panel = cv.parentElement;                       // .cstage
+  const panelW = Math.max(200, Math.min(460, panel.clientWidth || 460));
+  const sw = img.naturalWidth || img.width;
+  const sh = img.naturalHeight || img.height;
+  const W = panelW;
+  const H = Math.round(panelW * (sh / sw));
+  cv.width = W; cv.height = H;
+  cv.style.width = "100%"; cv.style.height = "auto";
+
+  const F = Math.min(W, H);
+  cropState = {
+    img: img, name: name, W: W, H: H, sw: sw, sh: sh, F: F,
+    // 初始 contain 居中（与以前"直接 contain 贴上"看到的画面一致，再让人自己框）
+    k: Math.min(F / sw, F / sh),
+    ix: 0, iy: 0, drag: null, pinch: null
+  };
+  cropState.ix = (W - sw * cropState.k) / 2;
+  cropState.iy = (H - sh * cropState.k) / 2;
+
+  const fr = document.getElementById("crop-frame");
+  fr.style.left = ((W - F) / 2) + "px";
+  fr.style.top = ((H - F) / 2) + "px";
+  fr.style.width = F + "px";
+  fr.style.height = F + "px";
+
+  document.getElementById("crop-max").textContent = String(ImageBlob.faceCanvasMaxFor(faceTargetId()));
+  document.getElementById("crop-rec").textContent = String(ImageBlob.faceSizeRecommendedFor(faceTargetId()));
+  document.getElementById("crop").classList.add("on");
+  cropSyncZoom();                                       // 滑杆跟着当前缩放走
+  cropDraw();
+}
+
+function cropDraw() {
+  if (!cropState) return;
+  const cv = document.getElementById("cropcv");
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  // 棋盘格 = 透明（表情必须有透明背景，这里让人一眼看出哪里是透明的）
+  const q = 8;
+  for (let y = 0; y < cv.height; y += q) {
+    for (let x = 0; x < cv.width; x += q) {
+      ctx.fillStyle = (((x / q) + (y / q)) % 2) ? "#15171d" : "#1d2027";
+      ctx.fillRect(x, y, q, q);
+    }
+  }
+  const s = cropState;
+  ctx.imageSmoothingEnabled = s.k < 1;
+  ctx.drawImage(s.img, s.ix, s.iy, s.sw * s.k, s.sh * s.k);
+  cropInfo();
+}
+
+function cropInfo() {
+  const s = cropState;
+  if (!s) return;
+  const side = Math.min(s.F / s.k, ImageBlob.faceCanvasMaxFor(faceTargetId()));
+  const px = Math.max(8, Math.floor(side / 4) * 4);
+  document.getElementById("crop-info").textContent =
+    "源图 " + s.sw + "×" + s.sh + "　缩放 " + Math.round(s.k * 100) + "%　" +
+    "框内输出 " + px + "×" + px + "（上限 " +
+    ImageBlob.faceCanvasMaxFor(faceTargetId()) + "，推荐 " +
+    ImageBlob.faceSizeRecommendedFor(faceTargetId()) + "）";
+}
+
+function cropClampPan() {
+  const s = cropState;
+  if (!s) return;
+  const w = s.sw * s.k, h = s.sh * s.k;
+  // ★ 目标：**方框永远被图覆盖**（框里不许出现页面底色）——
+  //   即 [ix, ix+w] ⊇ [fx, fx+F]，其中 fx = (W-F)/2。于是
+  //       ix ≤ fx          且      ix ≥ fx + F - w
+  //   （图比方框窄时下界反超上界，取上界 —— 那时图往左靠，框右侧露出一条
+  //    棋盘格；那一条本来就是"框外"，看得见反而对，别把它藏起来。）
+  //   第一版把下界写成了 (W - F - w)：W > 2F 时它是个**正数**，
+  //   于是小图会被强制拖进框里右侧、甚至拖到框外看不见 —— 实测那个算式错了。
+  const fx = (s.W - s.F) / 2, fy = (s.H - s.F) / 2;
+  const loX = fx + s.F - w, hiX = fx;
+  const loY = fy + s.F - h, hiY = fy;
+  s.ix = Math.min(hiX, Math.max(Math.min(loX, hiX), s.ix));
+  s.iy = Math.min(hiY, Math.max(Math.min(loY, hiY), s.iy));
+}
+
+function cropSetZoom(z, cx, cy) {
+  const s = cropState;
+  if (!s) return;
+  const k = Math.max(0.1, Math.min(8, z));
+  // 以 (cx,cy) 为不动点缩放（滚轮在指针处、双指在中心）
+  const wx = (cx - s.ix) / s.k, wy = (cy - s.iy) / s.k;
+  s.k = k;
+  s.ix = cx - wx * k;
+  s.iy = cy - wy * k;
+  cropClampPan();
+  cropSyncZoom();
+  cropDraw();
+}
+
+function cropSyncZoom() {
+  const s = cropState;
+  if (!s) return;
+  // 滑杆 100% = contain（"刚好装下"），到 800% 足够放大到看清单个像素
+  const base = Math.min(s.F / s.sw, s.F / s.sh);
+  const pct = Math.max(100, Math.min(800, Math.round(s.k / base * 100)));
+  const el = document.getElementById("crop-zoom");
+  el.value = String(pct);
+  document.getElementById("crop-zoomv").textContent = pct + "%";
+}
+
+function cropReset() {
+  const s = cropState;
+  if (!s) return;
+  s.k = Math.min(s.F / s.sw, s.F / s.sh);
+  s.ix = (s.W - s.sw * s.k) / 2;
+  s.iy = (s.H - s.sh * s.k) / 2;
+  cropSyncZoom();
+  cropDraw();
+}
+
+// 框选 → 一张**方图**（主体居中、四周透明）
+function cropRenderSquare() {
+  const s = cropState;
+  if (!s) return null;
+  const cap = ImageBlob.faceCanvasMaxFor(faceTargetId());
+  const side = Math.max(8, Math.round(Math.min(s.F / s.k, cap)));
+  const out = document.createElement("canvas");
+  out.width = side; out.height = side;
+  const ctx = out.getContext("2d", { willReadFrequently: true });
+  // ★ 不铺底色：canvas 默认全透明 ⇒ 产物天然带 alpha（表情必须带透明）
+  const sx = (s.W / 2 - s.F / 2 - s.ix) / s.k;
+  const sy = (s.H / 2 - s.F / 2 - s.iy) / s.k;
+  const sw = s.F / s.k;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(s.img, sx, sy, sw, sw, 0, 0, side, side);
+  return out;
+}
+
+function cropConfirm() {
+  const sq = cropRenderSquare();
+  if (!sq) return;
+  const slot = ownerCurrentSlot();
+  // ★ 进槽前的像素 = 这张方图。下面交给**既有**路径：
+  //   item.w 按"只缩不放 + 表情上限"取（pickDefaultOwnerSize），
+  //   renderToTarget() 走 contain + 居中，cfForRole() 给 RGB565A8。
+  const w = pickDefaultOwnerSize(sq.width, slot.role);
+  ownerLastPick = {
+    canvas: sq,
+    name: (cropState.name || "face").replace(/\.[^.]+$/, "") + "-" + slot.label,
+    role: slot.role,
+    slotLabel: slot.label,
+    srcW: sq.width, srcH: sq.height
+  };
+  document.getElementById("crop").classList.remove("on");
+  cropState = null;
+  // 立刻在预览里"进槽"：用一条与图片页同形的 item 走同一个渲染/打包路径
+  if (ownerFaceItems.length) ownerFaceItems.length = 0;
+  ownerFaceItems.push({ img: sq, name: ownerLastPick.name, role: slot.role,
+                        order: 0, fit: "contain", w: w, h: w });
+  render();
+  say("已框选：输出 " + sq.width + "×" + sq.height + "（四周透明、主体居中）" +
+      " ⇒ 进槽「" + slot.label + "」，按 " + w + "×" + w +
+      " 输出、产物 RGB565A8。\n点「保存安装包」把它连同配色一起打成 assets.bin。", "ok");
+}
+
+// 进槽时的输出尺寸：**只缩不放** + 表情上限（与图片页 pickDefaultSize 同一套口径）
+function pickDefaultOwnerSize(naturalW, role) {
+  const isFace = FaceStages.SCREENS.some(sc => sc.states.some(x => x.role === role));
+  const cap = isFace ? ImageBlob.faceSizeRecommendedFor(faceTargetId()) : 480;
+  const w = Math.min(cap, Math.round(naturalW || cap));
+  return Math.max(8, Math.min(cap, Math.floor(w / 4) * 4));
+}
+
+// 车主模式里"已经进槽的表情"（跨页只传**一张**：再来一张就替换掉）
+// ★ 变量本身声明在上面（`let ownerFaceItems = []`），这里只说用法 ——
+//   别在这里再写一次 let（同一段脚本里重复声明会直接 SyntaxError）。
+
+// ------------------------------------------------------------
+// 保存安装包：调**现有** asset-package 内核
+//   ★ 与图片页导出的 assets.bin **逐字节兼容**：同一个 packBytes()、同一个布局、
+//     同一份 theme 字节与同一份 image 字节 ⇒ 同一个文件。
+//   ★ 主题那一段用**当前状态重新序列化**（与 exportTheme 一字不差的那句
+//     JSON.stringify({theme:T}, null, 2)）—— 车主模式下"我改了什么就存什么"。
+//   ★ 还没框选过表情 ⇒ 只打包配色（image 段空清单是合法文件，固件读得进去）。
+// ------------------------------------------------------------
+function ownerThemeText() {
+  // ★ 与 exportTheme() 用的**同一句**（别在这里另写一份序列化）
+  return JSON.stringify({ theme: T }, null, 2);
+}
+
+function ownerImageBytes() {
+  const payload = ownerFaceItems.map(item => {
+    const alpha = alphaForOwnerRole(item.role);
+    const rgba = ownerRenderToTarget(item, item.w, item.h, alpha);
+    if (!rgba) throw new Error("「" + item.name + "」读不出像素，请重新框选");
+    return { name: safeNameOwner(item.name), w: item.w, h: item.h,
+             cf: alpha ? ImageBlob.CF.RGB565A8 : ImageBlob.CF.RGB565,
+             role: item.role, order: item.order,
+             pixels: alpha ? ImageBlob.rgbaToRgb565A8(rgba, item.w, item.h)
+                           : ImageBlob.rgbaToRgb565(rgba, item.w, item.h) };
+  });
+  return ImageBlob.build(payload);
+}
+
+function alphaForOwnerRole(role) {
+  return FaceStages.SCREENS.some(sc => sc.states.some(x => x.role === role));
+}
+
+// ★ 与图片页 renderToTarget() 的 **contain 分支**同一套规则（保持比例、居中、
+//   只缩不放、不铺底色以保留 alpha）。框选产物是方图 ⇒ 这里就是"居中贴上去"。
+//   背景不加框选（要走这条路请去图片页），所以这里只处理表情。
+function ownerRenderToTarget(item, tw, th, transparent) {
+  const cv = document.createElement("canvas");
+  cv.width = tw; cv.height = th;
+  const ctx = cv.getContext("2d", { willReadFrequently: true });
+  const src = item.img;
+  const sw = src.naturalWidth || src.width;
+  const sh = src.naturalHeight || src.height;
+  if (!sw || !sh) return null;
+  const k = Math.min(tw / sw, th / sh, 1);
+  const dw = Math.round(sw * k), dh = Math.round(sh * k);
+  ctx.imageSmoothingEnabled = k < 1;
+  ctx.drawImage(src, Math.round((tw - dw) / 2), Math.round((th - dh) / 2), dw, dh);
+  return ctx.getImageData(0, 0, tw, th).data;
+}
+
+function safeNameOwner(s) {
+  let out = "";
+  for (const ch of String(s).replace(/[^\w\u4e00-\u9fa5.\-]/g, "_")) {
+    if (ownerByteLen(out + ch) > ImageBlob.NAME_MAX - 1) break;
+    out += ch;
+  }
+  return out || "face";
+}
+function ownerByteLen(s) {
+  let n = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    n += c < 0x80 ? 1 : (c < 0x800 ? 2 : 3);
+  }
+  return n;
+}
+
+function saveOwnerPackage() {
+  saveThemeToLocal();                  // 与图片页共用的那一份
+  // 把框选好的表情交给图片页（同一个浏览器、同一个 origin ⇒ localStorage 够用；
+  // 它只是"一张待进槽的方图"，不是第二份主题状态）。
+  if (ownerLastPick && ownerLastPick.canvas) {
+    try {
+      localStorage.setItem(HANDOFF_KEY, JSON.stringify({
+        v: 1,
+        role: ownerLastPick.role,
+        slotLabel: ownerLastPick.slotLabel,
+        name: ownerLastPick.name,
+        png: ownerLastPick.canvas.toDataURL("image/png")
+      }));
+    } catch (e) {
+      say("这一张太大，浏览器存不下交接数据：" + e.message +
+          "。请到「② 图片」页直接拖入这张图。", "err");
+      return;
+    }
+  }
+  location.href = "image-editor.html";  // 保存安装包 = 在图片页打成一个 assets.bin
+}
+
+// ------------------------------------------------------------
+// 模式切换：只切显隐，**不动任何状态**
+//   ★ 默认 = 车主模式（本页 2026-10-15 起的口径）
+//   ★ 高级 = 原来那一整面控件墙（一个都没删）+ JSON 文本框（**只在高级里**）
+//   ★ 选择记在 localStorage 的**另一个键**上，与配色那份 THEME_KEY 无关 ——
+//     别把"我习惯哪个模式"混进配色里，否则导出的主题会带上本机偏好。
+// ------------------------------------------------------------
+const MODE_KEY = "206dash.themeEditorMode";
+
+function applyMode(mode, silent) {
+  const adv = (mode === "adv");
+  const ownerEl = document.getElementById("owner");
+  const advEl = document.getElementById("advanced");
+  if (ownerEl) ownerEl.style.display = adv ? "none" : "";
+  if (advEl) advEl.style.display = adv ? "" : "none";
+  const b1 = document.getElementById("btn-mode-owner");
+  const b2 = document.getElementById("btn-mode-adv");
+  if (b1) b1.className = adv ? "" : "on";
+  if (b2) b2.className = adv ? "on" : "";
+  try { localStorage.setItem(MODE_KEY, adv ? "adv" : "owner"); } catch (e) { /* ignore */ }
+  if (!silent) {
+    say(adv
+      ? "高级模式：原来的全部控件都在这儿（角度/半径/线宽/字号/中心 y/开机毫秒/" +
+        "告警阈值/JSON 文本框），一个都没删。"
+      : "车主模式：只留配色、红区/超速、表情图、保存安装包。其余在「高级」里。", "ok");
+  }
+  render();
+}
+
+function initMode() {
+  let saved = null;
+  try { saved = localStorage.getItem(MODE_KEY); } catch (e) { saved = null; }
+  // ★ 默认进入车主模式：没记录 = 车主模式（老用户上次选了高级也尊重他）
+  applyMode(saved === "adv" ? "adv" : "owner", true);
+  const b1 = document.getElementById("btn-mode-owner");
+  const b2 = document.getElementById("btn-mode-adv");
+  if (b1) b1.addEventListener("click", () => applyMode("owner"));
+  if (b2) b2.addEventListener("click", () => applyMode("adv"));
+}
+
+// ------------------------------------------------------------
+// 框选器的鼠标/触摸/滚轮接线
+//   · 拖动 = 平移（单指同理）· 滚轮 = 以指针为不动点缩放
+//   · 双指捏合 = 缩放（移动端）· 滑杆 = 100%..800%（100% = 刚好装下）
+// ------------------------------------------------------------
+function initCropper() {
+  const stage = document.getElementById("crop-stage");
+  if (!stage) return;
+  const cv = document.getElementById("cropcv");
+
+  const posOf = (e) => {
+    const r = cv.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * cv.width / r.width,
+             y: (e.clientY - r.top) * cv.height / r.height };
+  };
+
+  cv.addEventListener("pointerdown", e => {
+    if (!cropState) return;
+    cv.setPointerCapture(e.pointerId);
+    const p = posOf(e);
+    cropState.drag = { x: p.x, y: p.y };
+  });
+  cv.addEventListener("pointermove", e => {
+    if (!cropState || !cropState.drag) return;
+    const p = posOf(e);
+    cropState.ix += p.x - cropState.drag.x;
+    cropState.iy += p.y - cropState.drag.y;
+    cropState.drag = { x: p.x, y: p.y };
+    cropClampPan();
+    cropDraw();
+  });
+  ["pointerup", "pointercancel", "pointerleave"].forEach(ev =>
+    cv.addEventListener(ev, () => { if (cropState) cropState.drag = null; }));
+
+  // 滚轮缩放：以**指针位置**为不动点（这样"看哪儿放大哪儿"）
+  cv.addEventListener("wheel", e => {
+    if (!cropState) return;
+    e.preventDefault();
+    const p = posOf(e);
+    cropSetZoom(cropState.k * (e.deltaY < 0 ? 1.12 : 1 / 1.12), p.x, p.y);
+  }, { passive: false });
+
+  // 双指捏合（触摸屏）—— 与滚轮走同一个 cropSetZoom()
+  cv.addEventListener("touchstart", e => {
+    if (!cropState) return;
+    if (e.touches.length === 2) {
+      cropState.pinch = { d: touchDist(e), k: cropState.k };
+      cropState.drag = null;
+    }
+  }, { passive: true });
+  cv.addEventListener("touchmove", e => {
+    if (!cropState || !cropState.pinch || e.touches.length !== 2) return;
+    e.preventDefault();
+    const r = cv.getBoundingClientRect();
+    const cx = ((e.touches[0].clientX + e.touches[1].clientX) / 2 - r.left) * cv.width / r.width;
+    const cy = ((e.touches[0].clientY + e.touches[1].clientY) / 2 - r.top) * cv.height / r.height;
+    cropSetZoom(cropState.pinch.k * (touchDist(e) / cropState.pinch.d), cx, cy);
+  }, { passive: false });
+  cv.addEventListener("touchend", () => { if (cropState) cropState.pinch = null; });
+
+  const zr = document.getElementById("crop-zoom");
+  zr.addEventListener("input", () => {
+    if (!cropState) return;
+    const base = Math.min(cropState.F / cropState.sw, cropState.F / cropState.sh);
+    // 以方框中心为不动点（滑杆没有指针位置可用）
+    cropSetZoom(base * (+zr.value / 100), cropState.W / 2, cropState.H / 2);
+  });
+
+  document.getElementById("crop-ok").addEventListener("click", cropConfirm);
+  document.getElementById("crop-cancel").addEventListener("click", () => {
+    cropState = null;
+    document.getElementById("crop").classList.remove("on");
+    say("已取消框选，什么都没改。");
+  });
+  document.getElementById("crop-reset").addEventListener("click", cropReset);
+  // Esc = 取消（框选是模态）
+  window.addEventListener("keydown", e => {
+    if (e.key === "Escape" && cropState) {
+      cropState = null;
+      document.getElementById("crop").classList.remove("on");
+    }
+  });
+}
+
+function touchDist(e) {
+  const dx = e.touches[0].clientX - e.touches[1].clientX;
+  const dy = e.touches[0].clientY - e.touches[1].clientY;
+  return Math.max(1, Math.sqrt(dx * dx + dy * dy));
+}
+
+document.getElementById("file-face").addEventListener("change", e => {
+  ownerFaceFiles(e.target.files);
+  e.target.value = "";
+});
+
 // ---------------- 启动 ----------------
 // 先看本机有没有存过的配色(可能是本页上次改的,也可能是图片编辑器改的),
 // 没有才用编译期默认值
 const hadSaved = loadThemeFromLocal();
 buildControls();
+buildOwnerControls();
 buildStageSelect();
 setupZoom();
+initMode();                           // ★ 默认进入**车主模式**（只切显隐，不动状态）
+initCropper();
 simFromStage(FaceStages.STAGES[0]);   // 默认停在"转速 · 低"(怠速常态)
 render();
-say("就绪。左栏调参、右侧实时预览。\n" +
+say("就绪。左栏改色、右侧实时预览（现在是车主模式）。\n" +
     "右上角「阶段预览」可切到转速/车速/水温各档,看两屏各自的表情与读数。\n" +
-    "满意后点右上角「导出主题文件」。\n" +
+    "换表情图：把它拖进左栏那个框里 → 框选 → 保存安装包。\n" +
+    "老控件（角度/半径/字号/中心 y/开机毫秒/JSON……）全在顶栏那个「高级」里,一个都没删。\n" +
     (hadSaved === true
       ? "（已载入本机记住的配色 —— 这一份与「图片导入」页共用，两边改都算数。）"
       : hadSaved === "legacy"

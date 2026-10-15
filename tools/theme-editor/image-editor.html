@@ -128,6 +128,68 @@
   .navstrip a.navback:hover{background:#246b91;color:#fff}
   /* 返回键与后面四个页面之间加一道竖线，视觉上分开「回入口」和「换页面」 */
   .navstrip .navsep{width:1px;height:16px;background:var(--line);margin:0 2px}
+
+  /* ============================================================
+     ★★ 2026-10-15：**车主模式**（本页也**默认**进入）
+     ------------------------------------------------------------
+     口径见 index.html 里那段同名注释。两页**共同遵守**的一条最要紧：
+       · 车主模式 = 9 类控件（圆预览位、背景色、四条弧的点亮色、数字颜色、
+         红区转速、超速、表情图拖入）+ 一个「保存安装包」；
+       · **原有控件一个都不删**，全部搬进「高级」；
+       · 两个模式共用**同一份** gTheme 与**同一条**导出/刷写路径。
+     ★ 本页还多一层身份：它是"配色**和**图片"两件事的合并导出页。
+       颜色以「① 配色」页为主入口 —— 本页那几个色**与它共用同一个
+       localStorage 键**（THEME_KEY），所以两处改的是同一份，不会分叉。
+     ============================================================ */
+  .modebar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+           padding:10px 20px;border-bottom:1px solid var(--line);background:#171a22}
+  .modebar .modesw{display:flex;gap:6px}
+  .modebar .modesw button{padding:5px 12px;font-size:13px}
+  .modebar .modesw button.on{background:#1d4f6b;border-color:#2a6f96;font-weight:600}
+  .modebar .grow{flex:1}
+  .owner-note{color:var(--dim);font-size:12px}
+  details.advanced{margin:0;border-top:1px solid var(--line)}
+  details.advanced > summary{padding:12px 16px;color:var(--accent);font-size:13px;
+                             font-weight:600;letter-spacing:.04em;list-style:none;cursor:pointer}
+  details.advanced > summary::-webkit-details-marker{display:none}
+  details.advanced > summary:before{content:"▸ ";color:var(--dim)}
+  details.advanced[open] > summary:before{content:"▾ "}
+  .advblock{border-top:1px dashed var(--line)}
+  .facedrop{border:1px dashed var(--line);border-radius:8px;padding:14px 12px;
+            text-align:center;color:var(--dim);font-size:12px;cursor:pointer;
+            background:#0e1016;line-height:1.7}
+  .facedrop.hot{border-color:var(--accent);background:#12202a;color:var(--text)}
+  .facedrop b{color:var(--text);font-weight:600}
+  .slotpick{display:flex;align-items:center;gap:8px;margin-top:8px}
+  .slotpick label{color:var(--dim);font-size:12px;flex:0 0 66px}
+  .slotpick select{flex:1;min-width:0;background:#0e1016;color:var(--text);
+                   border:1px solid var(--line);border-radius:4px;padding:4px 6px}
+  /* 框选器（模态）：方框内 = 保留区，拖动平移、滚轮/双指缩放，框外丢掉 */
+  #crop{position:fixed;inset:0;background:rgba(6,8,12,.88);z-index:99;
+        display:none;align-items:center;justify-content:center;padding:20px}
+  #crop.on{display:flex}
+  #crop .cbox{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+              padding:14px 16px;max-width:640px;width:100%;max-height:calc(100vh - 40px);
+              overflow:auto}
+  #crop h3{margin:0 0 4px;font-size:15px}
+  #crop .chint{color:var(--dim);font-size:12px;margin-bottom:10px;line-height:1.6}
+  #crop .cstage{position:relative;width:100%;max-width:460px;margin:0 auto;
+                background:#0a0b0f;border-radius:6px;overflow:hidden;touch-action:none;
+                user-select:none;cursor:move}
+  #crop canvas#cropcv{display:block;width:100%;height:auto}
+  #crop .cframe{position:absolute;border:2px solid var(--accent);
+                box-shadow:0 0 0 9999px rgba(0,0,0,.62);pointer-events:none}
+  #crop .cframe:after{content:"保留区（框外丢掉）";position:absolute;left:0;top:-20px;
+                      color:var(--accent);font-size:11px;white-space:nowrap}
+  #crop .crow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px}
+  #crop .crow .grow{flex:1}
+  #crop .crow input[type=range]{flex:1;min-width:120px}
+  #crop .cout{color:var(--dim);font-size:12px}
+  .flashline{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+  .flashline input[type=text]{flex:1;min-width:180px;background:#0e1016;color:var(--text);
+                              border:1px solid var(--line);border-radius:4px;padding:5px 7px;
+                              font:12px Consolas,monospace}
+  .flashline .port{width:88px}
 </style>
 </head>
 <body>
@@ -145,14 +207,89 @@
 </div></div>
 <header>
   <h1>206Dash 图片编辑器</h1>
-  <span class="hint">拖图进来 → 选用途 → 导出 image.bin（或一次导出 assets.bin＝配色+图片，刷一条命令）→ 刷到 image 分区（固件不用重编译）</span>
+  <span class="hint">拖图进来 → 框选/选用途 → 保存安装包（assets.bin＝配色+图片，刷一条命令）→ 固件不用重编译</span>
   <span class="grow"></span>
   <button id="btn-add">＋ 添加图片</button>
   <button id="btn-export" class="primary">⬇ 导出 image.bin</button>
 </header>
 
+<!-- ============================================================
+     ★★ 车主模式（本页**默认**进入）
+     ★ 颜色以「① 配色」页为主入口 —— 本页这几个色与它**共用同一个
+       localStorage 键**（THEME_KEY），改的是同一份主题，不是两套状态。
+     ============================================================ -->
+<div class="modebar">
+  <span class="owner-note">模式</span>
+  <span class="modesw">
+    <button id="btn-mode-owner" class="on">车主模式</button>
+    <button id="btn-mode-adv">高级</button>
+  </span>
+  <span class="grow"></span>
+  <span class="owner-note" id="mode-hint">换表情图：拖进左栏那个框 → 框选 → 保存安装包</span>
+</div>
+
 <main>
-  <div class="left">
+  <!-- 车主模式的左栏 -->
+  <div class="left" id="owner">
+    <section>
+      <h2>配色</h2>
+      <div class="note" style="color:var(--dim);margin:0 0 10px">
+        这里的颜色<b>与「① 配色」页是同一份</b>（同一个 <code>206dash.theme</code> 键）——
+        哪一页改都算数，不会有两套状态。要调角度/半径/字号那些几何，请用 ① 配色页的「高级」。
+      </div>
+      <div id="owner-colors"></div>
+      <div id="owner-presets"></div>    </section>
+
+    <section>
+      <h2>红区 / 超速</h2>
+      <div id="owner-alerts"></div>
+      <div class="note" style="color:var(--dim)">
+        这两个阈值**仍然生效**：过超速 ⇒ 弧染红 + 大数字变红；进红区 ⇒ 脸变红。
+        ★ 蜂鸣器 2026-10-15 已从固件删除 ⇒ 设备不会再响（旧字段在高级里保留，只为兼容老主题文件）。
+      </div>
+    </section>
+
+    <section>
+      <h2>表情图</h2>
+      <div class="note" style="color:var(--dim);margin:0 0 10px">
+        表情<b>必须带透明背景（PNG）</b>：JPEG 没有 alpha，会被拒绝（请另存为 PNG）。
+        拖进来会弹<b>框选</b>：方框内是要保留的部分，拖动平移、滚轮/双指缩放，<b>框外丢掉</b>；
+        确认后得到一张<b>主体居中、四周透明</b>的方图，再走既有的缩放路径。
+        背景图不加框选（背景要铺满 480×480）——背景走下面的「高级」。
+      </div>
+      <div class="facedrop" id="owner-face-drop">
+        <b>把表情图拖到这里</b><br>（或点一下选文件）<br>PNG（带透明）· 松手就弹框选
+      </div>
+      <div class="slotpick">
+        <label>存进槽位</label>
+        <select id="owner-slot"></select>
+      </div>
+    </section>
+
+    <section>
+      <h2>保存安装包</h2>
+      <div class="row" style="margin-top:0">
+        <button id="btn-owner-save" class="primary" style="width:100%">保存安装包（assets.bin）</button>
+      </div>
+      <div class="flashline">
+        <span class="owner-note">端口</span>
+        <input type="text" class="port" id="owner-port" value="COM6">
+        <input type="text" id="owner-cmd" readonly>
+      </div>
+      <div class="note" style="color:var(--dim)">
+        只展示这一条刷写命令：<b>端口可改，偏移不让改</b>（写死 <code>0x210000</code>，
+        取自分区表：theme 分区 + 中间 spiffs + image 分区都在这个文件里，一条命令刷完两者）。
+        走的是**现有** asset-package 内核（asset-package-core.js）⇒ 与手工导出的
+        assets.bin 逐字节相同。
+      </div>
+    </section>
+  </div>
+
+  <!-- 高级的左栏：原来那些 section 一个都没删，整块搬进来 -->
+  <div class="left" id="advanced" style="display:none">
+  <details class="advanced" open>
+    <summary>原有全部控件（图片列表 / 弧 / 读数 / 刷写 / 占用）</summary>
+    <div class="advblock">
     <section>
       <h2>1 · 图片列表</h2>
       <div class="drop" id="drop">
@@ -307,6 +444,8 @@
       <div id="budget-text" class="hint" style="color:var(--dim);font-size:12px">还没有图片</div>
       <div class="budget" id="budget-bar"><i></i></div>
     </section>
+    </div>
+  </details>
   </div>
 
   <div class="right">
@@ -348,6 +487,46 @@
 </main>
 
 <input type="file" id="file-img" accept="image/*" multiple style="display:none">
+<input type="file" id="file-face" accept="image/png,image/webp,image/jpeg" style="display:none">
+
+<!-- ============================================================
+     框选器（模态）：**方框内 = 保留区**，拖动平移、滚轮（或双指）缩放，
+     框外丢掉；确认后导出一张**主体居中、四周透明**的方图。
+     ★ 它只动"进槽之前的像素"：产物仍旧交给既有的 renderToTarget()/ImageBlob
+       那条路（contain、只缩不放、保持比例、居中、RGB565A8、480 档上限 320）。
+     ★ 只给**表情槽**用；背景不加框选。
+     ★ 这段与 index.html 里那份是**同一套交互的两个副本**（两页都是"双击就能
+       开的静态页"，不引任何共享 JS）。两边由 check-owner-mode.js 用同一张
+       能力表对账 —— 谁改坏了一边就会被抓住。
+     ============================================================ -->
+<div id="crop">
+  <div class="cbox">
+    <h3>框选表情图</h3>
+    <div class="chint">
+      <b>方框里是要保留的部分</b>：拖动平移、滚轮（或双指）缩放 —— <b>框外丢掉</b>。<br>
+      确认后得到一张<b>主体居中、四周透明</b>的方图，再交给既有的缩放路径
+      （保持比例、只缩不放、居中，产物仍是 RGB565A8；上限 <b id="crop-max">320</b>，
+      推荐 <b id="crop-rec">300</b>）。
+    </div>
+    <div class="cstage" id="crop-stage">
+      <canvas id="cropcv"></canvas>
+      <div class="cframe" id="crop-frame"></div>
+    </div>
+    <div class="crow">
+      <span class="owner-note">缩放</span>
+      <input type="range" id="crop-zoom" min="100" max="800" value="100">
+      <span class="cout" id="crop-zoomv">100%</span>
+      <span class="grow"></span>
+      <button id="crop-reset">复位</button>
+    </div>
+    <div class="crow">
+      <span class="cout" id="crop-info"></span>
+      <span class="grow"></span>
+      <button id="crop-cancel">取消</button>
+      <button id="crop-ok" class="primary">用框选结果</button>
+    </div>
+  </div>
+</div>
 <!-- 主题文件(弧的配色)：只影响预览，不参与 image.bin
      ★ 2026-09-24:同一个输入框也用来读**合并容器** assets.bin(accept 里加了 .bin)。
        两种文件都是"读进来改本页状态",不需要第二个按钮、第二个 input。 -->
@@ -1326,6 +1505,628 @@ function arcReverseRow(parent, get, set) {
   parent.appendChild(row);
 }
 
+// ============================================================
+// ★★ 车主模式（2026-10-15）—— 本页也**默认**进入
+//
+// 与「① 配色」页那份是**同一套口径**（两页都能单独双击打开，所以代码各自一份，
+// 由 check-owner-mode.js 用同一张能力表对账）：
+//   ① 只显示 9 类控件 + 一个「保存安装包」：
+//      左右圆预览位、背景色、四条弧颜色、数字颜色、红区转速、超速、
+//      **表情图拖入**（拖入后弹框选）、保存安装包。
+//   ② 框选：方框内 = 保留区，拖动平移、滚轮/双指缩放、**框外丢掉**；
+//      确认后导出**主体居中、四周透明**的方图，再交给**既有那条缩放路径**
+//      （renderToTarget + ImageBlob：只缩不放、保持比例、居中、RGB565A8、上限 320）。
+//      ★ 只给**表情槽**做；背景不加框选（背景要铺满 480×480，没有"框外"）。
+//   ③ 「保存安装包」调**现有** asset-package 内核（exportAssetsBin）；
+//      旁边只展示一条刷写命令：端口可改、偏移不让改。
+//   ④ 原来那些 section（图片列表/弧/读数/刷写/占用）整块搬进「高级」。
+//   ⑤ 颜色只在「① 配色」页作为主入口；本页这几个色与它**共用同一个
+//      localStorage 键**（THEME_KEY）—— 所以不是两套状态。
+//   ⑥ 槽位文案用**中文阶段名**（从 face-stages.js 取，与固件 face_stages.h 同源）,
+//      不用 role 编号。
+// ============================================================
+
+const OWNER_CAPS = ["bg", "arc", "digit", "redline", "overspeed", "face", "save"];
+const OWNER_PORT_KEY = "206dash.flashPort";     // 与 ① 配色页共用（换电脑就要改一次）
+const HANDOFF_KEY = "206dash.faceHandoff";      // ① 配色页框选好的那张表情
+const MODE_KEY = "206dash.imageEditorMode";
+
+// 告警那一组字段在**本页的兜底**（车主模式的红区/超速两个滑块要用）。
+// ★ 为什么必须有它：ARC_FALLBACK 里**故意没有** alerts 段（它只放底色 + 四条弧 +
+//   四个读数色 —— test-theme-json.js 用 `Object.keys(...).length` 钉着这一点，
+//   不许多塞字段）。而车主模式要在本页改红区/超速，所以这两个数得有个来源。
+// ★ 值来自 lib/themetool/theme-default.json 的 alerts 段（= 固件 alerts.h 的
+//   AlertsConfig 默认值）。check-owner-mode.js 会把它逐字段对到 alerts.h 上 ——
+//   抄错了当场红（"抄一份数字"正是这个仓库反复踩过的坑）。
+const OWNER_ALERTS_FALLBACK = {
+  overspeed_kmh: 150,
+  overspeed_hyst_kmh: 3,
+  redline_rpm: 5500,
+  redline_hyst_rpm: 200,
+  door_debounce_ms: 200,
+  turn_signal_on_ms: 20000,
+  debounce_ms: 250,
+  beep_min_interval_ms: 3000,
+  beep_ms: 120,
+  only_highest: 1
+};
+
+let ownerControls = null;
+
+function ownerPort() {
+  let p = null;
+  try { p = localStorage.getItem(OWNER_PORT_KEY); } catch (e) { p = null; }
+  return (p && p.trim()) ? p.trim() : "COM6";
+}
+
+// 车主模式里要保留的弧：屏幕 / 弧序号 / 中文标签（**正好四条**）。
+// ★ 标签里的阶段名从 face-stages.js 取（它与固件 face_stages.h 同源）——
+//   不另造一套名字，也不用 role 编号。
+// ★ 这张表与主题页那张**同形**（check-owner-mode.js 按同一张能力表对账）。
+const OWNER_ARCS = [
+  { s: 0, i: 0, label: FaceStages.screen(0).gaugeLabel + "弧（外圈）" },
+  { s: 0, i: 1, label: FaceStages.stateLabel(0, "Idle") + "·" +
+                        FaceStages.stateLabel(0, "Redline") + " 弧（内圈）" },
+  { s: 1, i: 0, label: FaceStages.screen(1).gaugeLabel + "弧（外圈）" },
+  { s: 1, i: 1, label: FaceStages.stateLabel(1, "Idle") + "·" +
+                        FaceStages.stateLabel(1, "Overspeed") + " 弧（内圈）" }
+];
+
+// 表情槽 = 两屏各自的 5 个状态，**中文名与顺序都从 face-stages.js 来**
+//   （左屏 怠速/巡航/运动/高转/红区；右屏 静止/市区/快速路/高速/超速）
+function ownerSlots() {
+  const out = [];
+  for (let s = 0; s < 2; s++) {
+    FaceStages.statesOf(s).forEach(st => {
+      out.push({ side: s, key: st.key, role: st.role,
+                 label: FaceStages.screen(s).short + "屏 · " + FaceStages.screen(s).gaugeLabel +
+                        " · " + st.label });
+    });
+  }
+  return out;
+}
+
+// 车主模式里要保留的弧（屏幕 / 弧序号 / 中文标签）—— 表在下面 OWNER_ARCS
+function ownerArcSpecs() { return OWNER_ARCS; }
+
+// 与 colorRow() **同一套提交口径**（改色 ⇒ 标源 + 作废原始字节 + 存本机 + 重画），
+// 但返回一个带 sync() 的对象 —— 车主模式要在 render 之后把值同步回来。
+// ★ 高级里那个 colorRow() 一个字没改（老控件照旧）。
+function ownerColorRow(parent, label, get, set) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const lb = document.createElement("label");
+  lb.textContent = label;
+  const c = document.createElement("input");
+  c.type = "color"; c.value = hexOf(get());
+  const t = document.createElement("input");
+  t.type = "text"; t.value = hexOf(get());
+  const commit = (v) => {
+    set(v);
+    c.value = hexOf(v); t.value = hexOf(v);
+    gThemeSource = "本页改过（记得导出 theme.json）";
+    forgetThemeSrcBytes();
+    saveTheme();
+    buildArcSourceLine();
+    buildOwnerColors();              // 高级那一份控件也要跟着变（一份状态两处显隐）
+    refresh(false);
+  };
+  c.addEventListener("input", () => commit(unhexOf(c.value)));
+  t.addEventListener("change", () => {
+    if (/^#?[0-9a-fA-F]{6}$/.test(t.value)) {
+      commit(unhexOf(t.value[0] === "#" ? t.value : "#" + t.value));
+    } else { t.value = hexOf(get()); }
+  });
+  row.append(lb, c, t);
+  parent.appendChild(row);
+  return { row: row, sync: () => { c.value = hexOf(get()); t.value = hexOf(get()); } };
+}
+
+function buildOwnerControls() {
+  const box = document.getElementById("owner-colors");
+  if (!box) return;
+  box.innerHTML = "";
+  const rows = [];
+
+  const bgRow = ownerColorRow(box, "背景色", () => gTheme.bg_color, v => { gTheme.bg_color = v; });
+  bgRow.row.setAttribute("data-ocap", "bg");
+  rows.push(bgRow);
+
+  ownerArcSpecs().forEach(spec => {
+    const arcs = gTheme.screens[spec.s] && gTheme.screens[spec.s].arcs;
+    if (!arcs || !arcs[spec.i]) return;
+    const a = arcs[spec.i];
+    const r = ownerColorRow(box, spec.label, () => a.value_color, v => { a.value_color = v; });
+    r.row.setAttribute("data-ocap", "arc");
+    r.row.title = "点亮色。与「① 配色」页是同一份主题（同一个 " + THEME_KEY + " 键）";
+    rows.push(r);
+  });
+
+  const digitRow = ownerColorRow(box, "数字颜色",
+                                 () => ensureReadout(gTheme).digit_color,
+                                 v => { ensureReadout(gTheme).digit_color = v; });
+  digitRow.row.setAttribute("data-ocap", "digit");
+  digitRow.row.title = "转速/车速大数字的颜色（单位/水温/进气另有颜色，在高级里）";
+  rows.push(digitRow);
+
+  ownerControls = ownerControls || {};
+  ownerControls.colors = rows;
+
+  // 红区 / 超速（蜂鸣器已删，但这两个阈值仍然生效：弧染红 + 大数字变红 / 脸变红）
+  const alBox = document.getElementById("owner-alerts");
+  if (alBox) {
+    alBox.innerHTML = "";
+    const al = gTheme.alerts || OWNER_ALERTS_FALLBACK;
+    // ★ 身份标签写成**字面量**（别用变量拼）：check-owner-mode.js 是解析真源码
+    //   来数这些标签的，拼出来的它数不到，那条守卫就会静默失效。
+    const mkRedline = (label, get, set, min, max, step) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.setAttribute("data-ocap", "redline");
+      const lb = document.createElement("label");
+      lb.textContent = label;
+      const s = document.createElement("input");
+      s.type = "range"; s.min = min; s.max = max; s.step = step; s.value = get();
+      const n = document.createElement("input");
+      n.type = "number"; n.min = min; n.max = max; n.step = step; n.value = get();
+      const commit = (v) => {
+        set(v); s.value = v; n.value = v;
+        gThemeSource = "本页改过（记得导出 theme.json）";
+        forgetThemeSrcBytes();
+        saveTheme();
+        refresh(false);
+      };
+      s.addEventListener("input", () => commit(+s.value));
+      n.addEventListener("input", () => commit(+n.value));
+      row.append(lb, s, n);
+      alBox.appendChild(row);
+      return { row: row, sync: () => { s.value = get(); n.value = get(); } };
+    };
+    const mkOverspeed = (label, get, set, min, max, step) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.setAttribute("data-ocap", "overspeed");
+      const lb = document.createElement("label");
+      lb.textContent = label;
+      const s = document.createElement("input");
+      s.type = "range"; s.min = min; s.max = max; s.step = step; s.value = get();
+      const n = document.createElement("input");
+      n.type = "number"; n.min = min; n.max = max; n.step = step; n.value = get();
+      const commit = (v) => {
+        set(v); s.value = v; n.value = v;
+        gThemeSource = "本页改过（记得导出 theme.json）";
+        forgetThemeSrcBytes();
+        saveTheme();
+        refresh(false);
+      };
+      s.addEventListener("input", () => commit(+s.value));
+      n.addEventListener("input", () => commit(+n.value));
+      row.append(lb, s, n);
+      alBox.appendChild(row);
+      return { row: row, sync: () => { s.value = get(); n.value = get(); } };
+    };
+    ownerControls.redline = mkRedline("红区转速 rpm", () => al.redline_rpm,
+                                      v => { al.redline_rpm = v; }, 1000, 12000, 50);
+    ownerControls.overspeed = mkOverspeed("超速 km/h", () => al.overspeed_kmh,
+                                          v => { al.overspeed_kmh = v; }, 0, 300, 1);
+  }
+
+  // 表情槽下拉（中文阶段名）
+  const slotSel = document.getElementById("owner-slot");
+  if (slotSel) {
+    slotSel.innerHTML = "";
+    ownerSlots().forEach((sl, i) => {
+      const o = document.createElement("option");
+      o.value = String(i);
+      o.textContent = sl.label;
+      if (sl.side === 0 && sl.key === "Idle") o.selected = true;
+      slotSel.appendChild(o);
+    });
+  }
+
+  // 表情图拖入区（唯一的图片入口）
+  const drop = document.getElementById("owner-face-drop");
+  if (drop) {
+    drop.setAttribute("data-ocap", "face");
+    if (!drop.dataset.wired) {
+      drop.dataset.wired = "1";
+      drop.addEventListener("click", () => document.getElementById("file-face").click());
+      ["dragenter", "dragover"].forEach(ev =>
+        drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("hot"); }));
+      ["dragleave", "drop"].forEach(ev =>
+        drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("hot"); }));
+      drop.addEventListener("drop", e => ownerFaceFiles(e.dataTransfer.files));
+    }
+  }
+
+  // 保存安装包 + 一条刷写命令（端口可改、偏移不让改）
+  const save = document.getElementById("btn-owner-save");
+  if (save) {
+    save.setAttribute("data-ocap", "save");
+    if (!save.dataset.wired) {
+      save.dataset.wired = "1";
+      save.addEventListener("click", saveOwnerPackage);
+    }
+  }
+  const port = document.getElementById("owner-port");
+  if (port) {
+    port.value = ownerPort();
+    port.setAttribute("data-ocap", "port");     // ★ 端口可改（偏移不可改）
+    if (!port.dataset.wired) {
+      port.dataset.wired = "1";
+      port.addEventListener("input", () => {
+        const p = port.value.trim() || "COM6";
+        try { localStorage.setItem(OWNER_PORT_KEY, p); } catch (e) { /* 隐私模式忽略 */ }
+        updateOwnerFlash();
+      });
+    }
+  }
+  updateOwnerFlash();
+}
+
+// 车主模式那几个控件跟着 gTheme 同步（不写状态，只把状态摊到界面）。
+//
+// ★ 这是"一份状态，两处显隐"的关键一步：高级里那些控件（advancedColorRow/
+//   arcOpaRow 那一套）改完 gTheme 之后**只会各自更新自己**，车主模式那几行
+//   不会自动变 —— 以前只有 applyThemeToUi() 会重建两边，所以"在高级里改完色，
+//   切回车主模式看到的是旧值"。这里把车主模式那几行按 gTheme 重新读一遍。
+function applyOwnerTheme() {
+  if (!ownerControls) return;
+  (ownerControls.colors || []).forEach(r => r.sync && r.sync());
+  if (ownerControls.redline) ownerControls.redline.sync();
+  if (ownerControls.overspeed) ownerControls.overspeed.sync();
+}
+
+// 高级里改完色/套完主题之后调它（refresh() 与 applyThemeToUi() 各调一次）
+function buildOwnerColors() { applyOwnerTheme(); }
+
+function updateOwnerFlash() {
+  const cmd = document.getElementById("owner-cmd");
+  const port = document.getElementById("owner-port");
+  if (!cmd) return;
+  if (port) port.value = ownerPort();
+  // ★ 偏移**由 layout 取**（分区表），页面不给编辑入口
+  cmd.value = AssetPackageCore.flashCommand(coreForTarget(), "assets.bin",
+                                            { chip: ImageBlob.targetInfo(curTarget).chip,
+                                              port: ownerPort() });
+}
+
+// ------------------------------------------------------------
+// 表情图拖入：**先规格检查，再弹框选**
+//   ★ JPEG 一律拒绝，并明确告诉车主"表情要透明背景，请用 PNG"
+//     （规则与文案的唯一权威是 asset-spec.js 的 checkUpload()）
+// ------------------------------------------------------------
+function ownerCurrentSlot() {
+  const slots = ownerSlots();
+  const sel = document.getElementById("owner-slot");
+  const i = sel ? (+sel.value || 0) : 0;
+  return slots[i] || slots[0];
+}
+
+function ownerFaceFiles(files) {
+  const list = Array.from(files || []);
+  if (!list.length) return;
+  const f = list[0];
+  if (!/^image\//.test(f.type)) {
+    say("「" + f.name + "」不是图片格式。表情请用带透明背景的 PNG。", "err");
+    return;
+  }
+  const slot = ownerCurrentSlot();
+  const chk = AssetSpec.checkUpload(f.name, f.type, slot.role, curTarget);
+  if (!chk.ok) {
+    say("✗ 「" + f.name + "」不能当表情图：\n" + chk.errors.join("\n") +
+        "\n★ 表情要透明背景，请用 PNG。", "err");
+    return;
+  }
+  const img = new Image();
+  img.onload = () => { openCropper(img, f.name); };
+  img.onerror = () => say("✗ 「" + f.name + "」浏览器解不开这张图。请另存为 PNG 再传一次。", "err");
+  img.src = URL.createObjectURL(f);
+}
+
+// ------------------------------------------------------------
+// 框选器：方框内 = 保留区；拖动平移、滚轮/双指缩放；框外丢掉。
+// 坐标约定（唯一一份）：画布坐标 = (ix,iy) + 源坐标·k，
+//   方框恒为居中正方形（边长 F），框内保留 ⇒ 源矩形 = ((F左上)-i)/k 起、边长 F/k。
+// ★ 产物是**方图**、**全透明打底**（表情必须带 alpha）、**主体居中**；
+//   之后交给**既有** renderToTarget()/buildPayload()/ImageBlob 那条路打包
+//   （它给 cfForRole() → RGB565A8，以及"只缩不放 + 上限"的那套尺寸规则）。
+// ------------------------------------------------------------
+let cropState = null;
+
+function openCropper(img, name) {
+  const cv = document.getElementById("cropcv");
+  const stage = document.getElementById("crop-stage");
+  const panelW = Math.max(200, Math.min(460, stage.clientWidth || 460));
+  const sw = img.naturalWidth || img.width;
+  const sh = img.naturalHeight || img.height;
+  const W = panelW;
+  const H = Math.round(panelW * (sh / sw));
+  cv.width = W; cv.height = H;
+  const F = Math.min(W, H);
+  cropState = { img: img, name: name, W: W, H: H, sw: sw, sh: sh, F: F,
+                k: Math.min(F / sw, F / sh), ix: 0, iy: 0, drag: null, pinch: null };
+  cropState.ix = (W - sw * cropState.k) / 2;
+  cropState.iy = (H - sh * cropState.k) / 2;
+
+  const fr = document.getElementById("crop-frame");
+  fr.style.left = ((W - F) / 2) + "px";
+  fr.style.top = ((H - F) / 2) + "px";
+  fr.style.width = F + "px";
+  fr.style.height = F + "px";
+
+  document.getElementById("crop-max").textContent = String(ImageBlob.faceCanvasMaxFor(curTarget));
+  document.getElementById("crop-rec").textContent = String(ImageBlob.faceSizeRecommendedFor(curTarget));
+  document.getElementById("crop").classList.add("on");
+  cropSyncZoom();
+  cropDraw();
+}
+
+function cropDraw() {
+  if (!cropState) return;
+  const cv = document.getElementById("cropcv");
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  // 棋盘格 = 透明（表情必须有透明背景，这里让人一眼看出哪里是透明的）
+  const q = 8;
+  for (let y = 0; y < cv.height; y += q) {
+    for (let x = 0; x < cv.width; x += q) {
+      ctx.fillStyle = (((x / q) + (y / q)) % 2) ? "#15171d" : "#1d2027";
+      ctx.fillRect(x, y, q, q);
+    }
+  }
+  const s = cropState;
+  ctx.imageSmoothingEnabled = s.k < 1;
+  ctx.drawImage(s.img, s.ix, s.iy, s.sw * s.k, s.sh * s.k);
+  cropInfo();
+}
+
+function cropInfo() {
+  const s = cropState;
+  if (!s) return;
+  const side = Math.min(s.F / s.k, ImageBlob.faceCanvasMaxFor(curTarget));
+  const px = Math.max(8, Math.floor(side / 4) * 4);
+  document.getElementById("crop-info").textContent =
+    "源图 " + s.sw + "×" + s.sh + "　缩放 " + Math.round(s.k * 100) + "%　" +
+    "框内输出 " + px + "×" + px + "（上限 " + ImageBlob.faceCanvasMaxFor(curTarget) +
+    "，推荐 " + ImageBlob.faceSizeRecommendedFor(curTarget) + "）";
+}
+
+function cropClampPan() {
+  const s = cropState;
+  if (!s) return;
+  const w = s.sw * s.k, h = s.sh * s.k;
+  // ★ 目标：**方框永远被图覆盖**（框里不许出现页面底色）——
+  //   即 [ix, ix+w] ⊇ [fx, fx+F]，其中 fx = (W-F)/2。于是
+  //       ix ≤ fx          且      ix ≥ fx + F - w
+  //   （图比方框窄时下界反超上界，取上界 —— 那时图往左靠，框右侧露出一条
+  //    棋盘格；那一条本来就是"框外"，看得见反而对，别把它藏起来。）
+  const fx = (s.W - s.F) / 2, fy = (s.H - s.F) / 2;
+  const loX = fx + s.F - w, hiX = fx;
+  const loY = fy + s.F - h, hiY = fy;
+  s.ix = Math.min(hiX, Math.max(Math.min(loX, hiX), s.ix));
+  s.iy = Math.min(hiY, Math.max(Math.min(loY, hiY), s.iy));
+}
+
+function cropSetZoom(z, cx, cy) {
+  const s = cropState;
+  if (!s) return;
+  const k = Math.max(0.1, Math.min(8, z));
+  const wx = (cx - s.ix) / s.k, wy = (cy - s.iy) / s.k;
+  s.k = k;
+  s.ix = cx - wx * k;
+  s.iy = cy - wy * k;
+  cropClampPan();
+  cropSyncZoom();
+  cropDraw();
+}
+
+function cropSyncZoom() {
+  const s = cropState;
+  if (!s) return;
+  const base = Math.min(s.F / s.sw, s.F / s.sh);
+  const pct = Math.max(100, Math.min(800, Math.round(s.k / base * 100)));
+  document.getElementById("crop-zoom").value = String(pct);
+  document.getElementById("crop-zoomv").textContent = pct + "%";
+}
+
+function cropReset() {
+  const s = cropState;
+  if (!s) return;
+  s.k = Math.min(s.F / s.sw, s.F / s.sh);
+  s.ix = (s.W - s.sw * s.k) / 2;
+  s.iy = (s.H - s.sh * s.k) / 2;
+  cropSyncZoom();
+  cropDraw();
+}
+
+// 框选 → 一张**方图**（主体居中、四周透明）
+function cropRenderSquare() {
+  const s = cropState;
+  if (!s) return null;
+  const cap = ImageBlob.faceCanvasMaxFor(curTarget);
+  const side = Math.max(8, Math.round(Math.min(s.F / s.k, cap)));
+  const out = document.createElement("canvas");
+  out.width = side; out.height = side;
+  const ctx = out.getContext("2d", { willReadFrequently: true });
+  // ★ 不铺底色：canvas 默认全透明 ⇒ 产物天然带 alpha（表情必须带透明）
+  const sx = (s.W / 2 - s.F / 2 - s.ix) / s.k;
+  const sy = (s.H / 2 - s.F / 2 - s.iy) / s.k;
+  const sw = s.F / s.k;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(s.img, sx, sy, sw, sw, 0, 0, side, side);
+  return out;
+}
+
+function cropClose() {
+  cropState = null;
+  document.getElementById("crop").classList.remove("on");
+}
+
+function cropConfirm() {
+  const sq = cropRenderSquare();
+  if (!sq) return;
+  const slot = ownerCurrentSlot();
+  const name = (cropState.name || "face").replace(/\.[^.]+$/, "") + "-" + slot.label;
+  const w = pickDefaultSize(sq.width, slot.role);   // ★ 复用**既有**那条"只缩不放 + 上限"规则
+  // 进槽：与普通导入的 item 同形 ⇒ 走**同一份** renderToTarget()/buildPayload()
+  items.push({ id: nextId++, img: sq, name: name, role: slot.role, order: 0,
+               fit: "contain", w: w, h: w });
+  cropClose();
+  refresh();
+  say("已框选并放进槽位「" + slot.label + "」：输出 " + sq.width + "×" + sq.height +
+      "（四周透明、主体居中）⇒ 按 " + w + "×" + w + " 输出，产物 " +
+      (cfForRole(slot.role) === ImageBlob.CF.RGB565A8 ? "RGB565A8（带透明）" : "RGB565") +
+      "。\n点「保存安装包」就把它连同配色打成一个 assets.bin。", "ok");
+}
+
+function initOwnerCropper() {
+  const stage = document.getElementById("crop-stage");
+  if (!stage) return;
+  const cv = document.getElementById("cropcv");
+  const posOf = (e) => {
+    const r = cv.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * cv.width / r.width,
+             y: (e.clientY - r.top) * cv.height / r.height };
+  };
+  cv.addEventListener("pointerdown", e => {
+    if (!cropState) return;
+    cv.setPointerCapture(e.pointerId);
+    const p = posOf(e);
+    cropState.drag = { x: p.x, y: p.y };
+  });
+  cv.addEventListener("pointermove", e => {
+    if (!cropState || !cropState.drag) return;
+    const p = posOf(e);
+    cropState.ix += p.x - cropState.drag.x;
+    cropState.iy += p.y - cropState.drag.y;
+    cropState.drag = { x: p.x, y: p.y };
+    cropClampPan();
+    cropDraw();
+  });
+  ["pointerup", "pointercancel", "pointerleave"].forEach(ev =>
+    cv.addEventListener(ev, () => { if (cropState) cropState.drag = null; }));
+  cv.addEventListener("wheel", e => {
+    if (!cropState) return;
+    e.preventDefault();
+    const p = posOf(e);
+    cropSetZoom(cropState.k * (e.deltaY < 0 ? 1.12 : 1 / 1.12), p.x, p.y);
+  }, { passive: false });
+  cv.addEventListener("touchstart", e => {
+    if (!cropState) return;
+    if (e.touches.length === 2) {
+      cropState.pinch = { d: touchDist(e), k: cropState.k };
+      cropState.drag = null;
+    }
+  }, { passive: true });
+  cv.addEventListener("touchmove", e => {
+    if (!cropState || !cropState.pinch || e.touches.length !== 2) return;
+    e.preventDefault();
+    const r = cv.getBoundingClientRect();
+    const cx = ((e.touches[0].clientX + e.touches[1].clientX) / 2 - r.left) * cv.width / r.width;
+    const cy = ((e.touches[0].clientY + e.touches[1].clientY) / 2 - r.top) * cv.height / r.height;
+    cropSetZoom(cropState.pinch.k * (touchDist(e) / cropState.pinch.d), cx, cy);
+  }, { passive: false });
+  cv.addEventListener("touchend", () => { if (cropState) cropState.pinch = null; });
+
+  document.getElementById("crop-zoom").addEventListener("input", e => {
+    if (!cropState) return;
+    const base = Math.min(cropState.F / cropState.sw, cropState.F / cropState.sh);
+    cropSetZoom(base * (+e.target.value / 100), cropState.W / 2, cropState.H / 2);
+  });
+  document.getElementById("crop-ok").addEventListener("click", cropConfirm);
+  document.getElementById("crop-cancel").addEventListener("click", () => {
+    cropClose();
+    say("已取消框选，什么都没改。");
+  });
+  document.getElementById("crop-reset").addEventListener("click", cropReset);
+  window.addEventListener("keydown", e => { if (e.key === "Escape" && cropState) cropClose(); });
+  document.getElementById("file-face").addEventListener("change", e => {
+    ownerFaceFiles(e.target.files);
+    e.target.value = "";
+  });
+}
+
+function touchDist(e) {
+  const dx = e.touches[0].clientX - e.touches[1].clientX;
+  const dy = e.touches[0].clientY - e.touches[1].clientY;
+  return Math.max(1, Math.sqrt(dx * dx + dy * dy));
+}
+
+// ------------------------------------------------------------
+// 「保存安装包」= 调用**现有**那条路（exportAssetsBin → AssetPackageCore.packBytes）
+//   ⇒ 与高级里那个按钮产出的是**同一个函数、同一个内核、逐字节相同**的文件。
+//   车主模式只是把入口放到手边，并只展示一条刷写命令。
+// ------------------------------------------------------------
+function saveOwnerPackage() {
+  saveTheme();                       // ① 配色写回本机那份（与主题页共用）
+  exportAssetsBin();                 // ② 走既有的容器打包（内部会 download 出 assets.bin）
+  say("…并已把当前配色写回本机（与「① 配色」页是同一份）。", "ok");
+}
+
+// ------------------------------------------------------------
+// 接住「① 配色」页框选好的那张表情（跨页只传**一张方图**，不是第二份状态）。
+//   ★ 主题页存的是 data URL PNG；本页把它变成列表里的一条 item，
+//     role 用主题页选好的那个槽位 —— 于是"进槽前的像素"就是那张方图，
+//     后面的缩放/打包全走本页既有的那条路。
+// ------------------------------------------------------------
+function adoptHandoff() {
+  let text = null;
+  try { text = localStorage.getItem(HANDOFF_KEY); } catch (e) { return; }
+  if (!text) return;
+  let rec = null;
+  try { rec = JSON.parse(text); } catch (e) { rec = null; }
+  try { localStorage.removeItem(HANDOFF_KEY); } catch (e) { /* ignore */ }
+  if (!rec || !rec.png || typeof rec.role !== "number") return;
+  const img = new Image();
+  img.onload = () => {
+    const w = pickDefaultSize(img.naturalWidth, rec.role);
+    const h = Math.max(2, Math.round(w * (img.naturalHeight / img.naturalWidth) / 2) * 2);
+    items.push({ id: nextId++, img: img, name: rec.name || "face", role: rec.role,
+                 order: 0, fit: "contain", w: w, h: h });
+    refresh();
+    say("已接住「① 配色」页框选好的表情（槽位「" + (rec.slotLabel || rec.role) +
+        "」，源 " + img.naturalWidth + "×" + img.naturalHeight + "）。\n" +
+        "点「保存安装包」就把它连同配色打成一个 assets.bin。", "ok");
+  };
+  img.onerror = () => say("「① 配色」页交接过来的那张表情读不出来，请在本页重新框选一次。", "err");
+  img.src = rec.png;
+}
+
+// ------------------------------------------------------------
+// 模式切换：只切显隐，**不动任何状态**
+// ------------------------------------------------------------
+function applyMode(mode, silent) {
+  const adv = (mode === "adv");
+  const ownerEl = document.getElementById("owner");
+  const advEl = document.getElementById("advanced");
+  if (ownerEl) ownerEl.style.display = adv ? "none" : "";
+  if (advEl) advEl.style.display = adv ? "" : "none";
+  const b1 = document.getElementById("btn-mode-owner");
+  const b2 = document.getElementById("btn-mode-adv");
+  if (b1) b1.className = adv ? "" : "on";
+  if (b2) b2.className = adv ? "on" : "";
+  try { localStorage.setItem(MODE_KEY, adv ? "adv" : "owner"); } catch (e) { /* ignore */ }
+  if (!silent) {
+    say(adv
+      ? "高级模式：原来的全部控件都在这儿（图片列表 / 弧 / 读数 / 刷写 / 占用 / JSON），一个都没删。"
+      : "车主模式：只留配色、红区/超速、表情图（拖入即框选）、保存安装包。其余在「高级」里。", "ok");
+  }
+  refresh(false);
+}
+
+function initOwnerMode() {
+  let saved = null;
+  try { saved = localStorage.getItem(MODE_KEY); } catch (e) { saved = null; }
+  applyMode(saved === "adv" ? "adv" : "owner", true);   // ★ 默认车主模式
+  const b1 = document.getElementById("btn-mode-owner");
+  const b2 = document.getElementById("btn-mode-adv");
+  if (b1) b1.addEventListener("click", () => applyMode("owner"));
+  if (b2) b2.addEventListener("click", () => applyMode("adv"));
+}
+
 function buildArcSourceLine() {  const el = document.getElementById("arc-source");
   if (el) {
     el.textContent = "当前配色来源：" + gThemeSource +
@@ -1385,12 +2186,15 @@ function buildReadoutEditors() {
 }
 
 // 主题变过之后统一刷新:底色选择器、配色控件(弧 + 读数)、预览
+// ★ 车主模式那几行也要跟着刷（buildOwnerColors 会把 gTheme 重新摊到它们身上）——
+//   少了这一句的表现是"读入一份 theme.json / 套完预设，车主模式那几个色还是旧的"。
 function applyThemeToUi() {
   theme.bg = themeBgHex();
   const bg = document.getElementById("bg-color");
   if (bg) bg.value = theme.bg;
   buildArcEditors();
   buildReadoutEditors();
+  buildOwnerColors();
   refresh();
 }
 // 从图片列表里取某个角色的第一张（按 order 最小）
@@ -1826,6 +2630,7 @@ function applyPreviewSize() {
 function refresh(rebuildGrid = true) {
   buildList();
   applyPreviewSize();
+  buildOwnerColors();       // ★ 高级里改完色 / 读入主题之后，车主模式那几行跟着更新
   const stage = FaceStages.STAGES[curStage] || FaceStages.STAGES[0];
   // 大预览也按屏取:左屏看 stage.left、右屏看 stage.right(可被下拉覆盖)
   drawScreen(document.getElementById("cv0"), 0, stage, stageFaceOverride[0] || null);
@@ -2397,6 +3202,15 @@ buildStageSelects();
 // 否则用固件默认值
 const hadSavedTheme = restoreSavedTheme();
 applyThemeToUi();
+
+// ★★ 车主模式（本页也默认进入）—— 必须在 applyThemeToUi() 之后建：
+//    那几个控件要把**当前**配色读出来当初始值。
+buildOwnerControls();
+initOwnerCropper();
+initOwnerMode();
+adoptHandoff();                      // 主题页框选好的那张表情（如果有）
+applyOwnerTheme();                   // 占位符/初始值再同步一遍（没有 DOM 也安全）
+
 // ★ 开机这一行**必须点名当前目标板**（2026-09-24）：
 //   页面上的画布上限 / 分区大小 / 占用百分比**全是跟着目标板变的**（见 ImageBlob.TARGETS）。
 //   不点名的话，人会拿"最终板(双 2.8C)"的语境去读另一块板的数 ——
@@ -2405,15 +3219,13 @@ applyThemeToUi();
 //    ★ 这一行是**纯文本**（say() 用 textContent 写 #status，不渲染 markdown）
 //      ⇒ 说人话就行，别在句子里塞 **加粗**（会原样显示成星号）。
 const tinfo0 = ImageBlob.targetInfo(curTarget);
-say("就绪。当前目标板：" + tinfo0.label + "\n" +
+say("就绪。当前目标板：" + tinfo0.label + "（现在是车主模式）\n" +
     "　（image 分区 " + (partBytes() / 1024) + " KB；" +
     "画布上限、占用百分比都按这块板算。两块 2.8C 屏刷同一份 image.bin，" +
-    "占用按单块板算。要换板在「占用」那一栏改「目标板」。）\n" +
-    "1) 加图片  2) 选「用途」（背景 / 表情）  3) 导出 image.bin\n" +
-    "左上「仪表配色」可以直接改四条弧的颜色，以及**读数文字**（大数字/单位/水温/进气）的颜色，\n" +
-    "改完点「导出 theme.json」刷到 theme 分区。\n" +
-    "★ 换了底图之后字看不见，就在这里改读数颜色 —— 右边的预览会立刻跟着变（预览就是把关人）。\n" +
-    "（配色和图片是两个分区，要各刷一次；两页共用同一份配色，不会互相覆盖。）\n" +
+    "占用按单块板算。要换板在「高级 → 占用」那一栏改「目标板」。）\n" +
+    "车主模式：1) 改色（与「① 配色」页是同一份）2) 把表情图拖进左栏 → 框选 → 3) 保存安装包。\n" +
+    "★ 表情图必须带透明背景（PNG）：JPEG 会被拒绝（请另存为 PNG）。\n" +
+    "★ 原有的全部控件（图片列表 / 弧 / 读数 / 刷写 / 占用 / JSON）都在顶栏那个「高级」里，一个都没删。\n" +
     "右下「表情阶段模拟」可以逐档看转速/车速/水温各档下会显示哪张表情。" +
     (hadSavedTheme === "legacy"
       ? "\n\n※ 本机有一份旧格式的配色记录，它会把新的默认值挡住，已备份到 " + THEME_KEY_V1 +

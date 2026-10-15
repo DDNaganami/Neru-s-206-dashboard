@@ -686,8 +686,15 @@ section("读数颜色:图片编辑器 vs ui_theme.h / dash_ui.cpp");
       ok(Number(turnSlider[1]) * 1000 >= rangeOf("TurnMinMs"),
          "转向忘关滑块下限(" + turnSlider[1] + " s)不低于固件下限");
     }
-    const beepSlider = /slider\(g6, "响一声 ms"[\s\S]*?,\s*(\d+),\s*(\d+),\s*(\d+)\)\)/.exec(idxSrcA);
-    ok(!!beepSlider, "找到「响一声 ms」滑块");
+    // ★ 2026-10-15：这一条的**标签**改过口径 ——「响一声 ms」→
+    //   「响一声 ms（已无消费方）」（车主砍掉蜂鸣器 ⇒ 页面上要写明它不再发声）。
+    //   所以这里按**前缀**匹配；同时把这条的**意图**写清楚：
+    //   ★ 它钉的**不是**"必须有发声功能"，而是"这个滑块的下限不许低于
+    //     alerts.h 的 kAlertsBeepMinMs"。那个键仍在 theme.json 的 alerts 段里
+    //     （`theme_parse_alerts_json` 照旧解析、照旧钳制），所以这条依然有意义：
+    //     页面上能拖出来的值，设备端解析出来的必须一致。
+    const beepSlider = /slider\(g6, "响一声 ms[^"]*"[\s\S]*?,\s*(\d+),\s*(\d+),\s*(\d+)\)\)/.exec(idxSrcA);
+    ok(!!beepSlider, "找到「响一声 ms」滑块（标签现已注明「已无消费方」）");
     if (beepSlider) {
       ok(Number(beepSlider[1]) >= rangeOf("BeepMinMs"),
          "响一声滑块下限(" + beepSlider[1] + " ms)不低于固件下限");
