@@ -5,6 +5,11 @@
 #include "image_load.h"     // 图片资源(背景图 / 表情图)
 #include "face_stages.h"    // 表情槽位 → 图片角色 / 缺图降级链
 #include "system_status.h"  // 数据不可信提示 + 诊断页（纯逻辑住在 lib/dashcore/）
+// ★★ 2026-10-15：红区/超速的**阈值**要从 `AlertsConfig` 拿（那是唯一出处：
+//   默认值在 alerts.h、也可能来自 theme.json 的 `alerts` 段）。
+//   本文件**不自己写 5500 / 150 这两个数** —— 上一轮"两套阈值"的教训就是
+//   屏上那个数与会报的那个数各写一份，于是车主从来看不出红区提示。
+#include "alert_view.h"     // AlertView（告警 → 视图）+ AlertsConfig（阈值）
 // ★ 开机时的角色标签（2026-09-25）要读 `LINK_ROLE` —— 那是"这块板是谁"的**唯一**出处
 //   （编译期唯一权威，§5）。本文件不新增任何角色判据，只是把它印到屏上。
 #include "link_role.h"
@@ -56,18 +61,21 @@ struct ScreenUi {
   bool unit_set = false;                 // 单位文本写过没有(见 readout_apply)
   ArcKind digit_kind = ArcKind::Speed;   // 大数字跟的是哪条弧(建屏时定)
   int32_t digit_val = INT32_MIN;         // 上次显示的值:不变就不 set_text
+  // ★★ 2026-10-15：大数字现在**会变红**（车速超阈值时，见 arc_is_red 那一段）。
+  //   与 digit_val 同一个纪律：只在**状态真的变了**的时候碰一次样式
+  //   （读数每秒都在刷，无脑 set_text_color 会白脏一块）。
+  bool digit_red = false;                // 上一次把数字设成红的没有
   int32_t coolant_val = INT32_MIN;
   int32_t intake_val = INT32_MIN;
 
-  // ---- 指示灯槽位(2026-09-24)----
-  // 每个槽 = 一个**容器**(占位图形的父对象) + 子图形。
-  // 只存对象指针:亮/灭/闪烁全部靠 opa 与 HIDDEN 旗标表达,
-  // **不重建对象**(重建会在 LVGL 里留下 invalid 记录,闪烁时 5 Hz 重建更糟)。
-  lv_obj_t* lamp[kLampSlotCount] = {};
-  uint8_t lamp_sub[kLampSlotCount] = {};        // 这个槽有几个子图形(建槽时定)
-  uint8_t lamp_last_pulse[kLampSlotCount] = {}; // 上次的亮度:不变就一个字节都不碰
-  bool lamp_last_alert[kLampSlotCount] = {};
-  bool lamp_built = false;
+  // ---- 指示灯槽位：★★ 2026-10-15 车主把**整条六格指示灯栏删掉了**
+  //   （原话："车灯车门原车仪表显示更好"）。
+  //   ⇒ 原来这里的 lamp[] / lamp_sub[] / lamp_last_pulse[] / lamp_last_alert[] /
+  //     lamp_built 五个成员、`build_lamps()` / `lamp_apply()` 两个函数、
+  //     `lib/dashcore/lamp_view.h`（槽位枚举 + 灯条几何 + make_lamps）全部删除。
+  //   ★ 数据层**一个字都没动**：VAN 照旧解 `0x4FC` 的灯位与门位、照旧进
+  //     `VehicleState`、串口 `SRC-VAN` 照旧报 —— 只是屏上不再画它们。
+  //   ★ 本结构体里那个 `ScreenUi` 定义因此少了 5 个成员，别的都没变。
 
   // ---- 数据不可信角标（2026-09-24）----
   // ★ 形态：**表盘右缘一枚小图标文字**（不是红屏、不是每秒闪）。
@@ -280,6 +288,50 @@ static void arc_set_progress(lv_obj_t* arc, const ArcStyle& a, float t) {
     lv_arc_set_start_angle(arc, a.start_deg);                   // 固定端
     lv_arc_set_end_angle(arc, a.start_deg + (int32_t)(t * span));
   }
+}
+
+// ============================================================
+// ★★ 2026-10-15：**红区要一眼看得见**（车主拍板，两条一起做）
+//
+//   ① 转速红区：**触发点降到 5500**（`lib/dashcore/alerts.h` 的
+//      `redline_rpm`）。以前"看得见的红区"要到 6200 那一档才出现，
+//      而告警 5800 就报 ⇒ 5800~6200 之间屏上几乎没变化，车主一直以为
+//      "没有红区提示"。
+//   ② 速度高速红：**阈值统一到 150**（同文件的 `overspeed_kmh`）。
+//      以前告警是 120，屏上却什么都没变（同一类问题）。
+//
+//   做法（两条**同一套**，别再各写一份）：
+//     · 弧的**点亮段**（LV_PART_INDICATOR）换成红区色 + **加粗到 1.25 倍**
+//       （`THEME_REDLINE_ARC_COLOR`，见 ui_theme.h）；
+//     · 速度那条**大数字也一起变红**（速度是右屏主读数，数字红最直观）。
+//   ★ 红色是状态色，**不是主题色** ⇒ 刻意的编译期常量，不进 theme.json
+//     （理由与原来那两个灯条颜色同一条：加字段要升序列化版本号）。
+//   ★ **不新增任何 LVGL 对象**：只改既有弧对象的两个样式属性（一个 part 的
+//     颜色 + 线宽），层级、顺序、脏区一个字节都不变。
+//   ★ 判据取的是**告警层同一份阈值**（`Alerts::config()` 传进来），不在这里
+//     另写一个数 —— 这正是不让"两套阈值"再出现的那一条。
+// ============================================================
+
+// 这条弧该不该染红。`conf` 是**当前生效的那份告警配置**（可能来自 theme.json）。
+//   · 转速：按数值跨阈值。弧的填充位置本来就跟这个数走，再加迟滞反而会让
+//     "弧染红了但脸还没红"；
+//   · 速度：由**超速告警**驱动（`Alerts` 算出来的那条，自带 3 km/h 迟滞 + 去抖），
+//     见 dash_ui_render 里传进来的 `overspeed`；
+//   · 副表（水温/进气）永不染红 —— 它们没有"危险区"这个语义。
+static bool arc_is_red(ArcKind k, const ArcDashView& v, const AlertsConfig& conf) {
+  if (k == ArcKind::Rpm) return v.rpm >= conf.redline_rpm;
+  return false;
+}
+
+// 把一条弧的"亮/不亮红"落到 LVGL 上。★ 只在状态真的变了的时候碰样式。
+//   ★ 回退用的"正常色"从 `ArcStyle` 现取 —— 这样主题换了配色，
+//     "退出红区"之后回去的仍然是主题色，不会被我这里写死一个数覆盖掉。
+static void arc_apply_red(lv_obj_t* arc, const ArcStyle& a, bool red) {
+  const int32_t w = red ? ts((float)a.width * 1.25f) : ts((float)a.width);
+  lv_obj_set_style_arc_width(arc, w, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(arc,
+      red ? lv_color_hex(THEME_REDLINE_ARC_COLOR) : a.value_color,
+      LV_PART_INDICATOR);
 }
 
 // ============ 屏幕与控件构建 ============
@@ -547,7 +599,7 @@ static void build_readout(lv_obj_t* parent, const ScreenTheme& cfg, ScreenUi& ui
   //   刻意不做淡入:LVGL 给对象设 opa<255 会开离屏层,这个驱动上会错位(见 boot_apply)。
 }
 
-static void readout_apply(ScreenUi& ui, const ArcDashView& v) {
+static void readout_apply(ScreenUi& ui, const ArcDashView& v, bool over_red) {
   // 单位:只取决于弧种类,所以只需要写一次 —— 但必须等到"读数该出现的时刻"
   // (开机扫表期间 dash_ui_render 会早退,所以这一句自然就推迟到扫表之后)。
   if (ui.unit_lbl && !ui.unit_set) {
@@ -555,6 +607,15 @@ static void readout_apply(ScreenUi& ui, const ArcDashView& v) {
     lv_label_set_text(ui.unit_lbl, unit_text(ui.digit_kind));
   }
   if (ui.digit_lbl) {
+    // ★★ 2026-10-15：**大数字变红**（只对"速度"那一条读数 —— `over_red`
+    //   由调用方按 arc kind 算好传进来，这里不重复判断）。
+    //   放在 set_text 之前：颜色与值同一次渲染里一起生效，不会闪一帧旧色。
+    //   ★ 只在**变了**的时候碰样式（与 digit_val 同一条纪律）。
+    if (ui.digit_red != over_red) {
+      ui.digit_red = over_red;
+      lv_obj_set_style_text_color(ui.digit_lbl,
+          lv_color_hex(over_red ? THEME_REDLINE_ARC_COLOR : READOUT_DIGIT_COLOR), 0);
+    }
     const int32_t dv = readout_value(ui.digit_kind, v);
     if (dv != ui.digit_val) {          // 只有真的变了才碰 LVGL:读数每秒都在刷,
       ui.digit_val = dv;               // 无脑 set_text 会把 16 条 invalid 队列刷爆
@@ -581,186 +642,25 @@ static void readout_apply(ScreenUi& ui, const ArcDashView& v) {
   }
 }
 
-// ============ 指示灯槽位（占位图形，2026-09-24）============
+// ============ 6-cell lamp row: REMOVED 2026-10-15 ============
+// Owner's words: "che lin che men yuan che yi biao xian shi geng hao"
+// (the car's own instrument cluster already shows lamps and doors better).
+// Deleted with this section: lamp_make_cell / lamp_make_bar / lamp_make_dot /
+//   lamp_build_chevron / lamp_build_slot / build_lamps / lamp_apply;
+//   lib/dashcore/lamp_view.h (LampSlot + row geometry + make_lamps());
+//   THEME_LAMP_COLOR / THEME_LAMP_ALERT_COLOR in lib/themetool/ui_theme.h;
+//   the five ScreenUi members (lamp[] / lamp_sub[] / lamp_last_pulse[] /
+//   lamp_last_alert[] / lamp_built); the two build_lamps() calls in
+//   dash_ui_init() and the two lamp_apply() calls in dash_ui_render().
 //
-// ★★ 本轮**只画占位几何**，不画正式素材 —— 这是刻意的（让逻辑与美术解耦）：
-//     · 几何/位置在 src/ui_model.h（kLampSize / kLampGap / kLampCy，480 基准，
-//       随 theme_scale() 缩放 ⇒ 480 与 240 两档自动各自成立）；
-//     · 亮/灭/闪烁/告警描边由 make_lamps() 算好（纯函数，native 有几何用例）；
-//     · 这里**只负责把"亮不亮"变成像素**：一个槽一个容器 + 若干子图形。
-//   真屏到了换正式素材时，要改的**只有本函数下面那几段图形构建**
-//   （换成 image 或 LVGL 的矢量/自定义 draw），本文件其余部分、ui_model、
-//   alerts、data_service 全都不用动。
+// PRESERVED ON PURPOSE: the data layer still decodes the 0x4FC lamp and door
+//   bits (van_source.cpp / data_service.cpp / vehicle_state.h) and the SRC-VAN
+//   serial lines still report them -- there is simply nowhere left to draw them.
+//   The door / turn-signal DECISION logic in alerts.cpp is untouched too.
 //
-// 图形用**最朴素的几何**（矩形/圆/旋转矩形），每个槽一眼能认出是什么：
-//   左转 = 双层左尖括号(chevron)   右转 = 镜像
-//   双闪 = 两个三角并排(报警符号)    近光 = 半圆 + 三条斜光线
-//   仪表盘灯 = 实心圆(灯珠)         门   = 侧立的矩形门扇 + 门把手圆点
-//
-// ★ 为什么全部用 LVGL 对象而不是自绘：对象可以**只改 opa/旗标**地闪烁
-//   （见 lamp_apply），而自绘每次都要 invalidate 一整块。
-// ★ 不给这些对象设 opa < 255 的**父容器**：这个驱动上会给对象开离屏层
-//   （见 boot_apply 那条踩坑记录）。所以亮度落在**每个子图形**上，
-//   容器本身恒为不透明（它没有背景，只是坐标系）。
-
-// 建一个"纯容器"：无样式、不可滚动、按槽位摆好。
-static lv_obj_t* lamp_make_cell(lv_obj_t* parent, LampSlot slot) {
-  lv_obj_t* cell = lv_obj_create(parent);
-  lv_obj_remove_style_all(cell);
-  // ★ 不设 SCROLLABLE 会走离屏层裁剪（与表情容器同一个坑，见 build_face）
-  lv_obj_remove_flag(cell, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_size(cell, ts(kLampSize), ts(kLampSize));
-  lv_obj_set_pos(cell, ts(lampLeft(slot)), ts(lampTop(slot)));
-  lv_obj_add_flag(cell, LV_OBJ_FLAG_HIDDEN);   // 默认灭：第一帧由 lamp_apply 决定
-  return cell;
-}
-
-// 槽内的小矩形（三角形/光线/门扇都由它拼）
-static lv_obj_t* lamp_make_bar(lv_obj_t* cell, lv_color_t c, int32_t x, int32_t y,
-                              int32_t w, int32_t h, int32_t rot10) {
-  lv_obj_t* o = lv_obj_create(cell);
-  lv_obj_remove_style_all(o);
-  lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_size(o, ts(w), ts(h));
-  lv_obj_set_style_bg_color(o, c, 0);
-  lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(o, ts(1), 0);   // 一点倒角,免得细条端点太尖
-  lv_obj_set_pos(o, ts(x), ts(y));
-  // ★ LVGL 的旋转是 **0.1 度**为单位的整数,且绕对象中心转
-  lv_obj_set_style_transform_rotation(o, rot10, 0);
-  return o;
-}
-
-static lv_obj_t* lamp_make_dot(lv_obj_t* cell, lv_color_t c, int32_t cx, int32_t cy,
-                              int32_t d) {
-  lv_obj_t* o = lamp_make_bar(cell, c, cx - d / 2, cy - d / 2, d, d, 0);
-  lv_obj_set_style_radius(o, ts(d / 2), 0);   // 全圆角 = 圆
-  return o;
-}
-
-// 双层 chevron：`dir` = +1 指右 / -1 指左。返回子图形个数。
-// ★ 画法：两根细长条各转 ±θ，拼成一个"<"；两层错开就是双箭头。
-//   为什么不用三角形：LVGL 没有现成的三角形图元，而"两根条拼一个尖角"
-//   是纯矩形 + 旋转，行为在任何驱动上都一样（自绘路径要碰 draw 回调，
-//   那条路在这个精简版 esp_lcd 上还没验过）。
-//
-// ★ 几何用**"尖角位置 + 臂长"**算出来，不靠试：条的中心 = 尖角 + (L/2)·(cosθ, ±sinθ)
-//   （θ = 30° ⇒ 0.866L/2, 0.5L/2）。这样槽内怎么挪都只是改 `tip` 一个数。
-static uint8_t lamp_build_chevron(lv_obj_t* cell, lv_color_t c, int32_t dir) {
-  const int32_t L = 17;    // 条长
-  const int32_t T = 5;     // 条厚
-  const int32_t ang = 30;  // 与水平线的夹角(度)
-  const int32_t dx = 7;    // (L/2)·cos30 ≈ 7.4 → 取 7
-  const int32_t dy = 4;    // (L/2)·sin30 ≈ 4.25 → 取 4
-  uint8_t n = 0;
-  for (int32_t layer = 0; layer < 2; ++layer) {
-    // 尖角的 x：左箭头从 7 起往右排两层；右箭头镜像。
-    const int32_t tip_x = (dir < 0) ? (7 + layer * 9) : (33 - layer * 9);
-    const int32_t tip_y = 20;
-    // ★ 上臂转 -30°、下臂转 +30° —— **与 dir 无关**：一个 "<" 和一个 ">"
-    //   用的是同一对角度，只是尖角的 x 镜像了（第一版在这里按 dir 又翻了一次，
-    //   于是"右箭头"画出个"左箭头"，而且不报错）。
-    const int32_t bx = (dir < 0 ? tip_x + dx : tip_x - dx) - L / 2;
-    lamp_make_bar(cell, c, bx, tip_y - dy - T / 2, L, T, -ang * 10);
-    lamp_make_bar(cell, c, bx, tip_y + dy - T / 2, L, T, +ang * 10);
-    n += 2;
-  }
-  return n;
-}
-
-// 建一个槽的占位图形。返回子图形个数（0 = 这个槽没有图形，用例会拦）。
-static uint8_t lamp_build_slot(lv_obj_t* cell, LampSlot slot, lv_color_t c) {
-  switch (slot) {
-    case LampSlot::LeftArrow:  return lamp_build_chevron(cell, c, -1);
-    case LampSlot::RightArrow: return lamp_build_chevron(cell, c, +1);
-    case LampSlot::Hazard: {
-      // 两个三角并排(常见双闪符号):每个三角 = 两根斜条 + 一根横条
-      uint8_t n = 0;
-      for (int32_t k = 0; k < 2; ++k) {
-        const int32_t cx = 11 + k * 18;
-        lamp_make_bar(cell, c, cx - 8, 12, 4, 16, 20 * 10);
-        lamp_make_bar(cell, c, cx - 8, 12, 4, 16, -20 * 10);
-        lamp_make_bar(cell, c, cx - 9, 26, 18, 4, 0);
-        n += 3;
-      }
-      return n;
-    }
-    case LampSlot::LowBeam: {
-      // 圆 + 三条向下斜的光线(近光的通用符号)。
-      // ★ 一开始想画"半圆 + 光线",但那要**按角设圆角**(lv_obj 的 radius
-      //   只有整体/四角同值),而这个精简版驱动上没验过自绘路径 —— 于是
-      //   改成"圆 + 光线":同样一眼可辨,而且只用矩形/圆两种图元。
-      uint8_t n = 0;
-      lamp_make_dot(cell, c, 13, 20, 16);
-      n++;
-      lamp_make_bar(cell, c, 22, 8, 13, 3, 35 * 10);
-      lamp_make_bar(cell, c, 24, 18, 13, 3, 0);
-      lamp_make_bar(cell, c, 22, 28, 13, 3, -35 * 10);
-      n += 3;
-      return n;
-    }
-    case LampSlot::PositionLamp:
-      // 仪表盘灯 = 实心圆(灯珠)。不画光芒:它要能一眼区别于近光
-      lamp_make_dot(cell, c, 20, 20, 18);
-      return 1;
-    case LampSlot::Door: {
-      // 门扇(侧立矩形) + 门把手圆点
-      lamp_make_bar(cell, c, 12, 8, 15, 24, 0);
-      lamp_make_dot(cell, c, 23, 20, 5);
-      return 2;
-    }
-    default:
-      return 0;
-  }
-}
-
-// 建灯条(六个槽)。★ 创建顺序在**背景图之后**、读数之前 ——
-// 灯条压在背景图上、被读数压在下面(读数在底部只有副表数字,不会重叠)。
-static void build_lamps(lv_obj_t* parent, ScreenUi& ui) {
-  const lv_color_t c = lv_color_hex(THEME_LAMP_COLOR);
-  for (uint8_t i = 0; i < kLampSlotCount; ++i) {
-    lv_obj_t* cell = lamp_make_cell(parent, (LampSlot)i);
-    ui.lamp[i] = cell;
-    ui.lamp_sub[i] = lamp_build_slot(cell, (LampSlot)i, c);
-    // 告警描边用的边框:**建好就设置、平时不显示**(改 opa 而不是改宽度,
-    // 免得"开描边"那一下触发一次布局重算)
-    lv_obj_set_style_border_width(cell, ts(2), 0);
-    lv_obj_set_style_border_color(cell, lv_color_hex(THEME_LAMP_ALERT_COLOR), 0);
-    lv_obj_set_style_border_opa(cell, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_radius(cell, ts(6), 0);
-  }
-  ui.lamp_built = true;
-}
-
-// 把 make_lamps() 的结果落到 LVGL 上。
-// ★ 只在**亮度和告警位真的变了**的时候碰对象：转向灯 5 Hz 闪，
-//   无脑每帧 set_opa 会把 invalid 队列刷爆（表情那段注释里踩过同一个坑）。
-static void lamp_apply(ScreenUi& ui, const LampView& v) {
-  if (!ui.lamp_built) return;
-  for (uint8_t i = 0; i < kLampSlotCount; ++i) {
-    const uint8_t pulse = v.pulse[i];
-    const bool show = pulse > 0;
-    if (pulse != ui.lamp_last_pulse[i]) {
-      ui.lamp_last_pulse[i] = pulse;
-      if (show) {
-        lv_obj_remove_flag(ui.lamp[i], LV_OBJ_FLAG_HIDDEN);
-        // 亮度落在**每个子图形**上(不是容器 —— 见 build_lamps 上的说明)
-        const uint32_t kids = lv_obj_get_child_count(ui.lamp[i]);
-        for (uint32_t k = 0; k < kids; ++k) {
-          lv_obj_set_style_opa(lv_obj_get_child(ui.lamp[i], (int32_t)k), pulse, 0);
-        }
-      } else {
-        lv_obj_add_flag(ui.lamp[i], LV_OBJ_FLAG_HIDDEN);
-      }
-    }
-    if (v.alert[i] != ui.lamp_last_alert[i]) {
-      ui.lamp_last_alert[i] = v.alert[i];
-      lv_obj_set_style_border_opa(ui.lamp[i],
-                                  v.alert[i] ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-    }
-  }
-}
-
+// To bring it back: the pure mapping (lamp_view.h) is in git history; the
+//   reason it lived in lib/dashcore/ (native tests must be able to include it)
+//   is written in that file's header.
 // ============ 数据不可信角标 + 诊断页（2026-09-24）============
 //
 // 这一段**只负责画**：判据、去抖、限速、诊断页的字段映射全在
@@ -1117,21 +1017,22 @@ static float arc_progress(const ArcStyle& a, const ArcDashView& v) {
 //
 // LVGL 里"后建的画在上面"（子对象顺序就是绘制顺序），而这个函数的每一段
 //   都在建一层 ⇒ **本文件里段的先后 = 屏上谁压谁**。约定的最终层序
-//   （2026-09-24 车主定稿，从下到上）：
+//   （2026-09-24 车主定稿，从下到上；**2026-10-15 删掉六格灯栏后只剩四层**）：
 //
 //     1. 背景图            （最底，`g_bg_img`）
 //     2. 表情              （程序化 `build_face` + 表情图片 `g_face_img`）
 //     3. 表盘弧            （`build_arcs`）
-//     4. 六格指示灯        （`build_lamps`）
-//     5. 读数              （大数字 / 单位 / 水温 / 进气 —— **最高层**）
+//     4. 读数              （大数字 / 单位 / 水温 / 进气 —— **最高层**）
 //
+//   ★★ 原来的第 4 层"六格指示灯"（`build_lamps`）已随车主那道命令删除
+//     （原话："车灯车门原车仪表显示更好"，2026-10-15）。⇒ 弧上面直接就是读数。
 //   · 表情在弧**之下**：车主要"表盘弧永远是最上层"（原话），
 //     代价是表情图的边缘会被弧裁掉一块 —— **这是设计如此**，不是 bug
 //     （见 tools/theme-editor/asset-spec.js 的同一条注明）。
-//   · 弧在表情**之上**、但在灯与读数**之下**：读数绝不许被弧压住
+//   · 弧在表情**之上**、但在读数**之下**：读数绝不许被弧压住
 //     （车主原话："读数应该是最高层的"）。★ 别顺手把 `build_arcs` 挪到最后 ✗。
 //   · 诊断页（最末尾建）**不在**这张表里：它平时 HIDDEN，一显示就要盖住
-//     上面**全部**五层（整块不透明面板），所以它刻意建在读数之后。
+//     上面**全部**四层（整块不透明面板），所以它刻意建在读数之后。
 // ============================================================
 void dash_ui_init() {
   // 先落默认主题:保证任何情况下主题都是可用的。
@@ -1217,14 +1118,11 @@ void dash_ui_init() {
     build_arcs(g_screens[s], kScreens[g], g_ui[s]);
   }
 
-  // 指示灯槽位(占位图形):建在**读数之前** —— 于是副表数字(水温/进气)
-  // 压在灯条上面；两者在几何上不重叠(灯条 y=395..435、副表墨迹到 y≈396),
-  // 所以图层顺序在这里只是"万一"的保险(见 ui_model.h 的 kLamp* 说明)。
-  for (uint8_t s = 0; s < 2; ++s) {
-    build_lamps(g_screens[s], g_ui[s]);
-  }
+  // ★★ 2026-10-15：这里原来还有"第 4 层：指示灯槽位"（`build_lamps`，两屏各一次）。
+  //   车主把整条六格灯栏删了 ⇒ 这一段整个删掉，图层只剩四层
+  //   （背景 / 表情 / 弧 / 读数）—— 见本文件顶部的图层顺序表。
 
-  // 数字读数最后建:创建顺序就是图层顺序,读数要压在**弧、表情、灯**之上
+  // 数字读数最后建:创建顺序就是图层顺序,读数要压在**弧、表情**之上
   //   （车主 2026-09-24 定稿："读数应该是最高层的" ⇒ 弧被挪到表情之前之后，
   //     读数仍然是最后一个建的 —— 这一段的**位置**是层序约定的一部分，别动）。
   for (uint8_t s = 0; s < 2; ++s) {
@@ -1235,7 +1133,7 @@ void dash_ui_init() {
   //   ① 数据不可信角标（右缘小图标，默认隐藏）
   //   ② 诊断页（整屏不透明容器，默认隐藏）
   //   顺序的理由：诊断页要能盖住表盘上的一切（包括读数），而角标要压在
-  //   背景图与灯条之上。两条都靠"后建的在上面"这条 LVGL 规则，
+  //   背景图之上。两条都靠"后建的在上面"这条 LVGL 规则，
   //   不额外调 move_foreground（那一句只在渲染时作保险，见 dash_ui_render）。
   for (uint8_t s = 0; s < 2; ++s) {
     build_trust_badge(g_screens[s], g_ui[s]);
@@ -1329,7 +1227,8 @@ void dash_ui_tick(uint32_t now_ms) {
   lv_timer_handler();
 }
 
-void dash_ui_render(const ArcDashView& v, const LampView& lamps, SystemStatus& sys,
+void dash_ui_render(const ArcDashView& v, const AlertsConfig& alerts_cfg,
+                    bool overspeed_alert, SystemStatus& sys,
                     const SysStatusInputs& diag, uint32_t now) {
   if (now - last_ok_ms >= 1000) {
     last_ok_ms = now;
@@ -1360,7 +1259,8 @@ void dash_ui_render(const ArcDashView& v, const LampView& lamps, SystemStatus& s
 
   // ★ 灯条**在开机动画之前**应用:开机扫表期间也要能看见灯
   //   (打灯/开门是随时发生的,而开机动画只在前 1.1 秒)。它不参与弧的缓动。
-  for (uint8_t s = 0; s < 2; ++s) lamp_apply(g_ui[s], lamps);
+  //   ★★ 2026-10-15：这一句已随六格灯栏一起删除（车主："车灯车门原车仪表显示更好"）。
+  //     现在开机期间没有任何"随时要更新的灯"要落到屏上。
 
   // ---- ② 诊断页：开着的时候它**盖住一切**，所以先落它、再决定要不要画表盘 ----
   //   （诊断页的容器是不透明的整屏对象，落到最上层 ⇒ 表盘那些对象被它盖住，
@@ -1398,6 +1298,13 @@ void dash_ui_render(const ArcDashView& v, const LampView& lamps, SystemStatus& s
       const float target = arc_progress(a, v);
       ui.arc_cur[i] += (target - ui.arc_cur[i]) * k;
       arc_set_progress(ui.arcs[i], a, ui.arc_cur[i]);
+      // ★★ 2026-10-15：红区染色 + 加粗（两条弧共用同一套，见上面那一段说明）。
+      //   · 转速弧：数值跨 `redline_rpm`（阈值来自 alerts.h / theme.json）；
+      //   · 速度弧：**超速告警**那一位（自带迟滞 + 去抖，车主原话"用现有的告警状态驱动"）。
+      const bool red = (a.kind == ArcKind::Rpm)
+                           ? arc_is_red(a.kind, v, alerts_cfg)
+                           : (a.kind == ArcKind::Speed ? overspeed_alert : false);
+      arc_apply_red(ui.arcs[i], a, red);
     }
     if (kScreens[ti].show_face && ui.face_bg) {
       // 表情的显隐/形变只在 face_apply 里按状态变化时改一次,这里不重复 set。
@@ -1408,7 +1315,9 @@ void dash_ui_render(const ArcDashView& v, const LampView& lamps, SystemStatus& s
       const Face f = (ti == 0u) ? v.face_left : v.face_right;
       face_apply(ui, f);
     }
-    readout_apply(ui, v);
+    // ★ 大数字变红**只给速度那一条读数**（右屏主读数）—— 由 arc kind 决定，
+    //   所以这里算一次交给 readout_apply，不让它自己去猜哪屏是哪块表。
+    readout_apply(ui, v, ui.digit_kind == ArcKind::Speed && overspeed_alert);
   }
 
   // ---- ④ 诊断页开着时，把它重新抬到最上层 ----

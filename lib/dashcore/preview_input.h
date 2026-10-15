@@ -34,14 +34,18 @@
 //   L           近光                     P      仪表盘灯
 //   D           门（"动过"，不是"门开着"）
 //   O           超速（车速 = 130）        R      红区（转速 = 6000）
-//   M           静音开关（蜂鸣器）
 //   V           圆屏遮罩开关（2.8C 档的"可见区"那层标注；默认开）
 //   K           诊断页（**一个键**：关着→打开，开着→翻下一页，翻过最后一页→关闭）
 //   T           把这一拍的数据层口径切成"实测"（角标消失）；再按回到假数据
 //   X  /  Esc   全部复位（回到假数据；诊断页也一起关掉）
 //
+// ★ 2026-10-15：`M`（静音开关）**已删** —— 它掐的只是蜂鸣器，而蜂鸣器整车砍掉了
+//   （车主原话"蜂鸣器功能砍掉，节省资源"）。灯位那几个键（L/P/D/←/→/空格）
+//   **照旧保留**：VAN 数据层还在解 `0x4FC` 的灯位与门位，预览要能把那几个字段
+//   摆出来看（只是屏上不再有六格灯画它们了）。
+//
 // 控制文件同一套键名（数值版，便于精确摆位）:
-//   left=1 right=1 hazard=1 low_beam=1 position=1 door=1 mute=1
+//   left=1 right=1 hazard=1 low_beam=1 position=1 door=1
 //   speed=140 rpm=6000 clear=1
 //   mask=0      ← 关掉圆屏遮罩（等价于按 V；只影响落盘的那张图）
 //   sim=1       ← 把数据层口径切成"实测"（等价于按 T；演示提示消失那一半）
@@ -58,7 +62,7 @@
 
 enum class PreviewKey : uint8_t {
   None = 0,
-  Left, Right, Hazard, LowBeam, PositionLamp, Door, Overspeed, Redline, Mute, Clear,
+  Left, Right, Hazard, LowBeam, PositionLamp, Door, Overspeed, Redline, Clear,
   // 遮罩开关（2026-09-24）：**不是**车辆状态，而是"预览这一层怎么画"。
   // ★ 它刻意与其它键放在同一个枚举里：注入的入口只有一个（键盘 + 控制文件），
   //   多开一个入口就等于多一处"只在某个页面生效"的坑。
@@ -89,7 +93,9 @@ struct PreviewInput {
   bool speed_set = false, rpm_set = false;
   float speed_kmh = 0.0f;
   float rpm = 0.0f;
-  bool mute = false;          // 蜂鸣器静音（这个没有 *_set：默认不静音）
+  // ★★ 2026-10-15：`mute`（蜂鸣器静音）**已删** —— 蜂鸣器整车砍掉，
+  //   静音开关没有可掐的东西了（同一天删掉的还有：`Alerts::setMuted()`、
+  //   NVS 里的 `mute` 键、串口命令 `m`、预览键 `M` 与 `mute=` 那个控制文件键）。
   // 圆屏遮罩（2.8C 档）：**默认开** —— 预览落的第一张图就该带可视圈标注，
   // 否则"忘了开"会让素材四角的问题在 PC 上被漏掉（那正是这一档要抓的东西）。
   // ★ 它不属于"车辆状态"，所以不进 any()：按 V 不该让 `inject:` 那行回执
@@ -147,9 +153,15 @@ struct PreviewInput {
 // ------------------------------------------------------------
 // 纯函数部分①：键 → 注入
 // ★ 超速/红区注入的是**具体数值**（不是布尔）：告警判据是"车速 >= 阈值"，
-//   所以得把速度真的顶上去，才看得见整条告警链的反应（迟滞、重复间隔、
-//   屏上闪烁）。130 / 6000 分别高于 AlertsConfig 的默认阈值（120 / 5800），
-//   test_ui_lamps.cpp 有一条用例把"必须高于阈值"钉住。
+//   所以得把速度真的顶上去，才看得见整条告警链的反应（迟滞、去抖、屏上染红）。
+//   160 / 6000 分别高于 AlertsConfig 的默认阈值（**150** / **5500**），
+//   test_preview_input.cpp 有两条用例把"必须够得着阈值"钉住。
+//   ★★ 2026-10-15：超速那个注入值 **130 → 160** —— 阈值当天从 120 提到 150
+//     （车主："速度表超过 150KM/H 的时候也红吧"），130 就**够不着**了：
+//     按 O 不再触发告警、屏上也不染红（"按了没反应"是最难查的一类现象）。
+//     取 160 = 阈值 + 10，与红区那个 6000（阈值 5500 + 500）同一个思路：
+//     留一点余量，免得阈值微调就把预览的演示弄坏。
+//   6000 高于红区阈值（5500）⇒ 按 R 一定会进红区档。
 // ------------------------------------------------------------
 inline bool preview_apply_key(PreviewInput& in, PreviewKey k) {
   switch (k) {
@@ -160,9 +172,8 @@ inline bool preview_apply_key(PreviewInput& in, PreviewKey k) {
     case PreviewKey::PositionLamp:
       in.position = !in.position; in.position_set = true; break;
     case PreviewKey::Door:      in.door = !in.door;         in.door_set = true;      break;
-    case PreviewKey::Overspeed: in.speed_kmh = 130.0f; in.speed_set = true; break;
+    case PreviewKey::Overspeed: in.speed_kmh = 160.0f; in.speed_set = true; break;
     case PreviewKey::Redline:   in.rpm = 6000.0f;      in.rpm_set = true;   break;
-    case PreviewKey::Mute:      in.mute = !in.mute;                            break;
     case PreviewKey::ToggleMask:
       in.panel_mask = !in.panel_mask;
       in.panel_mask_set = true;      // 显式选择过 ⇒ 控制文件不许把它盖回去
@@ -267,11 +278,13 @@ inline int preview_apply_control_text(PreviewInput& in, const char* text) {
     else if (eqIgnoreCase(key, "low_beam")) { in.low_beam = truthy(val); in.low_beam_set = true; n++; }
     else if (eqIgnoreCase(key, "position")) { in.position = truthy(val); in.position_set = true; n++; }
     else if (eqIgnoreCase(key, "door"))     { in.door = truthy(val);     in.door_set = true; n++; }
-    else if (eqIgnoreCase(key, "mute"))     { in.mute = truthy(val);     n++; }
+    // ★ 2026-10-15：`mute=` 这个键**已删**（蜂鸣器整车砍掉 ⇒ 没有可掐的东西）。
+    //   写它的老控制文件照旧安全：认不出的键**不报错也不静默**（返回值里不算它，
+    //   调用方据此打一行提示）—— 这正是这一段原本就有的语义。
     // 圆屏遮罩（2.8C 档）：`mask=0` 关掉、`mask=1` 打开。
     // ★ 它不需要单独的 *_set 旗标：默认值就是"开"，而"写了 mask=0"与
-    //   "从没写过"对**结果**的影响是可区分的（前者覆盖默认值）——
-    //   和 mute 一样是"值即语义"的那一类。`clear=1` 会把它复位成"开"。
+    //   "从没写过"对**结果**的影响是可区分的（前者覆盖默认值）。
+    //   `clear=1` 会把它复位成"开"。
     else if (eqIgnoreCase(key, "mask"))     { in.panel_mask = truthy(val); in.panel_mask_set = true; n++; }
     // 「系统状态判据」的注入（2026-09-24 第二轮）：`sim=1` / `sim=0`。
     // ★ 语义是"**这一拍的数据层长什么样**"：1 = 来源 Van + VAN 帧新鲜
@@ -310,7 +323,7 @@ inline int preview_apply_control_text(PreviewInput& in, const char* text) {
 //   当成 bug 查的那一类**，而 main.cpp 不参与 native 链接 ⇒ 只有搬进 lib/
 //   才测得到（与 preview_apply_key 当初搬过来的理由逐字相同）。
 //
-// 语义（每一条都有用例钉住，见 test/test_dashcore/test_ui_lamps.cpp）：
+// 语义（每一条都有用例钉住，见 test/test_dashcore/test_preview_input.cpp）：
 //   ① 只有 `*_set` 成立的那一项才被覆写 —— "没注入过"不等于"注入成 0"；
 //   ② 双闪**先**施加、左右箭头**后**施加：
 //      · `hazard=1` ⇒ 左右两位一起置位（数据层 §4.3 的位域语义：

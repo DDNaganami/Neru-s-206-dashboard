@@ -3,10 +3,15 @@
 //
 // 三条规则的每一条都要有**正反两面**（这才叫测掉了）:
 //   ① 去抖:短于窗口不报 / 连续够了才报 / 中途断掉要**重新计时**
-//   ② 最短重复间隔:一直成立也只是"每 N 毫秒响一声",不会变成长鸣
-//   ③ 静音:掐蜂鸣器、**不掐**屏上那条(active() 照旧)
-// 外加:优先级、迟滞、只认已解字段(双闪不算"忘关")、reset 的语义、
-//       以及蜂鸣器抽象本身（宿主实现真的落了一行、空实现真的什么都不做）。
+//   ② 迟滞:进用阈值、退用阈值减迟滞（贴着边界不许来回抖）
+//   ③ 优先级:同时命中多条时只报最高的那一条
+// 外加:只认已解字段(双闪不算"忘关")、reset 的语义、
+//       以及**配置钳制**（那份配置现在能从 theme.json 来）。
+//
+// ★★ 2026-10-15：蜂鸣器整车砍掉（车主原话"蜂鸣器功能砍掉，节省资源"）⇒
+//   原来那批 `beepCount()` / `beeping()` / `pattern()` / 静音开关的断言全部
+//   改写或删除。**判据一条都没少**：本文件现在钉的就是"该报哪一条"，
+//   而不再是"响了几声"。
 //
 // ★ 全部是**纯逻辑**用例:不碰 LVGL、不碰串口、不读时钟 —— Alerts::update()
 //   的 now_ms 由用例自己喂,所以"20 秒"这种窗口在用例里是零成本的。
@@ -21,7 +26,6 @@
 #include <unity.h>
 #include <string.h>
 #include "alerts.h"
-#include "buzzer.h"
 
 // 造一个干净的 VehicleState（默认值里 speed=0 / rpm=0，不会误触发）
 static VehicleState clean() {
@@ -32,7 +36,7 @@ static VehicleState clean() {
 }
 
 // ============================================================
-// 一、什么都不满足 ⇒ 不报、不响
+// 一、什么都不满足 ⇒ 一条都不报
 // ============================================================
 void test_alerts_idle_by_default(void) {
   Alerts a;
@@ -40,9 +44,7 @@ void test_alerts_idle_by_default(void) {
   for (uint32_t t = 1000; t <= 5000; t += 100) {
     TEST_ASSERT_TRUE(a.update(s, t) == AlertKind::None);
   }
-  TEST_ASSERT_EQUAL_UINT32(0u, a.beepCount());
-  TEST_ASSERT_FALSE(a.beeping());
-  TEST_ASSERT_TRUE(a.pattern() == BeepPattern::Silent);
+  TEST_ASSERT_TRUE(a.active() == AlertKind::None);
 
   // ★ 只为"未解字段不给告警"这条纪律留个反证:水温/进气/油量乱填到危险值,
   //   也**一条都不许触发**（它们要么是 OBD 的、要么根本没解出来）。
@@ -51,69 +53,70 @@ void test_alerts_idle_by_default(void) {
   hot.intake_c = 90.0f;
   hot.fuel_pct = 1.0f;
   TEST_ASSERT_TRUE(a.update(hot, 5100) == AlertKind::None);
-  TEST_ASSERT_EQUAL_UINT32(0u, a.beepCount());
 }
 
 // ============================================================
-// 二、超速:进 120 / 退 117(迟滞)
+// 二、超速:进 150 / 退 147(迟滞)
+//
+// ★★ 2026-10-15：阈值 **120 → 150**（车主拍板："速度表超过 150KM/H 的时候也红吧"）。
+//   理由与红区那条一样：**不留两套不一致的阈值**（告警一个数、屏上另一个数，
+//   车主就永远看不出提示）。下面的断言**一律走 `a.config()`**，所以改阈值不用改
+//   这里的数字 —— 只有注释里的数要跟着走。
 // ============================================================
 void test_alerts_overspeed_with_hysteresis(void) {
   Alerts a;
   VehicleState s = clean();
 
-  // 119.9 < 120:连跑 3 秒都不报（顺带证明"没到阈值就是没到,与时间无关"）
+  // 阈值下 0.1：连跑 3 秒都不报（顺带证明"没到阈值就是没到,与时间无关"）
   s.speed_kmh = a.config().overspeed_kmh - 0.1f;
   for (uint32_t t = 1000; t <= 4000; t += 100) a.update(s, t);
   TEST_ASSERT_TRUE(a.active() == AlertKind::None);
-  TEST_ASSERT_EQUAL_UINT32(0u, a.beepCount());
 
-  // 到 120:去抖窗口 250 ms **差一点**不够 ⇒ 还不报（4500 - 4400 = 100）
+  // 到阈值:去抖窗口 250 ms **差一点**不够 ⇒ 还不报（4500 - 4400 = 100）
   s.speed_kmh = a.config().overspeed_kmh;
   a.update(s, 4400);
   TEST_ASSERT_TRUE(a.active() == AlertKind::None);
-  // 够 250 ms ⇒ 报,并**立刻**响一声（首声不等重复间隔）
+  // 够 250 ms ⇒ 报
   a.update(s, 4650);
   TEST_ASSERT_TRUE(a.active() == AlertKind::Overspeed);
-  TEST_ASSERT_TRUE(a.beeping());
-  TEST_ASSERT_TRUE(a.pattern() == BeepPattern::Urgent);
-  TEST_ASSERT_EQUAL_UINT32(1u, a.beepCount());
 
-  // 掉到 118（> 117，在迟滞带里）⇒ **继续报**（不来回跳）
-  s.speed_kmh = 118.0f;
+  // 掉到"阈值 - 迟滞 + 1"（在迟滞带里）⇒ **继续报**（不来回跳）
+  s.speed_kmh = a.config().overspeed_kmh - a.config().overspeed_hyst_kmh + 1.0f;
   a.update(s, 4750);
   TEST_ASSERT_TRUE(a.active() == AlertKind::Overspeed);
 
-  // 掉到 116（< 117）⇒ 立刻清（恢复不需要去抖）
-  s.speed_kmh = 116.0f;
+  // 掉到"阈值 - 迟滞 - 1"（出迟滞带）⇒ 立刻清（恢复不需要去抖）
+  s.speed_kmh = a.config().overspeed_kmh - a.config().overspeed_hyst_kmh - 1.0f;
   a.update(s, 4850);
   TEST_ASSERT_TRUE(a.active() == AlertKind::None);
-  TEST_ASSERT_FALSE(a.beeping());
 
-  // 回到 119（> 117 但 < 120）⇒ 仍然不报 —— 迟滞是**两侧**的
-  s.speed_kmh = 119.0f;
+  // 回到迟滞带内（> 退出门槛但 < 进入门槛）⇒ 仍然不报 —— 迟滞是**两侧**的
+  s.speed_kmh = a.config().overspeed_kmh - 1.0f;
   for (uint32_t t = 4950; t <= 7000; t += 100) a.update(s, t);
   TEST_ASSERT_TRUE(a.active() == AlertKind::None);
 }
 
 // ============================================================
-// 三、转速红区:5800 / 退 5600
+// 三、转速红区:进 5500 / 退 5300（迟滞 200）
+//
+// ★★ 2026-10-15：阈值 **5800 → 5500**（车主拍板："红区提示 5500"）。
+//   与 `expression.cpp` 的 `kRpmRedlineFrom`、`face_stages.h` 的阶段表行
+//   是**同一个触发点**（三处一起改，理由见 alerts.h 那一段）。
 // ============================================================
 void test_alerts_redline(void) {
   Alerts a;
   VehicleState s = clean();
 
-  s.rpm = a.config().redline_rpm - 10.0f;        // 5790 ⇒ 不报
+  s.rpm = a.config().redline_rpm - 10.0f;        // 阈值下 10 转 ⇒ 不报
   for (uint32_t t = 1000; t <= 3000; t += 100) a.update(s, t);
   TEST_ASSERT_TRUE(a.active() == AlertKind::None);
 
-  s.rpm = a.config().redline_rpm;                // 5800 ⇒ 报三短
+  s.rpm = a.config().redline_rpm;                // = 阈值 ⇒ 报
   a.update(s, 3100);
   a.update(s, 3400);                             // 300 ≥ 250 的去抖窗口
   TEST_ASSERT_TRUE(a.active() == AlertKind::Redline);
-  TEST_ASSERT_TRUE(a.pattern() == BeepPattern::Triple);
-  TEST_ASSERT_EQUAL_UINT32(1u, a.beepCount());
 
-  // 退到 5700（> 5600 = 5800 - 200）⇒ 仍在迟滞带,继续报
+  // 退到"阈值 - 迟滞 + 100"（仍在迟滞带里）⇒ 继续报
   s.rpm = a.config().redline_rpm - a.config().redline_hyst_rpm + 100.0f;
   a.update(s, 3500);
   TEST_ASSERT_TRUE(a.active() == AlertKind::Redline);
@@ -129,73 +132,57 @@ void test_alerts_redline(void) {
 // ============================================================
 // ★ 这条就是"别让它一直叫"的直接证据:红区**一直**成立 15 秒,
 //   响的次数必须是 1（首声）+ 每 3 秒一声 = 5 声,而不是"每一拍都响"。
-void test_alerts_beep_repeat_interval(void) {
+// ============================================================
+// 四、★ 2026-10-15 改写：**同一条告警一直成立 ⇒ 一直报同一条，不会自己消失**
+//
+//   这一条原来是"最短重复间隔"（`beepCount()` 每 3 秒 +1）的用例。蜂鸣器砍掉之后
+//   那个读数没有了，但它**底下要防的那件事还在**：条件持续成立时，
+//   `Alerts` 不许把它抖掉、不许换档、也不许"报一次就清"。
+//   ⇒ 判据从"响了几声"换成"active() 15 秒里一个字节都不变"，钉的是同一个不变式。
+// ============================================================
+void test_alerts_redline_stays_latched(void) {
   Alerts a;
   VehicleState s = clean();
   s.rpm = 6000.0f;
 
-  a.update(s, 1000);        // 条件首次成立 ⇒ 计时窗口从这一刻起
+  a.update(s, 1000);        // 条件首次成立 ⇒ 去抖窗口从这一刻起
   a.update(s, 1100);        // 100 ms:还在去抖
-  TEST_ASSERT_EQUAL_UINT32(0u, a.beepCount());
-  a.update(s, 1300);        // 300 ms ≥ 250 ⇒ 第一声
+  TEST_ASSERT_TRUE(a.active() == AlertKind::None);
+  a.update(s, 1300);        // 300 ms ≥ 250 ⇒ 报
   TEST_ASSERT_TRUE(a.active() == AlertKind::Redline);
-  TEST_ASSERT_EQUAL_UINT32(1u, a.beepCount());
 
-  // 到 4299 为止（< 1300 + 3000）一次都不许再响
-  for (uint32_t t = 1400; t <= 4299; t += 100) a.update(s, t);
-  TEST_ASSERT_EQUAL_UINT32(1u, a.beepCount());
-  TEST_ASSERT_FALSE(a.beeping());
-
-  // 越过 1300 + 3000 ⇒ 第二声
-  a.update(s, 4300);
-  TEST_ASSERT_EQUAL_UINT32(2u, a.beepCount());
-  TEST_ASSERT_TRUE(a.beeping());
-
-  // 一直成立到 16300 ⇒ 一共 6 声
-  //   （首声 1300;之后每 3000 ms 一声:4300 / 7300 / 10300 / 13300 / 16300）
-  //   算清楚再断言 —— 5 声是漏数了末尾那一拍（实现是对的,期望值写错了）。
-  for (uint32_t t = 4400; t <= 16300; t += 100) a.update(s, t);
-  TEST_ASSERT_EQUAL_UINT32(6u, a.beepCount());
+  // 一路推到 16300（15 秒）：**每一点都必须是同一条**，一次都不许闪断
+  for (uint32_t t = 1400; t <= 16300; t += 100) {
+    a.update(s, t);
+    TEST_ASSERT_TRUE(a.active() == AlertKind::Redline);
+  }
   TEST_ASSERT_TRUE(a.active() == AlertKind::Redline);
 }
 
 // ============================================================
-// 五、静音:掐蜂鸣器、不掐屏上那条
+// 五、★ 2026-10-15 改写：**没到阈值就是没到**（去抖不能被"时间"糊过去）
+//
+//   这一条原来是"静音开关"的用例（掐蜂鸣器、不掐屏上那条）。
+//   静音随蜂鸣器一起删了，改钉同一段的另一半：**一直没到阈值时，
+//   不管跑多久都不许报** —— 也就是"去抖窗口只对'条件成立'计时"这件事。
 // ============================================================
-void test_alerts_mute_switch(void) {
+void test_alerts_below_threshold_never_reports(void) {
   Alerts a;
   VehicleState s = clean();
-  s.rpm = 6000.0f;
+  s.rpm = a.config().redline_rpm - 1.0f;      // 差 1 转
 
-  a.setMuted(true);
-  TEST_ASSERT_TRUE(a.muted());
-  for (uint32_t t = 1000; t <= 6000; t += 100) a.update(s, t);
-  // 屏上照旧报（静音 ≠ 假装没事）,但一声都没响
+  // 跑 15 秒，每一拍都不许报（"等久一点就会报"是最容易写歪的一种状态机）
+  for (uint32_t t = 1000; t <= 16000; t += 100) {
+    a.update(s, t);
+    TEST_ASSERT_TRUE(a.active() == AlertKind::None);
+  }
+
+  // 补上那 1 转 ⇒ 从这一刻起算去抖（不是"立刻报"）
+  s.rpm = a.config().redline_rpm;
+  a.update(s, 16100);
+  TEST_ASSERT_TRUE(a.active() == AlertKind::None);      // 100 ms < 250
+  a.update(s, 16400);                                   // 300 ms ≥ 250
   TEST_ASSERT_TRUE(a.active() == AlertKind::Redline);
-  TEST_ASSERT_FALSE(a.beeping());
-  TEST_ASSERT_TRUE(a.pattern() == BeepPattern::Silent);
-  TEST_ASSERT_EQUAL_UINT32(0u, a.beepCount());
-
-  // 取消静音 ⇒ **立刻**响（静音期间没响过,所以不必等重复间隔）
-  a.setMuted(false);
-  a.update(s, 6100);
-  TEST_ASSERT_TRUE(a.beeping());
-  TEST_ASSERT_EQUAL_UINT32(1u, a.beepCount());
-
-  // toggle 也要能用（真机上就是一个键）
-  a.toggleMuted();
-  TEST_ASSERT_TRUE(a.muted());
-  a.toggleMuted();
-  TEST_ASSERT_FALSE(a.muted());
-
-  // 静音之后再响,间隔仍然按"上一次**真响**的时刻"算
-  a.setMuted(true);
-  a.update(s, 7000);
-  a.setMuted(false);
-  a.update(s, 8000);        // 700 距上一次真响（6100）不到 3 秒 ⇒ 不响
-  TEST_ASSERT_EQUAL_UINT32(1u, a.beepCount());
-  a.update(s, 9200);        // 3100 ≥ 3000 ⇒ 响
-  TEST_ASSERT_EQUAL_UINT32(2u, a.beepCount());
 }
 
 // ============================================================
@@ -222,7 +209,6 @@ void test_alerts_door_uses_activity(void) {
   TEST_ASSERT_TRUE(a.active() == AlertKind::None);
   a.update(s, 1600);                       // 300 ≥ 200 ⇒ 报
   TEST_ASSERT_TRUE(a.active() == AlertKind::Door);
-  TEST_ASSERT_TRUE(a.pattern() == BeepPattern::Long);
 
   // 活动结束 ⇒ 立刻清
   s.door_activity = false;
@@ -245,8 +231,6 @@ void test_alerts_turn_signal_left_on(void) {
   TEST_ASSERT_TRUE(a.active() == AlertKind::None);       // 19900:还没到
   a.update(s, kOn + kNeed);
   TEST_ASSERT_TRUE(a.active() == AlertKind::TurnSignal);
-  TEST_ASSERT_TRUE(a.pattern() == BeepPattern::Short);
-  TEST_ASSERT_EQUAL_UINT32(1u, a.beepCount());
   // 打回（左灭）⇒ 立刻清
   s.indicator_left = false;
   a.update(s, kOn + kNeed + 100);
@@ -281,7 +265,6 @@ void test_alerts_hazard_is_not_forgotten_signal(void) {
   s.hazard = true;
   for (uint32_t t = 1000; t <= 61000; t += 250) a.update(s, t);
   TEST_ASSERT_TRUE(a.active() == AlertKind::None);
-  TEST_ASSERT_EQUAL_UINT32(0u, a.beepCount());
 }
 
 // ============================================================
@@ -292,8 +275,11 @@ void test_alerts_priority_and_single_output(void) {
   VehicleState s = clean();
   const uint32_t kTurnOn = 1000;
 
-  // 四条全命中:超速 130 + 红区 6000 + 门活动 + 左转亮着
-  s.speed_kmh = 130.0f;
+  // 四条全命中:超速 160 + 红区 6000 + 门活动 + 左转亮着
+  // ★★ 2026-10-15：车速从 130 提到 **160** —— 超速阈值当天从 120 涨到 150，
+  //   而这一条测的是"四条同时成立时挑最重的那一条"，所以那一位**必须真的成立**
+  //   （130 现在不构成超速，用例会当场红 —— 那条红是**对的**，它逼着这里跟着改）。
+  s.speed_kmh = 160.0f;
   s.rpm = 6000.0f;
   s.door_activity = true;
   s.indicator_left = true;
@@ -303,18 +289,11 @@ void test_alerts_priority_and_single_output(void) {
   const uint32_t tEnd = kTurnOn + a.config().turn_signal_on_ms + 1000u;
   for (uint32_t t = kTurnOn; t <= tEnd; t += 250) a.update(s, t);
   TEST_ASSERT_TRUE(a.active() == AlertKind::Overspeed);       // 最高
-  // ★ 这里断言的是 `patternFor()`,**不是** `a.pattern()`:
-  //   `pattern()` 只在"这一拍正在响"时才有值（其余时候是 Silent,
-  //   见 alerts.cpp 的最后一行）—— 循环最后一拍未必落在该响的那一刻。
-  //   "模式映射"与"什么时候响"是两件事,别在一条断言里混。
-  TEST_ASSERT_TRUE(Alerts::patternFor(a.active()) == BeepPattern::Urgent);
 
-  // 车速掉下去 ⇒ 下一条顶上（红区），而且**模式跟着换**
+  // 车速掉下去 ⇒ 下一条顶上（红区）
   s.speed_kmh = 0.0f;
   a.update(s, tEnd + 250);
   TEST_ASSERT_TRUE(a.active() == AlertKind::Redline);
-  TEST_ASSERT_TRUE(Alerts::patternFor(a.active()) == BeepPattern::Triple);
-  TEST_ASSERT_TRUE(a.beepCount() >= 2u);      // 换了一条 ⇒ 可以立刻响
 
   // 转速也掉 ⇒ 门顶上
   s.rpm = 0.0f;
@@ -330,11 +309,14 @@ void test_alerts_priority_and_single_output(void) {
   s.indicator_left = false;
   a.update(s, tEnd + 1000);
   TEST_ASSERT_TRUE(a.active() == AlertKind::None);
-  TEST_ASSERT_TRUE(a.pattern() == BeepPattern::Silent);
 }
 
 // ============================================================
-// 九、reset() 的语义:清状态机、**不清**静音与计数
+// 九、reset() 的语义:清状态机（换数据源时不带上一路"还在报"过来）
+//
+// ★★ 2026-10-15：原来是"清状态机、**不清**静音与计数"。蜂鸣器砍掉之后
+//   "静音与计数"都不存在了 ⇒ 这一条只剩前半条，但**要防的事一模一样**：
+//   reset 之后条件仍成立时，必须**重新去抖**（不是"立刻又报"）。
 // ============================================================
 void test_alerts_reset_semantics(void) {
   Alerts a;
@@ -343,19 +325,11 @@ void test_alerts_reset_semantics(void) {
   a.update(s, 1000);
   a.update(s, 1300);
   TEST_ASSERT_TRUE(a.active() == AlertKind::Redline);
-  const uint32_t beeps = a.beepCount();
-  TEST_ASSERT_EQUAL_UINT32(1u, beeps);
-  a.setMuted(true);
 
   a.reset();
   TEST_ASSERT_TRUE(a.active() == AlertKind::None);
-  TEST_ASSERT_TRUE(a.pattern() == BeepPattern::Silent);
-  TEST_ASSERT_FALSE(a.beeping());
-  TEST_ASSERT_EQUAL_UINT32(beeps, a.beepCount());   // 计数保留
-  TEST_ASSERT_TRUE(a.muted());                      // 静音保留（是人的选择）
 
   // 复位之后条件仍成立 ⇒ 要**重新**去抖（不是"立刻又报"）
-  a.setMuted(false);
   a.update(s, 5000);
   TEST_ASSERT_TRUE(a.active() == AlertKind::None);   // 计时窗口从这一刻重开
   a.update(s, 5200);                                 // 200 < 250 ⇒ 还不报
@@ -365,60 +339,43 @@ void test_alerts_reset_semantics(void) {
 }
 
 // ============================================================
-// 十、蜂鸣器抽象本身:空实现真的什么都不做;宿主实现真的落一行
+// 十、★ 2026-10-15：告警名（日志/诊断页用）逐条对账
+//
+//   这一组原来是"蜂鸣器抽象本身"（`BuzzerNull`/`BuzzerHost` 各钉一条 +
+//   `patternFor()` 四条互不相同）。蜂鸣器与 `BeepPattern` 整车砍掉 ⇒
+//   那部分断言删了；留下的这一半**照旧重要**：`alertName()` 是串口日志
+//   （`alert: redline`）与诊断页那一格的取值来源，有一个空洞就会打出 "?"。
 // ============================================================
-// ★ 这一组是"抽象后面挂着可替换实现"这句话的**可验证形式**:
-//   真机上要换的是另一个 Buzzer 子类（2.8C 的 TCA9554 EXIO8），
-//   而 alerts 那一侧一行都不用动 —— 所以这里对两个实现的接口行为各钉一条。
-void test_buzzer_abstraction(void) {
-  const char* buzzer_host_last_line(void);   // 见 buzzer.cpp
-
-  BuzzerNull none;
-  none.begin();
-  none.beep(BeepPattern::Urgent, 120);
-  none.off();
-  TEST_ASSERT_EQUAL_STRING("null", none.name());
-
-  BuzzerHost host;
-  host.begin();
-  host.beep(BeepPattern::Triple, 120);
-  host.off();
-  TEST_ASSERT_EQUAL_STRING("host", host.name());
-  // 格式固定为 "BEEP pattern=<名字> ms=<数>"（纯 ASCII,见 buzzer.cpp 的说明）
-  TEST_ASSERT_EQUAL_STRING("BEEP pattern=triple ms=120", buzzer_host_last_line());
-
-  // 五种模式的名字都要有（不许有空洞 —— 屏幕上/日志里会出现"?"）
-  TEST_ASSERT_EQUAL_STRING("silent", beepPatternName(BeepPattern::Silent));
-  TEST_ASSERT_EQUAL_STRING("short", beepPatternName(BeepPattern::Short));
-  TEST_ASSERT_EQUAL_STRING("triple", beepPatternName(BeepPattern::Triple));
-  TEST_ASSERT_EQUAL_STRING("urgent", beepPatternName(BeepPattern::Urgent));
-  TEST_ASSERT_EQUAL_STRING("long", beepPatternName(BeepPattern::Long));
-
-  // 告警名同理
+void test_alert_names_have_no_holes(void) {
   TEST_ASSERT_EQUAL_STRING("none", alertName(AlertKind::None));
   TEST_ASSERT_EQUAL_STRING("overspeed", alertName(AlertKind::Overspeed));
   TEST_ASSERT_EQUAL_STRING("redline", alertName(AlertKind::Redline));
   TEST_ASSERT_EQUAL_STRING("door", alertName(AlertKind::Door));
   TEST_ASSERT_EQUAL_STRING("turn-signal", alertName(AlertKind::TurnSignal));
 
-  // 模式映射:每条告警一个模式,且**没有两条共用**（共用就分不出是谁在响）
-  const BeepPattern pats[4] = {
-    Alerts::patternFor(AlertKind::Overspeed), Alerts::patternFor(AlertKind::Redline),
-    Alerts::patternFor(AlertKind::Door),      Alerts::patternFor(AlertKind::TurnSignal),
-  };
-  for (int i = 0; i < 4; ++i) {
-    TEST_ASSERT_TRUE(pats[i] != BeepPattern::Silent);
-    for (int j = i + 1; j < 4; ++j) TEST_ASSERT_TRUE(pats[i] != pats[j]);
+  // ★ 枚举里**每一条**都要有名字（含 Count 那个哨兵不要紧，但合法的几条必须有）
+  for (uint8_t i = 0; i < (uint8_t)AlertKind::Count; ++i) {
+    const char* n = alertName((AlertKind)i);
+    TEST_ASSERT_NOT_NULL(n);
+    TEST_ASSERT_TRUE(strlen(n) > 0);
+    TEST_ASSERT_TRUE(strcmp(n, "?") != 0);
   }
+  // 越界的值走兜底（不许崩、也不许返回空指针）
+  TEST_ASSERT_EQUAL_STRING("?", alertName((AlertKind)200));
 }
 
 // ============================================================
-// 四、配置钳制（2026-09-27 新增）
+// 十一、配置钳制（2026-09-27 新增）
 //
 // 为什么要有它：这份配置现在**能从主题文件来**（编辑器里拖控件改，见
 // lib/themetool/theme_store.cpp 的 theme_parse_alerts_json）⇒ 它从"编译期常量"
 // 变成了"外部输入"。下面每一条都对应一个"手滑写进去、屏上和日志上都看不出来"
 // 的坑 —— 所以每条都验**边界值本身**，而不是"随便钳一下"。
+//
+// ★★ 2026-10-15：`beep_ms` / `beep_min_interval_ms` 两条**照旧验** ——
+//   蜂鸣器虽然删了，但这两个键还住在 `theme.json` 的 `alerts` 段里、
+//   解析器照旧读它们、`alerts_config_clamp()` 照旧钳它们（删了钳制会让
+//   老主题文件"看起来坏了"）。它们现在只是**没有消费方**。
 // ============================================================
 void test_alerts_config_clamp_ranges(void) {
   AlertsConfig c;
@@ -500,12 +457,15 @@ void test_alerts_config_clamp_ranges(void) {
 }
 
 // 钳制之后的那份配置**真的会被告警层用**（不是钳了个摆设）：
-// 把超速阈值设到 90，车速 95 就该报 —— 而同一个 95 在默认 120 下不该报。
+// 把超速阈值设到 90，车速 95 就该报 —— 而同一个 95 在默认阈值下不该报。
+// ★★ 2026-10-15：默认阈值从 120 改成 150 之后，这仍然成立（95 < 150）；
+//   而且这里**刻意走两条不同的路**（一条用默认、一条用 setConfig），
+//   于是"阈值到底是谁说了算"这件事在这里被钉死。
 void test_alerts_clamped_config_is_actually_used(void) {
   VehicleState s = clean();
   s.speed_kmh = 95.0f;
 
-  Alerts a;                       // 默认阈值 120
+  Alerts a;                       // 默认阈值（现在是 150）
   uint32_t t = 1000;
   for (; t <= 4000; t += 100) TEST_ASSERT_EQUAL((int)AlertKind::None, (int)a.update(s, t));
 
@@ -520,18 +480,38 @@ void test_alerts_clamped_config_is_actually_used(void) {
   TEST_ASSERT_EQUAL((int)AlertKind::Overspeed, (int)got);
 }
 
+// ★★ 2026-10-15 新增：**默认阈值本身就是这次要的口径**
+//   （车主："速度表超过 150KM/H 的时候也红吧" ⇒ `overspeed_kmh = 150`）。
+//   ★ 为什么把默认值也钉一遍：它是固件层面"屏上那条红色提示什么时候出现"的
+//     唯一出处（主题文件没写 `alerts.overspeed_kmh` 时就是它）。
+//     与红区那条同理（见下一条）。
+void test_alerts_default_thresholds_are_the_agreed_ones(void) {
+  const AlertsConfig def{};
+  TEST_ASSERT_EQUAL_FLOAT(150.0f, def.overspeed_kmh);   // 车主口径：150
+  TEST_ASSERT_EQUAL_FLOAT(3.0f, def.overspeed_hyst_kmh);  // 迟滞保留
+  TEST_ASSERT_EQUAL_FLOAT(5500.0f, def.redline_rpm);    // 车主口径：5500
+  TEST_ASSERT_EQUAL_FLOAT(200.0f, def.redline_hyst_rpm);  // 迟滞保留
+  // 钳制允许这两个值原样穿过（`kAlertsOverspeedMaxKmh` = 300、
+  // `kAlertsRedlineMinRpm` = 0 ⇒ 150 与 5500 都在范围内）
+  AlertsConfig c = def;
+  alerts_config_clamp(c);
+  TEST_ASSERT_EQUAL_FLOAT(150.0f, c.overspeed_kmh);
+  TEST_ASSERT_EQUAL_FLOAT(5500.0f, c.redline_rpm);
+}
+
 void register_alerts_tests(void) {
   RUN_TEST(test_alerts_idle_by_default);
   RUN_TEST(test_alerts_overspeed_with_hysteresis);
   RUN_TEST(test_alerts_redline);
-  RUN_TEST(test_alerts_beep_repeat_interval);
-  RUN_TEST(test_alerts_mute_switch);
+  RUN_TEST(test_alerts_redline_stays_latched);
+  RUN_TEST(test_alerts_below_threshold_never_reports);
   RUN_TEST(test_alerts_door_uses_activity);
   RUN_TEST(test_alerts_turn_signal_left_on);
   RUN_TEST(test_alerts_hazard_is_not_forgotten_signal);
   RUN_TEST(test_alerts_priority_and_single_output);
   RUN_TEST(test_alerts_reset_semantics);
-  RUN_TEST(test_buzzer_abstraction);
+  RUN_TEST(test_alert_names_have_no_holes);
   RUN_TEST(test_alerts_config_clamp_ranges);
   RUN_TEST(test_alerts_clamped_config_is_actually_used);
+  RUN_TEST(test_alerts_default_thresholds_are_the_agreed_ones);
 }

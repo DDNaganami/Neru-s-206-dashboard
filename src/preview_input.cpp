@@ -69,7 +69,9 @@ static PreviewKey win_read_key() {
     case 'd': case 'D': return PreviewKey::Door;
     case 'o': case 'O': return PreviewKey::Overspeed;
     case 'r': case 'R': return PreviewKey::Redline;
-    case 'm': case 'M': return PreviewKey::Mute;
+    // ★★ 2026-10-15：`m` / `M`（蜂鸣器静音开关）**已删** —— 蜂鸣器整车砍掉
+    //   （车主原话"蜂鸣器功能砍掉，节省资源"）⇒ 没有可掐的东西了。
+    //   这两个键现在落到 default ⇒ 返回 `PreviewKey::None`（键位空着，不报错）。
     // 圆屏遮罩开关（2.8C 档）：`v` 而不是别的字母 —— 它标的是"可见区(visible)"。
     // ★ 与 `x`/Esc 分开：X 是"全清"（回到假数据），V 只翻遮罩这一位，
     //   按 V 不该把转向灯/门那些注入一起清掉。
@@ -80,7 +82,7 @@ static PreviewKey win_read_key() {
     //      见 ARCHITECTURE.md 的显示约定一节）。
     // `t`：把这一拍的数据层口径切成"实测"（T = treat as real）。
     //      按一下角标消失、再按一下回来 —— 这正是验收要演示的那一条。
-    // ★ 两个字母都不是既有键（既有：←/→/空格/L/P/D/O/R/M/V/X/Esc）。
+    // ★ 两个字母都不是既有键（既有：←/→/空格/L/P/D/O/R/V/X/Esc）。
     case 'k': case 'K': return PreviewKey::Diag;
     case 't': case 'T': return PreviewKey::Sim;
     case 'x': case 'X': return PreviewKey::Clear;
@@ -178,7 +180,9 @@ bool preview_input_poll(PreviewInput& in) {
         in.sim_ok_set = true;
       }
       // 诊断页翻页（事件位）：**只置位、不清**，由主循环按边沿处理。
-      if (file_in.diag_toggle_req) in.diag_toggle_req = true;      in.mute = file_in.mute;
+      // ★★ 2026-10-15：这一行原来还挂着 `in.mute = file_in.mute;` —— 静音开关
+      //   随蜂鸣器一起删了（`PreviewInput::mute` 字段与控制文件的 `mute=` 键都已删除）。
+      if (file_in.diag_toggle_req) in.diag_toggle_req = true;
       // 遮罩：**只有控制文件里真的写了 `mask=` 才覆盖**（判据是那个 `_set` 旗标，
       // 不是"值不等于默认"）。★ 少了这条判断，键盘按 V 关掉遮罩之后会被下一帧
       // 文件重读按默认值（开）盖回去 —— 看着就是"V 没用"，而那是这一层最典型的坑。

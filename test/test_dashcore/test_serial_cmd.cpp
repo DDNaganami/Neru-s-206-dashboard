@@ -13,6 +13,9 @@
 //   · ★ `r`（面板重初始化）是**现场救黑屏**的唯一软件手段 ⇒ 它必须被认出来；
 //     而它一旦**误**认（比如把某个回放字符吃成重初始化），就会给面板来一次
 //     不必要的复位 ⇒ 两个方向都要钉住。
+//   · ★★ 2026-10-15：`m`（静音）与 `b`（蜂鸣器试响）随蜂鸣器一起删了
+//     （车主原话"蜂鸣器功能砍掉，节省资源"）。**删字符**也是两个方向之一：
+//     它现在必须返回 `None`、照旧进回放路径（见 test_serial_cmd_mb_are_not_commands）。
 // ============================================================
 #include <unity.h>
 #include <stdint.h>
@@ -20,12 +23,14 @@
 #include "serial_cmd.h"
 
 // ============================================================
-// 一、命令表：**只有这六个小写字符**是命令
+// 一、命令表：**只有这几个小写字符**是命令
 // ============================================================
+// ★★ 2026-10-15：原来这里还有 `m`（静音）与 `b`（蜂鸣器试响）两条。蜂鸣器整车
+//   砍掉（车主原话"蜂鸣器功能砍掉，节省资源"）⇒ 那两个字符**不再是命令**
+//   （见下面 test_serial_cmd_mb_are_not_commands，它把"删掉之后照旧进回放路径"
+//   这件事钉住 —— 删字符的方向与"多认一个字符"一样要有人管）。
 void test_serial_cmd_table(void) {
   TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::Diag,   (uint8_t)serial_cmd_classify('d'));
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::Mute,   (uint8_t)serial_cmd_classify('m'));
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::Beep,   (uint8_t)serial_cmd_classify('b'));
   TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::Reinit, (uint8_t)serial_cmd_classify('r'));
   TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::Inject, (uint8_t)serial_cmd_classify('i'));
   // ★ 注入那一档的**动作**由编译开关决定（默认构建里恒 false ⇒ 调用方把它当普通字符）
@@ -37,16 +42,33 @@ void test_serial_cmd_table(void) {
   TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::Wire, (uint8_t)serial_cmd_classify('w'));
 }
 
+// ★★ 2026-10-15 新增：**删掉的那两个字符必须是 None**
+//   `m` / `b` 以前是命令，现在蜂鸣器砍了 ⇒ 它们必须**干净地**回到"不是命令"。
+//   ★ 为什么这条值得单独钉：它们都落在**十六进制字母表**里（a-f 那一段），
+//     而这个串口上同时跑着 `VAN 824 18F8271D000000` 这种回放行 ⇒
+//     "多认一个字符"会吃掉回放行、"少认一个"才会让命令按了没反应。
+//     删字符属于后者，方向安全，但一样要有人管住（免得哪天又被人加回来一半）。
+void test_serial_cmd_mb_are_not_commands(void) {
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::None, (uint8_t)serial_cmd_classify('m'));
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::None, (uint8_t)serial_cmd_classify('b'));
+}
+
 // ============================================================
 // 二、大写一律**不是**命令（这一条直接保护回放：`VAN …` 行的首字符是 V）
-//    ★ 大写 D/M/B/R 在十六进制里根本不出现，但"多认一个"比"少认一个"危险得多。
+//    ★ 大写 D/I/M/B 在十六进制里根本不出现，但"多认一个"比"少认一个"危险得多。
+//    ★★ 2026-10-15 注意：**`R`（大写）= `SerialCmd::Rebuild`**，它是**命令**，
+//      不在这一组里 —— 加它进来会让这条用例红（那正是它该做的：
+//      这个数组的语义是"这些大写字母**不是**命令"，写错一个就是写错判据）。
 // ============================================================
 void test_serial_cmd_rejects_uppercase(void) {
-  const char ups[] = { 'D', 'M', 'B', 'R', 'I', 'V', 'A', 'N' };
+  const char ups[] = { 'D', 'I', 'M', 'B', 'V', 'A', 'N' };
   for (unsigned i = 0; i < sizeof(ups); i++) {
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::None,
                             (uint8_t)serial_cmd_classify(ups[i]));
   }
+  // `R` 是**唯一**大写命令（面板全量重建），单独钉住这个例外
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::Rebuild,
+                          (uint8_t)serial_cmd_classify('R'));
 }
 
 // ============================================================
@@ -55,14 +77,14 @@ void test_serial_cmd_rejects_uppercase(void) {
 //      ⇒ 危险的是 a-f 与数字；这里把 a-f 与数字逐个过一遍）
 // ============================================================
 void test_serial_cmd_hex_chars_are_not_commands(void) {
-  // ★ `b` 与 `d` 是**唯二**落在十六进制字母表里的小写命令字符！
+  // ★★ 2026-10-15：`b`（试响）原来也是"落在十六进制字母表里的小写命令"之一，
+  //   它随蜂鸣器删掉之后，这一档**只剩 `d`** 一个（`b` 现在归下面那批"不是命令"）。
   //   ⇒ 它们能工作**完全**依赖调用方那条"只认行首 / 缓冲里已有 V/v 时不吃"的判据。
   //   这一条断言是**刻意**写出来的：它把"为什么必须要行首判据"钉在案上。
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::Beep, (uint8_t)serial_cmd_classify('b'));
   TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::Diag, (uint8_t)serial_cmd_classify('d'));
-  // 其余十六进制字符全不是命令
+  // 其余十六进制字符全不是命令（`b` 现在也在这批里 —— 蜂鸣器已删）
   const char hex[] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-                       'a', 'c', 'e', 'f' };
+                       'a', 'b', 'c', 'e', 'f' };
   for (unsigned i = 0; i < sizeof(hex); i++) {
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SerialCmd::None, (uint8_t)serial_cmd_classify(hex[i]));
   }
@@ -119,6 +141,7 @@ void test_serial_cmd_inject_count(void) {
 
 void register_serial_cmd_tests(void) {
   RUN_TEST(test_serial_cmd_table);
+  RUN_TEST(test_serial_cmd_mb_are_not_commands);
   RUN_TEST(test_serial_cmd_rejects_uppercase);
   RUN_TEST(test_serial_cmd_hex_chars_are_not_commands);
   RUN_TEST(test_serial_cmd_control_chars_are_not_commands);

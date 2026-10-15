@@ -197,8 +197,13 @@ static void test_rpm_stages_use_real_landmarks(void) {
   //   免得以后有人"顺手"把它改成 kRpmMax 让模拟看起来走到头。
   TEST_ASSERT_TRUE_MESSAGE(rows[4]->rpm < kRpmMax,
                            "转速·红区 不该取表盘上限 7000 —— 发动机到不了,取断油附近");
-  TEST_ASSERT_TRUE_MESSAGE(rows[4]->rpm >= 5800.0f,
-                           "转速·红区 必须落进红区档(>=5800,断油 6300 之下)");
+  TEST_ASSERT_TRUE_MESSAGE(rows[4]->rpm >= 5580.0f,
+                           "转速·红区 必须落进红区档(触发点 5500 + 迟滞 80 = 5580 起)");
+  // 编码纪律：本文件用与 test_main.cpp 相同的 UTF-8 字符串字面量（见 README）。
+  // ★★ 2026-10-15：这一条原来写的是 `>= 5800.0f`（与当时的触发点 5800 同龄）。
+  //   触发点降到 5500 之后，下界必须跟着走 —— **但不能直接填 5500**：
+  //   状态机的进入门槛是"阈值 + 迟滞 80 = 5580"，填 5500 会让 `run_stage`
+  //   （下面第 5 条断言）落在**高转**档。所以下界取 5580（= 真实门槛）。
   // 运动/高转取中间,而且要各自真的落在"运动"/"高转"那一档
   TEST_ASSERT_TRUE(rows[2]->rpm > kRpmCruiseNominal);
   TEST_ASSERT_TRUE(rows[3]->rpm > rows[2]->rpm);

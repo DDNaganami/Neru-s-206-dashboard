@@ -39,19 +39,23 @@ static Face right_of(float speed, uint32_t t) {
 //   由下面的 test_face_ladder_hysteresis 连帧测。
 void test_left_follows_rpm_only(void) {
   // 转速五档边界(按 TU5JP4 + AL4 的活动范围定,见 expression.cpp 顶部)
+  // ★★ 2026-10-15：红区那条边界从 **5800 → 5500**（车主拍板）。进入门槛 =
+  //   阈值 + 迟滞 80 = **5580** ⇒ 下面 5579 / 5580 那一对跟着改。
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle,    (uint8_t)at(0, 1579).left);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise,  (uint8_t)at(0, 1580).left);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Cruise,  (uint8_t)at(0, 3579).left);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport,   (uint8_t)at(0, 3580).left);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Sport,   (uint8_t)at(0, 4579).left);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::High,    (uint8_t)at(0, 4580).left);
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::High,    (uint8_t)at(0, 5879).left);
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Redline, (uint8_t)at(0, 5880).left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::High,    (uint8_t)at(0, 5579).left);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Redline, (uint8_t)at(0, 5580).left);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Redline, (uint8_t)at(0, kRpmMax).left);
 
   // ★ 实车地标必须各自落在**对的那一档**里(这是用户给的真实数据,
   //   不是"随便取几个点"):怠速 900 → 怠速、巡航 2000 → 巡航、
-  //   4200 → 运动、5200 → 高转、6500 → 红区(断油附近)
+  //   4200 → 运动、5200 → 高转、6200 → 红区(断油附近)
+  //   ★★ 2026-10-15：红区那一档的**门槛**降到 5500，所以 5200 仍然是"高转"
+  //     （门槛 5580），而 6200 稳稳在红区里。
   TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Idle, (uint8_t)at(0, kRpmIdleNominal).left,
                                   "点火怠速 900 转该是怠速脸");
   TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Cruise, (uint8_t)at(0, kRpmCruiseNominal).left,
@@ -63,10 +67,9 @@ void test_left_follows_rpm_only(void) {
   TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Redline, (uint8_t)at(0, 6200.0f).left,
                                   "断油(6300)下方 6200 转该是红区脸");
   // 红区必须在**断油之前**就开始提醒(踩到断油才亮红是没用的):
-  // AL4 的 kickdown 就能到 5000+,所以红区定在 6000(断油约 6500 之前 500 转)。
-  //    (进入门槛 = 阈值 + 迟滞 = 5880;上面那条 5879 已经断言过"还没进")
-  TEST_ASSERT_TRUE_MESSAGE(at(0, 5880.0f).left == Face::Redline,
-                           "5880 转就该进红区(断油 6300,留 420 转提前量)");
+  // ★★ 2026-10-15：阈值 5500、迟滞 80 ⇒ 进入门槛 **5580**（断油 6300 之前 720 转）
+  TEST_ASSERT_TRUE_MESSAGE(at(0, 5580.0f).left == Face::Redline,
+                           "5580 转就该进红区(= 阈值 5500 + 迟滞 80)");
   // 反过来说:5200 转**不该**已经报红(那是"高转",正常全油门就会到)
   TEST_ASSERT_TRUE_MESSAGE(at(0, 5200.0f).left == Face::High,
                            "5200 转还在高转 —— 报红太早会让正常加速一直亮红区");
@@ -102,14 +105,15 @@ void test_face_ladder_hysteresis(void) {
   s.rpm = 1500.0f - hyst - 1.0f;
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Idle, (uint8_t)face_update(s, 1300).left);
 
-  // ③ 红区同理:6300 进、5900 还在红区、5800 退出
+  // ③ 红区同理:5580 进、5420 还在红区、5419 退出
+  //   ★★ 2026-10-15：阈值 5800 → **5500**（迟滞 80 不变）⇒ 进出门槛一起下移。
   face_reset();
   s.rpm = 6100.0f;
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::Redline, (uint8_t)face_update(s, 2000).left);
-  s.rpm = 5720.0f;                              // 退出门槛本身:仍算红区
+  s.rpm = 5420.0f;                              // 退出门槛(5500-80)本身:仍算红区
   TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)Face::Redline, (uint8_t)face_update(s, 2100).left,
-                                  "5720(退出门槛)仍在红区,不该立刻掉回高转");
-  s.rpm = 5719.0f;                              // 差 1 转就退出
+                                  "5420(退出门槛)仍在红区,不该立刻掉回高转");
+  s.rpm = 5419.0f;                              // 差 1 转就退出
 
   TEST_ASSERT_EQUAL_UINT8((uint8_t)Face::High, (uint8_t)face_update(s, 2200).left);
 

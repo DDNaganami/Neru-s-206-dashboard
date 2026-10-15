@@ -41,7 +41,7 @@ static SysStatusInputs healthy() {
 }
 
 // ============================================================
-// 一、什么都不成立 ⇒ 不提示、不响
+// 一、什么都不成立 ⇒ 不提示
 // ============================================================
 void test_sys_idle_by_default(void) {
   SystemStatus s;
@@ -50,7 +50,6 @@ void test_sys_idle_by_default(void) {
   }
   TEST_ASSERT_FALSE(s.untrusted());
   TEST_ASSERT_EQUAL_UINT32(0u, s.episodes());
-  TEST_ASSERT_FALSE(s.beepDue());
 
   // ★ "刚上电、一帧 VAN 都还没有"**不算**不可信（`van_ever_framed = false`）：
   //   开机动画那 1.1 秒里挂个角标会像故障，而不是"还没数据"。
@@ -86,12 +85,14 @@ void test_sys_sim_fallback_debounce_and_recover(void) {
   TEST_ASSERT_TRUE(s.update(in, 2500) == DataTrustReason::kDataFallback);
   TEST_ASSERT_TRUE(s.untrusted());
   TEST_ASSERT_EQUAL_UINT32(1u, s.episodes());
-  TEST_ASSERT_TRUE(s.beepDue());     // ★ 变坏这一拍要给一声轻提示
 
-  // 一直坏着 ⇒ 不会每拍都"该响"（一声就是一声）
+  // 一直坏着 ⇒ 只有**一次**"变坏"（episodes 是跳变计数，不是每拍 +1）
+  //   ★★ 2026-10-15：这里原来是 `TEST_ASSERT_FALSE(s.beepDue())` 那一组
+  //   （"一声就是一声"）。蜂鸣器砍掉之后换成同一个不变式的另一半：
+  //   **跳变计数不许被时间刷上去**。
   for (uint32_t t = 2600; t <= 6000; t += 100) {
     s.update(in, t);
-    TEST_ASSERT_FALSE(s.beepDue());
+    TEST_ASSERT_EQUAL_UINT32(1u, s.episodes());
   }
   TEST_ASSERT_EQUAL_UINT32(1u, s.episodes());
 
@@ -208,14 +209,18 @@ void test_sys_priority(void) {
   in2.speed_kmh = 12.0f;
   in2.rpm = 900.0f;
   TEST_ASSERT_TRUE(s.update(in2, 2600) == DataTrustReason::kDataFallback);
-  TEST_ASSERT_FALSE(s.beepDue());
   TEST_ASSERT_EQUAL_UINT32(1u, s.episodes());
 }
 
 // ============================================================
-// 七、一声轻提示：限速 5 秒（数据在阈值上下来回抖时不许滴滴叫）
+// 七、★ 2026-10-15 改写：**反复变坏/变好时，跳变计数与状态迁移都是干净的**
+//
+//   这一条原来是"一声轻提示的 5 秒限速"（`beepDue()`）。蜂鸣器整车砍掉 ⇒
+//   那个读数没有了。这里改钉**同一段时间线**上真正重要的一件事：
+//   数据在阈值上下来回抖时，"不可信"状态与 `episodes` 计数必须一步不错
+//   （原来那条限速防的是"滴滴叫"，现在防的是"状态机自己抖"）。
 // ============================================================
-void test_sys_beep_rate_limit(void) {
+void test_sys_flap_stays_consistent(void) {
   SystemStatus s;
   SysStatusInputs bad = healthy();
   bad.rpm_src = 1;                 // 只有来源这一条
@@ -223,26 +228,25 @@ void test_sys_beep_rate_limit(void) {
 
   s.update(bad, 0);
   TEST_ASSERT_TRUE(s.update(bad, 1500) == DataTrustReason::kDataFallback);
-  TEST_ASSERT_TRUE(s.beepDue());
+  TEST_ASSERT_EQUAL_UINT32(1u, s.episodes());
 
-  // 立刻恢复（过了 good 窗口）再立刻变坏 ⇒ **不许再响**（离上一声 < 5 s）
+  // 立刻恢复（过了 good 窗口）再立刻变坏 ⇒ 状态必须干净地走完一轮
   s.update(ok, 1600);
   s.update(ok, 2500);
   TEST_ASSERT_FALSE(s.untrusted());
   s.update(bad, 2600);
   TEST_ASSERT_TRUE(s.update(bad, 4200) == DataTrustReason::kDataFallback);
-  TEST_ASSERT_FALSE(s.beepDue());          // ← 限速掐掉了这一声
+  TEST_ASSERT_EQUAL_UINT32(2u, s.episodes());   // ← 第二次"变坏"被记到了
 
-  // 再恢复、等到离第一声超过 5 s 再坏 ⇒ 这一声该响
+  // 再恢复、再变坏 ⇒ 第三次
   s.update(ok, 4300);
   s.update(ok, 5200);
   TEST_ASSERT_FALSE(s.untrusted());
   s.update(bad, 5300);
   TEST_ASSERT_TRUE(s.update(bad, 6900) == DataTrustReason::kDataFallback);
-  TEST_ASSERT_TRUE(s.beepDue());
   TEST_ASSERT_EQUAL_UINT32(3u, s.episodes());
 
-  // reset():状态清空，但累计计数与"上一声的时刻"**不清**
+  // reset():状态清空，但累计计数**不清**（与 Alerts::reset 同一条口径）
   s.reset();
   TEST_ASSERT_FALSE(s.untrusted());
   TEST_ASSERT_EQUAL_UINT32(3u, s.episodes());
@@ -256,10 +260,8 @@ void test_sys_thresholds(void) {
   TEST_ASSERT_EQUAL_UINT32(800u, kTrustSysRecoverMs);
   TEST_ASSERT_EQUAL_UINT32(20000u, kTrustFreezeWindowMs);
   TEST_ASSERT_EQUAL_UINT32(3000u, kTrustVanStaleMs);
-  TEST_ASSERT_EQUAL_UINT32(5000u, kTrustBeepMinIntervalMs);
-  // ★ 单次哔 <= 300 ms：有源蜂鸣器 + "持续高电平拉低 3.3V 轨"那条机制尚未排除
-  //   ⇒ 不许出现长时间连续高电平（见 ARCHITECTURE.md 的提示音说明）。
-  TEST_ASSERT_TRUE(kTrustBeepMs <= 300u);
+  // ★★ 2026-10-15：`kTrustBeepMinIntervalMs` / `kTrustBeepMs` 两个"提示音"常量
+  //   随蜂鸣器一起删了（原来这里钉的是 5000 / ≤300ms）。
   // 变坏比变好慢（这是"不刺眼"的另一半：恢复要干脆）
   TEST_ASSERT_TRUE(kTrustSysDebounceMs > kTrustSysRecoverMs);
   // 冻结窗口比去抖窗口长一个量级（否则停车等红灯会误报）
@@ -303,7 +305,10 @@ void test_diag_page_sys_fields(void) {
   TEST_ASSERT_NOT_NULL(strstr(buf, "ui=5.2fps"));
   TEST_ASSERT_NOT_NULL(strstr(buf, "panel=5.5fps f=777"));
   TEST_ASSERT_NOT_NULL(strstr(buf, "flush=1300us copy=640us"));
-  TEST_ASSERT_NOT_NULL(strstr(buf, "mute=0"));
+  // ★★ 2026-10-15：原来这里钉的是 `mute=0`（静音开关那一格）。蜂鸣器整车砍掉
+  //   ⇒ 那一格与 `SysStatusInputs::beep_muted` 一起删了，改成钉**它后面那一行**
+  //   （守护那一格）仍然在位 —— 免得"删一行时顺手把排版弄坏"没人发现。
+  TEST_ASSERT_NOT_NULL(strstr(buf, "guard "));
   // ★ 2026-09-24 新增：面板健康守护那一行（"仪表盘必须常亮"的**可见化**）。
   //   在 `healthy()` 的默认输入里它全是 0（那些构建里没有面板可守）——
   //   而"0"就是正确的读数；真机上的非零值由下面那一组专门钉。
@@ -373,21 +378,22 @@ void test_diag_page_link_fields(void) {
   in.obd_support_known = true;
   in.obd_speed_supported = 1;
   in.obd_speed_polled = true;
-  in.beep_muted = true;
   in.alert_active = 2;           // redline
 
   const DiagView v = diagBuild(DiagPage::Link, in);
   char buf[1024];
   diagRenderText(v, buf, sizeof(buf));
   TEST_ASSERT_EQUAL_STRING("DIAG-LINK", v.title);
-  TEST_ASSERT_TRUE(v.muted);
   TEST_ASSERT_NOT_NULL(strstr(buf, "link state=1 age=240ms"));
   TEST_ASSERT_NOT_NULL(strstr(buf, "ticks=5000 gap=3"));
   TEST_ASSERT_NOT_NULL(strstr(buf, "miss=7 off=-12ms"));
   TEST_ASSERT_NOT_NULL(strstr(buf, "obd rpm=28.5 cool=1.0"));
   TEST_ASSERT_NOT_NULL(strstr(buf, "intake=1.0 speed=0.0"));
   TEST_ASSERT_NOT_NULL(strstr(buf, "010D=yes polled=1"));
-  TEST_ASSERT_NOT_NULL(strstr(buf, "alert=2 mute=1"));
+  // ★★ 2026-10-15：这一行原来是 `alert=2 mute=1`。`mute=` 随蜂鸣器删了，
+  //   **`alert=` 保留**（告警判断一个字没动，诊断页照旧报"现在报的是哪一条"）。
+  TEST_ASSERT_NOT_NULL(strstr(buf, "alert=2"));
+  TEST_ASSERT_NULL(strstr(buf, "mute="));
 }
 
 // ============================================================
@@ -517,7 +523,8 @@ void test_sys_preview_keys(void) {
   TEST_ASSERT_TRUE(in2.diag_toggle_req);
   TEST_ASSERT_FALSE(in2.any());
   // 它也不该碰任何"数值/开关"注入位
-  TEST_ASSERT_FALSE(in2.sim_ok_set || in2.speed_set || in2.left_set || in2.mute);
+  // ★★ 2026-10-15：断言里原来还有 `|| in2.mute` —— 静音随蜂鸣器删了。
+  TEST_ASSERT_FALSE(in2.sim_ok_set || in2.speed_set || in2.left_set);
 
   // 控制文件的 `sim=` / `diag=` 与上面两个键同口径
   PreviewInput f;
@@ -560,7 +567,6 @@ void test_sys_freeze_parked_engine_off_is_quiet(void) {
   }
   TEST_ASSERT_FALSE(s.untrusted());      // 角标一次都不该出现
   TEST_ASSERT_EQUAL_UINT32(0u, s.episodes());
-  TEST_ASSERT_FALSE(s.beepDue());        // 也不该有那一声轻提示
 }
 
 // ② 发动机在转（rpm = 800）：车停着（speed = 0）但值冻结 20 秒 ⇒ **报**
@@ -577,7 +583,6 @@ void test_sys_freeze_engine_running_reports(void) {
   TEST_ASSERT_TRUE(s.update(in, 22500) == DataTrustReason::kDataFrozen);
   TEST_ASSERT_TRUE(s.untrusted());
   TEST_ASSERT_EQUAL_STRING("data-frozen", dataTrustReasonName(s.active()));
-  TEST_ASSERT_TRUE(s.beepDue());
   TEST_ASSERT_EQUAL_UINT32(1u, s.episodes());
 
   // 熄火：值也变了（800 → 0）⇒ 窗口重置 + 前提不再成立 ⇒ 恢复窗口后角标撤掉
@@ -669,7 +674,7 @@ void register_system_status_tests(void) {
   RUN_TEST(test_sys_data_frozen);
   RUN_TEST(test_sys_link_fallback);
   RUN_TEST(test_sys_priority);
-  RUN_TEST(test_sys_beep_rate_limit);
+  RUN_TEST(test_sys_flap_stays_consistent);
   RUN_TEST(test_sys_thresholds);
   RUN_TEST(test_diag_page_sys_fields);
   RUN_TEST(test_diag_panel_guard_line);

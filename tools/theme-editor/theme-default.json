@@ -112,9 +112,9 @@
     "boot_face_blink_ms": 130,
 
     "alerts": {
-      "overspeed_kmh": 120,
+      "overspeed_kmh": 150,
       "overspeed_hyst_kmh": 3,
-      "redline_rpm": 5800,
+      "redline_rpm": 5500,
       "redline_hyst_rpm": 200,
       "door_debounce_ms": 200,
       "turn_signal_on_ms": 20000,

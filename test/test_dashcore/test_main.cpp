@@ -18,13 +18,19 @@ void register_image_roundtrip_tests(void);
 void register_data_service_tests(void);
 void register_expression_tests(void);
 void register_van_fields_tests(void);   // 已解字段接进数据层:灯位/门/VIN + 不抢既有优先级(2026-09-24)
-void register_alerts_tests(void);       // 告警层:去抖/最短重复间隔/静音 + 蜂鸣器抽象(2026-09-24)
-void register_ui_lamp_tests(void);      // 指示灯槽位几何 + 预览注入语义(2026-09-24)
+void register_alerts_tests(void);       // 告警层:去抖/迟滞/优先级/配置钳制(2026-09-24)
+// ★★ 2026-10-15：这一组原来叫 `register_ui_lamp_tests`（文件 test_ui_lamps.cpp），
+//   里面一半是**六格指示灯栏**的几何与映射用例 —— 车主把整条灯栏从 UI 上删掉
+//   ⇒ 那四条用例与 `lamp_view.h` 一起删除，文件改名 `test_preview_input.cpp`，
+//   留下的两组（预览注入语义 + 圆屏几何/遮罩）照旧钉着。
+void register_preview_input_tests(void); // 预览注入语义 + 圆屏遮罩几何(2026-09-24)
 void register_system_status_tests(void); // 系统状态层:数据不可信提示 + 诊断页(2026-09-24)
-void register_buzzer_exio_tests(void);   // 真机蜂鸣器驱动:EXIO8 掩码/降级/夹时长/不阻塞(2026-09-24)
+// ★★ 2026-10-15：`register_buzzer_exio_tests`（真机蜂鸣器驱动 EXIO8 那一整组）
+//   随 `lib/dashcore/buzzer_exio.*` 与 test_buzzer_exio.cpp 一起删除 ——
+//   车主原话"蜂鸣器功能砍掉，节省资源"。
 void register_panel_guard_tests(void);   // 面板健康守护:回读对账/按影子重写/背光/2秒周期/自愈(2026-09-24)
 void register_boot_persist_tests(void);  // 跨重启留档:上一次 reason/上一次跑了多久/守护累计(2026-09-25)
-void register_serial_cmd_tests(void);    // 串口单字符命令的判据层:d/m/b/r + 别多吃回放字符(2026-09-24)
+void register_serial_cmd_tests(void);    // 串口单字符命令的判据层:d/r/i/w + 别多吃回放字符(2026-09-24)
 void register_role_layout_tests(void);   // 角色 ↔ 屏幕的映射:哪块板显示哪一屏(2026-09-25)
 void register_usb_personality_tests(void); // 板上 USB/串口"人格"(FSUSB42 SEL=GPIO0)——方案与默认档(2026-09-26)
 void register_face_stage_tests(void);
@@ -94,15 +100,12 @@ int main(void) {
   //   排在它后面的用例跑不到 —— 崩溃虽已修掉,这条顺序纪律照旧保留)。
   register_van_fields_tests();
   register_alerts_tests();
-  register_ui_lamp_tests();
+  register_preview_input_tests();
   // ★ 2026-09-24 新增：系统状态层（"数据不可信"提示 + 诊断页字段映射）。
   //   同样排在 face_stages 之前（顺序纪律见上）。
   register_system_status_tests();
-  // ★ 2026-09-24 新增：真机蜂鸣器驱动（TCA9554 的 EXIO8）—— 掩码只动目标位 /
-  //   `Long` 降级 3 短哔 / 单次 ≤ 300ms / 静音不写寄存器 / 到点自动关。
-  //   排在 face_stages 之前（顺序纪律见上）。
-  register_buzzer_exio_tests();
-  // ★ 2026-09-24 新增：面板健康守护（PanelGuard）—— 仪表盘必须常亮。
+  // ★★ 2026-10-15：真机蜂鸣器驱动那一组（`register_buzzer_exio_tests`）已删除。
+  //   面板健康守护（PanelGuard）—— 仪表盘必须常亮。
   //   它守的是"那颗 TCA9554 的输出寄存器（LCD_RST/LCD_CS 就在里面）与影子寄存器
   //   一不一致"以及"背光占空还对不对"；判据/时钟/输出全是注入的 ⇒ 宿主机可测。
   //   同样排在 face_stages 之前（顺序纪律见上）。
@@ -113,10 +116,12 @@ int main(void) {
   //   （靠 10 分钟一次的心跳）、守护四个计数的跨重启累计。判据/NVS 全是注入的 ⇒ 宿主机可测。
   //   同样排在 face_stages 之前（顺序纪律见上）。
   register_boot_persist_tests();
-  // ★ 2026-09-24 新增：串口单字符命令的判据层（`d`/`m`/`b`/`r`）。
+  // ★ 2026-09-24 新增：串口单字符命令的判据层（`d`/`r`/`i`/`w` …）。
   //   抽出来的理由是"这一层原来是 `src/main.cpp` 里的代码，而 native 只编 lib/"
   //   （见 `serial_cmd.h` 的文件头）；这一个口上同时跑日志与回放帧 ⇒
   //   "多认一个字符"会吃掉回放、"少认一个"会变成"按了没反应"，两个方向都要钉。
+  //   ★★ 2026-10-15：`m`/`b` 两个字符随蜂鸣器删除，那一组里多了一条用例钉住
+  //     "删掉的字符必须回到 None"。
   register_serial_cmd_tests();
   // ★ 2026-09-25 新增：**角色 ↔ 屏幕的映射**（`dash_role_layout.h`）。
   //   起因是车主原话"副表怎么也给你刷成速度表了" —— 新板（从板镜像）上电显示的是

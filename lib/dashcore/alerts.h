@@ -20,20 +20,29 @@
 //
 // ---- 这一层为什么独立成一个文件（而不是写进 dash_ui 或 main）----
 //   它**不碰 LVGL、不碰硬件、不依赖 Arduino**（纯逻辑 + 时间戳），于是：
-//     · native 上能把去抖 / 限速 / 静音三条规则逐条测掉（test_alerts.cpp）；
-//     · 模拟页（pcpreview）与真机跑**同一份判据**，"预览里响、车上不响"这种
+//     · native 上能把去抖 / 迟滞 / 优先级三条规则逐条测掉（test_alerts.cpp）；
+//     · 模拟页（pcpreview）与真机跑**同一份判据**，"预览里报、车上不报"这种
 //       分叉在结构上不可能发生；
-//     · 蜂鸣器换成哪块板发（§8 的 L14）只换 Buzzer 的实现，本文件一个字不用动。
+//     · 告警以后换**形态**（文字条 / 表盘变色 / 新的角标 / 任何发声装置）只换
+//       视图或驱动那一侧，本文件一个字不用动。
 //
-// ---- 三条必须有的规则（都是"别让它一直叫"）----
+// ★★ 2026-10-15（车主）：「**蜂鸣器功能砍掉，节省资源**」。
+//   ⇒ 本层**只回答"现在该报哪一条"**，不再有任何"响/不响"的概念：
+//     `BeepPattern` / `beepCount()` / `beeping()` / `pattern()` / `muted()` /
+//     `beep_min_interval_ms` / `beep_ms` 全部随 `buzzer.*` 一起删掉了
+//     （`lib/dashcore/buzzer.h` / `buzzer_exio.*` 两个实现文件也已删除）。
+//   ★ **判断逻辑一个字都没动**：四条判据、去抖窗口、迟滞带、优先级、
+//     `only_highest` 全部原样保留 —— 车主砍的是"发声"，不是"判断"。
+//   ★ `AlertsConfig` 里 `beep_*` 两个字段**保留**：它们是 `theme.json` 的
+//     `alerts` 段里既有的键（`theme_parse_alerts_json` 照旧解析、照旧钳制），
+//     删字段会让"主题文件看起来坏了"。它们现在只是**没有消费方**。
+//
+// ---- 必须有的规则 ----
 //   ① 去抖（debounce）：条件要**连续**成立 `debounce_ms` 才认。
 //      为什么是"连续"而不是"累计"：门/灯在总线上是脉冲式的（§4.6 的段内跳变、
 //      §4.3 的闪烁欠采样），累计计时会让一串噪声把告警"攒"出来。
 //      恢复是**立即**的（条件一不成立就清），因为"不再报警"晚一步没有好处。
-//   ② 最短重复间隔（beep_min_interval_ms）：响了之后至少隔这么久才允许再响。
-//      ★ 它同时是"最长响多久"的上界——两个上限取小（见 update() 的说明）。
-//   ③ 静音开关（muted）：led（上屏）与蜂鸣器**分开**处理 ——
-//      静音只掐蜂鸣器，屏上的指示灯照旧（"静音"不等于"假装没事"）。
+//   ② 只报最高优先级的那一条（`only_highest`）：同时命中多条时取最重的。
 // ============================================================
 
 enum class AlertKind : uint8_t {
@@ -46,33 +55,31 @@ enum class AlertKind : uint8_t {
 };
 const char* alertName(AlertKind k);
 
-// ---- 蜂鸣器输出模式 ----
-// ★ 是**模式**不是频率：具体频率/占空比由 Buzzer 那一侧决定（无源蜂鸣器要 PWM、
-//   有源的只要高低电平），所以判据与驱动这样分层。
-enum class BeepPattern : uint8_t {
-  Silent = 0,    // 不响
-  Short,         // 一短（转向灯忘关：提醒一下，别烦人）
-  Triple,        // 三短（转速红区：与 README「下一步 #6」那条一致）
-  Urgent,        // 四短（超速：最高优先级）
-  Long,          // 一长（门未关：持续提示，人下车/上车时听着最明确）
-  Count
-};
-const char* beepPatternName(BeepPattern p);
-
 struct AlertsConfig {
   // ① 超速。★ 与表情那个超速档（>130，退 127）**刻意不同**：
-  //    表情是"脸变成什么样"，告警是"要不要叫"。用 120/117 是因为
-  //    车主手册那条路的限速不高于 120 —— 而且这条数是**阈值、不是定标**，
-  //    改它不动任何协议结论。真车标定后只改这一个数。
-  float overspeed_kmh = 120.0f;
+  //    表情是"脸变成什么样"，告警是"要不要叫"。用 150 是因为**车主
+  //    2026-10-15 拍板**："速度表超过 150KM/H 的时候也红吧"—— 而这条阈值
+  //    同时驱动屏上那两条红色提示（弧染红 + 大数字变红），所以不再是"随便一个
+  //    阈值、改它不动协议结论"：它就是要**在 150 那一刻看得见**。
+  //    ★ 它仍然是**阈值、不是定标**：改它不动任何协议结论。
+  //    ★★ 注意：这个数与 `overspeed_hyst_kmh` 一起，被**三个**地方读：
+  //      本层的告警判据、`src/dash_ui.cpp` 的弧染色、以及大数字变红。
+  //      ⇒ 谁也不许再写一份字面量（"两套阈值"正是车主这次要消掉的东西）。
+  //    ★ 历史值 120（2026-09-24 ~ 2026-10-15）已按车主口径提高；下面**不再
+  //      写"旧值 = 120.0f"这种字样** —— `tools/theme-editor/test-theme-json.js`
+  //      会用正则从本结构体里抓默认值，注释里出现同样的赋值会把那条对账带歪。
+  float overspeed_kmh = 150.0f;
   float overspeed_hyst_kmh = 3.0f;   // 退出迟滞（防止在阈值上下"哒哒"叫）
 
-  // ② 转速红区。5800 与 expression.cpp 的 kRpmRedlineFrom 同一个地标
-  //    （表盘 7000、断油 6300，提前到 5800 报）。这里**复述**一个数而不是
-  //    去 include expression 的内部常量：那边是"表情档位"的口径，
-  //    这边是"告警阈值"的口径，将来可能各自调。test_alerts.cpp 有一条用例
-  //    钉住"两者现在相等"，调歪了会红。
-  float redline_rpm = 5800.0f;
+  // ② 转速红区。★★ 2026-10-15：**5800 → 5500**（车主拍板）。
+  //    起因：屏上"看得见的红区"当时落在 **6200** 那一档，而告警在 5800
+  //    ⇒ 5800~6200 之间屏上几乎没变化，车主一直以为"没有红区提示"。
+  //   现在三处**同一个触发点 5500**：本处（告警）、`expression.cpp` 的
+  //    `kRpmRedlineFrom`（脸变红）、`face_stages.h` 的阶段表行（编辑器预览）。
+  //    为什么是 5500：断油 6300（车主实测 2026-09-18），5500 留 800 转提前量
+  //    —— 2 档 100km/h 就在 5500 附近，是**真会开到**的那一格（原来是 5800）。
+  //    ★ 退出迟滞 200 转**保留**（进 5500 / 退 5300），防止在阈值上下"哒哒"报。
+  float redline_rpm = 5500.0f;
   float redline_hyst_rpm = 200.0f;
 
   // ③ 门。用 `door_activity`（"动过"），连续成立这么久才报。
@@ -86,18 +93,16 @@ struct AlertsConfig {
   // 通用：任意告警的去抖下限（0 = 用各自的）
   uint32_t debounce_ms = 250;
 
-  // 最短重复间隔：响过之后至少隔这么久才允许再响（三个模式共用这一个数）。
-  // ★ 3000 ms 的来历：README「下一步 #6」那条是"进红区响一声"（不是长鸣），
-  //   而人要能听清又不被吵，重复周期取秒级。改成 0 会变成"一直叫"。
+  // ★★ 2026-10-15：下面这两个**只剩"主题文件里认得的键"这一个身份**
+  //   （车主砍掉蜂鸣器 ⇒ 本层不再算"响多久/隔多久"）。
+  //   ★ 为什么**不一起删**：它们住在 `theme.json` 的 `alerts` 段里，
+  //     编辑器与已经导出的主题文件都带着它们；删字段等于让那些文件
+  //     "看起来坏了"（见 alerts.h 文件头那条说明）。
+  //     解析与钳制照旧（`theme_parse_alerts_json` / `alerts_config_clamp`）。
   uint32_t beep_min_interval_ms = 3000;
-
-  // 单次蜂鸣的"标称时长"（ms）。★ 它**不是**驱动侧的精确时长：
-  //   Buzzer 的实现可以按自己的硬件给（PC 上是提示音、真机上是 PWM 通断），
-  //   这里只用它做"最长响多久"的上界（见 update()）。
   uint32_t beep_ms = 120;
 
   // 只报最高优先级的那一个（同时命中多条时）。优先级：超速 > 红区 > 门 > 转向。
-  // 为什么不是"同时响几条"：屏上只有一个蜂鸣器、一个灯位，同时报等于都听不清。
   bool only_highest = true;
 };
 
@@ -109,8 +114,8 @@ struct AlertsConfig {
 //    为什么非钳不可（三个例子，都是手滑就写出来的）：
 //      · `turn_signal_on_ms = 0` ⇒ **一打转向灯就报"忘关"**（下限取 1000 ms，
 //        因为一次转弯本来就是秒级的事）；
-//      · `beep_ms = 0` ⇒ 蜂鸣器"响"0 毫秒 = 永远听不见（这是最难查的一种：
-//        屏上照报、日志照打，就是不响）；
+//      · `beep_ms = 0` ⇒ （历史项）蜂鸣器"响"0 毫秒 = 永远听不见 —— 蜂鸣器已删，
+//        但主题文件里这个键照旧解析、照旧钳制，免得老文件"看起来坏了"；
 //      · `overspeed_kmh = 5000` ⇒ 超速告警永远不会触发，而屏上什么都看不出来。
 //
 //    ★ 它**只**被解析器（`theme_parse_alerts_json`）调用；`setConfig()` 照旧信任
@@ -145,28 +150,16 @@ public:
   AlertKind update(const VehicleState& s, uint32_t now_ms);
 
   // 清空状态机的记忆。用途与 face_reset() 一样：换数据源（模拟↔真 VAN）时
-  // 别让上一路的"还在告警中"延续到新源上。★ **不清静音开关**（那是人的选择，
-  // 换源不该把手动静音忘掉）。
+  // 别让上一路的"还在告警中"延续到新源上。
   void reset();
 
-  // ---- 静音开关 ----
-  bool muted() const { return muted_; }
-  void setMuted(bool m) { muted_ = m; }
-  void toggleMuted() { muted_ = !muted_; }
-
   // ---- 只读状态（UI / 日志用）----
-  AlertKind active() const { return active_; }         // 当前生效的那条（静音时也照报）
+  AlertKind active() const { return active_; }         // 当前生效的那一条
   bool isActive(AlertKind k) const {                    // 某一条现在生效吗
     return k != AlertKind::None && k == active_;
   }
-  bool beeping() const { return beeping_; }             // 蜂鸣器这一拍该不该响
-  BeepPattern pattern() const { return pattern_; }       // 当前模式（Silent = 不响）
-  uint32_t beepCount() const { return beep_count_; }     // 累计响了几次（日志/用例用）
-  uint32_t lastBeepMs() const { return last_beep_ms_; }
   const AlertsConfig& config() const { return cfg_; }
   void setConfig(const AlertsConfig& c) { cfg_ = c; }
-
-  static BeepPattern patternFor(AlertKind k);
 
 private:
   // 去抖状态。**必须放在头文件里**（不能藏在 .cpp 的匿名空间）：
@@ -181,13 +174,7 @@ private:
   static void debounce(Cond& c, bool raw, uint32_t now_ms, uint32_t need_ms);
   Cond cond_[(uint8_t)AlertKind::Count] = {};
   bool raw_[(uint8_t)AlertKind::Count] = {};   // 上一拍的原始条件（迟滞用）
-  uint32_t beep_count_ = 0;
 
   AlertsConfig cfg_{};
   AlertKind active_ = AlertKind::None;
-  BeepPattern pattern_ = BeepPattern::Silent;
-  bool beeping_ = false;
-  bool muted_ = false;
-  uint32_t last_beep_ms_ = 0;
-  bool beeped_ = false;        // 这一轮告警里响过没有（"最短重复间隔"的另一半）
 };

@@ -179,8 +179,6 @@ DataTrustReason SystemStatus::evaluate(const SysStatusInputs& in, uint32_t now_m
 }
 
 DataTrustReason SystemStatus::update(const SysStatusInputs& in, uint32_t now_ms) {
-  beep_due_ = false;
-
   const DataTrustReason raw = evaluate(in, now_ms);
   const bool bad = (raw != DataTrustReason::kNone);
 
@@ -198,15 +196,9 @@ DataTrustReason SystemStatus::update(const SysStatusInputs& in, uint32_t now_ms)
     if (bad_.on) {
       active_ = raw;                        // 用去抖窗口**结束时**那一条
       ++episodes_;
-      // ★ 一声轻提示：只在"变坏"这一跳置一次，且与上一声至少隔
-      //   kTrustBeepMinIntervalMs（数据在阈值上下抖时不会变成滴滴叫）。
-      //   ★ 静音开关**不在这里**判：静音是"人的选择"，由调用方在把 beepDue()
-      //     交给蜂鸣器之前过一道 —— 这一层刻意不持有静音状态，免得两处各记一份。
-      if (last_beep_ms_ == 0u ||
-          (uint32_t)(now_ms - last_beep_ms_) >= kTrustBeepMinIntervalMs) {
-        beep_due_ = true;
-        last_beep_ms_ = (now_ms == 0u) ? 1u : now_ms;   // 0 保留给"还没响过"
-      }
+      // ★★ 2026-10-15：这里原来还有"一声轻提示"（`beep_due_` + 5 秒限速）。
+      //   蜂鸣器整车砍掉 ⇒ 那一段删了。**判据与去抖一个字都没动**：
+      //   变坏照旧换角标、照旧 ++episodes_（诊断页/用例都还在读它）。
     }
   } else {
     if (good_.on) {
@@ -215,7 +207,7 @@ DataTrustReason SystemStatus::update(const SysStatusInputs& in, uint32_t now_ms)
       bad_.run = false;
     } else if (bad_.on && raw != DataTrustReason::kNone) {
       // 一直不可信时：理由可以**升级/降级**（例如 VAN 断流修好、但来源仍是 Sim）
-      // ⇒ 角标上的字跟着变。这不重新计时、也不再响一声（那是同一次"不可信"）。
+      // ⇒ 角标上的字跟着变。这不重新计时（那是同一次"不可信"）。
       active_ = raw;
     }
   }
@@ -230,9 +222,8 @@ void SystemStatus::reset() {
   freeze_now_ = false;
   freeze_armed_ = false;
   freeze_since_ms_ = 0;
-  beep_due_ = false;
-  // ★ 刻意不清 episodes_ 与 last_beep_ms_：累计统计与"上一声什么时候响的"
-  //   不该因为一次复位就查不出来（与 Alerts::reset 同一条口径）。
+  // ★ 刻意不清 episodes_：累计统计不该因为一次复位就查不出来
+  //   （与 Alerts::reset 同一条口径）。
 }
 
 // ------------------------------------------------------------
@@ -273,7 +264,6 @@ DiagView diagBuild(DiagPage page, const SysStatusInputs& in) {
   DiagView v{};
   if ((uint8_t)page >= kDiagPageCount) page = DiagPage::Sys;   // 越界折回，不擅自扩页
   v.title = diagPageTitle(page);
-  v.muted = in.beep_muted;
 
   char age[16];
   fmtAgeMs(age, sizeof(age), in.van_age_ms);
@@ -310,7 +300,10 @@ DiagView diagBuild(DiagPage page, const SysStatusInputs& in) {
       // 而不是显示 0 —— 0 会被读成"面板一帧都没刷"（那是另一回事）。
       diagLine(v, "panel=- (driver n/a)");
     }
-    diagLine(v, "mute=%ld  K:next", (long)(in.beep_muted ? 1 : 0));
+    // ★★ 2026-10-15：这一行原来还有 `mute=`（蜂鸣器静音开关）。蜂鸣器整车砍掉
+    //   ⇒ 静音没有可掐的东西，那一格与 `SysStatusInputs::beep_muted` 一起删了。
+    //   ★ 这一页的最后一行只留按键提示（第 2 页面那个 `K:next  Esc:exit` 同理）。
+    diagLine(v, "K:next");
     // ★ 面板健康守护那行（2026-09-24，"仪表盘必须常亮"的**可见化**）：
     //   `rd` = 守护跑了多久/回读过几次（**在涨就说明守护活着**）；
     //   `fix` = 按影子把扩展器重写回来的次数（LCD_RST/LCD_CS 被改写那条路径）；
@@ -369,8 +362,10 @@ DiagView diagBuild(DiagPage page, const SysStatusInputs& in) {
     } else {
       diagLine(v, "obd n/a (no ELM327)");   // "未接就显示未连接"
     }
-    diagLine(v, "alert=%ld mute=%ld", (long)(int32_t)in.alert_active,
-             (long)(in.beep_muted ? 1 : 0));
+    // ★ 2026-10-15：这一行原来是 `alert=<n> mute=<n>`，`mute=` 随蜂鸣器一起删了
+    //   （静音开关没有消费方）。**`alert=` 保留** —— 告警判断一个字没动，
+    //   诊断页照旧报"现在报的是哪一条"。
+    diagLine(v, "alert=%ld", (long)(int32_t)in.alert_active);
     diagLine(v, "mask=%lupx preview", (unsigned long)in.panel_mask_px);
     diagLine(v, "K:next  Esc:exit");
   }

@@ -233,17 +233,10 @@ void dash_display_init() {
 lv_display_t* dash_display_left() { return g_left; }
 lv_display_t* dash_display_right() { return g_right; }
 
-// 蜂鸣器那一侧的"落一行"出口（lib/dashcore/buzzer.cpp 声明它、这里给实现）。
-// ★ 为什么挂在**这个**文件而不是新开一个：它要的只是"把一行文本送到
-//   运行预览那个终端"，而预览驱动这一段已经拿着 stdout 与 Arduino 桩；
-//   单独开一个 .cpp 只会让"pcpreview 到底编了哪些文件"更难数。
-// ★ native 构建里同一符号由 buzzer.cpp 自己的默认实现提供（fputs 到 stdout），
-//   两边签名一致 —— 签名对不上时 native 会直接链接失败（那是刻意的）。
-void buzzer_host_printf(const char* line) {
-  fputs(line, stdout);
-  fputc('\n', stdout);
-  fflush(stdout);   // ★ 不 flush 的话这一行会卡在缓冲里，"按了怎么没反应"最难查
-}
+// ★★ 2026-10-15：这里原来还有 `buzzer_host_printf()` ——
+//   `lib/dashcore/buzzer.cpp` 的"落一行 BEEP …"出口，pcpreview 把它接到 stdout。
+//   蜂鸣器整车砍掉（`buzzer.*` / `buzzer_exio.*` 四个文件已删）⇒ 这个出口连同
+//   `BuzzerHost` 一起删了（native 侧那份同名默认实现也随 `buzzer.cpp` 消失）。
 
 // ---- 「2.8C(最终板)」档：遮罩的运行时开关 + 帧号（见文件头）----
 void dash_display_preview_set_panel_mask(bool on) { g_panel_mask = on; }

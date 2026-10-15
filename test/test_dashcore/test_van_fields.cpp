@@ -398,11 +398,15 @@ void test_alert_inputs_from_van(void) {
 
   // ③ 转速:同一个 0x824 帧的 data[0..1] ÷8 = 799 rpm
   TEST_ASSERT_EQUAL_FLOAT(799.0f, st.rpm);
-  //    ★ 顺带钉住告警层那条"红区"的**地标数**:5800 与 expression.cpp 的
+  //    ★ 顺带钉住告警层那条"红区"的**地标数**:它与 expression.cpp 的
   //      `kRpmRedlineFrom`(那里是 private 的 static,外面读不到)是**同一个数**。
   //      两边各自记一份是有意的(表情档位 vs 告警阈值将来可能各自调),
   //      但今天必须相等 —— 谁调歪了,这里红。
-  TEST_ASSERT_EQUAL_FLOAT(5800.0f, AlertsConfig{}.redline_rpm);
+  //      ★★ 2026-10-15：这个地标从 **5800 降到 5500**（车主拍板），
+  //        两处**同时**改：本断言与 `expression.cpp` 的 `kRpmRedlineFrom`。
+  TEST_ASSERT_EQUAL_FLOAT(5500.0f, AlertsConfig{}.redline_rpm);
+  // ★ 超速那条同理（车主："速度表超过 150KM/H 的时候也红吧"）
+  TEST_ASSERT_EQUAL_FLOAT(150.0f, AlertsConfig{}.overspeed_kmh);
 }
 
 void register_van_fields_tests(void) {

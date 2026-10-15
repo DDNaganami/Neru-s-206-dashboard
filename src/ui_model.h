@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "vehicle_state.h"
 #include "expression.h"
 
@@ -46,8 +46,8 @@ inline ArcDashView make_view(const VehicleState& s, uint32_t now_ms) {
   return v;
 }
 
-// 指示灯槽位（六格灯）—— 定义在 lib/dashcore/lamp_view.h（纯映射、native 可测）。
-// ★ 从 src/ui_model.h 里**移出去**了，不是删掉：这里 include 一下，
-//   于是 dash_ui.cpp / main.cpp 照旧写 LampView / make_lamps / LampSlot，
-//   一个调用点都不用改（那正是"移动而不是复制"的验收标准）。
-#include "lamp_view.h"
+// ★★ 2026-10-15：这里原来 include 了 `lib/dashcore/lamp_view.h`（六格指示灯的
+//   槽位枚举 + 灯条几何 + `make_lamps()`），好让 dash_ui / main 照旧写
+//   `LampView` / `LampSlot`。车主把整条灯栏从 UI 上删掉 ⇒ 那个头文件与这一行
+//   一起删了；现在"告警 → 视图"只剩 `lib/dashcore/alert_view.h`（`AlertView`），
+//   由 `dash_ui.h` include 进来。

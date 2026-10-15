@@ -27,6 +27,9 @@ void alerts_config_clamp(AlertsConfig& c) {
   c.debounce_ms         = clampU(c.debounce_ms, kAlertsDebounceMinMs, kAlertsDebounceMaxMs);
   c.beep_min_interval_ms = clampU(c.beep_min_interval_ms, kAlertsBeepGapMinMs, kAlertsBeepGapMaxMs);
   c.beep_ms             = clampU(c.beep_ms, kAlertsBeepMinMs, kAlertsBeepMaxMs);
+  // ★ 上面这两个 `beep_*` 现在**没有消费方**（蜂鸣器已删），但仍然照旧钳制：
+  //   它们住在 `theme.json` 的 `alerts` 段里，编辑器与已导出的主题文件都带着
+  //   ⇒ 该段的钳制规则保持"整段都被挡一遍"，老文件不会因为少了一条规则而"看起来坏了"。
   // only_highest 是 bool，没有"越界"这回事（JSON 那边 1/0 与 true/false 都收）
 }
 
@@ -40,30 +43,6 @@ const char* alertName(AlertKind k) {
     case AlertKind::Count:      break;
   }
   return "?";
-}
-
-const char* beepPatternName(BeepPattern p) {
-  switch (p) {
-    case BeepPattern::Silent: return "silent";
-    case BeepPattern::Short:  return "short";
-    case BeepPattern::Triple: return "triple";
-    case BeepPattern::Urgent: return "urgent";
-    case BeepPattern::Long:   return "long";
-    case BeepPattern::Count:  break;
-  }
-  return "?";
-}
-
-BeepPattern Alerts::patternFor(AlertKind k) {
-  switch (k) {
-    // 超速最急（四短）；红区按 README「下一步 #6」那条"响一声"的口径给三短；
-    // 门给一长（人上下车时听着最明确）；转向灯只给一短（提醒，别烦人）。
-    case AlertKind::Overspeed:  return BeepPattern::Urgent;
-    case AlertKind::Redline:    return BeepPattern::Triple;
-    case AlertKind::Door:       return BeepPattern::Long;
-    case AlertKind::TurnSignal: return BeepPattern::Short;
-    default:                    return BeepPattern::Silent;
-  }
 }
 
 // 去抖通用段：条件**连续**成立 need_ms 才算。
@@ -124,8 +103,8 @@ AlertKind Alerts::update(const VehicleState& s, uint32_t now_ms) {
 
   // ---------- 选一条 ----------
   // 优先级 = 枚举顺序（超速 > 红区 > 门 > 转向），与下标一致。
-  // ★ 屏上只有一个蜂鸣器、一个提示灯位 ⇒ 同时报等于都听不清/看不清，
-  //   所以默认只挑一条（`only_highest`）。z 顺序里第一条命中的就是最高优先级。
+  // ★ 同时命中多条时默认只挑一条（`only_highest`）：屏上、日志里都只报最重的那条，
+  //   同时报几条反而等于什么都没说清。顺序里第一条命中的就是最高优先级。
   AlertKind pick = AlertKind::None;
   for (uint8_t i = 1; i < (uint8_t)AlertKind::Count; ++i) {
     if (!cond_[i].on) continue;
@@ -133,29 +112,10 @@ AlertKind Alerts::update(const VehicleState& s, uint32_t now_ms) {
     if (cfg_.only_highest) break;
   }
 
-  // ---------- 蜂鸣器 ----------
-  // 换了一条告警 ⇒ 重新计时（可以立刻响）；同一条持续 ⇒ 按最短重复间隔续响。
-  if (pick != active_) {
-    active_ = pick;
-    beeped_ = false;
-    last_beep_ms_ = 0;
-  }
-  beeping_ = false;
-  if (active_ != AlertKind::None && !muted_) {
-    // ★ "别让它一直叫"的两条上界都在这里：
-    //   ① 一声只响 beep_ms（标称值，由 Buzzer 实现决定怎么落）；
-    //   ② 两次响之间至少隔 beep_min_interval_ms —— 条件一直成立也只是"每
-    //      beep_min_interval_ms 响一声"，不会变成长鸣。
-    const bool due = !beeped_ ||
-                     ((uint32_t)(now_ms - last_beep_ms_) >= cfg_.beep_min_interval_ms);
-    if (due) {
-      beeping_ = true;
-      beeped_ = true;
-      last_beep_ms_ = (now_ms == 0u) ? 1u : now_ms;   // 0 保留给"还没响过"
-      beep_count_++;
-    }
-  }
-  pattern_ = beeping_ ? patternFor(active_) : BeepPattern::Silent;
+  // ★★ 2026-10-15：这一段原来是"蜂鸣器"（换一条 ⇒ 重新计时、按最短重复间隔续响、
+  //   静音开关）。蜂鸣器整车砍掉（车主原话"省资源"）⇒ 这里只剩"记下现在报的是哪条"。
+  //   ★ 判据一个字都没动：`pick` 怎么算出来的完全照旧，只是不再有人发声。
+  active_ = pick;
   return active_;
 }
 
@@ -167,10 +127,4 @@ void Alerts::reset() {
     raw_[i] = false;
   }
   active_ = AlertKind::None;
-  pattern_ = BeepPattern::Silent;
-  beeping_ = false;
-  beeped_ = false;
-  last_beep_ms_ = 0;
-  // ★ 刻意不清 muted_ 与 beep_count_：静音是人的选择（换数据源不该忘掉），
-  //   计数是累计统计（清了就查不出"这一趟响了几次"）。
 }

@@ -44,11 +44,11 @@ static inline long lroundf(float v) { return (long)(v >= 0.0f ? (v + 0.5f) : (v 
 #include "dash_display.h"
 #include "dash_ui.h"
 #include "alerts.h"       // 告警层:只用已解字段(超速/红区/门/转向灯忘关)
-#include "buzzer.h"       // 蜂鸣器抽象（"什么时候该响"与"谁发声"分开）
-// ★ 2026-09-24:真机那一档的实现（2.8C 板载**有源**蜂鸣器，走 TCA9554 的 EXIO8）。
-//   只在 `DASH_DISPLAY_RGB`（= `[env:esp32s3-rgb]`）里编进固件 —— 抓帧盒那三个 env
-//   的编译单元里**一行都不存在**（门就是那个既有宏，没新增任何 -D）✓
-#include "buzzer_exio.h"  // L14 的落地：发声的是**这块 2.8C（右/主机板）**
+// ★★ 2026-10-15：`buzzer.h` / `buzzer_exio.h` 两行**已删** —— 车主原话
+//   "蜂鸣器功能砍掉，节省资源" ⇒ `lib/dashcore/buzzer.*` 与 `buzzer_exio.*`
+//   四个文件一起删除，这里不再挂任何发声装置。
+//   ★ 告警层（`alerts.*`）的**判断**一个字都没动，只是不再有"响"这个动作。
+#include "alert_view.h"   // 告警 → 视图（红区/超速那两条要读它的阈值）
 // ★ 2026-09-25:**跨重启留档**（上一次的复位原因 / 上一次运行了多久 / 守护累计计数）。
 //   判据层与 NVS 读写回调的分工见 `lib/dashcore/boot_persist.h` 的文件头；
 //   起因是本单那个悬案：累计启动次数 31→32，而上一次的 reason 没有留档 ⇒ 判不出死因。
@@ -146,66 +146,24 @@ static const uint32_t kObdBaud = 38400;
 static VehicleDataService g_data(nullptr);
 
 // ============================================================================
-//  告警层 + 蜂鸣器（2026-09-24 新增）
+//  告警层（2026-09-24 新增）
 // ============================================================================
-// 触发源**只用已解字段**：超速（车速）/ 转速红区（5800）/ 门（"动过"）/
-// 转向灯亮太久。判据、去抖、最短重复间隔、静音全在 lib/dashcore/alerts.*
-// （纯逻辑，native 用例逐条测掉），这里只做三件事：
+// 触发源**只用已解字段**：超速（车速）/ 转速红区（5500）/ 门（"动过"）/
+// 转向灯亮太久。判据、去抖、迟滞全在 lib/dashcore/alerts.*
+// （纯逻辑，native 用例逐条测掉），这里只做两件事：
 //   ① 每轮喂一份快照给 Alerts；
-//   ② 按它的结论驱动蜂鸣器（Buzzer 抽象后面的实现）；
-//   ③ 把结论交给 UI（灯位闪烁 + 告警描边）。
+//   ② 把结论交给 UI（红区/超速那两条的**染色与加粗**、以及诊断页那一格）。
 //
-// ★ 蜂鸣器挂哪个实现（**这是 §8 L14 的落点，2026-09-24 已落地**）：
-//   · **真机（`[env:esp32s3-rgb]`，= 车主手上这块 2.8C）= `BuzzerExio`** ——
-//     经 `dash_buzzer_set()` 写 TCA9554 的 **EXIO8**（那颗芯片本来就在驱动这块屏，
-//     所以**零额外引脚**）。硬件结论（**有源**：只会响/不响，没有音调、音量不可调）
-//     的实测在 `docs/RGB-PANEL-2.8C.md` §13.6，落地形态见 §13.7。
-//     ★★ **L14 的答复：发声的是 2.8C 这一块（右板 = 主机板）** —— 当下手上只有
-//        这一块 2.8C（第二块还没到货），"另一块板上有没有蜂鸣器"**未实测**，
-//        所以按"这一块能响、就用这一块"接线，不假设另一块也有（文档里写明）。
-//     ★ 三条硬约束（单次哔 ≤300ms / `Long` 降级 3 短哔 / 绝不做长鸣）落在
-//        `lib/dashcore/buzzer_exio.*` 里，理由与那次黑屏事故的关系见那里的文件头。
-//   · pcpreview 上仍是 `BuzzerHost`（打印 `BEEP pattern=… ms=…` 一行，
-//     可选 -DBUZZER_HOST_SOUND=1 出系统提示音）⇒ 模拟页上能看见"什么时候会响"。
-//   · 未接显示的构建（抓帧盒 `esp32s3`/`esp32dev`）仍是 `BuzzerNull`（不发声）：
-//     那边连屏都没有，更不需要发声。
+// ★★ 2026-10-15：这里原来还有"蜂鸣器挂哪个实现 + 每轮 tick/safety/beep/off"
+//   那一整套（`g_buzzer` / `BuzzerNull` / `BuzzerHost` / `BuzzerExio` +
+//   2 秒绝对上限 + 串口 `b` 试响 + 静音开关 `m` + NVS 里的 `mute` 键）。
+//   车主原话："**蜂鸣器功能砍掉，节省资源**" ⇒ 整条砍掉，一行不留。
+//   ★ **判断一个字都没动**：四条判据、去抖窗口、迟滞带、优先级全照旧，
+//     现在只是"报了也没有人发声"（屏上那两条红色提示照常由它驱动）。
 static Alerts g_alerts;
-static BuzzerNull g_buzzer_null;
-#if defined(DASH_DISPLAY_PREVIEW)
-static BuzzerHost g_buzzer_host;
-#endif
-#if defined(DASH_DISPLAY_RGB)
-// ★★ 这一整段（实例 + 绑定点 + 串口命令 `b`）只在真屏那一份构建里存在。
-//   门用的是**既有的** `DASH_DISPLAY_RGB` 宏（platformio.ini 里早就有、且**只有**
-//   `[env:esp32s3-rgb]` 定义它）⇒ `[env:esp32dev]` / `[env:esp32s3]`（**VAN 抓帧盒**）
-//   以及 extends 它们的 `-vaninv` / `-vansniff` / `-spi` / `-linkloop` 的编译单元里
-//   **一行都不存在**，行为逐字节不变 ✓。**没有新增任何 -D** ✓。
-//
-// ★ 为什么要一个 `setExio` 转发：`BuzzerExio` 与显示驱动之间靠一个**函数指针**
-//   解耦（`BuzzerExioSetFn`），而不是让 `lib/dashcore` 反过来 include `src/` 的头
-//   —— 口径与 `buzzer_host_printf()` 那条一致（见 buzzer.cpp 的说明）。
-//   真机写总线那一侧**只有一处**：`src/dash_display_rgb.cpp` 的 `dash_buzzer_set()`
-//   （它拿着影子寄存器做读-改-写；另写第二份 = 丢位 = 面板复位）。
-static BuzzerExio g_buzzer_exio(&dash_buzzer_set, nullptr, &millis);
-#endif
-static Buzzer* g_buzzer = &g_buzzer_null;
-
-// ★ 蜂鸣器"绝对上限掐过几次"的两个出口（2026-09-25 新增）。
-//   ★ 为什么要有这个读数：真机上"主循环有没有停过"这件事，除了屏上的现象，
-//     只有这一格是**硬的** —— `BuzzerExio::safety()` 只在"起表之后超过 2 秒还在响"
-//     时才 +1，而那正是"没人去执行到点关"的形态（见 `lib/dashcore/buzzer_exio.h`
-//     的 `kBuzzerSafetyMs` 那一段）。
-//   ★ 门用**既有的** `DASH_DISPLAY_RGB`（真屏那一档）：其余构建里 `g_buzzer` 挂的是
-//     `BuzzerNull`/`BuzzerHost`（没有这个读数）⇒ 这里必须编译期分叉，不新增任何 -D。
-#if defined(DASH_DISPLAY_RGB)
-static uint32_t buzzer_safety_cuts() { return g_buzzer_exio.safetyCuts(); }
-#else
-static uint32_t buzzer_safety_cuts() { return 0u; }
-#endif
 
 // 告警状态的一行回执（只在**变了**的时候打：每 5 秒那行只报"当前是什么"）。
 static uint8_t g_alert_last = 0xFF;   // 0xFF = 还没打过
-static uint32_t g_beep_seen = 0;
 
 // ============================================================================
 //  系统状态层（2026-09-24 新增）—— 「数据不可信」提示 + 诊断页
@@ -216,8 +174,11 @@ static uint32_t g_beep_seen = 0;
 //   （纯逻辑，native 用例逐条钉住），这里只做四件事：
 //     ① 每拍把 `SysStatusInputs` 拼出来（**全部来自既有信息，零新数据源**）；
 //     ② 把结论交给 dash_ui（角标 + 诊断页）；
-//     ③ 按 `beepDue()` 响一声轻提示（走既有 `Buzzer` 抽象 + 既有静音开关）；
-//     ④ 静音开关的**掉电保存**（见下面 load/save 的说明）。
+//     ③ 把结论交给 dash_ui（角标 + 诊断页）。
+// ★★ 2026-10-15：这里原来还有 ③"按 `beepDue()` 响一声轻提示"与
+//   ④"静音开关的掉电保存（NVS）"。蜂鸣器整车砍掉 ⇒ 那两条一起删了
+//   （`KTrustBeepMs` / `kTrustBeepMinIntervalMs` / `mute` 键 / 串口 `m` / 预览 `M`）。
+//   ★ 判据没动：`g_sys.update()` 照旧推进，角标与诊断页照旧。
 static SystemStatus g_sys;
 // VAN 帧的**本机计数**：`van.raw_frames` 那一行用。
 // ★ 为什么在 main 自己数而不是读物理层的 `VanPhyWire::Stats`：
@@ -250,24 +211,17 @@ static uint32_t g_vanraw_last_ms = 0;       // 最近一帧成功解出的时刻
 //   （RGB 那条路上第一次整屏刷新要 ≈1 秒 ⇒ 那一秒 fps 会掉下来）。
 //   用整数 EMA（alpha = 1/8）而不是浮点：只为了一个显示值不值当用浮点。
 static uint32_t g_ui_fps10 = 0;
-// 静音开关的掉电保存（设备端用 Preferences/NVS；预览端没有 NVS）。
-// ★ 口径：**默认有声**（= 不静音），静音是车主的**选择**，要能跨上电记住。
-static bool g_beep_muted = false;
+// NVS 句柄（设备端用 Preferences；预览端没有 NVS）。
+// ★★ 2026-10-15：这三行原来还有一位"静音开关的掉电保存"（`g_beep_muted` /
+//   `kPrefsMuteKey = "mute"` / `mute_load()` / `mute_save()`）。蜂鸣器整车砍掉
+//   ⇒ 静音没有可掐的东西，那一条一起删了（NVS 里旧的那颗 `mute` 键不再被读，
+//   也不会被写 —— 留着它对任何行为都没有影响）。
+//   ★ `g_prefs` / `kPrefsNamespace` **保留**：下面 `bootNvsRead/Write` 那一整套
+//     （复位原因、上一段运行时长、守护跨重启累计）照旧用它。
 #if defined(ARDUINO)
 #include <Preferences.h>
 static Preferences g_prefs;
 static const char* kPrefsNamespace = "dash";
-static const char* kPrefsMuteKey   = "mute";
-static void mute_load() {
-  if (!g_prefs.begin(kPrefsNamespace, /*readOnly=*/true)) return;   // 没有 NVS ⇒ 保持默认
-  g_beep_muted = g_prefs.getBool(kPrefsMuteKey, false);
-  g_prefs.end();
-}
-static void mute_save(bool m) {
-  if (!g_prefs.begin(kPrefsNamespace, /*readOnly=*/false)) return;
-  g_prefs.putBool(kPrefsMuteKey, m);
-  g_prefs.end();
-}
 
 // ============================================================================
 // ★★ 复位原因 + 复位次数（2026-09-24 新增）—— 第 ③ 层防线的**取证手段**
@@ -475,29 +429,22 @@ static void boot_note() {
 }
 
 #else
-// 预览端：静音状态由 `preview/inject.txt` 的 `mute=` / 键 `M` 管（见 preview_input.h），
-// 不落盘 —— 落盘会让"重新跑一次预览"继承上一次的静音，演示时反而容易误会。
-static void mute_load() {}
-static void mute_save(bool) {}
+// 预览端：没有任何 NVS。
+// ★★ 2026-10-15：这里原来还有一对空壳 `mute_load()` / `mute_save()` —— 静音开关
+//   随蜂鸣器一起删了（预览端也没有可掐的东西了）。
 #endif  // ARDUINO
 
 #if defined(DASH_DISPLAY_PREVIEW)
 // pcpreview 的注入快照 + 它改过的字段。设备固件里没有这一段。
 static PreviewInput g_preview;
 static PreviewInput g_preview_prev;
-static uint32_t g_lamp_pulse_ms = 0;
-static bool g_lamp_pulse = false;
-// ★ 2026-09-24：告警那一拍的"屏上闪"要**落进帧里**才算数。
-//   起因（实测会误导人）：`Alerts::beeping()` 只持续 `beep_ms`（120ms），
-//   而预览**每 200ms 才落一帧** ⇒ 有将近一半的落帧时刻那一拍已经过去了。
-//   于是"按 O 触发超速，屏上却没闪"会时不时出现 —— 而判据本身是对的
-//   （真机 60fps 下每次都看得见），纯粹是**采样**问题。
-//   修法：脉冲开始时记住当时的帧号，**一直保持到显示侧真的落了新的一帧**
-//   （`dash_display_preview_frames()` 变了）为止。判据/去抖/蜂鸣器一个字
-//   都没改（那三层在 lib/dashcore/alerts.*，native 用例逐条钉着）——
-//   这里只是"让那一拍活到被拍下来"。
-static uint32_t g_lamp_pulse_frame = 0;
-static bool g_lamp_pulse_armed = false;
+// ★★ 2026-10-15：这一段原来还有"告警那一拍的屏上闪"那四个变量
+//   （`g_lamp_pulse_ms` / `g_lamp_pulse` / `g_lamp_pulse_frame` /
+//    `g_lamp_pulse_armed`）。那是给**六格灯**用的采样补偿：
+//   `Alerts::beeping()` 的一拍只有 120ms，而预览每 200ms 才落一帧 ⇒
+//   要把那一拍"保持到被拍下来为止"，好让 lamps= 那几条断言看得见闪。
+//   车主把整条灯栏删掉、蜂鸣器也砍掉 ⇒ 这条采样补偿**没有消费方了**，整段删除。
+//   （判据层一个字没动：`Alerts` 照旧算它的四条告警。）
 
 // ★ 2026-09-24（第二轮）：预览里演示"数据不可信提示"的那一位。
 //   `sim_ok` **不是车辆状态**（见 preview_input.h 的说明），所以它不进
@@ -522,18 +469,19 @@ static void preview_apply(const PreviewInput& in, VehicleState& st) {
     //   所以"只按了 V"这一种变化单列一行 —— 否则按 V 之后屏幕上一行回执都没有，
     //   而"按了没反应"是最难查的现象。
     if (in.any()) {
-      dash_logf("inject: L=%d R=%d haz=%d low=%d pos=%d door=%d spd=%.0f rpm=%.0f mute=%d\n",
+      dash_logf("inject: L=%d R=%d haz=%d low=%d pos=%d door=%d spd=%.0f rpm=%.0f\n",
                 (int)in.left, (int)in.right, (int)in.hazard, (int)in.low_beam,
-                (int)in.position, (int)in.door, in.speed_kmh, in.rpm, (int)in.mute);
+                (int)in.position, (int)in.door, in.speed_kmh, in.rpm);
     }
     dash_logf("inject: round mask = %s (2.8C tier; key V)\n", in.panel_mask ? "ON" : "OFF");
     dash_display_preview_set_panel_mask(in.panel_mask);
   }
   // ★ 施加的**纯逻辑**在 lib/dashcore/preview_input.h 的 preview_apply_snapshot()
   //   （双闪与左右箭头的合并语义、*_set 的"没注入过 ≠ 注入成 0"都在那里，
-  //    由 native 用例逐条钉住）—— 这里只留下"回执 + 遮罩推送 + 静音"三件 IO。
+  //    由 native 用例逐条钉住）—— 这里只留下"回执 + 遮罩推送"两件 IO。
+  //   ★★ 2026-10-15：这里原来还有第三件 `g_alerts.setMuted(in.mute)` ——
+  //     静音开关随蜂鸣器一起删了（`inject:` 那行回执也少了 `mute=%d` 那一格）。
   preview_apply_snapshot(in, st);
-  g_alerts.setMuted(in.mute);
 }
 #endif  // DASH_DISPLAY_PREVIEW
 #if defined(ARDUINO)
@@ -1415,8 +1363,10 @@ static SysStatusInputs sys_inputs_build(uint32_t now_ms) {
   }
 #endif
 
-  // ---- ⑦ 告警 / 静音 ----
-  in.beep_muted   = g_beep_muted;
+  // ---- ⑦ 告警状态 ----
+  // ★★ 2026-10-15：这一格原来还有 `in.beep_muted = g_beep_muted`（静音开关，
+  //   诊断页第 1 页那一格 `mute=` 用它）。蜂鸣器整车砍掉 ⇒ 字段与那一格一起删了。
+  //   ★ `alert_active` **保留**：告警判断一个字没动，诊断页照旧报"现在报的是哪一条"。
   // ★ 用"回执那一份"：`g_alert_last` 的 0xFF 是"还没报过"的哨兵（不是一条告警）
   //   ⇒ 转成 0（= AlertKind::None）再给诊断页，免得屏上出现 alert=255。
   in.alert_active = (g_alert_last == 0xFFu) ? 0u : g_alert_last;
@@ -1438,7 +1388,7 @@ static SysStatusInputs sys_inputs_build(uint32_t now_ms) {
 //     (链路自己 `begin()` 时会把 43/44 按 §0 §1.1 重新配一遍,那时 Serial0 的读
 //      拿到的是链路字节 —— 那是"贴帧口被链路占着"这个既定事实,不是新问题。)
 // ============================================================================
-//  真机的**串口单字符命令**（2026-09-24 新增）—— 「诊断页 / 静音」的真机入口
+//  真机的**串口单字符命令**（2026-09-24 新增）—— 诊断页 / 面板重初始化的真机入口
 // ============================================================================
 // ★ 为什么真机入口是串口、不是按键：**这块板上没有可用的按键** ——
 //   2.8C 整板上能当输入用的只剩 12PIN 的 `GPIO0`（= BOOT strap，不建议）
@@ -1451,7 +1401,7 @@ static SysStatusInputs sys_inputs_build(uint32_t now_ms) {
 // ★★ 为什么整段只在 `DASH_DISPLAY_RGB`（= `[env:esp32s3-rgb]`）里编 ✗：
 //   `[env:esp32s3]` / `[env:esp32dev]`（以及 extends 它们的 `-vaninv`/`-vansniff`）
 //   是 **VAN 抓帧盒** —— 它们的串口上跑的是**抓帧数据/回放文本**，一个字节都
-//   不许被吃掉。所以这两个命令**只**进真屏那一份构建，而且**不新增任何 `-D`**：
+//   不许被吃掉。所以这几个命令**只**进真屏那一份构建，而且**不新增任何 `-D`**：
 //   `DASH_DISPLAY_RGB` 是 platformio.ini 里**早就有的**、且**只有**
 //   `[env:esp32s3-rgb]` 定义的那一个宏（见 dash_display.cpp 的驱动分支）
 //   ⇒ 其余 env 的编译单元里**这段代码一行都不存在**，行为逐字节不变 ✓。
@@ -1460,24 +1410,14 @@ static SysStatusInputs sys_inputs_build(uint32_t now_ms) {
 //   · `d` ⇒ 诊断页：与预览的 `K` **同一个循环** —— 关着 ⇒ 打开第 1 页；
 //           还有下一页 ⇒ 翻页；在最后一页 ⇒ 关闭。回执与预览逐字同一行
 //           （`diag: open page=1/2` / `diag: closed page=2/2`）。
-//   · `m` ⇒ **静音开关取反**，并**写 NVS**（掉电保存；与 `setup()` 里读回的
-//           是同一对 load/save）⇒ 车主**不用按键**就能静音。回执 `mute: 1 (saved)`。
-//   · `b` ⇒ **蜂鸣器测试：响一声**（2026-09-24 新增）。★ 这是**人耳判据**的入口：
-//           有源/无源那半问在 §13.6 已经由车主听出来了，但"**接上以后到底响不响**"
-//           只能靠耳朵 —— 机上没有麦克风，所以留一个**按需**触发的按键：
-//           不用等告警、不用等开机那 2.44 秒的 `trust: sim-fallback`。
-//           ★ 用的是 `BeepPattern::Long` **故意如此**：验收要看的正是驱动里那条
-//             "**长鸣 ⇒ 3 短哔**"的降级（`ARCHITECTURE.md` §4 第 2/3 条 +
-//             `lib/dashcore/buzzer_exio.h` 文件头 ②）。
-//             时长给 `kTrustBeepMs`（120ms，就是"数据不可信"那一声轻提示的量）
-//             ⇒ 听到的是 **3 声、每声 120ms、中间隔 80ms**，绝不会是长鸣。
-//           ★ 它走的是**与告警同一个 `g_buzzer`**（挂的是真机那一档 `BuzzerExio`）
-//             ⇒ 这一声与"真告警响的那一声"是同一条路径，不是另开一条测试旁路。
-//           ★ **静音（`m`）不拦它**：`m` 的语义是"关掉**自动告警**"（`alerts` +
-//             那一声轻提示），而 `b` 是车主**主动按下去**的测试动作 ——
-//             前提是"静音开关不绕开既有 Alerts/NVS 那条路"，这一条没动（见
-//             `mute_toggle_from_serial()` 与 loop() 里那两处 `muted()` 判据）。
-//             回执那一行会把当前静音态一起打出来，免得混起来。
+//   · `r` ⇒ 面板重初始化 + 重发当前画面（见下面 `reinit_from_serial()`）。
+//
+// ★★ 2026-10-15：`m`（静音开关取反 + 写 NVS）与 `b`（蜂鸣器试响）**两个命令
+//   已随蜂鸣器一起删除** —— 车主原话"蜂鸣器功能砍掉，节省资源"。
+//   ⇒ 串口上少了这两个命令；开机也不再打 `mute: N (loaded from NVS)` 那一行。
+//   ★ 删字符是**安全**的：`m`/`b` 都落在十六进制字母表里，以前它们能工作完全
+//     靠下面那条"只认行首 / 缓冲里已有 V 时不吃"的判据；现在它们不再被认成
+//     命令 ⇒ 那一类字节**照旧进回放路径**（`serial_cmd_classify` 返回 None）。
 //
 // ★★ 命令**只认"行首"**（这个口上当前没有未完成的一行）—— 判据在下面
 //   `serial_cmd_handle` 里：回放行里的十六进制**本来就可能含 `d`**（例
@@ -1505,55 +1445,13 @@ static void diag_key_press() {
             (unsigned)(dash_ui_diag_page() + 1u), (unsigned)kDiagPageCount);
 }
 
-// 静音取反 + **落盘**（`Preferences`/NVS，命名空间 `dash`、键 `mute`，见上面那段）。
-// ★ 三件事的顺序是有意的：先改内存态（这一拍就生效）→ 写 NVS（掉电记住）
-//   → 同步给告警层（`g_alerts` 与 `g_beep_muted` 是两份状态，必须一起动）。
-static void mute_toggle_from_serial() {
-  g_beep_muted = !g_beep_muted;
-  mute_save(g_beep_muted);
-  g_alerts.setMuted(g_beep_muted);
-  dash_logf("mute: %d (saved)\n", g_beep_muted ? 1 : 0);
-}
-
-// `b`：**响一声**（人耳判据的入口，见上面命令表里那段说明）。
-// ★ 这里只做两件事：起一拍 + 打一行回执 —— **绝不阻塞**（真正的高低电平由
-//   `loop()` 每轮推进，显示那一秒的帧照样照常画）。
-// ★★ 为什么要那个"窗口"（`g_beep_cmd_until_ms`）：`loop()` 里驱动蜂鸣器那一支是
-//   `if (g_alerts.beeping()) beep() else off()` —— 串口 `b` 起的那一拍里
-//   `Alerts::beeping()` 恒为假，于是主循环**每轮都会调 `off()`**，而
-//   `BuzzerExio::off()` 的语义是"**取消**"（静音那一跳靠它立刻掐断）
-//   ⇒ 不处理的话 `b` 只会响第一声（**实测就是这么发现的**：3 短哔变成 1 声）。
-//   修法：命令侧记一个"这一拍到什么时候为止"的窗口，`loop()` 那一支在窗口内
-//   走"**只推进、不取消**"（序列由 `g_buzzer->tick()` 推进，见 loop() 里那一段）。
-//   ★ 判据只有这一处（`beep_cmd_window()`），别在别处再写一遍。
-//   ★ 窗口内**不调 `beep()`**（只 tick）：序列已经在跑了，重复起表只会把相位归零。
-// ★ 静音（`m`）**不拦**这一声：`m` 关的是**自动告警**，而 `b` 是车主**主动**
-//   按下去的测试动作。回执那一行会把当前静音态打出来，免得两者混起来。
-static uint32_t g_beep_cmd_until_ms = 0;   // 串口 `b` 那一拍的到期时刻（0 = 没有）
-
-// 串口 `b` 的那一拍还在窗口里吗？
-// ★ 这里用 `millis() < 到期` 的**绝对值**比较（不是 `now - start` 那种差值形式）：
-//   本窗口最长 560ms，`millis()` 那道 49.7 天的回绕**不可能**落进这么短的窗口里，
-//   所以绝对值比较是安全的、也更好读。窗口一过就自动失效（`g_beep_cmd_until_ms`
-//   跟着被清成 0）⇒ 下一次告警照旧走正常的 `beep()/off()` 那一支。
-static bool beep_cmd_window(uint32_t now) {
-  if (g_beep_cmd_until_ms == 0u) return false;
-  if ((int32_t)(now - g_beep_cmd_until_ms) >= 0) {
-    g_beep_cmd_until_ms = 0u;
-    return false;
-  }
-  return true;
-}
-
-static void beep_test_from_serial() {
-  // ★ `Long` 是**有意**的：这一声要验的正是驱动里"**长鸣 ⇒ 3 短哔**"那条降级
-  //   （`ARCHITECTURE.md` §4 第 2/3 条 + `lib/dashcore/buzzer_exio.h` 文件头 ②）。
-  g_buzzer->beep(BeepPattern::Long, kTrustBeepMs);
-  const uint32_t total = 3u * kTrustBeepMs + 2u * kGapMs;   // 3 声 + 2 个间隙 = 520ms
-  g_beep_cmd_until_ms = millis() + total + 40u;             // 留一点余量
-  dash_logf("buzz: test beep cmd=b(Long>3short) ms=%u x3 gap=%ums muted=%d\n",
-            (unsigned)kTrustBeepMs, (unsigned)kGapMs, g_beep_muted ? 1 : 0);
-}
+// ★★ 2026-10-15：这里原来还有四个东西，全部随蜂鸣器删除（车主原话
+//   "蜂鸣器功能砍掉，节省资源"）：
+//     · `mute_toggle_from_serial()`（串口 `m`：静音取反 + 写 NVS + 同步告警层）
+//     · `g_beep_cmd_until_ms` + `beep_cmd_window()`（串口 `b` 那一拍的"别取消"窗口）
+//     · `beep_test_from_serial()`（串口 `b`：试响一声，人耳判据的入口）
+//   ★ 判据层一个字没动：`serial_cmd.h` 里 `m` / `b` 两个枚举值也一起删了，
+//     那两个字符现在返回 `SerialCmd::None` ⇒ 照旧进回放路径。
 
 // `r`：**面板重初始化 + 重发当前画面**（2026-09-24 新增，第 ③ 层防线）。
 //
@@ -1706,12 +1604,9 @@ static bool serial_cmd_handle(char c, char* line, uint8_t& len) {
     case SerialCmd::Diag:
       diag_key_press();
       return true;
-    case SerialCmd::Mute:
-      mute_toggle_from_serial();
-      return true;
-    case SerialCmd::Beep:
-      beep_test_from_serial();
-      return true;
+    // ★★ 2026-10-15：`SerialCmd::Mute`（`m`）与 `SerialCmd::Beep`（`b`）两个分支
+    //   已随蜂鸣器删除 —— 那两个字符现在由 `serial_cmd_classify()` 返回
+    //   `SerialCmd::None`，走下面 default 那一支 ⇒ 照旧进回放路径。
     case SerialCmd::Rebuild:
 #if defined(DASH_DISPLAY_RGB)
       // 2026-10-10: 全量重建（del + panel_create）。与 r 的区别：r 只重写面板寄存器；
@@ -1813,13 +1708,15 @@ static bool serial_cmd_handle(char c, char* line, uint8_t& len) {
 //        清掉那串字节（它不可能是回放行，留着只会在下次换行时 echo 出一行
 //        `VAN? …`），然后把这一颗字节当命令。
 //        ★ 这条路径 2026-09-24 **上板验过**（不是纸上推的）：先发一颗 `x`
-//          把那种杂散字节**造出来**，再发 `m` ⇒ `mute: 1 (saved)` 照常出来，
+//          把那种杂散字节**造出来**，再发一个命令 ⇒ 回执照常出来，
 //          而且**没有** `VAN? x` 回显（缓冲确实被清掉了）。
+//           ★★ 2026-10-15：当时验的是 `m`（`mute: 1 (saved)`）—— 那条命令
+//             已随蜂鸣器删除；今天这一档能用的命令是 `d`（`diag: open …`）。
 //   ★ 首字节是 V/v 时**一律不动它**：那可能就是一行正在贴进来的回放帧，
-//     命令字符（`d`/`m`）在 hex 里本来就可能出现（例 `VAN 824 18F8271D000000`）。
+//     命令字符（`d`/`r`）在 hex 里本来就可能出现（例 `VAN 824 18F8271D000000`）。
 //   ★ 回放路径（`van_replay_feed`）**一个字都没动** —— 上面这套判据只决定
 //     "这一颗字节要不要当命令吃掉"。
-//   ★★ 2026-09-24 补：命令表本身（`d`/`m`/`b`/**`r`**）抽成了纯函数
+//   ★★ 2026-10-15 补：命令表本身（`d`/`r`/`i`/`w`/`o`/`t`/`u`/`R`）抽成了纯函数
 //      `lib/dashcore/serial_cmd.h` 的 `serial_cmd_classify()` —— 上面这套"行首"
 //      判据只决定**要不要问它**，而"哪几个字符算命令"那一层现在宿主机上可测
 //      （见 `test/test_dashcore/test_serial_cmd.cpp` 里那一组）。
@@ -1978,10 +1875,15 @@ static void print_selftest(const char* tag) {
 // ★★ 主循环**停顿探测**（2026-09-25 新增）—— "下次再卡就有现场"的唯一办法
 // ============================================================================
 // ★ 起因（车主的现场，逐字记）：新板（从板镜像）插着 Type-C、没接 4Pin 的时候
-//   **"现在会长鸣一会儿，画面也卡住了"**。而这块板上的蜂鸣器是**软开关**
-//   （写 TCA9554 的 EXIO8，没有硬件定时，见 lib/dashcore/buzzer_exio.*）⇒
+//   **"现在会长鸣一会儿，画面也卡住了"**。而这块板上的蜂鸣器当时是**软开关**
+//   （写 TCA9554 的 EXIO8，没有硬件定时）⇒
 //   "一直响"只可能是**主循环停住了、没人去执行到点关掉**；画面冻结是同一件事的
 //   另一半（渲染也在主循环里）。⇒ **这两个症状是同一次"主循环被堵死"**。
+//
+//   ★★ 2026-10-15：蜂鸣器整车砍掉之后，"长鸣"这一半症状**结构上不可能再发生**了
+//     （`lib/dashcore/buzzer_exio.*` 已删）。但这一段探测**照旧保留** ——
+//     它验的是"主循环有没有被堵死"，而"画面卡住"那一半还在，判据本来就是
+//     `millis()` 差值，与蜂鸣器无关（车主那句原话的另一半仍然要能查到现场）。
 //
 // ★ 为什么先要探测而不是直接猜原因：那一夜的症状是**偶发**的，而我们要的不是
 //   "也许是这样"，是**一行数字**。所以这里把两件事记下来：
@@ -2937,34 +2839,17 @@ void setup() {
   //   这是编译期事实（`-DOBD_SERIAL=0` 的构建里根本没有那一路），不是运行期探测。
   g_obd_enabled = true;
 #endif
-  // 静音开关的掉电保存（默认有声；静音是车主的选择，要跨上电记住）。
-  mute_load();
-  g_alerts.setMuted(g_beep_muted);
-#if defined(DASH_DISPLAY_RGB)
-  // ★ 真屏构建：把"**这一板上电时记着的是什么**"打出来。
-  //   静音开关在这块板上没有按键入口（见上面串口命令那一段），"掉电保存成不成立"
-  //   就全靠这一行可测：发过 `m` 之后复位/断电重上，这里应当是
-  //   `mute: 1 (loaded from NVS)`；再发一次 `m` 就回到 0。
-  //   ★ 只编进 `[env:esp32s3-rgb]`（`DASH_DISPLAY_RGB`，见上面那一段的说明）——
-  //     抓帧盒两个 env 的串口日志**一个字节都不变** ✓。
-  dash_logf("mute: %d (loaded from NVS)\n", g_beep_muted ? 1 : 0);
-#endif
+  // ★★ 2026-10-15：这里原来还有"静音开关的掉电保存"（`mute_load()` +
+  //   `g_alerts.setMuted()` + 真屏那行 `mute: N (loaded from NVS)`）与
+  //   "蜂鸣器挂哪个实现"（`g_buzzer = &g_buzzer_host/&g_buzzer_exio` + `begin()`）
+  //   这两段。蜂鸣器整车砍掉 ⇒ 两段一起删。
+  //   ★ 副作用（写进提交信息）：开机**不再有 `mute:` 那一行**。
+  //   ★ 告警层照旧就绪，只是不再有发声装置。
   g_data.begin();
   BOOT_STAGE(2);
 
-  // 告警层 + 蜂鸣器：把实现**挂上**（挂哪个见上面那一段注释 —— L14 的落点）。
-#if defined(DASH_DISPLAY_PREVIEW)
-  g_buzzer = &g_buzzer_host;      // 预览：打印 BEEP 行（可选系统提示音）
-#elif defined(DASH_DISPLAY_RGB)
-  // ★★ 真机（2.8C，右/主机板）：挂上写 TCA9554 的 EXIO8 那一档。
-  //   这是本单的**核心那一行** —— 少了它，`g_buzzer` 还指着 `BuzzerNull`
-  //   （空实现），于是"日志里一切正常、板子一声不响"，而且**看不出来**：
-  //   `beep()` 被照常调用、返回 void、没有人报错。
-  //   ★ 只是"把 g_buzzer_exio 声明出来"是不够的 —— 必须在**这里**绑。
-  g_buzzer = &g_buzzer_exio;
-#endif
-  g_buzzer->begin();
-  dash_logf("alerts: 已就绪(超速 %.0f / 红区 %.0f / 门 / 转向灯忘关 %us)\n",
+  dash_logf("alerts: 已就绪(超速 %.0f / 红区 %.0f / 门 / 转向灯忘关 %us)"
+            " —— 蜂鸣器已删,只上屏(红区/超速染红)\n",
             (double)g_alerts.config().overspeed_kmh,
             (double)g_alerts.config().redline_rpm,
             (unsigned)(g_alerts.config().turn_signal_on_ms / 1000u));
@@ -3099,18 +2984,24 @@ void setup() {
   //     ① 从**当前配置**出发（= alerts.h 的编译期默认值），文件只覆盖它写了的那几个
   //        ⇒ 老主题文件（没有 alerts 段）行为**一个字节都不变**；
   //     ② 越界值由 `alerts_config_clamp()` 挡（那份配置现在是外部输入）；
-  //     ③ **静音不在这个文件里** —— `muted` 是运行时状态（`m` 键 / 预览页 `M`，
-  //        存 NVS、跨上电记住，见下面 `g_beep_muted` 那一段）。把它也写进文件会
-  //        造出"两个真相"，所以刻意不写；要静音就是按一下 `m`（一次，之后一直记住）。
+  //     ③ ★★ 2026-10-15：这里原来还有第三条"**静音不在这个文件里**"（`m` 键 /
+  //        预览页 `M` / NVS）。蜂鸣器整车砍掉 ⇒ 静音开关不存在了，那一条删掉。
+  //        ★ `beep_ms` / `beep_min_interval_ms` 两个键**照旧解析、照旧钳制**
+  //          （见下面那行日志）—— 它们住在已经导出的主题文件里，删解析会让
+  //          那些文件"看起来坏了"；现在只是没有消费方。
   {
     AlertsConfig ac = g_alerts.config();
     if (theme_load_alerts(ac)) {
       g_alerts.setConfig(ac);
       // 这一行是**判据**：刷一份带 alerts 段的主题后，这里打出来的必须就是
       // 文件里那几个数（编辑器导出的就是下面这些字段名，逐项对得上）。
+      // ★★ 2026-10-15：`响 %ums` / `最短间隔 %ums` 两格**留着**（它们对应的
+      //   键照旧解析、照旧钳制），只是现在没有消费方 —— 打出来便于核对"文件里写
+      //   的值有没有被正确读进来"（这两格不再是"会不会响"的判据）。
       dash_logf("alerts: 已应用主题里的 alerts 段 "
                 "(超速 %.0f/迟滞 %.0f, 红区 %.0f/迟滞 %.0f, 门去抖 %ums, "
-                "转向忘关 %us, 去抖 %ums, 响 %ums, 最短间隔 %ums, only_highest=%u)\n",
+                "转向忘关 %us, 去抖 %ums, 响 %ums(无消费方), 最短间隔 %ums(无消费方), "
+                "only_highest=%u)\n",
                 (double)ac.overspeed_kmh, (double)ac.overspeed_hyst_kmh,
                 (double)ac.redline_rpm, (double)ac.redline_hyst_rpm,
                 (unsigned)ac.door_debounce_ms,
@@ -3332,76 +3223,26 @@ void loop() {
 
   // ---- 告警层（2026-09-24）----
   // ★ 喂的是**这一轮最终的快照**（注入之后），所以 pcpreview 上按 O/R
-  //   能立刻看到告警与蜂鸣器的反应 —— 而判据本身与真车跑的是同一份代码。
+  //   能立刻看到告警的反应 —— 而判据本身与真车跑的是同一份代码。
   const AlertKind alert = g_alerts.update(st_mut, now);
-  // ★ 先推进时序，再决定"这一拍该不该响"（顺序是硬的）：
-  //   · `tick()` 负责"到点关 + 多相序列的下一相"（真机那一档才有实际动作；
-  //     `BuzzerNull`/`BuzzerHost` 是默认空实现 ⇒ 这两档一个字节都没变）；
-  //   · 没有它，`Triple`/`Urgent`/`Long⇒3 短哔` 这些**跨好几拍**的序列
-  //     会永远停在第一相 —— 听起来就是"本该 3 声、只响 1 声"。
-  //   ★ 它**不阻塞**（`BuzzerExio::tick()` 只是几次整数比较 + 至多一次写位）。
-  g_buzzer->tick();
-  // ★★ 蜂鸣器的**绝对上限**（2026-09-25 新增，`Buzzer::safety()`）：
-  //   `tick()` 那条路是"到点关"，可它**只在主循环转得动时才走**。车主那条
-  //   "长鸣一会儿"说明存在"主循环停住 ⇒ 谁都没去关"的形态 ⇒ 这里再加一条
-  //   **与序列状态机无关**的兜底：任何一次 `beep()` 起表之后，只要墙钟超过
-  //   `kBuzzerSafetyMs`（2 s）还在响，就无条件关掉 + 丢弃序列 + 打一行日志。
-  //   ★ 它**不动**既有那条"单次哔 ≤300ms"的硬约束（序列自己仍然按相走）——
-  //     这一条是**额外**的、只在"那段逻辑没机会跑"的时候才生效的天花板。
-  //   ★ 代价：每圈两次整数比较（`beep()` 里的起表时刻 + `millis()`）。
-  g_buzzer->safety();
-#if defined(DASH_DISPLAY_RGB)
-  // ★★ 串口 `b` 那一拍的窗口内：**只推进、不取消**（理由见 `beep_cmd_window()`）。
-  //   这一段**只进真屏那一份构建**（`DASH_DISPLAY_RGB`，与命令 `b` 同一道门）
-  //   ⇒ 抓帧盒三个 env 里一行都不存在 ✓。
-  const bool beep_window = beep_cmd_window(now);
-#endif
-  if (g_alerts.beeping()) {
-    g_buzzer->beep(g_alerts.pattern(), g_alerts.config().beep_ms);
-#if defined(DASH_DISPLAY_RGB)
-  } else if (beep_window) {
-    // 串口 `b` 的窗口内、且没有告警在响 ⇒ **不调 off()**（它是"取消"，
-    // 会把这一拍掐成一声）。这一拍已经由上面的 `tick()` 在推进了。
-  } else {
-    g_buzzer->off();
-  }
-#else
-  } else {
-    g_buzzer->off();
-  }
-#endif
+  // ★★ 2026-10-15：这里原来还有"蜂鸣器每轮 tick/safety、按 beeping() 起一拍、
+  //   否则 off()"那一整段（含串口 `b` 的窗口处理）。蜂鸣器整车砍掉 ⇒ 整段删除。
+  //   ★ 判据一个字没动：`g_alerts.update()` 照旧算四条告警，结论只往下走给 UI
+  //     （红区/超速那两条的染色与加粗）与日志。
   // 状态变化时打一行（不是每轮都打：红区一直守着会变成每秒一行噪音）。
   const uint8_t alert_id = (uint8_t)alert;
   if (alert_id != g_alert_last) {
     g_alert_last = alert_id;
-    dash_logf("alert: %s%s\n", alertName(alert), g_alerts.muted() ? " (muted)" : "");
+    dash_logf("alert: %s\n", alertName(alert));
   }
-#if defined(DASH_DISPLAY_PREVIEW)
-  // 屏上告警闪与蜂鸣器**同一拍**：这里用"刚响过的那一拍"当相位源
-  // （听起来在叫、看起来在闪 = 一条信息；两者不同步会很怪）。
-  if (g_alerts.beeping()) {
-    if (!g_lamp_pulse) {
-      // 新的一拍：记下**当前已经落了几帧**，等它落出下一帧再放开。
-      g_lamp_pulse = true;
-      g_lamp_pulse_armed = true;
-      g_lamp_pulse_frame = dash_display_preview_frames();
-      g_lamp_pulse_ms = now;
-    }
-  } else if (g_lamp_pulse) {
-    // 蜂鸣器已经不响了（`beep_ms` = 120ms 的窗口过去了），但**先别急着熄**：
-    // 预览每 200ms 才落一帧，这一拍必须活到被拍下来为止（见上面的说明）。
-    const bool captured = g_lamp_pulse_armed &&
-                          (dash_display_preview_frames() != g_lamp_pulse_frame);
-    if (captured || (uint32_t)(now - g_lamp_pulse_ms) > 1500u) {
-      g_lamp_pulse = false;
-      g_lamp_pulse_armed = false;
-    }
-  }
-  const LampView lamps = make_lamps(st_mut, alert_id, now, g_lamp_pulse);
-#else
-  // 设备侧：告警闪的相位由 beep 的节奏给（真机上蜂鸣器一响，屏上就闪那一拍）。
-  const LampView lamps = make_lamps(st_mut, alert_id, now, g_alerts.beeping());
-#endif
+  // ★★ 2026-10-15：这里原来还有预览侧"让告警那一拍活到被拍下来"的采样补偿
+  //   （`g_lamp_pulse*` 四个变量 + `make_lamps(...)`）。六格灯栏删掉之后
+  //   没有消费方了 ⇒ 整段删除，两屏共用同一份 `alert_id`。
+  //
+  // `overspeed` **单独取一次**给屏上用（红区/超速那两条要它，见 dash_ui_render）：
+  //   ★ 用它而不是"车速 >= 150"再算一遍 —— 这样阈值只有一处（alerts.h /
+  //     theme.json），而且自带迟滞与去抖（车主原话："用现有的告警状态驱动"）。
+  const bool overspeed_alert = g_alerts.isActive(AlertKind::Overspeed);
 
   dash_ui_tick(now);   // LVGL 心跳,每个循环都跑
 #if defined(PANEL_GUARD_FAULT_INJECT) && (PANEL_GUARD_FAULT_INJECT == 1)
@@ -3484,26 +3325,17 @@ void loop() {
     }
 #endif
     const DataTrustReason trust = g_sys.update(diag_in, now);
-    // 一声轻提示（**走既有 Buzzer 抽象**）：只在"变坏"那一跳响一次、受 5 秒限速，
-    // 而且**静音开关优先**（车主的选择 > 这一声提示）。
-    // ★ 时长用 kTrustBeepMs（120 ms）：有源蜂鸣器只能开/关 ⇒ 就是"开这么久然后关"；
-    //   它必须 <= 300 ms（不许长时间连续高电平，理由见 ARCHITECTURE 的提示音说明）。
-    bool trust_beeped = false;
-    if (g_sys.beepDue()) {
-      if (!g_beep_muted && !g_alerts.muted()) {
-        g_buzzer->beep(BeepPattern::Short, kTrustBeepMs);
-        trust_beeped = true;
-      }
-    }
+    // ★★ 2026-10-15：这里原来还有"一声轻提示"（`g_sys.beepDue()` +
+    //   静音开关 + `g_buzzer->beep(Short, kTrustBeepMs)`）。蜂鸣器整车砍掉
+    //   ⇒ 整段删除。**判据没动**：`g_sys.update()` 照旧推、角标照旧出。
     // 状态变化的一行回执（不是每拍都打：数据在阈值上下抖会变成刷屏）。
-    // ★ 把"有没有响那一声"并进这一行 —— 分成两行会让"该响没响"与"状态没变"
-    //   看起来一模一样（而静音与否正是要能一眼看出来的东西）。
+    // ★★ 这一行原来还挂着 `beep` / `muted` 两个后缀 —— 蜂鸣器删掉之后它们
+    //   没有意义了（"该响没响"这件事已经不存在），只剩"变坏了没有"。
     static uint8_t trust_last = 0xFF;
     if ((uint8_t)trust != trust_last) {
       trust_last = (uint8_t)trust;
-      dash_logf("trust: %s%s%s (episodes=%lu)\n", dataTrustReasonName(trust),
+      dash_logf("trust: %s%s (episodes=%lu)\n", dataTrustReasonName(trust),
                 trust == DataTrustReason::kNone ? "" : "  <-- 屏上出现数据不可信提示",
-                trust_beeped ? " beep" : (g_sys.untrusted() ? " muted" : ""),
                 (unsigned long)g_sys.episodes());
     }
     // ★★ 这一行是**唯一**算 `ArcDashView` 的地方 —— 于是它也是从板唯一能拿到
@@ -3513,7 +3345,9 @@ void loop() {
     //     反过来写会让 `left_face` 比屏上晚一拍（200 ms 的错位，肉眼看不出来，
     //     但"屏上显示的档位"与"主板日志里记的档位"就不是同一个时刻的了）。
     const ArcDashView view = make_view(st_mut, now);
-    dash_ui_render(view, lamps, g_sys, diag_in, now);
+    // ★★ 2026-10-15：第 2 个参数从 `lamps`（六格灯）换成红区/超速那两个输入 ——
+    //   阈值取**告警层那份配置**（唯一出处），超速那一位取告警层的结论。
+    dash_ui_render(view, g_alerts.config(), overspeed_alert, g_sys, diag_in, now);
 #if LINK_ROLE != 1
     // ---- 链路（从板侧）：发 HELLO + STATUS + 排水（★ 2026-09-27 新增）----
     // ★ 位置就是上面那段的第一条理由：`view` 是刚刚推上屏的那一份 ⇒
@@ -3606,20 +3440,20 @@ void loop() {
                     fieldSourceName(s.position_lamp),
                     cur.door_activity ? "active" : "idle",
                     (cur.vin[0] != '\0') ? cur.vin : "-");
+      // ★★ 2026-10-15：这一行原来还有 `beeps=` / `muted` / `buzz safety=` 三格
+      //   （蜂鸣器累计响了几次、静音态、被 2 秒绝对上限掐过几次）。
+      //   蜂鸣器整车砍掉 ⇒ 那三格一起删，只剩"现在报的是哪一条"（判据没动）。
+      //   ★ 灯位/门位那几格（`turn=` / `low=` / `pos=` / `door=`）**一个字都没少**：
+      //     数据层照旧解 `0x4FC`，只是屏上不再画了。
       dash_logf("SRC-VAN age lights=%sms door=%sms vin=%sms | src turn=%s door=%s vin=%s"
-                " | alert=%s beeps=%lu%s | buzz safety=%lu\n",
+                " | alert=%s\n",
                     (s.lights_age_ms == UINT32_MAX) ? "-" : age_lights,
                     (s.door_age_ms == UINT32_MAX) ? "-" : age_door,
                     (s.vin_age_ms == UINT32_MAX) ? "-" : age_vin,
                     fieldSourceName(s.indicator_left),
                     fieldSourceName(s.door),
                     fieldSourceName(s.vin),
-                    alertName(g_alerts.active()),
-                    (unsigned long)g_alerts.beepCount(),
-                    g_alerts.muted() ? " muted" : "",
-                    // ★ 2026-09-25：被"2 秒绝对上限"掐过几次（真屏那一档才有实际值）。
-                    //   `0` = 没发生过"到点关那个动作没被执行"这件事。
-                    (unsigned long)buzzer_safety_cuts());
+                    alertName(g_alerts.active()));
     }
 #if LINK_ROLE == 1
     // 链路质量（§7 的失败模式表：链路断/从板无响应那一行就看这里）。

@@ -55,10 +55,12 @@ const char* dataTrustReasonText(DataTrustReason r);       // 中文短文（诊�
 //     它会让驾驶员不敢相信屏上的真值。恢复要干脆。
 // ★ 两个窗口都是**连续成立**才认（不是累计）—— 与 alerts 的去抖是同一条
 //   纪律（累计计时会让一串噪声把提示"攒"出来）。
-// ★ 一声提示音：**每次"变坏"只响一次**（`beep_due` 只置一次），且受
-//   `kTrustBeepMinIntervalMs` 限速 ⇒ 数据在阈值上下抖时不会变成滴滴叫。
-//   `kTrustBeepMs` 是**标称时长**，交给 `Buzzer` 那一侧落（有源蜂鸣器只能
-//   开/关 ⇒ 就是"开这么久然后关"，见 buzzer.h 的分层说明）。
+// ★★ 2026-10-15：原来这里还有"每次变坏响一声轻提示（`beepDue()`）"那一条。
+//   蜂鸣器整车砍掉（车主原话"蜂鸣器功能砍掉，节省资源"）⇒ 整条删掉了：
+//   随之删的是 `beepDue()` / `beep_due_` / `kTrustBeepMs` /
+//   `kTrustBeepMinIntervalMs` / NVS 里的 `mute` 键 / 串口 `m` 与预览 `M`。
+//   ★ 判据与去抖**一个字都没动**：`episodes_`（变坏过几次）照旧累计、
+//     角标与诊断页照旧显示 —— 砍的是"发声"，不是"判断"。
 // ------------------------------------------------------------
 static const uint32_t kTrustSysDebounceMs = 1500u;   // 判"不可信"：连续成立这么久
 static const uint32_t kTrustSysRecoverMs  = 800u;    // 判"恢复"：连续成立这么久
@@ -109,14 +111,6 @@ static const uint32_t kTrustEngineRunningRpm = 500u;
 //     那正是"数据层开始回落 Sim"的那一刻。比它短 ⇒ 角标会比假数据先出现
 //     （屏上是真值却报"不可信"）；比它长 ⇒ 假数据已经上屏了角标还没出来。
 static const uint32_t kTrustVanStaleMs = 3000u;
-
-// 提示音（**一声轻提示**）。
-// ★ 300 ms 是**硬上限**（有源蜂鸣器 + "持续高电平拉低 3.3V 轨"这条机制
-//   尚未排除 ⇒ 不许长时间连续高电平，见 ARCHITECTURE.md 的提示音说明）。
-//   120 ms 与 alerts 的 `beep_ms` 默认值同量级：听得见、不刺耳。
-static const uint32_t kTrustBeepMs = 120u;
-static const uint32_t kTrustBeepMinIntervalMs = 5000u;   // 两次"变坏"提示的最小间隔
-static_assert(kTrustBeepMs <= 300u, "单次哔必须 <= 300ms（见文档的提示音说明）");
 
 // VAN 帧计数（**既有计数器，只是换个出口**）。
 // `frames` = 解出的帧数、`fcs_ok` = 其中 CRC 通过的、`edges` = 边沿数。
@@ -223,15 +217,18 @@ struct SysStatusInputs {
   uint32_t boot_hb_n = 0;
   uint32_t boot_count = 0;
 
-  // ---- ⑦ 告警 / 提示音状态（诊断页要显示"静音开关"）----
-  bool     beep_muted = false;
+  // ---- ⑦ 告警状态（诊断页要显示"现在报的是哪一条"）----
+  // ★★ 2026-10-15：原来这里还有一个 `beep_muted`（静音开关）。蜂鸣器整车砍掉
+  //   ⇒ 静音没有可掐的东西，字段与诊断页上那一格 `mute=` 一起删了。
+  //   ★ `alert_active` **保留**：告警判断本身一个字没动（车主只砍了蜂鸣器），
+  //     诊断页第 2 页照旧报"现在报的是哪一条"。
   uint8_t  alert_active = 0;      // (uint8_t)AlertKind
 };
 
 // 诊断页的行数上限。
 // ★ 为什么存**成品字符串**而不是"格式串 + 参数"：诊断页 5 Hz 重画，而
 //   "哪一格显示什么"是纯逻辑（native 逐字对账）、"变成像素"是 dash_ui 的事
-//   —— 与 lamp_view.h 把"亮不亮"与"怎么画"分开是同一条分层。行数上限 16：
+//   —— 与 `alert_view.h` 把"该报哪一条"与"怎么画"分开是同一条分层。行数上限 16：
 //   最长那一页 11 行，留出余量。
 static const uint8_t kDiagMaxLines = 16;
 
@@ -254,7 +251,7 @@ const char* diagPageTitle(DiagPage p);
 //
 // 用法（与 data_service / alerts 同一个套路）：主循环每圈调一次
 //     const DataTrustReason r = g_sys.update(inputs, now_ms);
-//     if (g_sys.beepDue()) { beep(); }      // 一声轻提示（受静音与限速约束）
+//     // r != kNone ⇒ 屏上挂角标（蜂鸣器已删，这一层不再有任何"发声"出口）
 // ------------------------------------------------------------
 class SystemStatus {
  public:
@@ -266,11 +263,8 @@ class SystemStatus {
   DataTrustReason active() const { return active_; }
   // 从"可信"到"不可信"的**首次**跳变计数（诊断页显示；也是用例的抓手）
   uint32_t episodes() const { return episodes_; }
-  // 这一拍该不该"轻提示一声"。★ 每次变坏只置一次，且与上一声至少隔
-  // `kTrustBeepMinIntervalMs`；调用方读完即清（下一次 update() 会清）。
-  bool beepDue() const { return beep_due_; }
 
-  // 清空记忆（换数据源/复位时用）。**不清** `episodes_` 与上一声的时刻 ——
+  // 清空记忆（换数据源/复位时用）。**不清** `episodes_` ——
   // 累计统计不该因为一次复位就查不出来（与 Alerts::reset 同一条口径）。
   void reset();
 
@@ -298,8 +292,6 @@ class SystemStatus {
   bool freeze_now_ = false;         // 去抖前的"冻结"结论（evaluate 内部用）
 
   uint32_t episodes_ = 0;
-  bool     beep_due_ = false;
-  uint32_t last_beep_ms_ = 0;
 
   DataTrustReason evaluate(const SysStatusInputs& in, uint32_t now_ms);
 };
@@ -334,7 +326,6 @@ struct DiagView {
   const char* title = "";                              // 页面名（"DIAG" / "DIAG-LINK"）
   char        line[kDiagMaxLines][kDiagLineCap] = {};  // 每行文本（空串 = 这一行不画）
   uint8_t     lines = 0;
-  bool        muted = false;                           // 静音开关现在的状态（页面上要显示）
 };
 
 // 把输入落成一页（`page` 越界 ⇒ 自动折回第 0 页）。**纯函数**。

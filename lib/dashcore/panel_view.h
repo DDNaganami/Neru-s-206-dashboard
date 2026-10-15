@@ -3,7 +3,6 @@
 #include <stdio.h>    // snprintf（panelDescribe）
 #include <math.h>     // sqrt（sqrtf 走 math.h；设备端 newlib 也有）
 #include <string.h>
-#include "lamp_view.h"   // kLampBaseRes（屏基准分辨率，480）
 
 // ============================================================
 // 圆屏可视化区 —— 「这块屏是圆的」这件事的**唯一一份几何**
@@ -11,7 +10,7 @@
 //
 // ★ 为什么单独一个头（而不是写进 src/dash_display.cpp 的预览那一段）：
 //   ① **native 能测**：`lib_archive = no` 的 native 构建只编 `lib/`，
-//      所以"想测谁就把它放进 lib/"（与 lamp_view.h / preview_input.h 同一条
+//      所以"想测谁就把它放进 lib/"（与 preview_input.h / alert_view.h 同一条
 //      结构约束）。下面这几条不变量算错**不会报错**，只会让遮罩圈画歪一格 ——
 //      那正是最需要机器钉住的一类东西。
 //   ② **PC 预览与主题编辑器必须引用同一份数字**：网页那边（JS）按同样口径给出
@@ -43,12 +42,13 @@
 #define PANEL_DUALEYE_TIER_ID    "DualEye"
 #define PANEL_DUALEYE_TIER_LABEL "DualEye (historical, returned 2026-09-22)"
 
-// 480 基准的方屏边长（= 像素矩阵边长 = THEME_BASE_RES = kLampBaseRes）。
-// ★ 这三个数本来就是同一个数，这里**复述并 static_assert 钉住**：
-//   万一哪天有人只改了其中一处，编译期就报出来（而不是屏上慢慢歪）。
+// 480 基准的方屏边长（= 像素矩阵边长 = `ui_theme.h` 的 `THEME_BASE_RES`）。
+// ★★ 2026-10-15：这里原来还有一条 `static_assert(kPanelBaseSide == kLampBaseRes)`
+//   —— 那个常量住在 `lamp_view.h`（六格指示灯栏的几何），而车主当天下令把
+//   整条灯栏删掉了 ⇒ 那个头文件与那条对账一起删了。本文件从此**自持**这一个数
+//   （它与 `THEME_BASE_RES` 仍是同一个数；那个在 lib/themetool/ui_theme.h 里，
+//    而这一个刻意不 include 它 —— 那个头要 LVGL，本文件要能在宿主机上单独编）。
 static const int32_t kPanelBaseSide = 480;
-static_assert(kPanelBaseSide == kLampBaseRes,
-              "panel_view 的基准边长与 lamp_view 的 kLampBaseRes 对不上");
 
 // 480×480 像素矩阵里，圆的直径就是整块屏的边长（有效区就是内切圆）。
 // 之所以还要写出来：下面的 mm 换算要用它，而"用哪个数当直径"正是最容易
@@ -104,7 +104,7 @@ static inline int32_t panelInscribedSquareSide(int32_t res) {
 //                           480 px = 70.13 mm ⇒ 返回 **7013**
 //   （这一段我连着算错三次 —— 一度把"每像素 0.1461mm"写成 14610，
 //     于是屏被算成 701 mm。这种错**不会让任何东西崩**，只会在串口/文档里
-//     写错一个物理尺寸，所以 test_ui_lamps.cpp 里逐条钉着它。）
+//     写错一个物理尺寸，所以 test_preview_input.cpp 里逐条钉着它。）
 static inline int32_t panelMmPerPx10000(int32_t res) {
   if (res <= 0) return 0;
   // kPanelActiveAreaMm10 的单位是 1e-2 mm（7013 = 70.13 mm）；

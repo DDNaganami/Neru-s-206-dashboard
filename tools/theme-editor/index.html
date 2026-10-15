@@ -281,9 +281,12 @@ function defaultTheme() {
     //   ★ 静音**故意不在这里**：它是运行时状态（`m` 键 / 预览页 `M`，存 NVS 跨上电记住）。
     //     把它也写进文件会造出"两个真相"（文件说响、NVS 说静音），见 alerts.h 的说明。
     alerts: {
-      overspeed_kmh: 120,
+      // ★★ 2026-10-15：超速 120 → **150**、红区 5800 → **5500**（车主拍板）。
+      //   这两个数必须与 `lib/dashcore/alerts.h` 的 `AlertsConfig` 默认值**一致**
+      //   （`tools/theme-editor/test-theme-json.js` 会逐字段对账，不一致当场红）。
+      overspeed_kmh: 150,
       overspeed_hyst_kmh: 3,
-      redline_rpm: 5800,
+      redline_rpm: 5500,
       redline_hyst_rpm: 200,
       door_debounce_ms: 200,
       turn_signal_on_ms: 20000,

@@ -323,9 +323,12 @@ static void test_readout_defaults_fit_gap(void) {
   TEST_ASSERT_TRUE_MESSAGE(unit_top - digit_bottom <= 30, "数字和单位之间空太多");
   // 水温/进气读数在表盘**下半圆那一侧**,可用的竖直带子由三样东西夹出来
   // (2026-09-27 深夜车主实屏报"字不见了",逐行量出来的数字,别凭感觉改):
-  //   · 表情图不透明下沿 = **389**(300×300 的表情图居中 ⇒ 下巴那一行还是不透明的);
-  //   · 灯条 = **395..435**(`lamp_view.h`:kLampCy=415、kLampSize=40 ⇒ 顶 395 底 435);
-  //   · 下半圆的副弧(radius 168/width 10)底部到 **408**。
+// ★★ 2026-10-15：水温/进气读数下面那三样"占用者"里，**灯条已经删了**
+//   （车主把整条六格指示灯栏从 UI 上去掉）。下界 436 仍然按"副弧之下、
+//   表情下巴之下"量，只是现在少了一个占用者 —— 判据本身没变。
+//   · 表情图不透明下沿 = **389**(300×300 的表情图居中 ⇒ 下巴那一行还是不透明的);
+//   · 原灯条 = 395..435（★ 2026-10-15 已删，那一段现在是空的）;
+//   · 下半圆的副弧(radius 168/width 10)底部到 **408**。
   // ⇒ 18 号墨迹(cy-3..cy+10)必须整条落在 **436 以下**,而且还得在 240 内切圆里:
   //   读数居中、字宽约 60px ⇒ 最外侧 |dx|≈30 ⇒ 圆的许可 y ≤ 240+sqrt(240²-30²)=478
   //   ⇒ 墨迹下沿(cy+10) ≤ 478 ⇒ cy ≤ 468(与 ui_theme.cpp 的解析夹取上限 470 同向)。
@@ -488,9 +491,15 @@ static void test_alerts_at_root_and_boolean_literals(void) {
   TEST_ASSERT_EQUAL_FLOAT(130.0f, c.overspeed_kmh);
   TEST_ASSERT_TRUE(c.only_highest);
   // 没说到的字段**一个字都不许动**（这是"字段可缺失"那条规矩的落点）
-  TEST_ASSERT_EQUAL_FLOAT(5800.0f, c.redline_rpm);
+  // ★★ 2026-10-15：红区默认值 5800 → **5500**（车主拍板），这里跟着改。
+  TEST_ASSERT_EQUAL_FLOAT(5500.0f, c.redline_rpm);
   TEST_ASSERT_EQUAL_UINT32(20000u, c.turn_signal_on_ms);
   TEST_ASSERT_EQUAL_UINT32(120u, c.beep_ms);
+  // ★★ 2026-10-15：超速**默认值** 120 → **150**。
+  //   ★ 注意这一条与上面 `overspeed_kmh: 130` 的关系：那一格是**文件里写了**
+  //     的值（130），所以它必须原样活下来 —— **不要**把它也改成 150
+  //     （那会把"文件覆盖默认值"这条规矩本身测坏）。
+  TEST_ASSERT_EQUAL_FLOAT(130.0f, c.overspeed_kmh);
 
   const char* jf = R"({"alerts":{"only_highest": false}})";
   AlertsConfig c2;
@@ -546,7 +555,8 @@ static void test_alerts_unknown_keys_and_wrong_types(void) {
   TEST_ASSERT_EQUAL_UINT32(150u, c.beep_ms);
   TEST_ASSERT_EQUAL_FLOAT(6500.0f, c.redline_rpm);
   // 类型不对的那个字段保持默认（而不是被解析成 0 或垃圾）
-  TEST_ASSERT_EQUAL_FLOAT(120.0f, c.overspeed_kmh);
+  // ★★ 2026-10-15：默认值 120 → **150**
+  TEST_ASSERT_EQUAL_FLOAT(150.0f, c.overspeed_kmh);
   // `alerts` 不是对象时 ⇒ 当没有这一段
   const char* arr = R"({"alerts":[1,2,3]})";
   AlertsConfig c2;
