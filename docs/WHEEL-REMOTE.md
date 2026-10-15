@@ -109,3 +109,31 @@ B 等真的嫌黑屏碍事再做 ✓。
 - 协议是否已有版本号/兼容策略（`lib/link` 里查）
 - 主题切到"多套预置"后放哪里（另一个分区？SPIFFS？）—— 以及分区表还有没有空间
 - 气囊灯的具体处理方式（加多大电阻、是否会记录故障码）
+
+### 2.1 候选型号（2026-10-15 调研；价格为官网 USD，**人民币价与 mm 文本尺寸均未查到**）
+
+筛选前提：**屏幕 1.0–1.6 寸 且 真能驱动扬声器**（只有蜂鸣器的板子一律不算 ✗）。
+
+| 型号 | MCU / PSRAM | 屏 | 音频通路 | 尺寸 | 价格 | 备注 |
+|---|---|---|---|---|---|---|
+| **微雪 ESP32-S3-Touch-LCD-1.46** ★圆屏首选 | S3R8 / 8MB | 1.46" **圆** 412×412 触摸 | PCM5101 DAC + 独立功放 + **已焊喇叭**（功放型号官方未标 ✗） | 未查到（有官方 2D/3D 结构图 .rar） | $21.99–26.99 | TF 槽、RTC、MX1.25 电池；★**音量旋钮凸起**，装盖要留孔或拆掉；结构图：https://files.waveshare.com/wiki/ESP32-S3-Touch-LCD-1.46/ESP32-S3-Touch-LCD-1.46_Structural%20Diagram-With%20Cover.rar |
+| **微雪 ESP32-S3-Touch-AMOLED-1.32** ★体积最小 | S3-PICO-1-N8R8 / 8MB | 1.32" **圆** 466×466 AMOLED 触摸 | ES8311 + MX1.25 **喇叭座**（**未随附喇叭**，需自备 8Ω） | 未查到 | $21.99 | **无 TF 槽** ⇒ WAV 只能放 8MB flash/PSRAM；分辨率最高、板最小 |
+| **微雪 ESP32-S3-Touch-LCD-1.54** ★最便宜/音频最全 | S3R8 / 8MB | 1.54" **方** 240×240 触摸（屏走 **FPC 可拆**） | ES8311 + **NS4150B 功放** + **已焊喇叭** + MX1.25 喇叭座 + ES7210 双麦 | 未查到 | $14.99–18.99 | 唯一"板载喇叭 + 喇叭座"双全；TF 槽、电池充电、IMU；**方屏**塞圆盖需自做遮罩 |
+| 微雪 ESP32-S3-Touch-AMOLED-1.43**C** | S3-PICO-1-N8R8 / 8MB | 1.43" **圆** 466×466 AMOLED 600cd/m² | ES8311 + 功放 + MX1.25 喇叭座（**未随附喇叭**） | 未查到 | $30.99–31.99 | ★**必须买带 `C` 的**；不带 C 的官方标题未提扬声器，疑无音频 ✗ |
+| LILYGO T-Watch S3 | S3 / 8MB | 1.54" 方 240×240 | 板载 **MAX98357A**（喇叭是否已焊未查到） | 47.45×40×13（来自报道，非官方规格） | $42.98–43.99 | |
+| Seeed SenseCAP Watcher W1-A（**整机**） | S3 / 8MB PSRAM / 32MB Flash | 1.45" **圆** 412×412 触摸 | I2S + 官方称「1W speaker output」**板载喇叭**（功放型号未查到） | 机身尺寸未查到 | 未查到 | 400mAh 电池；**是"整机小机器人"形态**，未必好塞喇叭盖 ⇒ 仅作备选 https://wiki.seeedstudio.com/watcher_hardware_overview/ |
+| Seeed XIAO ESP32S3 + Round Display | S3 / 8MB | 1.28" **圆** 240×240 | **只引 I2S** ⇒ 须自加 MAX98357A + 喇叭 | 圆屏 39×39，叠层厚度未查到 | 未查到 | |
+
+**明确排除**
+- ✗ **只有蜂鸣器**：M5Stack **Dial / Dial v1.1**（1.28" 圆屏最像，但音频只有 Buzzer 80dB）、StickC-Plus2、DinMeter、Capsule。
+- ✗ **全篇无音频器件**：微雪 Touch-LCD-**1.28**（1.28" 圆屏）、微雪 Touch-LCD-1.47、Elecrow CrowPanel 1.28"/1.46"、LILYGO T-Display-S3 AMOLED 1.43"。
+- ✗ **屏不在 1.0–1.6"**：LILYGO T-Circle-S3（0.75"，但有 MAX98357A）、T-Embed 1.9"、AtomS3R 0.85"、CoreS3/Core2 2.0"、Adafruit 1.69"、DFRobot DFR1221 1.85"。
+- ✗ **有音频无屏**：M5Stack Atom VoiceS3R、微雪 ESP32-S3-AUDIO-Board。
+- ✗ **本轮没找到任何同时满足"1.0–1.6" 屏 + 可推喇叭"的 ESP32-C3/C6 现成品**。
+
+**否证**：Seeed / DFRobot / Adafruit / SparkFun 四家**都没有**「1.0–1.6" 屏 + 板载功放 + 喇叭端子」的单板现货；能达标的都是**组合方案（C 类）**，要自己加 MAX98357A/PAM8302 + 喇叭 —— 例：Seeed XIAO ESP32S3 + Round Display（1.28" 圆）、Adafruit ESP32-S3 TFT Feather 5483 + MAX98357A（1.14" 方，$24.95）、SparkFun Thing Plus ESP32-S3 DEV-24408（无屏）、DFRobot FireBeetle 2 ESP32-S3 AI DFR0975（无屏）。⇒ **"一块板搞定"的只有微雪那 4 块** ✓。
+
+**结论**：要"**圆屏 + 开箱即响**" ⇒ **1.46**；要"**最小体积塞进喇叭盖**" ⇒ **1.32 AMOLED + 自备 8Ω 喇叭**；要"**最便宜 + 音频最全 + 屏可拆走线**" ⇒ **1.54**。
+★ 与现有两块 2.8C 同族、**ESP-NOW 代码可直接复用**的只有微雪这几块 S3 板 ✓。
+
+**未查到**：所有板的 mm 文本尺寸（微雪只放尺寸图/结构图压缩包）、所有人民币价格（中文站 JS 渲染 + 本次 web_search 全程超时）、1.46/1.43C/1.32 的**功放芯片型号**、1.43C 与 1.32 **是否随附喇叭**、LILYGO 喇叭是否已焊。
