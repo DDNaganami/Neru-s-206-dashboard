@@ -490,14 +490,14 @@ section("分区表必须是纯 ASCII(否则 PlatformIO 在中文 Windows 上直�
 
 // ------------------------------------------------------------
 section("页面里两个纯函数:名字截断与字节长度");
-// 从 image-editor.html 里抽出来跑,而不是抄一份 —— 抄一份就会漂移。
+// 从 index.html 里抽出来跑,而不是抄一份 —— 抄一份就会漂移。
 // 为什么值得测:设备端 name 是 char[24],**按字节**算。
 // 一个汉字 3 字节,所以"24 个字符"的中文名会写坏设备端的索引表。
 {
-  const html = require("fs").readFileSync(__dirname + "/image-editor.html", "utf8");
+  const html = require("fs").readFileSync(__dirname + "/index.html", "utf8");
   const grab = (name) => {
     const m = new RegExp("function " + name + "\\(([\\s\\S]*?)\\n\\}").exec(html);
-    if (!m) throw new Error("image-editor.html 里找不到函数 " + name);
+    if (!m) throw new Error("index.html 里找不到函数 " + name);
     return m[0];
   };
   const src = grab("byteLen") + "\n" + grab("safeName") +
@@ -533,7 +533,7 @@ section("页面:导入时的默认输出尺寸(只缩不放 + 按角色设上限
 //   再大盖住副弧)。
 section("页面与共享常量没有分叉");
 {
-  const html = require("fs").readFileSync(__dirname + "/image-editor.html", "utf8");
+  const html = require("fs").readFileSync(__dirname + "/index.html", "utf8");
   // ★ 页面里**不许**再出现写死的表情上限 —— 一律问 ImageBlob 的常量。
   //   这条是"改了共享常量但页面没跟上"的唯一守卫(那种错不报错,只是导出的图不对)。
   ok(html.indexOf("ImageBlob.faceCanvasMaxFor") >= 0,
@@ -551,7 +551,7 @@ section("页面与共享常量没有分叉");
   // ★ 预览画布必须跟着目标板的**屏**走:在 480 的画布里预览 240 的图会失真
   //   (240 的底图够不到弧带、152 的表情看着只有一点点大)。
   const pm = /function previewSide\(([\s\S]*?)\n\}/.exec(html);
-  if (!pm) throw new Error("image-editor.html 里找不到 previewSide");
+  if (!pm) throw new Error("index.html 里找不到 previewSide");
   const makeSide = (target) => new Function(
     "ImageBlob", "curTarget", pm[0] + "\nreturn previewSide;")(IB, target);
   eq(makeSide("s3_240")(), 240, "240 板:预览画布 240(1 像素 = 屏上 1 像素)");
@@ -561,7 +561,7 @@ section("页面与共享常量没有分叉");
   ok(IB.FACE_CANVAS_MAX === 320 && IB.FACE_SIZE_RECOMMENDED === 300,
      "老常量仍在(480 档),行为不变");
   const fm = /function pickDefaultSize\(([\s\S]*?)\n\}/.exec(html);
-  if (!fm) throw new Error("image-editor.html 里找不到 pickDefaultSize");
+  if (!fm) throw new Error("index.html 里找不到 pickDefaultSize");
   // ★ 用真的共享常量 + 真的页面函数跑一遍(不复制逻辑)。
   //   注意:new Function 的函数体在**全局作用域**,拿不到模块的 require ——
   //   所以依赖一律走参数传进去(踩过:直接写 require 会 ReferenceError)。

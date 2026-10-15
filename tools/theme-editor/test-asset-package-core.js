@@ -143,15 +143,21 @@ section("① 这个文件必须能进浏览器(页面是 file:// 双击打开的
   // ★ 光内核能进浏览器还不够:**页面得真的引用它**,而且要在 theme-json.js 之后
   //   (checkThemeContent 里要用到那个全局)。这条链子断在哪一段,表现都是
   //   "页面一片空白"或"按钮点了没反应" —— 而静态页不报错,所以在这里钉住。
-  const pageHtml = fs.readFileSync(path.join(__dirname, "image-editor.html"), "utf8");
+  //   ★★ 2026-10-15（配色 + 图片合并成一个页面）:编辑页只有 index.html 这一份;
+  //      image-editor.html 是重定向薄壳,它**不许**再引一份内核。
+  const pageHtml = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
   const atCore = pageHtml.indexOf('src="asset-package-core.js"');
   const atTheme = pageHtml.indexOf('src="theme-json.js"');
-  ok(atCore > 0, "②图片页(index.html 之外的唯一编辑页)引用了 asset-package-core.js");
+  ok(atCore > 0, "合并后的编辑页(index.html)引用了 asset-package-core.js");
   ok(atTheme > 0 && atTheme < atCore, "theme-json.js 排在 asset-package-core.js **之前**加载");
   ok(pageHtml.indexOf("AssetPackageCore.packBytes") > 0,
-     "②图片页真的调了内核的 packBytes(不是引了不用)");
+     "编辑页真的调了内核的 packBytes(不是引了不用)");
   ok(pageHtml.indexOf("AssetPackageCore.unpackBytes") > 0,
-     "②图片页真的调了内核的 unpackBytes(导入那条路)");
+     "编辑页真的调了内核的 unpackBytes(导入那条路)");
+  const shellHtml = fs.readFileSync(path.join(__dirname, "image-editor.html"), "utf8")
+    .replace(/<!--[\s\S]*?-->/g, "");
+  ok(shellHtml.indexOf("asset-package-core.js") < 0,
+     "重定向薄壳里没有内核引用(不许有第二份实现)");
 }
 
 // ============================================================

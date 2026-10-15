@@ -5,23 +5,28 @@
 ## ★ 统一入口 `tools/web/index.html`（2026-09-24 新增）
 
 **不知道从哪一页开始就打开它**：`tools/web/index.html`（双击 `tools/web/open.bat` 同效）。
-它是四个网页的**导航页**，本身**不是**一个新编辑器 —— 四页一个字节都没被合并
-（它们各自都是已经实测过的静态页，合并等于把它们一起翻新，风险不成比例）。
+它是这些网页的**导航页**，本身**不是**一个新编辑器。
+★ ★ 2026-10-15（车主口径变更）：**配色页与图片页真的合并了** ——
+车主原话「图片页和配色页能合并吗，因为感觉功能上其实是统一的」。
+但用的是**页内分区**（同一份主题状态 T + 同一份图片清单 items），不是重写成 SPA：
+实现在 `tools/theme-editor/index.html` 一处，`image-editor.html` 只剩一个
+跳到 `index.html#images` 的**重定向薄壳**（老书签仍然能用，但没有第二份实现）。
+两个预览页一个字节都没动。
 
 它上面有什么：
 
 | 内容 | 说明 |
 |---|---|
-| **四张卡片** | 每一页写清"干什么 / 什么时候用 / 点进去"，链接是相对路径（换目录照样能点） |
-| **工作流顺序** | ① 配色（`theme.json`）→ ② 图片（`image.bin`）→ ③ 刷写 → ④ 跑 `pcpreview` 看效果 |
+| **三张卡片** | 每一页写清"干什么 / 什么时候用 / 点进去"，链接是相对路径（换目录照样能点）。① = 主题编辑器（配色 + 图片两个分区） |
+| **工作流顺序** | ① 主题编辑器（① 配色分区 → ② 图片分区）→ ② 刷写 → ③ 跑 `pcpreview` 看效果 |
 | **刷写命令** | 目标板 = 双 2.8C（`esp32s3`）；偏移 `theme` `0x210000` / `image` `0x254000`（出处：`partitions-s3.csv`），端口写成 `COM6` 并注明"改成你自己的" |
 | **预览看不到什么** | 撕裂 / 残留 / 横纹 / 帧率在预览里**结构上不可能出现**，指向 `docs/PREVIEW.md` 第 4 节 |
 | **已知限制** | 预览页只显示落盘帧、**没有上传入口**；六格灯是**程序化占位图形**（不需要素材，颜色在配色页改）；台上不接 VAN ⇒ 六格全灭 + `SIM` 角标是**预期**，不是故障 |
 
-**四个页面顶部都有一条统一的导航条**（纯 HTML/CSS，没有 JS、没有外部资源）：
-最左边是**「← 返回导航页」**（比其它链接显眼，方便来回跳），右边四个按钮直接互相跳，
-当前页高亮。`image-editor.html`（唯一的上传入口）那条末尾还多一句「要传图片素材 ⇒ ② 图片页」。
-★ 四页分布在两个目录里，**相对路径深度不同**（`tools/theme-editor/` 的是 `../web/index.html`，
+**各页面顶部都有一条统一的导航条**（纯 HTML/CSS，没有 JS、没有外部资源）：
+最左边是**「← 返回导航页」**（比其它链接显眼，方便来回跳），右边那几个按钮直接互相跳，
+当前页高亮。
+★ 页面分布在两个目录里，**相对路径深度不同**（`tools/theme-editor/` 的是 `../web/index.html`，
 `preview/` 的是 `../tools/web/index.html`）—— 这类写错不会报错、只会"点了没反应"，
 所以 `syntax-check-pages.js` 会**按目录逐个核对导航条链接指向的文件真的存在**（见下）。
 
@@ -30,9 +35,9 @@
 
 | 页面 | 管什么 | 刷到哪个分区 |
 |---|---|---|
-| **`../web/index.html`** | **统一入口（导航页）**：四张卡片 + 工作流顺序 + 刷写命令 + 已知限制 | —（不是编辑器，不产生文件） |
-| `index.html` | **配色与几何**：背景色、弧线颜色/角度/半径、表情大小、开机动画时长 | `theme` 分区（16 KB @ `0x210000`） |
-| `image-editor.html` | **图片资源**：背景图 + 两屏各一套表情差分（**配色也在这一页**：底色、四条弧、四处读数颜色） | `image` 分区（经典板 1 MB / S3 板 8 MB @ `0x254000`，页面里选「目标板」） |
+| **`../web/index.html`** | **统一入口（导航页）**：三张卡片 + 工作流顺序 + 刷写命令 + 已知限制 | —（不是编辑器，不产生文件） |
+| `index.html` | **★ 唯一的编辑器**（配色 + 图片两个页内分区）：① 配色 = 背景色、弧线颜色/角度/半径、表情大小、开机动画时长；② 图片 = 槽位清单（背景 1 + 表情 10）、规格检查、框选、占用 | 两个分区都能打：`theme` 分区（16 KB @ `0x210000`）+ `image` 分区（经典板 1 MB / S3 板 8 MB @ `0x254000`，页面里选「目标板」），或一次打成 `assets.bin` |
+| `image-editor.html` | **重定向薄壳**（几行，跳到 `index.html#images`）：老书签/老链接的落脚点，**没有第二份实现** | —（不产生文件） |
 
 两个分区彼此独立：只想换配色就只刷 `theme`，只想换图就只刷 `image`。
 **两种都不需要重新编译固件。**
@@ -73,7 +78,7 @@ python -m esptool --chip esp32s3 --port COM6 --baud 921600 write_flash 0x210000 
 车主定的口径（原话："默认就改成 2.8C 最终版吧，而且是双 2.8C"）：
 
 - **默认档** = `s3`（2.8C）。出处只有一个：`image-blob-build.js` 的
-  `DEFAULT_TARGET`；页面 `image-editor.html` 的 `curTarget` 与下拉框选中项
+  `DEFAULT_TARGET`；页面 `index.html` 的 `curTarget` 与下拉框选中项
   都从它派生（`build-image-bin.js` 的 `--target` 默认值同源）。
   以前默认是 `classic`（经典板 1 MB），于是**页面一打开看到的是另一块板的
   分区大小、画布上限与占用百分比** —— 在"最终板"的语境下照着错的数做图。
@@ -515,9 +520,12 @@ node tools/theme-editor/check-system-status.js sweep preview/frames
 
 ---
 
-# 二、图片编辑器 `image-editor.html`
+# 二、图片素材（主题编辑器的「② 图片」分区）
 
-双击打开，**拖图片进去 → 选用途 → 导出 `image.bin` → 刷到 image 分区**。
+★ 2026-10-15 起它**不再是单独一页**：配色与图片合并成 `index.html` 里的两个页内分区
+（车主口径「功能上其实是统一的」）。老链接 `image-editor.html` 会跳到 `index.html#images`。
+
+打开 `index.html` → 点「② 图片」，**拖图片进槽位 → 导出 `image.bin` → 刷到 image 分区**。
 同一页也能**一次导出 `assets.bin`**（配色 + 图片合成一个文件，一条 `write_flash` 刷完两块分区）
 —— 见上面「现在可以只导出**一个**文件」那一节。
 
@@ -646,7 +654,8 @@ node tools/theme-editor/check-system-status.js sweep preview/frames
 
 ### 3. 做图 → 导出 `image.bin`
 
-1. 双击打开 `image-editor.html`，目标板选「**微雪双屏 240×240**」；
+1. 双击打开 `index.html`（① 主题编辑器），切到「**② 图片**」分区；
+   目标板在「高级 → 占用」里选「**微雪双屏 240×240**」；
 2. 拖 PNG 进去（背景 1 张 240×240、表情最多 10 张 152×152，带透明的 PNG 更好——
    页面按角色自动选格式：背景 `RGB565` 2 字节/像素、表情 `RGB565A8` 3 字节/像素）；
 3. 每张的「用途」下拉框选上面表里的角色（新图默认依次给：背景 → 左屏常态 → 右屏常态）；
@@ -885,7 +894,7 @@ python -m esptool --chip esp32 -p COM3 write_flash 0x210000 theme.json
 
 > ★ 这一页的预览合成顺序**与固件逐层一致**（`drawScreen()`：
 > 背景 → 表情 → 弧 → 读数）。改固件那一侧的顺序时，
-> **`image-editor.html` 的 `drawScreen()` 必须一起改** ——
+> **编辑器 `index.html` 的 `drawScreen()` 必须一起改**（合并后只有这一份）——
 > 否则预览看到的层序与真机相反，这一页就不再是把关人。
 > 真机那一侧的顺序写在 `src/dash_ui.cpp` 的 `dash_ui_init()` 上方那段
 > 「图层顺序」注释里（**由创建顺序决定**，改顺序前先读那一条）。
@@ -1200,7 +1209,7 @@ node tools/theme-editor/check-preview-frame.js preview\frames\r_0140.bmp idle ye
 > `lv_label_create()` 的**默认文本是 "Text"**，忘了清空时那一带同样是白的，
 > 单纯的"有没有亮点"检查发现不了（这个坑真踩过）。
 
-**上传 + 配色两个界面本身已经完成**（`image-editor.html` / `index.html`），
+**上传 + 配色两个界面本身已经完成**（现在合并成 `index.html` 一页两个分区），
 这一轮补的是"固件真的把图画出来"、"表盘上有数字读数"以及
 "宿主机能逐像素验证它们画对了"。
 
@@ -1307,14 +1316,15 @@ pwsh tools/theme-editor/test-image-roundtrip.ps1
 ## 表盘朝向也要对账（`test-gauge-geometry.js`）
 
 ```powershell
-node tools/theme-editor/test-gauge-geometry.js   # 71 项断言
+node tools/theme-editor/test-gauge-geometry.js   # 65 项断言（合并后只剩一份编辑器要查）
 ```
 
 管两件事：
 
-1. **两个编辑器的角度换算不加任何偏移**。LVGL 的 `lv_arc` 是 0°=3 点钟、顺时针，
+1. **编辑器那份角度换算不加任何偏移**（合并后只有一份，另外反着查"薄壳里不许有第二份"）。
+   LVGL 的 `lv_arc` 是 0°=3 点钟、顺时针，
    而 canvas 的 `arc()` 约定完全一样 —— 所以 `d` 直接换成弧度即可。
-   曾经两个页面都写成 `(d - 90)`，于是预览里的表**整体被逆时针转了 90°**：
+   曾经两页各写一份、都写成 `(d - 90)`，于是预览里的表**整体被逆时针转了 90°**：
    起点从 7:30 跑到 4:30、缺口从正下方跑到正右方。固件一直是对的，
    但用户先看到的是预览，于是问"表的方向是否需要向右旋转 90 度"。
 2. **默认主题的满量程弧缺口在正下方**、起点在左下（135°）、`end > start`（顺时针增长）、
@@ -1352,11 +1362,14 @@ node tools/theme-editor/test-theme-json.js
 后面几百行 JS 全跑到标签外面 —— 表现是空白页，而"每段脚本都能编译"的检查
 完全查不出来（它们确实都能编译）。
 
-★ **2026-09-24 起这个脚本查五个页面**（基线从 14 项变成 41 项）：
+★ **2026-09-24 起这个脚本查五个页面**（基线从 14 项变成 41 项）；
+★ **2026-10-15：配色与图片合并 ⇒ 现在是"四个文件 + 一个薄壳"共 34 项**
+（少的是薄壳那 5 个脚本引用与 5 条导航链接 —— 它没有脚本、也没有导航条；
+薄壳自己多了两条**反向断言**：必须没有内联脚本、必须带那条 `index.html#images` 的 meta refresh）。
 
 | 查的页面 | 位置 |
 |---|---|
-| `index.html`（主题编辑器）、`image-editor.html` | `tools/theme-editor/` |
+| `index.html`（唯一的编辑器：配色 + 图片两个分区）+ `image-editor.html`（重定向薄壳） | `tools/theme-editor/` |
 | `preview.html`、`preview-28c.html` | `preview/` |
 | `index.html`（**统一入口 / 导航页**） | `tools/web/` |
 
@@ -1367,7 +1380,7 @@ node tools/theme-editor/test-theme-json.js
    导航页**必须**没有内联脚本，谁往那页塞 JS 都会被这条点名，而不是被
    "没找到脚本 ⇒ 失败"误伤。
 2. **新增一节：导航条里的链接必须真的指向存在的文件**（按各自目录逐个 `fs.existsSync`）。
-   四页分布在两个目录里、**相对路径深度不同**（`tools/theme-editor/` 用
+   各页分布在两个目录里、**相对路径深度不同**（`tools/theme-editor/` 用
    `../web/index.html`、`preview/` 用 `../tools/web/index.html`），
    写错的症状是"点了没反应"，静态页上**不报任何错**。
    这一节还顺带断言：导航条里**不许有 http(s) 外链**（这些页面要能离线双击打开），
@@ -1376,7 +1389,7 @@ node tools/theme-editor/test-theme-json.js
    > `../../tools/web/index.html`（**多退了一层**，preview 只深一层）。
    > 另一个坑在检查脚本自己身上：一开始用正则懒匹配取导航条那一段，
    > 结果在导航页上匹配到了 `<style>` 里的 `.navstrip{...}` 文本、
-   > 在 `image-editor.html` 上又因为"第一个 `</div></div>` 就算完"少读了几个链接
+   > 在图片页上（当时还是单独一页）又因为"第一个 `</div></div>` 就算完"少读了几个链接
    > ⇒ 现在按 **div 开合数深度**找配对（`navStripOf()`）。
 
 `test-theme-json.js` 管的是另一件事：主题文件里的 `0xRRGGBB` 颜色，以及
@@ -1388,22 +1401,27 @@ node tools/theme-editor/test-theme-json.js
 ### 车主模式那两个新检查（2026-10-15）
 
 ```powershell
-node tools/theme-editor/check-owner-mode.js   # 能力表对账 + 打包指纹
-node tools/theme-editor/smoke-pages.js        # 用最小 DOM 桩把两个页面真跑一遍
+node tools/theme-editor/check-owner-mode.js   # 364 项：能力表对账 + 合并结构 + 打包指纹
+node tools/theme-editor/smoke-pages.js        # 79 项：用最小 DOM 桩把合并后的页面真跑一遍
 ```
 
-**为什么语法检查不够**：这两个页面的故障大多是**运行时**的，表现都是"白屏/点了没反应"——
+**为什么语法检查不够**：这个页面的故障大多是**运行时**的，表现都是"白屏/点了没反应"——
 顶层就调用还没声明的 `const`（TDZ）、同一个 `let` 声明两遍、`getElementById` 拿到 `null`
 之后 `.value` 抛错。`syntax-check-pages.js` 只编译不执行，一条都抓不到。
 `smoke-pages.js` 塞一个最小 DOM 桩，把页面那段内联脚本从头跑到尾，再点几下
-（改色 / 切模式），于是这类错会当场抛出来。**这一单里它真抓到过两个**：
+（改色 / 切分区 / 切模式 / 套预设 / 三个导出按钮），于是这类错会当场抛出来。
+**它抓到过两个**：
 ① 主题页少了 `asset-package-core.js` 的引用（车主模式一进来就要用 `flashCommand`）；
 ② 图片页在 `ARC_FALLBACK.alerts` 里找红区/超速（那份兜底**故意**只有底色+弧+读数色，
 `test-theme-json.js` 用 `Object.keys().length` 钉着），一建控件就抛错。
 
 `check-owner-mode.js` 是**结构化**的守卫（没有别的测试盯着这些）：
 
-* 车主模式**恰好**有那 9 类控件（`data-ocap` 标记，多一个少一个都红）；
+* 车主模式**恰好**有那 9 类控件（`data-ocap` 标记，多一个少一个都红；
+  合并后「保存安装包」是 **2 个** —— 两个分区各一个，都指向同一个 `saveOwnerPackage()`）；
+* **合并结构本身**（第 ⓪ 节）：薄壳不超过 40 行、没有脚本、带 `index.html#images` 的 meta refresh；
+  而 `drawScreen`/`drawArc`/`coreForTarget`/`buildOwnerSlots`/框选器/`THEME_KEY` 这些
+  在合并后的页面里**各自只有一份**（重复就是"两个真相"）；
 * 高级里旧控件**一个不少**（逐个按标签文字/元素 id 点名）；
 * **JSON 文本框只在高级里**；
 * 默认进车主模式（`applyMode(... "owner", true)` 那一行被钉住）；
@@ -1415,8 +1433,9 @@ node tools/theme-editor/smoke-pages.js        # 用最小 DOM 桩把两个页面
 * **打包产物指纹未变**（见 [`OWNER-MODE.md`](OWNER-MODE.md) §3）。
 
 三处副本是：`lib/themetool/ui_theme.h` 的 `theme_set_defaults()`（固件的事实来源）、
-`theme-default.json`（给人当模板）、`image-editor.html` 的 `ARC_FALLBACK`
-（图片编辑器没读主题时的兜底弧）。它们不一致**不会报错**，只会表现成
+`theme-default.json`（给人当模板）、`index.html` 的 `ARC_FALLBACK`
+（没读主题时的兜底弧；★ 合并前它在图片页，现在跟着并进 `index.html`，
+`make-golden-hashes.js` 与 `test-theme-json.js` 都改成从那里抠）。它们不一致**不会报错**，只会表现成
 "预览颜色不对"或者"照参考文件刷进去两个表左右颠倒"—— 后者真实发生过。
 
 **读数颜色那一节（2026-09 加的）也是同一套对账**，而且副本更多：
@@ -1454,7 +1473,7 @@ node tools/theme-editor/smoke-pages.js        # 用最小 DOM 桩把两个页面
   什么工况会触发）。稳态表情**只由数据决定、与时间无关** —— 这一点有单测钉住。
   要做"眼皮动"这类动作得引入多帧序列，目前没这个需求。
 - **声音告警段（排队中；规格与分区算术见 `ACCEPTANCE.md` 的 2026-09-20 条）**：
-  `image-editor.html` 以后加一块「声音」区 —— 拖 WAV 进来、**在浏览器里直接试听**、选它绑哪个条件
+  `index.html` 以后加一块「声音」区 —— 拖 WAV 进来、**在浏览器里直接试听**、选它绑哪个条件
   （转速进红区 5800 / 超速 >130 …），控件旁**就地写明格式与上限**（WAV / PCM / 16-bit / 单声道 /
   8~16 kHz，单文件 ≤3 秒且 ≤96000 字节）。不传就是固件合成的三短音（零素材、零分区占用），上传只是覆盖。
 - **1 MB 装不下"满屏 480 背景 + 240×240 全套 8 张表情"**（见上面那节）。
@@ -1600,8 +1619,8 @@ node tools/theme-editor/smoke-pages.js        # 用最小 DOM 桩把两个页面
 |---|---|
 | **`../web/index.html`** | **★ 统一入口（导航页）**：四张卡片 + 工作流顺序 + 刷写命令 + 预览看不到什么 + 已知限制。纯 HTML/内联 CSS、**零脚本**、零外部资源（见本文开头那一节） |
 | **`../web/open.bat`** | 双击打开导航页（`start "" "%~dp0index.html"`，**纯 ASCII** —— 中文在 `.bat` 里会踩代码页的坑） |
-| `index.html` | 主题编辑器（依赖同目录的 `face-stages.js`、`theme-json.js`） |
-| `image-editor.html` | 图片编辑器（依赖同目录的 `image-blob-build.js`、`face-stages.js`、`theme-json.js`） |
+| `index.html` | **主题编辑器（唯一的编辑器：配色 + 图片两个分区）**，依赖同目录的 `face-stages.js`、`theme-json.js`、`image-blob-build.js`、`asset-spec.js`、`asset-package-core.js` |
+| `image-editor.html` | **重定向薄壳**（跳到 `index.html#images`；没有脚本、没有依赖） |
 | `image-blob-build.js` | **打包器**：RGB565 转换 + 镜像格式。网页与 Node 共用同一份 |
 | **`asset-spec.js`** | **★ 素材规格（上传端唯一权威）+ 简单转换**：可接受格式、产物格式、尺寸上限、圆形可视区、alpha 要求、命名与角色映射、`prepareAsset()`（保持比例的缩放 / 裁透明边）、`checkUpload()`（格式与 alpha 的拒绝路径）。网页、文档、命令行共用这一份 |
 | `test-asset-spec.js` | 素材规格与转换的用例（Node 直接跑，**261 项断言**）：把规格里的每个数与打包器/分区表对账 + 逐条测拒绝/警告路径 + **用途编号↔名字等价**（两边的角色编号表对账） |

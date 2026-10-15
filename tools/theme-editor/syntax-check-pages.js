@@ -1,5 +1,5 @@
 /* ============================================================
- * syntax-check-pages.js —— 两个编辑器的内联脚本语法检查(Node 运行)
+ * syntax-check-pages.js —— 编辑器/预览页的内联脚本语法检查(Node 运行)
  *
  *   node tools/theme-editor/syntax-check-pages.js
  *
@@ -9,6 +9,9 @@
  *
  * 只做语法检查(不执行):把每个内联 <script> 的正文交给 new Function 编译。
  * 页面里的 DOM 调用不会被执行,所以这里不需要浏览器。
+ * ★ 2026-10-15（配色 + 图片合并成一个页面）:
+ *   `image-editor.html` 现在是一个**重定向薄壳**（几行 HTML，跳到 index.html#images）
+ *   ⇒ 对它做**反向断言**:必须没有内联脚本、必须有那条 meta refresh。
  * ============================================================ */
 "use strict";
 
@@ -16,17 +19,16 @@ const fs = require("fs");
 const path = require("path");
 
 const dir = __dirname;
-// 五个页面:两个编辑器在 tools/theme-editor/,两个预览页在 preview/,
-// 统一入口(导航页)在 tools/web/。
-// ★ 旧的三个页面 = 两个编辑器 + preview.html。
+// 四个页面:编辑器在 tools/theme-editor/（配色+图片已合并成 index.html 里的两个分区）,
+// 两个预览页在 preview/,统一入口(导航页)在 tools/web/。
 // ★ 2026-09-24:预览页变成**两张**(preview.html 纯帧播放;
 //   preview-28c.html 是「2.8C(最终板)」档,页面上多一圈真机圆边虚线)。
-//   两张都要查 —— 它们是"双击打开的静态页",语法错的表现同样是"一片空白"。
 // ★ 2026-09-24 新增 tools/web/index.html(统一入口/导航页):
 //   它是纯 HTML + 内联 CSS,**一段脚本都没有** —— 这是它的优点(没有"脚本挂了
 //   就白页"这回事)。所以下面那条"至少要有一段内联脚本"的老检查对它不适用:
 //   对导航页改为**反向断言**(必须真的没有内联脚本),这样以后谁往那一页塞脚本
 //   都会被这条抓住,而不是被"没找到脚本 ⇒ 失败"误伤。
+// ★ 2026-10-15 新增 image-editor.html 的**薄壳**身份:同样是反向断言(必须没有脚本)。
 const pages = [
   path.join(dir, "index.html"),
   path.join(dir, "image-editor.html"),
@@ -39,6 +41,10 @@ const pages = [
 // 本目录下也有一个 index.html(主题编辑器),只看文件名会把两者混起来。
 function isNavPage(file) {
   return /[\\/]web[\\/]index\.html$/i.test(file);
+}
+// 判断"是不是那个重定向薄壳" —— 同样按完整路径认（本目录下的 image-editor.html）。
+function isShellPage(file) {
+  return /[\\/]theme-editor[\\/]image-editor\.html$/i.test(file);
 }
 
 let pass = 0, fail = 0;
@@ -100,6 +106,26 @@ for (const file of pages) {
   }
 
   const scripts = inlineScripts(html);
+  if (isShellPage(file)) {
+    // ★ 薄壳：**必须**没有内联脚本（它就是"老链接还能用"的那几行），
+    //   而且必须真的带一条跳到 index.html#images 的 meta refresh。
+    //   这两条是**反向断言** —— 谁哪天又往这里塞一份实现，当场红。
+    if (scripts.length !== 0) {
+      fail++;
+      console.log("  ✗ " + page + "(重定向薄壳)本不该有脚本,却找到 " + scripts.length +
+                  " 段内联脚本 —— 实现只许在 index.html 那一份里");
+    } else {
+      pass++;
+      console.log("  " + page + ":0 段内联脚本(重定向薄壳,预期如此)");
+    }
+    if (!/<meta\s+http-equiv="refresh"\s+content="0;\s*url=index\.html#images"/i.test(html)) {
+      fail++;
+      console.log("  ✗ " + page + "(重定向薄壳)里没有跳到 index.html#images 的 meta refresh");
+    } else {
+      pass++;
+    }
+    continue;
+  }
   if (scripts.length === 0) {
     if (isNavPage(file)) {
       // 导航页就该没有脚本(纯 HTML/CSS)—— 这是**通过**,不是失败。
@@ -161,10 +187,23 @@ for (const file of pages) {
   const page = path.basename(file);
   if (!fs.existsSync(file)) continue;
   // ★ 导航页**自己就是首页**:它不需要"返回导航页"，也不需要那条页内导航条
-  //   （它靠四张卡片进四页）。所以这一段对它是"不适用"，不是失败 ——
+  //   （它靠那几张卡片进各页）。所以这一段对它是"不适用"，不是失败 ——
   //   少了这一句，检查会在一个**正确的**页面上报假红。
   if (isNavPage(file)) {
     console.log("  " + page + "（导航页/首页本身：不需要导航条与返回键）");
+    continue;
+  }
+  // ★ 薄壳也不需要导航条（它不是一页，只是老链接的落脚点）；
+  //   它要保证的是"回跳目标真的存在"——下面单查这一条。
+  if (isShellPage(file)) {
+    const target = path.join(path.dirname(file), "index.html");
+    if (fs.existsSync(target)) {
+      pass++;
+      console.log("  " + page + "（重定向薄壳：回跳目标 index.html 存在）");
+    } else {
+      fail++;
+      console.log("  ✗ " + page + "（重定向薄壳）的回跳目标 index.html 不存在");
+    }
     continue;
   }
   const pageDir = path.dirname(file);

@@ -66,11 +66,14 @@ function clockName(deg) {
 }
 
 // ------------------------------------------------------------
-section("两个编辑器的角度换算没有偏移(LVGL 与 canvas 约定一致)");
+section("编辑器的角度换算没有偏移(LVGL 与 canvas 约定一致)");
 {
-  for (const f of ["index.html", "image-editor.html"]) {
+  // ★★ 2026-10-15（配色 + 图片合并成一个页面）：编辑页只剩 index.html 这一份
+  //   （两个分区共用一套绘制代码）；image-editor.html 是重定向薄壳，
+  //   它**不该**再有 degToRad/drawArc —— 那一条在下面单独反着查。
+  for (const f of ["index.html"]) {
     const src = fs.readFileSync(path.join(__dirname, f), "utf8");
-    // 找到角度换算函数本体(两个页面各写了一份)
+    // 找到角度换算函数本体
     const fn = /function degToRad\(d\)\s*\{\s*return([^}]*)\}/.exec(src);
     ok(!!fn, f + " 里有 degToRad()");
     if (fn) {
@@ -83,8 +86,6 @@ section("两个编辑器的角度换算没有偏移(LVGL 与 canvas 约定一致
     const bad = /\(\s*[a-zA-Z_$][\w$]*\s*[-+]\s*90\s*\)\s*\*\s*Math\.PI/.exec(src);
     ok(!bad, f + " 里没有别处再做 ±90 偏移");
     // 确保 degToRad 真的被用来画弧(别是定义了却没用,那样测试就是空转)。
-    // 两个页面的写法不同:index.html 直接调 degToRad();image-editor.html 在
-    // drawArc 里写成 `const rad = degToRad;` 再调 rad()。所以查两件事:
     //   ① 文件里至少引用 degToRad 两次(定义 + 使用)
     //   ② drawArc 内部确实用到了角度换算
     const refs = (src.match(/degToRad/g) || []).length;
@@ -113,16 +114,27 @@ section("两个编辑器的角度换算没有偏移(LVGL 与 canvas 约定一致
     }
 
     // ★ 副表(kind 2 = 水温 / kind 3 = 进气温度)都不许被当成"大数字的来源"。
-    //   两个编辑器的判定必须与固件 dash_ui.cpp 的 is_aux_kind() 同一套 ——
+    //   编辑器的判定必须与固件 dash_ui.cpp 的 is_aux_kind() 同一套 ——
     //   只排除 2 的话,一条 [进气, 车速] 顺序的屏会让速度表的大数字变成进气温度,
     //   不报错、只是读数变错,很难查。
     {
       const pk = /function primaryKind\([^)]*\)\s*\{([\s\S]*?)\n\}/.exec(src);
+      ok(!!pk, f + " 里有 primaryKind()（大数字跟哪一路）");
       if (pk) {
         const b = stripComments(pk[1]);
         ok(/!==\s*2/.test(b) && /!==\s*3/.test(b),
            f + " 的 primaryKind() 要同时排除水温(2)与进气温度(3)");
       }
+    }
+  }
+
+  // ★ 反向：薄壳里**不许**再有第二份画弧/算角度/渲染三角
+  //   （老链接那个文件只剩几行 HTML；谁把实现又抄回去，这里当场红）
+  {
+    const shell = fs.readFileSync(path.join(__dirname, "image-editor.html"), "utf8")
+      .replace(/<!--[\s\S]*?-->/g, "");
+    for (const bad of ["degToRad", "drawArc", "drawScreen", "primaryKind", "ImageBlob", "canvas"]) {
+      ok(shell.indexOf(bad) < 0, "重定向薄壳里没有第二份实现：" + bad);
     }
   }
 }
@@ -165,10 +177,10 @@ section("默认主题:满量程弧的缺口在正下方");
   //   那是"右屏只有一条车速弧"时的写法,加了进气温度弧之后
   //   右屏第二条(内圈)被标成"（外圈）",用户一眼就看出来了。
   //   这条守卫盯住两件事:① 不再出现按屏号写死的三元式;
-  //   ② 标签确实是从半径比出来的。两个编辑器的弧块标题都在 image-editor 里,
-  //   这里只查那个文件。
+  //   ② 标签确实是从半径比出来的。
+  //   ★★ 2026-10-15：合并后弧块标题只有一份，在 index.html 里。
   {
-    const imgSrc = fs.readFileSync(path.join(__dirname, "image-editor.html"), "utf8");
+    const imgSrc = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
     const build = /function buildArcEditors\(\)\s*\{([\s\S]*?)\n\}/.exec(imgSrc);
     ok(!!build, "找得到 buildArcEditors()");
     if (build) {

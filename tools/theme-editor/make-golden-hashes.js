@@ -43,14 +43,15 @@ function sha256(buf) {
 }
 
 // ------------------------------------------------------------
-// ① 主题字节 —— 与 index.html 的 exportTheme()/ownerThemeText() **同一句**
+// ① 主题字节 —— 与 index.html 的 exportThemeJson()/saveOwnerPackage() **同一句**
 //    ★ 这里**从 index.html 里把 defaultTheme() 抠出来求值**，不手抄一份：
 //      抄一份就会在"改了页面忘了改这里"时静默分叉（本仓库的既有风格：
 //      测试一律解析真源码，见 test-theme-json.js）。
-//    ★ 图片页那份默认主题不是 defaultTheme()（它叫 ARC_FALLBACK）——
-//      它是**图片页自己的**兜底/导入基准，test-theme-json.js 已经把它与
-//      ui_theme.h、theme-default.json 三方对过账。这里也把它抠出来，
-//      这样"两页的默认主题"都进了指纹。
+//    ★ ★ 2026-10-15（配色 + 图片合并成一个页面之后）：
+//      "图片页那份默认主题"（ARC_FALLBACK）也跟着并进了 index.html ——
+//      image-editor.html 现在只是一个跳到 index.html#images 的**薄壳**，
+//      所以两份都从 index.html 里抠。**指纹值一个都没变**（文字没动），
+//      这一点由 check-owner-mode.js 的第 ⑬ 节逐字段对账。
 // ------------------------------------------------------------
 function themeDefaultFromPage(pageFile) {
   const src = fs.readFileSync(path.join(dir, pageFile), "utf8");
@@ -62,7 +63,8 @@ function themeDefaultFromPage(pageFile) {
 
 // ARC_FALLBACK 是**对象字面量**（键没引号、颜色写成 0x…）⇒ 去掉行注释后用
 // new Function 求值（与 test-theme-json.js 那一节同一套办法）。
-function arcFallbackFromImagePage(pageFile) {
+// ★ 合并后它住在 index.html（原来在图片页）。
+function arcFallbackFromMergedPage(pageFile) {
   const src = fs.readFileSync(path.join(dir, pageFile), "utf8");
   const m = /const ARC_FALLBACK\s*=\s*\{([\s\S]*?)\n\};/.exec(src);
   if (!m) throw new Error(pageFile + " 里找不到 ARC_FALLBACK");
@@ -127,7 +129,7 @@ function layout() {
 
 function computeAll() {
   const themeIdx = themeBytesOf(themeDefaultFromPage("index.html"));
-  const themeImg = themeBytesOf(arcFallbackFromImagePage("image-editor.html"));
+  const themeImg = themeBytesOf(arcFallbackFromMergedPage("index.html"));
   const imgBytes = imageBytes();
   const packed = APC.packBytes({
     themeBytes: themeIdx,
@@ -147,7 +149,9 @@ function computeAll() {
     note: "打包产物指纹：任何会进字节的改动都会让它变 —— 见 check-owner-mode.js",
     themeJsonBytes: themeIdx.length,
     themeJsonSha256: sha256(themeIdx),
-    // 图片页那份默认主题（ARC_FALLBACK）序列化后的字节
+    // 合并前"图片页那份默认主题"（ARC_FALLBACK）序列化后的字节
+    //   ★ 字段名保留（指纹文件是**证据**，改名会让"前后两个值在说同一件事"看不出来）；
+    //     只是它现在从合并后的 index.html 里抠。
     imageEditorThemeJsonBytes: themeImg.length,
     imageEditorThemeJsonSha256: sha256(themeImg),
     imageBinBytes: imgBytes.length,

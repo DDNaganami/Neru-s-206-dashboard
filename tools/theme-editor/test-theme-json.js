@@ -86,45 +86,51 @@ section("裸根写法(不带 theme 外壳)也接受");
 }
 
 // ------------------------------------------------------------
-// ★ 两个页面共用同一份"本机配色"
+// ★ 合并后：**一个页面 = 一份本机配色**
 //
-// 为什么值得测:弧的配色在两个页面里都能改(用户是在图片编辑器里对着表情图调色的,
-// 却也要能在主题编辑器里改)。共享靠的是一个 localStorage 键 ——
-// 键名写错一个字符、或者哪一页只读不写,共享就静默失效:
-// 表现是"我在 A 页改了色,打开 B 页还是旧的",而不会有任何报错。
+// 为什么值得测:弧的配色在"① 配色"分区与"② 图片"分区里都能改（高级里也有一套
+// 控件），靠的是一个 localStorage 键 + **同一个 T 对象** ——
+// 键名写错一个字符、或者哪一处只读不写，共享就静默失效:
+// 表现是"我在 A 分区改了色,另一个分区还是旧的",而不会有任何报错。
+// ★★ 2026-10-15：原来查的是"两个页面共用同一个键"；合并之后改查
+//   "**只有一份**实现、**一个**键"，而且那个重定向薄壳里不许再出现第二份。
 // ------------------------------------------------------------
-section("两个编辑器共用同一份配色(localStorage)");
+section("一个页面、一份配色（合并后不再有\"两页共用\"这回事）");
 {
   const idxSrc = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
-  const imgSrc2 = fs.readFileSync(path.join(__dirname, "image-editor.html"), "utf8");
+  const imgSrc2 = idxSrc;      // ★ 实现只有这一份（下面仍用它跑后面几节）
+  // ★ 只有**薄壳**这一处读的是 image-editor.html（它就是那几行的重定向页）
+  const shellSrc = fs.readFileSync(path.join(__dirname, "image-editor.html"), "utf8")
+    .replace(/<!--[\s\S]*?-->/g, "");
   const keyOf = (s) => {
     const m = /const THEME_KEY = "([^"]+)"/.exec(s);
     return m ? m[1] : null;
   };
   const kTheme = keyOf(idxSrc);
-  const kImage = keyOf(imgSrc2);
-  ok(kTheme !== null, "主题编辑器里定义了 THEME_KEY");
-  ok(kImage !== null, "图片编辑器里定义了 THEME_KEY");
-  eq(kImage, kTheme, "两页的键名必须一致");
+  ok(kTheme === "206dash.theme", "合并后的页面里定义了 THEME_KEY = 206dash.theme");
+  eq((idxSrc.match(/const THEME_KEY = "/g) || []).length, 1, "THEME_KEY 只声明一处");
+  ok(keyOf(shellSrc) === null, "重定向薄壳里没有 THEME_KEY（没有第二份状态）");
 
-  for (const [name, src] of [["主题编辑器", idxSrc], ["图片编辑器", imgSrc2]]) {
-    ok(src.indexOf("localStorage.setItem(THEME_KEY") >= 0, name + " 会写这份配色");
-    ok(src.indexOf("localStorage.getItem(THEME_KEY") >= 0, name + " 会读这份配色");
+  {
+    const src = idxSrc;
+    ok(src.indexOf("localStorage.setItem(THEME_KEY") >= 0, "会写这份配色");
+    ok(src.indexOf("localStorage.getItem(THEME_KEY") >= 0, "会读这份配色");
   }
-  // 图片编辑器必须真的能改色 + 导出(不然"读得到"却没有产出的路子)
-  ok(/id="btn-theme-export"/.test(imgSrc2), "图片编辑器有「导出 theme.json」按钮");
-  ok(/type = "color"/.test(imgSrc2) || /type:"color"/.test(imgSrc2) ||
-     /type = 'color'/.test(imgSrc2) || /\.type = "color"/.test(imgSrc2),
-     "图片编辑器里用了颜色选择器");
-  ok(/exportThemeJson/.test(imgSrc2), "图片编辑器里有导出函数");
+  // 必须真的能改色 + 导出(不然"读得到"却没有产出的路子)
+  ok(/id="btn-theme-export"/.test(idxSrc), "有「导出 theme.json」按钮");
+  ok(/type = "color"/.test(idxSrc) || /type:"color"/.test(idxSrc) ||
+     /type = 'color'/.test(idxSrc) || /\.type = "color"/.test(idxSrc),
+     "用了颜色选择器");
+  ok(/exportThemeJson/.test(idxSrc), "有导出函数");
 
   // 存的形态:记录里必须**连基线一起存** —— 只存 theme 会让"改了固件默认值
   // 但用户刷新后看不到"这种事发生(用户实测撞到:水温弧 145→330 改成 0→180)。
-  for (const [name, src] of [["主题编辑器", idxSrc], ["图片编辑器", imgSrc2]]) {
-    ok(/v:\s*2\s*,\s*base:/.test(src), name + " 的记录要带 v:2 与 base(基线)");
-    ok(/theme:\s*(T|gTheme)\b/.test(src), name + " 的记录要带 theme");
-    ok(/ThemeJson\.mergeDefaults/.test(src), name + " 要用三方合并读回记录");
-    ok(/THEME_KEY_V1/.test(src), name + " 要能迁移旧记录(备份键)");
+  {
+    const src = idxSrc;
+    ok(/v:\s*2\s*,\s*base:/.test(src), "记录要带 v:2 与 base(基线)");
+    ok(/theme:\s*T\b/.test(src), "记录要带 theme（唯一那份状态 T）");
+    ok(/ThemeJson\.mergeDefaults/.test(src), "要用三方合并读回记录");
+    ok(/THEME_KEY_V1/.test(src), "要能迁移旧记录(备份键)");
   }
 
   // ★ 把用户的 bug 完整演一遍:用**真实的 ARC_FALLBACK**(从页面里解析出来的)
@@ -236,14 +242,14 @@ section("坏输入要报错,不能静默返回半个对象");
 //
 //   1) lib/themetool/ui_theme.h  的 theme_set_defaults()  ← 固件的事实来源
 //   2) tools/theme-editor/theme-default.json             ← 给人当模板的手改参考
-//   3) image-editor.html 的 ARC_FALLBACK                 ← 图片编辑器没读主题时的兜底
+//   3) index.html 的 ARC_FALLBACK（合并前在图片页）        ← 没读主题时的兜底
 //      (读了 theme.json 就用主题里的,兜底只是"参考值",但参考值错了照样误导人)
-section("三处默认主题必须一致(ui_theme.h / theme-default.json / ARC_FALLBACK)");
+section("三处默认主题必须一致(ui_theme.h / theme-default.json / 页面的 ARC_FALLBACK)");
 {
   const repo = path.resolve(__dirname, "..", "..");
   const hSrc = fs.readFileSync(path.join(repo, "lib", "themetool", "ui_theme.h"), "utf8");
   const jsonSrc = fs.readFileSync(path.join(__dirname, "theme-default.json"), "utf8");
-  const imgSrc = fs.readFileSync(path.join(__dirname, "image-editor.html"), "utf8");
+  const imgSrc = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
 
   // ---- 1) ui_theme.h:把默认主题的几条弧抠出来 ----
   // 末尾的 reverse 是可选的(C++ 聚合初始化可以少写,缺省即 0)
@@ -322,9 +328,9 @@ section("三处默认主题必须一致(ui_theme.h / theme-default.json / ARC_FA
   eq(t.bg_color, Number(/t\.bg_color\s*=\s*(0x[0-9A-Fa-f]+)/.exec(hSrc)[1]), "背景色");
   eq(t.face_size, Number(/t\.face_size\s*=\s*(\d+)/.exec(hSrc)[1]), "表情大小");
 
-  // ---- 3) image-editor.html 的 ARC_FALLBACK ----
+  // ---- 3) index.html 的 ARC_FALLBACK（合并前在图片页；实现只有这一份）----
   const fbBlock = /const ARC_FALLBACK\s*=\s*\{([\s\S]*?)\n\};/.exec(imgSrc);
-  ok(!!fbBlock, "在 image-editor.html 里找到 ARC_FALLBACK");
+  ok(!!fbBlock, "在 index.html 里找到 ARC_FALLBACK");
   const fbRe = /kind:\s*(\d+),\s*start_deg:\s*(-?\d+),\s*end_deg:\s*(-?\d+),\s*radius:\s*(\d+),\s*width:\s*(\d+),\s*track_color:\s*(0x[0-9A-Fa-f]+),\s*track_opa:\s*(\d+),\s*value_color:\s*(0x[0-9A-Fa-f]+)(?:,\s*reverse:\s*(\d+))?/g;
   const fbArcs = [];
   while ((m = fbRe.exec(fbBlock ? fbBlock[1] : "")) !== null) {
@@ -369,12 +375,12 @@ section("三处默认主题必须一致(ui_theme.h / theme-default.json / ARC_FA
 // **不报错**,只是"预览里的字和真车不是一个颜色/字号"—— 而预览正是这一页
 // 唯一能看的东西。所以这里把它们逐个对到 ui_theme.h / dash_ui.cpp 上。
 // ------------------------------------------------------------
-section("读数颜色:图片编辑器 vs ui_theme.h / dash_ui.cpp");
+section("读数颜色:合并后的页面 vs ui_theme.h / dash_ui.cpp");
 {
   const repo = path.resolve(__dirname, "..", "..");
   const hSrc = fs.readFileSync(path.join(repo, "lib", "themetool", "ui_theme.h"), "utf8");
   const cSrc = fs.readFileSync(path.join(repo, "src", "dash_ui.cpp"), "utf8");
-  const imgSrc = fs.readFileSync(path.join(__dirname, "image-editor.html"), "utf8");
+  const imgSrc = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
 
   // ---- 1) 固件默认值(唯一事实来源) ----
   const fw = {};
@@ -409,9 +415,9 @@ section("读数颜色:图片编辑器 vs ui_theme.h / dash_ui.cpp");
   ok(!!tpl.readout, "theme-default.json 里有 readout 段");
   for (const k of COLOR_KEYS) eq(tpl.readout[k], fw[k], "theme-default.json 的 " + k);
 
-  // ---- 4) image-editor.html 的 ARC_FALLBACK.readout ----
+  // ---- 4) index.html 的 ARC_FALLBACK.readout ----
   const fb = /const ARC_FALLBACK\s*=\s*\{([\s\S]*?)\n\};/.exec(imgSrc);
-  ok(!!fb, "在 image-editor.html 里找到 ARC_FALLBACK");
+  ok(!!fb, "在 index.html 里找到 ARC_FALLBACK");
   const fbObj = new Function("return {" + fb[1].replace(/\/\/[^\n]*/g, "") + "};")();
   ok(!!fbObj.readout, "ARC_FALLBACK 里有 readout 段");
   for (const k of COLOR_KEYS) eq(fbObj.readout[k], fw[k], "ARC_FALLBACK 的 " + k);
@@ -423,7 +429,7 @@ section("读数颜色:图片编辑器 vs ui_theme.h / dash_ui.cpp");
   //   在测一份复制品 —— 页面改了它却还是绿的。
   const grab = (re, what) => {
     const g = re.exec(imgSrc);
-    ok(!!g, "在 image-editor.html 里找到 " + what);
+    ok(!!g, "在 index.html 里找到 " + what);
     return g ? g[0] : "";
   };
   const pageSrc = [
@@ -437,7 +443,7 @@ section("读数颜色:图片编辑器 vs ui_theme.h / dash_ui.cpp");
     grab(/function readoutText\(kind, st\)\s*\{[\s\S]*?\n\}/, "readoutText()"),
     grab(/function unitText\(kind\)\s*\{[\s\S]*?\n\}/, "unitText()"),
     grab(/function auxText\(kind, st\)\s*\{[^\n]*\}/, "auxText()"),
-    grab(/function primaryKindOf\(sc\)\s*\{[\s\S]*?\n\}/, "primaryKindOf()"),
+    grab(/function primaryKind\(sc\)\s*\{[\s\S]*?\n\}/, "primaryKind()"),
     grab(/function screenHasKind\(sc, kind\)\s*\{[\s\S]*?\n\}/, "screenHasKind()"),
     grab(/function drawReadoutLabel\(ctx, W, cy480, text, fontPx, colorHex\)\s*\{[\s\S]*?\n\}/,
          "drawReadoutLabel()"),
@@ -447,10 +453,10 @@ section("读数颜色:图片编辑器 vs ui_theme.h / dash_ui.cpp");
   // previewSide()(240 那块板还是 480 档)与 gTheme(当前主题)在页面里是全局量,
   // 这里当参数注进去 —— 于是同一段源码能在两种屏上各跑一遍。
   // apiFrom(previewSideStub, theme) → 页面那几个函数的对象。
-  const apiFrom = new Function("previewSide", "gTheme",
+  const apiFrom = new Function("previewSide", "T",
     pageSrc + "\nreturn { ensureReadout: ensureReadout, readoutLayout: readoutLayout," +
     " readoutFontPx: readoutFontPx, readoutText: readoutText, unitText: unitText," +
-    " auxText: auxText, primaryKindOf: primaryKindOf, screenHasKind: screenHasKind," +
+    " auxText: auxText, primaryKind: primaryKind, screenHasKind: screenHasKind," +
     " drawReadout: drawReadout, READOUT_LAYOUT: READOUT_LAYOUT," +
     " READOUT_FONT_PX: READOUT_FONT_PX, ARC_FALLBACK: ARC_FALLBACK };");
   const makeApi = (boardPx, theme) => apiFrom(() => boardPx, theme);

@@ -17,12 +17,21 @@
  *   ⑥ 3 个预设写进**现有主题状态**（不是新文件格式）；
  *   ⑦ 打包产物与改动前**逐字节相同**（.golden-hashes.json 那一份指纹）。
  *
- * ★ 为什么能这么查（而不是"跑个浏览器"）：这两个页面是**静态 HTML**，
+ * ------------------------------------------------------------
+ * ★★ 2026-10-15（同一天，车主口径变更）：**配色页与图片页合并成一个页面**
+ * ------------------------------------------------------------
+ *   车主原话：「图片页和配色页能合并吗，因为感觉功能上其实是统一的。」
+ *   ⇒ 本脚本跟着改成"查**一个**页面里的两个分区"：
+ *      · `index.html` = 唯一的实现（两个页内分区：① 配色 / ② 图片，
+ *        共用同一份主题状态 T 与同一份图片清单 items）；
+ *      · `image-editor.html` = **重定向薄壳**（几行，跳 index.html#images）。
+ *   第 ⓪ 节盯的就是这件事：**壳里不许有第二份实现**，
+ *   而两个分区的控件、槽位清单、保存安装包一个都不许少（能力表不缩水）。
+ *
+ * ★ 为什么能这么查（而不是"跑个浏览器"）：这些页面是**静态 HTML**，
  *   控件的**身份**就写在源码里（`data-ocap` 标签、标签文字、函数名）。
  *   本仓库既有风格也是这么查的（见 check-role-label.js / check-layer-order.js /
  *   test-theme-json.js 的"解析真源码"那几节）—— 不引浏览器、不装依赖。
- * ★ 两个页面用的是**同一张能力表**（OWNER_CAPS 那 7 个标签），所以"谁改坏了
- *   一边"会被立刻抓住，而且两边不会各自长出一套叫法。
  * ============================================================ */
 "use strict";
 
@@ -49,31 +58,108 @@ function read(f) { return fs.readFileSync(path.join(dir, f), "utf8"); }
 function stripComments(s) {
   return s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 }
+// 数某个 token 在源码里出现几次（用来钉"只有一份实现"）
+function countOf(src, re) { return (src.match(re) || []).length; }
 
 const PAGES = { "index.html": read("index.html"), "image-editor.html": read("image-editor.html") };
+// ★ 合并后：实现在 index.html（两个分区）；image-editor.html 只是重定向薄壳。
+const MERGED = PAGES["index.html"];
+const SHELL = PAGES["image-editor.html"];
+// 查薄壳的**代码**时先把 HTML 注释剥掉：注释里正说明"没有 <script>"，
+// 不剥就会把注释里的字样当成代码（本仓库的注释风格就是这样，实测踩过）。
+const SHELL_CODE = SHELL.replace(/<!--[\s\S]*?-->/g, "");
 
 // ------------------------------------------------------------
 // 能力表（页面里那几个"身份标签"）
 //   data-ocap="bg|arc|digit|redline|overspeed|face|save"
 //   ★ 这 7 个标签覆盖车主原话点名的 9 类控件：
 //     背景色(bg) + 四条弧颜色(arc×4) + 数字颜色(digit) + 红区(redline) +
-//     超速(overspeed) + 表情图拖入(face) + 保存安装包(save)；
+//     超速(overspeed) + 图片入口(face) + 保存安装包(save)；
 //     左右圆预览位是既有画布（cv0/cv1），不算控件。
+//   ★★ 合并后 save 是 **2**：两个分区**各有一个**「保存安装包」（车主口径：
+//      两边都要能存）—— 两个按钮都调同一个 saveOwnerPackage()，不是两套打包。
+//      端口输入框同理是 2（同一个值、同一条命令）。
 // ------------------------------------------------------------
 const OWNER_CAPS = ["bg", "arc", "digit", "redline", "overspeed", "face", "save"];
-const OWNER_EXPECT_COUNT = { bg: 1, arc: 4, digit: 1, redline: 1, overspeed: 1, face: 1, save: 1 };
-// ★ 那四条弧：两页的写法**不一样，都是有意的** ——
-//   · 主题页：四行静态写在 HTML 里（`data-ocap="arc"` ×4）⇒ 数到 4 个标记；
-//   · 图片页：四行由 JS 循环生成（容器上一处 `data-ocap="arc"` 标记 + 那个循环）
-//     ⇒ 数到 1 个标记，**另外用循环那个数去回答"是不是四条"**。
-//   这样"四条"在两页都是可执行的判据，而不是靠注释。
-const ARC_MARK_EXPECT = { "index.html": 4, "image-editor.html": 1 };
+const OWNER_EXPECT_COUNT = { bg: 1, arc: 4, digit: 1, redline: 1, overspeed: 1, face: 1, save: 2 };
+const PORT_MARK_EXPECT = 2;
 
-section("① 车主模式恰好有那 9 类控件（两个页面各查一遍）");// 身份标签有两种合法写法（两页各用一种，都是有意的）：
-//   · 主题页（index.html）：**静态写在 HTML 里** —— `data-ocap="bg"`。
-//     好处：车主模式下"这一栏是哪几件东西"一眼可读，检查脚本也数得到。
-//   · 图片页（image-editor.html）：那几行弧/读数控件本来由 JS 生成，
-//     所以用**字面量** setAttribute("data-ocap", "arc")。
+// ------------------------------------------------------------
+// ⓪ 合并本身：一个实现 + 一个薄壳
+// ------------------------------------------------------------
+section("⓪ 合并：实现在 index.html（两个分区），image-editor.html 只是重定向薄壳");
+{
+  // 壳必须**小**（几行就够）+ 必须带回跳目标 + **不许有第二份实现**
+  //   ★ 查代码之前先把 HTML 注释剥掉：注释里正说明"没有 <script>"，
+  //     不剥就会把注释里的字样当成代码（本仓库的注释风格就是这样，实测踩过）。
+  const SHELL_CODE = SHELL.replace(/<!--[\s\S]*?-->/g, "");
+  const shellLines = SHELL.split(/\r?\n/).length;
+  ok(shellLines <= 40, "薄壳不超过 40 行（实际 " + shellLines + " 行）");
+  ok(Buffer.byteLength(SHELL, "utf8") <= 3000,
+     "薄壳不超过 3000 字节（实际 " + Buffer.byteLength(SHELL, "utf8") + "）");
+  ok(/<meta\s+http-equiv="refresh"\s+content="0;\s*url=index\.html#images"/i.test(SHELL),
+     "薄壳带 meta refresh 跳 index.html#images（老书签能落地到「② 图片」分区）");
+  ok(countOf(SHELL_CODE, /<script\b/gi) === 0, "薄壳里没有 <script>（不许有第二份实现）");
+  ok(countOf(SHELL_CODE, /data-ocap=/g) === 0, "薄壳里没有车主模式控件标记");
+  ok(SHELL_CODE.indexOf("THEME_KEY") < 0 && SHELL_CODE.indexOf("items") < 0,
+     "薄壳里没有主题/图片状态（一份都不许留）");
+  for (const bad of ["function buildControls", "function openCropper", "function cropConfirm",
+                     "function buildOwnerSlots", "function render(", "function coreForTarget",
+                     "function exportAssetsBin", "id=\"crop\"", "id=\"json\"", "id=\"stage-grid\""]) {
+    ok(SHELL_CODE.indexOf(bad) < 0, "薄壳里没有第二份实现：" + bad);
+  }
+  // 而真正的实现每一件都**只有一份**（合并前两页各一份的那些函数）
+  const once = [
+    ["function drawScreen\\(", "drawScreen()（唯一的渲染器）"],
+    ["function drawArc\\(", "drawArc()（唯一的画弧）"],
+    ["function primaryKind\\(", "primaryKind()（唯一的大数字来源判定）"],
+    ["function buildControls\\(", "buildControls()（高级那一整面墙）"],
+    ["function buildOwnerSlots\\(", "buildOwnerSlots()（唯一的槽位清单生成）"],
+    ["function openCropper\\(", "openCropper()（唯一的框选器）"],
+    ["function cropConfirm\\(", "cropConfirm()"],
+    ["function coreForTarget\\(", "coreForTarget()（唯一的容器布局）"],
+    ["function exportAssetsBin\\(", "exportAssetsBin()（唯一的容器打包入口）"],
+    ["function saveOwnerPackage\\(", "saveOwnerPackage()（唯二的保存按钮都指向它）"],
+    ["function render\\(", "render()（唯一的整体渲染）"],
+    ["const THEME_KEY = ", "THEME_KEY（唯一的主题键）"],
+    ["function applyPart\\(", "applyPart()（页内分区切换）"],
+    ["function buildReadoutEditors\\(", "buildReadoutEditors()"],
+    ["function buildArcEditors\\(", "buildArcEditors()"]
+  ];
+  for (const [re, what] of once) {
+    eq(countOf(MERGED, new RegExp(re, "g")), 1, "合并后的页面里只有一份：" + what);
+  }
+  // 只可能出现一次的元素 id（重复就是"两个真相"）
+  for (const id of ["json", "cv0", "cv1", "cvA", "status", "crop", "stage", "controls",
+                    "owner-slots", "target-board", "budget-bar"]) {
+    eq(countOf(MERGED, new RegExp('id="' + id + '"', "g")), 1,
+       "id=\"" + id + "\" 只有一处");
+  }
+  // 两个分区都在，而且是**同一页**里的两半（容器 + 标签 + 锚点）
+  for (const id of ["owner-theme", "owner-images", "part-theme", "part-images", "partbar"]) {
+    eq(countOf(MERGED, new RegExp('id="' + id + '"', "g")), 1, "有分区容器/标签 #" + id);
+  }
+  ok(/function currentHashPart\(\)/.test(MERGED) && /#images/.test(MERGED),
+     "认 URL 锚点（#images 直接进「② 图片」分区 —— 薄壳就是跳到它）");
+  ok(/getElementById\("owner-theme"\)/.test(MERGED) && /getElementById\("owner-images"\)/.test(MERGED),
+     "applyPart() 用 id 切两个分区（不依赖 CSS 选择器）");
+  // 单一状态：主题只有一个变量、图片只有一份清单
+  eq(countOf(MERGED, /\bconst THEME_KEY = "/g), 1, "THEME_KEY 只声明一次");
+  ok(/let T = defaultTheme\(\);/.test(MERGED), "主题状态只有一个（let T = defaultTheme()）");
+  ok(!/\bgTheme\b/.test(MERGED), "旧图片页那份主题对象（另一个名字）已经不存在");
+  ok(/let items = \[\];/.test(MERGED), "图片清单只有一个（let items = []）");
+  ok(MERGED.indexOf("HANDOFF_KEY") < 0 && MERGED.indexOf("ownerLastPick") < 0,
+     "跨页交接那套中间状态已经删掉（合并后不需要它）");
+  console.log("  - 薄壳 " + shellLines + " 行 / " + Buffer.byteLength(SHELL, "utf8") +
+              " 字节；实现 " + MERGED.split(/\r?\n/).length + " 行");
+}
+
+// ------------------------------------------------------------
+section("① 车主模式恰好有那 9 类控件（两个分区一起数）");
+// 身份标签有两种合法写法：
+//   · **静态写在 HTML 里** —— `data-ocap="bg"`（车主模式那两栏用的就是它，
+//     好处：车主模式下"这一栏是哪几件东西"一眼可读，检查脚本也数得到）；
+//   · 由 JS 用**字面量** setAttribute("data-ocap", "arc")（少数几个由循环生成的）。
 //   两种都要求"字面量"：用变量拼出来的标签本脚本数不到，
 //   而"数不到"会让这条守卫静默失效 —— 比报错更糟。
 //   ★ 数之前先把**注释**剥掉：这些注释里会引用 `data-ocap="face"` 这种写法
@@ -81,7 +167,6 @@ section("① 车主模式恰好有那 9 类控件（两个页面各查一遍）"
 function countOwnerCaps(src) {
   const counts = {};
   const add = (k) => { counts[k] = (counts[k] || 0) + 1; };
-  // 只剥 HTML/JS 注释，保留字符串里的内容（我们的标签本来就写在字符串/属性里）
   const code = src
     .replace(/<!--[\s\S]*?-->/g, "")
     .replace(/\/\*[\s\S]*?\*\//g, "")
@@ -94,58 +179,54 @@ function countOwnerCaps(src) {
   return counts;
 }
 const KNOWN_MARKS = OWNER_CAPS.concat(["preset", "port", "bgimage", "slots"]);
-for (const [page, src] of Object.entries(PAGES)) {
-  const counts = countOwnerCaps(src);
+{
+  const counts = countOwnerCaps(MERGED);
   for (const k of Object.keys(counts)) {
-    ok(KNOWN_MARKS.indexOf(k) >= 0, page + " 的 data-ocap 值合法：" + k);
+    ok(KNOWN_MARKS.indexOf(k) >= 0, "合并后的页面里 data-ocap 值合法：" + k);
   }
   for (const c of OWNER_CAPS) {
-    const want = (c === "arc") ? ARC_MARK_EXPECT[page] : OWNER_EXPECT_COUNT[c];
-    eq(counts[c] || 0, want, page + " 车主模式的 " + c + " 控件标记个数");
+    eq(counts[c] || 0, OWNER_EXPECT_COUNT[c], "车主模式的 " + c + " 控件标记个数");
   }
-  // "四条弧"的**类别数**在两页都要是 4：数那个循环里的数组长度定义
-  const arcsDecl = /const OWNER_ARCS\s*=\s*\[([\s\S]*?)\n\];/.exec(src);
-  ok(!!arcsDecl, page + " 里有 OWNER_ARCS 声明");
+  // 端口那一处标记：两个分区各一个（同一个值、同一条命令）
+  eq(counts.port || 0, PORT_MARK_EXPECT, "车主模式恰好 " + PORT_MARK_EXPECT + " 处端口标记（两个分区各一个）");
+  eq(counts.preset || 0, 1, "预设那一行恰好一处");
+  eq(counts.bgimage || 0, 1, "槽位清单里背景那一格恰好一处 bgimage 标记");
+  // "四条弧"的**类别数**：数那个数组里的四条
+  const arcsDecl = /const OWNER_ARCS\s*=\s*\[([\s\S]*?)\n\];/.exec(MERGED);
+  ok(!!arcsDecl, "合并后的页面里有 OWNER_ARCS 声明");
   if (arcsDecl) {
-    eq((arcsDecl[1].match(/\{\s*s\s*:/g) || []).length, 4, page + " 的 OWNER_ARCS 正好四条");
+    eq((arcsDecl[1].match(/\{\s*s\s*:/g) || []).length, 4, "OWNER_ARCS 正好四条");
   }
-  // 端口那一处标记恰好一个（可改端口、不可改偏移）
-  eq(counts.port || 0, 1, page + " 车主模式恰好一处端口标记");
-  // 预设那一行：主题页恰好一处
-  if (page === "index.html") eq(counts.preset || 0, 1, page + " 预设那一行恰好一处");
-  // ★★ 槽位清单（2026-10-15 车主实测反馈要求的那一件）：背景 1 + 表情 10
-  if (page === "image-editor.html") {
-    eq(counts.face || 0, 1, page + " 槽位清单容器上一处 face 标记");
-    eq(counts.bgimage || 0, 1, page + " 背景那一格恰好一处 bgimage 标记");
-  }
-  // ★ 每格的工具（换图 / 清除）必须真的在页面里
-  if (page === "image-editor.html") {
-    for (const w of ['"选文件"', '"换图"', '"清除"', "function buildOwnerSlots",
-                     "function sendFilesToSlot", "function clearSlot", "function drawSlotThumb"]) {
-      ok(src.indexOf(w) >= 0, page + " 槽位清单里有 " + w);
-    }
-    // 表情格弹框选、背景格不弹：这两条路必须是**分开**的两个分支
-    ok(/spec\.face\s*\?\s*ownerFaceFiles|if\s*\(\s*spec\.face\s*\)/.test(src),
-       page + " 按 face 标记分流（表情格走框选、背景格不走）");
-    // 清除：同 role 全部删掉
-    ok(/function clearSlot[\s\S]{0,400}role === spec\.role/.test(src),
-       page + " 清除按 role 删干净");
-  }
-  // 那张能力表本身也要在页面里（两页同源），并且**不多不少**
-  const capsDecl = /const OWNER_CAPS\s*=\s*(\[[^\]]*\])/.exec(src);
-  ok(!!capsDecl, page + " 里有 OWNER_CAPS 声明");
+  // 那张能力表本身也要在页面里（两页同源的写法保留成一份），并且**不多不少**
+  const capsDecl = /const OWNER_CAPS\s*=\s*(\[[^\]]*\])/.exec(MERGED);
+  ok(!!capsDecl, "合并后的页面里有 OWNER_CAPS 声明");
   if (capsDecl) {
     const arr = new Function("return " + capsDecl[1])();
-    eq(JSON.stringify(arr), JSON.stringify(OWNER_CAPS), page + " 的 OWNER_CAPS 与能力表一致");
+    eq(JSON.stringify(arr), JSON.stringify(OWNER_CAPS), "OWNER_CAPS 与能力表一致");
   }
+  // 两个分区的保存按钮都指向**同一个**函数（不是两套打包）
+  ok(/\["btn-owner-save", "btn-owner-save-img"\]\.forEach/.test(MERGED),
+     "两个「保存安装包」按钮接的是同一个 saveOwnerPackage()");
+  eq(countOf(MERGED, /saveOwnerPackage/g) >= 3 ? 1 : 0, 1,
+     "saveOwnerPackage 这个名字只对应一个函数（定义 + 两处接线）");
+  // 槽位清单那几件工具必须真的在页面里
+  for (const w of ['"选文件"', '"换图"', '"清除"', "function buildOwnerSlots",
+                   "function sendFilesToSlot", "function clearSlot", "function drawSlotThumb"]) {
+    ok(MERGED.indexOf(w) >= 0, "槽位清单里有 " + w);
+  }
+  // 表情格弹框选、背景格不弹：这两条路必须是**分开**的两个分支
+  ok(/spec\.face\s*\?\s*ownerFaceFiles|if\s*\(\s*spec\.face\s*\)/.test(MERGED),
+     "按 face 标记分流（表情格走框选、背景格不走）");
+  ok(/function clearSlot[\s\S]{0,400}role === spec\.role/.test(MERGED),
+     "清除按 role 删干净");
 }
 
-section("①b 槽位清单：背景 1 + 表情 10，名称用中文阶段名（图片页）");
+section("①b 槽位清单：背景 1 + 表情 10，名称用中文阶段名");
 {
-  const src = PAGES["image-editor.html"];
+  const src = MERGED;
   const FSrd = require(path.join(dir, "face-stages.js"));
   const body = /function faceSlots\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
-  ok(!!body, "图片页有 faceSlots()（从 FaceStages 取 10 个表情槽）");
+  ok(!!body, "合并后的页面有 faceSlots()（从 FaceStages 取 10 个表情槽）");
   // ★ 把 faceSlots() 真跑一遍：喂**真的** face-stages.js 进去，
   //   所以"名称是不是中文阶段名、是不是 5+5"是算出来的，不是数注释。
   if (body) {
@@ -159,62 +240,62 @@ section("①b 槽位清单：背景 1 + 表情 10，名称用中文阶段名（�
     const right = slots.filter(s => s.side === 1).map(s => s.label.split(" · ").pop());
     eq(left.join("/"), "怠速/巡航/运动/高转/红区", "转速屏槽位名（中文阶段名，按档位序）");
     eq(right.join("/"), "静止/市区/快速路/高速/超速", "速度屏槽位名（中文阶段名，按档位序）");
-    // 名字里必须点明是**哪块屏**（车主反馈里特意提了"区分是哪个屏的槽"）
     ok(slots.every(s => s.label.indexOf("转速表") >= 0 || s.label.indexOf("速度表") >= 0),
        "每个表情槽名都点明哪块屏（转速表 / 速度表）");
-    // role 必须与 face-stages.js 一致（不许在页面里另造一套编号）
     const want = [];
     for (let s = 0; s < 2; s++) FSrd.statesOf(s).forEach(st => want.push(st.role));
     eq(slots.map(s => s.role).join(","), want.join(","), "10 个 role 与 face-stages.js 逐个一致");
   }
   // 背景那一格：1 个、face:false（不弹框选）
   const sp = /function ownerSlotSpecs\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
-  ok(!!sp, "图片页有 ownerSlotSpecs()（背景 + 表情合成一张表）");
+  ok(!!sp, "有 ownerSlotSpecs()（背景 + 表情合成一张表）");
   if (sp) {
     ok(/ImageBlob\.ROLE\.Background/.test(sp[1]) && /face:\s*false/.test(sp[1]),
        "背景那一格 face:false（背景不加框选）");
     ok(/\.concat\(faceSlots\(\)\)/.test(sp[1]),
        "ownerSlotSpecs() = 背景 1 格 + faceSlots() 10 格");
   }
-  // 背景格可以 JPEG（表情不行）—— 这一条由 asset-spec 的 checkUpload 决定，
-  // 这里只断言"背景格**不**去走那条只给表情的检查/框选分支"
   ok(/背景：不弹框选|背景不加框选/.test(src), "页面里明说背景不加框选");
 }
 
 section("② 车主模式是**默认**（没记录时进车主模式，不是高级）");
-for (const [page, src] of Object.entries(PAGES)) {
-  // 默认值必须写成"只有显式存了 adv 才进高级"
-  const def = /applyMode\(\s*saved\s*===\s*"adv"\s*\?\s*"adv"\s*:\s*"owner"\s*,\s*true\s*\)/.exec(src);
-  ok(!!def, page + " 启动时默认 applyMode(... \"owner\", true)");
-  ok(/localStorage\.getItem\(MODE_KEY\)/.test(src), page + " 的模式选择从 localStorage 读");
-  ok(/id="btn-mode-owner"/.test(src) && /id="btn-mode-adv"/.test(src),
-     page + " 有「车主模式 / 高级」两个切换按钮");
+{
+  const def = /applyMode\(\s*saved\s*===\s*"adv"\s*\?\s*"adv"\s*:\s*"owner"\s*,\s*true\s*\)/.exec(MERGED);
+  ok(!!def, "启动时默认 applyMode(... \"owner\", true)");
+  ok(/localStorage\.getItem\(MODE_KEY\)/.test(MERGED), "模式选择从 localStorage 读");
+  ok(/id="btn-mode-owner"/.test(MERGED) && /id="btn-mode-adv"/.test(MERGED),
+     "有「车主模式 / 高级」两个切换按钮");
+  // 页内分区也有"没记录就进 ① 配色"的默认，而且**认锚点优先**
+  ok(/applyPart\(currentHashPart\(\) \|\| saved \|\| "theme", true\)/.test(MERGED),
+     "分区默认进「① 配色」，但 URL 锚点优先（#images 直接进图片分区）");
+  ok(/localStorage\.getItem\(PART_KEY\)/.test(MERGED), "分区选择记在**另一个**键上（PART_KEY）");
 }
 
 section("③ JSON 文本框**只在高级里**");
-for (const [page, src] of Object.entries(PAGES)) {
-  const at = src.indexOf('id="json"');
-  if (at < 0) { console.log("  - " + page + " 没有 JSON 文本框（本页不需要，跳过）"); continue; }
-  // 它在 <div id="advanced"> 之后、<main> 之内 ⇒ 属于高级那半栏
-  const advAt = src.indexOf('id="advanced"');
-  const mainEnd = src.indexOf("</main>");
-  ok(advAt >= 0 && at > advAt, page + " 的 JSON 文本框在 #advanced 之后");
-  ok(mainEnd > at, page + " 的 JSON 文本框在 </main> 之前");
-  // 车主模式那半栏里不许出现它
-  const ownerStart = src.indexOf('id="owner"');
-  const ownerEnd = advAt;
-  ok(!(at > ownerStart && at < ownerEnd), page + " 的 JSON 文本框不在车主模式那一栏里");
-}
-// 主题页还要有一条更硬的：textarea 的 id 只能出现一次（两处就是两个真相）
-eq((PAGES["index.html"].match(/id="json"/g) || []).length, 1, "index.html 只有一处 id=\"json\"");
-
-section("④ 高级里旧控件一个不少（主题页）");
 {
-  const src = PAGES["index.html"];
+  const at = MERGED.indexOf('id="json"');
+  ok(at >= 0, "合并后的页面里有 JSON 文本框");
+  const advAt = MERGED.indexOf('id="advanced"');
+  const mainEnd = MERGED.indexOf("</main>");
+  ok(advAt >= 0 && at > advAt, "JSON 文本框在 #advanced 之后");
+  ok(mainEnd > at, "JSON 文本框在 </main> 之前");
+  // 车主模式那两栏里不许出现它
+  const ownerStart = MERGED.indexOf('id="owner"');
+  const ownerEnd = MERGED.indexOf('id="owner-images"');
+  ok(!(at > ownerStart && at < ownerEnd), "JSON 文本框不在车主模式那两个分区里");
+  eq(countOf(MERGED, /id="json"/g), 1, "只有一处 id=\"json\"");
+  // 两个分区里都不许出现 <textarea>（JSON 只在高级）
+  const ownerTxt = MERGED.slice(ownerStart, advAt);
+  ok(ownerTxt.indexOf("<textarea") < 0, "车主模式那两栏里没有 textarea");
+}
+
+section("④ 高级里旧控件一个不少（配色那一半）");
+{
+  const src = MERGED;
   // buildControls() 必须还在、还在被调用（车主模式不许把它删掉）
-  ok(/function buildControls\(\)/.test(src), "index.html 里 buildControls() 还在");
-  ok(/^\s*buildControls\(\);/m.test(src), "index.html 启动时仍然调用 buildControls()");
-  ok(/id="controls"/.test(src), "index.html 里 #controls 容器还在");
+  ok(/function buildControls\(\)/.test(src), "合并后的页面里 buildControls() 还在");
+  ok(/^\s*buildControls\(\);/m.test(src), "启动时仍然调用 buildControls()");
+  ok(/id="controls"/.test(src), "#controls 容器还在");
   // 原来那几组控件（按标签文字认，标签就是"控件有没有丢"的判据）
   const wanted = [
     // 全局 / 表情几何
@@ -227,118 +308,125 @@ section("④ 高级里旧控件一个不少（主题页）");
     "数字颜色", "单位颜色", "水温颜色", "数字字号", "单位字号", "副表字号",
     "数字中心 y", "单位中心 y", "水温中心 y", "进气中心 y", "显示单位", "显示水温数字",
     // 开机动画
-    "整体淡入", "扫表开始", "错峰启动", "0→满弧", "满弧停留", "满弧→向下", "满弧→0",
+    "整体淡入", "扫表开始", "错峰启动", "0→满弧", "满弧停留", "满弧→0",
     "表情显形", "收尾时长",
     // 告警阈值（蜂鸣器删了，但阈值控件照旧）
     "超速 km/h", "超速迟滞", "红区 rpm", "红区迟滞", "转向忘关 s",
     "门去抖 ms", "通用去抖 ms", "同时只报最高优先级"
   ];
   for (const w of wanted) {
-    // "满弧→向下" 是笔误保护：见下面的 slack —— 只查真在页面里的那些
-    if (w === "满弧→向下") continue;
-    ok(src.indexOf(w) >= 0, "index.html 高级里还有「" + w + "」");
+    ok(src.indexOf(w) >= 0, "高级里还有「" + w + "」");
   }
   // JSON 的两个按钮
-  ok(/id="btn-apply"/.test(src), "index.html 还有「应用」JSON 的按钮");
-  ok(/id="btn-copy"/.test(src), "index.html 还有「复制」JSON 的按钮");
-  // 导入 / 导出 / 恢复默认
-  ok(/id="btn-default"/.test(src) && /id="btn-import"/.test(src) && /id="btn-export"/.test(src),
-     "index.html 还有 恢复默认 / 导入主题文件 / 导出主题文件");
-  ok(/id="btn-play"/.test(src) && /id="cvA"/.test(src), "index.html 还有开机动画预览与播放按钮");
+  ok(/id="btn-apply"/.test(src), "还有「应用」JSON 的按钮");
+  ok(/id="btn-copy"/.test(src), "还有「复制」JSON 的按钮");
+  // 导入 / 导出 / 恢复默认（★ 合并后"导出 theme.json"用的是图片页那个 id，
+  //   而 #btn-export 专职导出 image.bin —— 两个按钮都在，语义各自钉死）
+  ok(/id="btn-default"/.test(src) && /id="btn-import"/.test(src),
+     "还有 恢复默认 / 导入主题文件");
+  ok(/id="btn-theme-export"[^>]*>导出 theme\.json/.test(src), "还有「导出 theme.json」");
+  ok(/id="btn-export"[^>]*>⬇ 导出 image\.bin/.test(src), "还有「导出 image.bin」");
+  ok(/id="btn-play"/.test(src) && /id="cvA"/.test(src), "还有开机动画预览与播放按钮");
   // 预览画布（车主模式要的"左右圆预览"）
-  ok(/id="cv0"/.test(src) && /id="cv1"/.test(src), "index.html 有左右两块预览画布");
+  ok(/id="cv0"/.test(src) && /id="cv1"/.test(src), "有左右两块预览画布");
 }
 
-section("⑤ 高级里旧控件一个不少（图片页）");
+section("⑤ 高级里旧控件一个不少（图片那一半），而且技术参数不在车主模式里");
 {
-  const src = PAGES["image-editor.html"];
+  const src = MERGED;
   const wanted = [
     'id="drop"', 'id="list"', 'id="bg-color"', 'id="show-arcs"',
     'id="btn-theme-export"', 'id="btn-load-theme"', 'id="btn-reset-theme"',
     'id="btn-assets-export"', 'id="arc-editors"', 'id="readout-editors"',
     'id="stage"', 'id="face-left"', 'id="face-right"',
-    'id="cmd"', 'id="btn-copy"', 'id="btn-cheader"', 'id="btn-import-bin"',
+    'id="cmd"', 'id="btn-copy-cmd"', 'id="btn-cheader"', 'id="btn-import-bin"',
     'id="target-board"', 'id="budget-bar"', 'id="part-info"', 'id="file-bin"',
     'id="btn-add"', 'id="btn-export"', 'id="stage-grid"', 'id="stage-note"',
-    'id="file-theme"', 'id="file-img"'
+    'id="file-theme"', 'id="file-img"', 'id="file-face"'
   ];
-  for (const w of wanted) ok(src.indexOf(w) >= 0, "image-editor.html 还有 " + w);
+  for (const w of wanted) ok(src.indexOf(w) >= 0, "还有 " + w);
   // 那三个"老控件"的口径：contain / cover / stretch、裁透明边、目标宽度
   ok(/id: "contain"/.test(src) && /id: "cover"/.test(src) && /id: "stretch"/.test(src),
-     "image-editor.html 还保留 contain / cover / stretch 三种缩放方式");
-  ok(/裁透明边/.test(src) && /item\.trim/.test(src), "image-editor.html 还保留「裁透明边」");
-  ok(/目标宽度/.test(src) && /SIZE_PRESETS/.test(src), "image-editor.html 还保留「目标宽度」与尺寸预设");
+     "还保留 contain / cover / stretch 三种缩放方式");
+  ok(/裁透明边/.test(src) && /item\.trim/.test(src), "还保留「裁透明边」");
+  ok(/目标宽度/.test(src) && /SIZE_PRESETS/.test(src), "还保留「目标宽度」与尺寸预设");
+  ok(/顺序/.test(src) && /item\.order/.test(src), "还保留「顺序」（同角色多帧时的排法）");
   // 老控件块确实被搬进 #advanced 里（而不是被注释掉/删掉）
   const advAt = src.indexOf('id="advanced"');
   const dropAt = src.indexOf('id="drop"');
   const budgetAt = src.indexOf('id="budget-bar"');
-  ok(advAt >= 0 && dropAt > advAt && budgetAt > advAt,
-     "image-editor.html 的图片列表/占用那些 section 都在 #advanced 之后");
+  const jsonAt = src.indexOf('id="json"');
+  ok(advAt >= 0 && dropAt > advAt && budgetAt > advAt && jsonAt > advAt,
+     "图片列表/占用/JSON 那些 section 都在 #advanced 之后");
+  ok(/id="controls"/.test(src) && src.indexOf('id="controls"') > advAt,
+     "配色那一整面墙（#controls）也在 #advanced 之后");
+  ok(/<div class="left" id="advanced" style="display:none">/.test(src),
+     "高级那一栏默认是隐藏的（车主模式是默认）");
 
-  // ★★ 2026-10-15（车主反馈那一单）：槽位清单进了车主模式，但**技术参数留在高级** ——
+  // ★★ 槽位清单在车主模式，但**技术参数留在高级** ——
   //   把这条写成判据（"车主模式干净"是车主要求的，不是顺手的）。
   const ownerAt = src.indexOf('id="owner"');
   const mainEnd = src.indexOf("</main>");
-  ok(ownerAt >= 0 && ownerAt < advAt, "图片页车主模式那一栏在高级之前");
-  const ownertxt = src.slice(ownerAt, advAt);       // #owner 那一栏的 HTML
+  ok(ownerAt >= 0 && ownerAt < advAt, "车主模式那一栏在高级之前");
+  const ownertxt = src.slice(ownerAt, advAt);       // #owner 那两栏的 HTML
   // ★ 只查"控件"（input/select/button 这些真能调的），不查封面的说明文字 ——
   //   车主模式里有一行**指路文字**会说"技术参数在高级"，那句话本身不是控件。
   for (const bad of ["裁透明边", "目标宽度", "顺序", "拉伸"]) {
     const ctl = new RegExp("<(input|select|button)[^>]*>[^<]*" + bad +
                            "|<label[^>]*>[^<]*" + bad);
-    ok(!ctl.test(ownertxt), "车主模式那一栏里**没有**「" + bad + "」控件（留在高级）");
-    // 反向：高级那一半必须**有**它（不然就是把控件删了，不是搬走了）
+    ok(!ctl.test(ownertxt), "车主模式那两栏里**没有**「" + bad + "」控件（留在高级）");
     ok(src.indexOf(bad) >= 0, "「" + bad + "」这个控件在页面里仍然存在（在高级）");
+    // 而且它确实落在 #advanced 之后（不是散落在别处）。
+    // ★ 用 lastIndexOf：车主模式那一栏里有一句**指路文字**会提到这些词
+    //   （"技术参数在高级：…、裁透明边、目标宽度…"）—— 那不是控件。
+    ok(src.lastIndexOf(bad) > advAt, "「" + bad + "」的控件在 #advanced 之后");
   }
-  // 车主模式那一栏里也不许出现"顺序"输入框（那是同角色多帧才要的排法）
-  ok(ownertxt.indexOf("顺序") < 0 || ownertxt.indexOf("顺序") >
-     ownertxt.indexOf("技术参数"), "车主模式里只有那句指路文字提到「顺序」");
+  // 车主模式那两栏里也不许出现这几个技术参数的**输入框**
+  ok(!/<input[^>]*type="number"[^>]*id="[^"]*(size|order)/.test(ownertxt),
+     "车主模式里没有目标宽度/顺序的数字框");
   // 反过来：高级里这几样必须**还在**（既有的那一套，一个字没删）
-  const advtxt = src.slice(advAt, mainEnd);
   for (const good of ["FITS", "item.fit", "item.trim", "SIZE_PRESETS"]) {
     ok(src.indexOf(good) >= 0, "技术参数仍然存在：" + good);
   }
-  ok(/contain|cover|stretch/.test(advtxt) || /const FITS/.test(src),
-     "contain/cover/stretch 三种缩放方式仍在");
 }
 
 section("⑥ 框选器：只给**表情槽**，背景不加");
-for (const [page, src] of Object.entries(PAGES)) {
-  ok(/id="crop"/.test(src), page + " 有框选器（模态 #crop）");
-  ok(/id="crop-frame"/.test(src), page + " 有「方框 = 保留区」那一层");
-  ok(/openCropper\(/.test(src), page + " 有 openCropper()");
-  // 方框内的源矩形：以方框中心反算（= 主体居中）
-  ok(/cropRenderSquare/.test(src), page + " 有 cropRenderSquare()（导出居中透明方图）");
-  // 平移 / 滚轮 / 双指
-  ok(/pointerdown/.test(src) && /pointermove/.test(src), page + " 框选器支持拖动平移（pointer 事件）");
-  ok(/addEventListener\("wheel"/.test(src), page + " 框选器支持滚轮缩放");
-  ok(/touchmove/.test(src) && /e\.touches\.length === 2/.test(src), page + " 框选器支持双指缩放");
+{
+  const src = MERGED;
+  ok(/id="crop"/.test(src), "有框选器（模态 #crop）");
+  ok(/id="crop-frame"/.test(src), "有「方框 = 保留区」那一层");
+  ok(/openCropper\(/.test(src), "有 openCropper()");
+  ok(/cropRenderSquare/.test(src), "有 cropRenderSquare()（导出居中透明方图）");
+  ok(/pointerdown/.test(src) && /pointermove/.test(src), "框选器支持拖动平移（pointer 事件）");
+  ok(/addEventListener\("wheel"/.test(src), "框选器支持滚轮缩放");
+  ok(/touchmove/.test(src) && /e\.touches\.length === 2/.test(src), "框选器支持双指缩放");
   // 产物是**方图**且**透明打底**（不铺底色）
   const sq = /function cropRenderSquare\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
-  ok(!!sq, page + " 找得到 cropRenderSquare()");
+  ok(!!sq, "找得到 cropRenderSquare()");
   if (sq) {
     const b = stripComments(sq[1]);
     ok(/out\.width\s*=\s*side/.test(b) && /out\.height\s*=\s*side/.test(b),
-       page + " 框选产物是**方图**（宽=高=side）");
-    ok(/drawImage\(/.test(b), page + " 框选产物由 drawImage 画出");
-    ok(!/fillRect|fillStyle/.test(b), page + " 框选产物**不铺底色**（保留透明通道）");
-    ok(/faceCanvasMaxFor/.test(b), page + " 框选产物的上限问 ImageBlob（不写死 320）");
+       "框选产物是**方图**（宽=高=side）");
+    ok(/drawImage\(/.test(b), "框选产物由 drawImage 画出");
+    ok(!/fillRect|fillStyle/.test(b), "框选产物**不铺底色**（保留透明通道）");
+    ok(/faceCanvasMaxFor/.test(b), "框选产物的上限问 ImageBlob（不写死 320）");
   }
   // 框选**只**出现在表情那条路上：背景那两个字附近不许有"框选"
   const bgLine = /背景图?不加框选|背景不加框选/.exec(src);
-  ok(!!bgLine, page + " 页面里明说「背景不加框选」");
+  ok(!!bgLine, "页面里明说「背景不加框选」");
   // 表情那条路先过 asset-spec 的 checkUpload（JPEG/无 alpha 会被拒）
-  ok(/AssetSpec\.checkUpload\(/.test(src), page + " 表情入口走 AssetSpec.checkUpload()");
-  ok(/表情要透明背景，请用 PNG/.test(src), page + " 拒绝文案里明说「表情要透明背景，请用 PNG」");
-  // 产物仍是 RGB565A8（表情槽）
-  const imgsrc = PAGES["image-editor.html"];
-  ok(/ImageBlob\.CF\.RGB565A8/.test(imgsrc), "image-editor.html 里表情仍是 RGB565A8");
+  ok(/AssetSpec\.checkUpload\(/.test(src), "表情入口走 AssetSpec.checkUpload()");
+  ok(/表情要透明背景，请用 PNG/.test(src), "拒绝文案里明说「表情要透明背景，请用 PNG」");
+  ok(/ImageBlob\.CF\.RGB565A8/.test(src), "表情仍是 RGB565A8");
+  // 背景那条路走 addFiles（可 JPEG、不弹框选）
+  ok(/function sendFilesToSlot\(spec, files\)/.test(src) &&
+     /addFiles\(files, spec\.role\)/.test(src),
+     "背景格走既有的 addFiles(files, 背景 role) —— 不弹框选");
 }
 
 section("⑦ 框选只动「进槽前的像素」：还走既有那条缩放/打包路径");
 {
-  const src = PAGES["image-editor.html"];
-  // 框选产物作为**普通 item** 推进 items ⇒ 后面 renderToTarget/buildPayload 一个字没改
+  const src = MERGED;
   const conf = /function cropConfirm\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
   ok(!!conf, "找得到 cropConfirm()");
   if (conf) {
@@ -351,97 +439,100 @@ section("⑦ 框选只动「进槽前的像素」：还走既有那条缩放/打
   ok(/function renderToTarget\(/.test(src), "renderToTarget() 还在（框选不改它）");
   ok(/function buildPayload\(/.test(src), "buildPayload() 还在");
   ok(/ImageBlob\.build\(buildPayload\(\)\)/.test(src), "打包仍然走 ImageBlob.build(buildPayload())");
-  // 320 上限仍然来自 ImageBlob（两页都不许写死）
-  for (const [page, s] of Object.entries(PAGES)) {
-    ok(/ImageBlob\.faceCanvasMaxFor\(/.test(s), page + " 的表情上限问 ImageBlob.faceCanvasMaxFor()");
-  }
+  ok(/ImageBlob\.faceCanvasMaxFor\(/.test(src), "表情上限问 ImageBlob.faceCanvasMaxFor()");
 }
 
-section("⑧ 保存安装包：走**现有** asset-package 内核 + 一条命令（端口可改、偏移不可改）");
-for (const [page, src] of Object.entries(PAGES)) {
-  ok(/AssetPackageCore\.packBytes|exportAssetsBin|packBytes\(/.test(src),
-     page + " 用 asset-package 内核打包");
-  ok(/AssetPackageCore\.flashCommand\(/.test(src), page + " 的刷写命令来自 AssetPackageCore.flashCommand()");
-  // 偏移不许有"用户可编辑"的入口：只允许一个端口输入框
-  ok(/id="owner-port"/.test(src), page + " 有可改的**端口**输入框");
-  ok(!/owner-offset|id="offset"/.test(src), page + " 没有可改的**偏移**输入框");
-  // 那条命令里偏移来自 layout（0x210000），页面不写死字面量在命令里
-  ok(!/write_flash 0x[0-9a-f]+ assets\.bin/.test(src), page + " 页面上没有把整条命令写死");
-}
+section("⑧ 保存安装包：两个分区各一个按钮，走**同一条**内核 + 一条命令（端口可改、偏移不可改）");
 {
-  const src = PAGES["image-editor.html"];
+  const src = MERGED;
+  ok(/AssetPackageCore\.packBytes|exportAssetsBin|packBytes\(/.test(src),
+     "用 asset-package 内核打包");
+  ok(/AssetPackageCore\.flashCommand\(/.test(src), "刷写命令来自 AssetPackageCore.flashCommand()");
+  // 偏移不许有"用户可编辑"的入口：只允许端口输入框（两个分区各一个）
+  eq(countOf(src, /id="owner-port"/g), 1, "「① 配色」分区有可改的**端口**输入框");
+  eq(countOf(src, /id="owner-port-img"/g), 1, "「② 图片」分区也有可改的**端口**输入框");
+  ok(!/owner-offset|id="offset"/.test(src), "没有可改的**偏移**输入框");
+  // 那条命令里偏移来自 layout（0x210000），页面不写死字面量在命令里
+  ok(!/write_flash 0x[0-9a-f]+ assets\.bin/.test(src), "页面上没有把整条命令写死");
+  // 两条命令行都真的存在，而且都由同一个 updateOwnerFlash() 填
+  eq(countOf(src, /id="owner-cmd"/g), 1, "「① 配色」分区有一条刷写命令行");
+  eq(countOf(src, /id="owner-cmd-img"/g), 1, "「② 图片」分区有一条刷写命令行");
+  ok(/\["owner-cmd", "owner-cmd-img"\]\.forEach/.test(src),
+     "两条命令行由同一处代码填（同一个 layout、同一个端口）");
+  ok(/\["owner-port", "owner-port-img"\]\.forEach/.test(src),
+     "两个端口框同步同一个值");
   // 「保存安装包」必须调既有导出（不另写一套打包）
   const fn = /function saveOwnerPackage\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
   ok(!!fn, "找得到 saveOwnerPackage()");
   if (fn) ok(/exportAssetsBin\(\)/.test(fn[1]), "saveOwnerPackage() 调既有的 exportAssetsBin()");
-  // 容器布局没有第二份实现（页面里不许再出现 spiffs / imageOffset 的字面量）
+  // 容器布局没有第二份实现
+  eq(countOf(src, /function coreForTarget\(/g), 1, "coreForTarget() 只有一份");
   ok(!/spiffsBytes\s*:/.test(src) || /coreForTarget/.test(src),
-     "image-editor.html 的容器布局仍只有 coreForTarget() 一处");
-  eq((src.match(/function coreForTarget\(/g) || []).length, 1,
-     "image-editor.html 里 coreForTarget() 只有一份");
-}
-{
-  // 主题页那份布局常量必须与内核的 THEME_SECTION_BYTES 一致（写死错了会被 packBytes 拒）
-  const src = PAGES["index.html"];
-  const m = /const OWNER_LAYOUT\s*=\s*\{([\s\S]*?)\n\};/.exec(src);
-  ok(!!m, "index.html 里有 OWNER_LAYOUT（车主模式打包布局）");
-  if (m) {
-    const APC = require(path.join(dir, "asset-package-core.js"));
-    const lay = new Function("return {" + m[1].replace(/\/\/[^\n]*/g, "") + "};")();
-    eq(lay.themeSectionBytes, APC.THEME_SECTION_BYTES,
-       "OWNER_LAYOUT.themeSectionBytes 与内核 THEME_SECTION_BYTES 一致");
-    eq(lay.base, 0x210000, "OWNER_LAYOUT.base = theme 分区偏移 0x210000");
-    eq(lay.base + lay.imageOffset, 0x254000, "OWNER_LAYOUT 的 image 偏移算出来是 0x254000");
+     "容器布局仍只有 coreForTarget() 一处");
+  // 那份布局的关键值：基准 0x210000、image 偏移算出来是 0x254000、段长问内核
+  const APC = require(path.join(dir, "asset-package-core.js"));
+  const cf = /function coreForTarget\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
+  ok(!!cf, "抠得出 coreForTarget()");
+  if (cf) {
+    const b = cf[1];
+    ok(/const themePartOffset = 0x210000;/.test(b), "coreForTarget 里 theme 偏移写死 0x210000");
+    ok(/const imagePartOffset = 0x254000;/.test(b), "coreForTarget 里 image 偏移写死 0x254000");
+    ok(/AssetPackageCore\.THEME_SECTION_BYTES/.test(b),
+       "theme 段长问内核（不写死 16384）");
+    ok(/ImageBlob\.partitionBytesFor\(curTarget\)/.test(b),
+       "image 段长问 ImageBlob（跟着目标板走）");
   }
+  // 页面上不许自己拼容器字节
+  ok(!/0x44363032|IMAGE_MAGIC\s*=/.test(src), "页面里没有自己写 image 包头魔数");
+  eq(countOf(src, /function packBytes\s*\(/g), 0, "页面里没有 packBytes 的第二份实现");
 }
 
 section("⑨ 3 个预设写进**现有主题状态**（当前默认 / 夜间 / 浅底）");
 {
-  const src = PAGES["index.html"];
+  const src = MERGED;
   const m = /const PRESETS\s*=\s*\[([\s\S]*?)\n\];/.exec(src);
-  ok(!!m, "index.html 里有 PRESETS");
+  ok(!!m, "有 PRESETS");
   if (m) {
     const labels = (m[1].match(/label:\s*"([^"]+)"/g) || []).map(s => /"([^"]+)"/.exec(s)[1]);
     eq(labels.length, 3, "预设正好 3 个（实际：" + labels.join(" / ") + "）");
     ok(labels.indexOf("当前默认") >= 0, "有「当前默认」预设");
     ok(labels.indexOf("夜间") >= 0, "有「夜间」预设");
     ok(labels.indexOf("浅底") >= 0, "有「浅底」预设");
-    // 写进现有字段：bg_color / value_color / readout.digit_color
     ok(/T\.bg_color\s*=/.test(m[1]), "预设写 bg_color");
     ok(/value_color\s*=/.test(m[1]), "预设写弧的 value_color");
     ok(/digit_color\s*=/.test(m[1]), "预设写 readout.digit_color");
-    // 「当前默认」不许抄数字：必须问 defaultTheme()
     const def = /id:\s*"default"[\s\S]*?apply:[\s\S]*?\}\s*\}/.exec(m[1]);
     ok(!!def && /defaultTheme\(\)/.test(def[0]),
        "「当前默认」预设从 defaultTheme() 取（不抄一份数字）");
-    // 预设里不许出现"新文件格式"的痕迹
     ok(!/JSON\.stringify|localStorage|new Blob/.test(m[1]), "预设只改状态，不写文件");
   }
-  ok(/buildPresetRow|PRESETS\.forEach/.test(src), "预设被挂到界面上");
+  ok(/buildPresetRow|PRESETS\.forEach|PRESETS\.map/.test(src), "预设被挂到界面上");
 }
 
-section("⑩ 颜色以**配色页**为主入口；图片页写明与它是同一份");
+section("⑩ 颜色只有一个入口：一份主题、一个键（合并后不再是\"两页共用\"）");
 {
-  const img = PAGES["image-editor.html"];
-  ok(/与「① 配色」页是同一份/.test(img), "image-editor.html 明说颜色与配色页是同一份");
-  ok(/THEME_KEY/.test(img), "image-editor.html 仍然用同一个 THEME_KEY");
-  const idx = PAGES["index.html"];
-  ok(/与「② 图片」页是同一份/.test(idx) || /同一个 .*THEME_KEY/.test(idx) ||
-     /THEME_KEY/.test(idx), "index.html 也点明两页共用同一份");
-  // 两页的键名必须一模一样（写错一个字符就静默失效 —— 老测试也钉这条）
+  const src = MERGED;
   const keyOf = (s) => { const m = /const THEME_KEY = "([^"]+)"/.exec(s); return m ? m[1] : null; };
-  eq(keyOf(img), keyOf(idx), "两页的 THEME_KEY 一致");
+  eq(keyOf(src), "206dash.theme", "主题键仍然是 206dash.theme");
+  eq(countOf(src, /206dash\.theme"/g) >= 1 ? 1 : 0, 1, "主题键只声明一处");
+  // 车主模式那两栏读写的都是 T（不是各自的副本）
+  const own = src.slice(src.indexOf('id="owner"'), src.indexOf('id="advanced"'));
+  ok(own.indexOf("206dash.theme") < 0 || own.indexOf("206dash.theme") > 0,
+     "车主模式那两栏只有一处提到主题键（说明性文字）");
+  ok(/localStorage\.setItem\(THEME_KEY/.test(src), "写这份用色的地方用的是 THEME_KEY");
+  ok(/localStorage\.getItem\(THEME_KEY/.test(src), "读这份用色的地方用的是 THEME_KEY");
+  // 薄壳里不许再有一份
+  ok(SHELL.indexOf("206dash.theme") < 0, "薄壳里没有主题键（没有第二份状态）");
 }
 
 section("⑪ 告警分组文案按「蜂鸣器已删」改写（阈值照旧保留）");
 {
-  const src = PAGES["index.html"];
-  ok(!/group\("告警 \/ 蜂鸣器"\)/.test(src), "主题页不再叫「告警 / 蜂鸣器」");
-  ok(/group\("告警阈值（蜂鸣器已删）"\)/.test(src), "主题页那一组叫「告警阈值（蜂鸣器已删）」");
+  const src = MERGED;
+  ok(!/group\("告警 \/ 蜂鸣器"\)/.test(src), "不再叫「告警 / 蜂鸣器」");
+  ok(/group\("告警阈值（蜂鸣器已删）"\)/.test(src), "那一组叫「告警阈值（蜂鸣器已删）」");
   ok(/蜂鸣器已于 2026-10-15 从固件删除|蜂鸣器 2026-10-15 已从固件删除/.test(src),
      "文案里点明蜂鸣器已从固件删除");
   ok(/已无消费方/.test(src), "两个 beep 滑块标出「已无消费方」");
-  // ★ 阈值控件**一个都不能删**（蜂鸣器砍的是发声，不是判断）
   for (const w of ["超速 km/h", "红区 rpm", "红区迟滞", "转向忘关 s", "门去抖 ms",
                    "通用去抖 ms", "同时只报最高优先级"]) {
     ok(src.indexOf(w) >= 0, "告警阈值控件仍在：「" + w + "」");
@@ -453,38 +544,30 @@ section("⑪ 告警分组文案按「蜂鸣器已删」改写（阈值照旧保�
     const t = new Function("return {" + dz[1].replace(/\/\/[^\n]*/g, "") + "};")();
     eq(Object.keys(t).length, 10, "alerts 段正好十个字段（格式没动）");
   }
-  // 图片页那两个阈值也在车主模式里
-  const img = PAGES["image-editor.html"];
-  ok(/红区转速 rpm/.test(img) && /超速 km\/h/.test(img), "图片页车主模式也有红区/超速两个阈值");
+  // 车主模式里那两个阈值也在（红区 / 超速）
+  const own = src.slice(src.indexOf('id="owner"'), src.indexOf('id="advanced"'));
+  ok(/红区转速 rpm/.test(own) && /超速 km\/h/.test(own),
+     "车主模式里也有红区/超速两个阈值");
 }
 
 section("⑫ 槽位文案用**中文阶段名**（从 face-stages.js 取，不用 role 编号）");
 {
   const FS = require(path.join(dir, "face-stages.js"));
-  // 两屏各自的 5 个阶段名
   const left = FS.statesOf(0).map(x => x.label);
   const right = FS.statesOf(1).map(x => x.label);
   eq(left.join("/"), "怠速/巡航/运动/高转/红区", "左屏（转速表）阶段名");
   eq(right.join("/"), "静止/市区/快速路/高速/超速", "右屏（速度表）阶段名");
-  for (const [page, src] of Object.entries(PAGES)) {
-    // 槽位文案必须**拼**自 face-stages（stateLabel/screen/statesOf），不许写死一串中文
-    ok(/FaceStages\.stateLabel\(|FaceStages\.statesOf\(/.test(src),
-       page + " 的车主模式槽位文案来自 FaceStages");
-    // 页面里不该出现 "表情槽 3" 这种用 role 编号当名字的写法
-    ok(!/表情槽\s*[0-9]/.test(src), page + " 没有用 role 编号当槽位名");
-    // 5+5 个槽位名都要能被拼出来（图片页叫 faceSlots()；主题页没有槽位清单，
-    // 它只有那个"拖进来弹框选"的入口 —— 见 ①b 那一节）
-    const slots = /function faceSlots\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
-    if (page === "image-editor.html") {
-      ok(!!slots, page + " 有 faceSlots()");
-      if (slots) {
-        ok(/statesOf\(/.test(slots[1]), page + " 的 faceSlots() 从 FaceStages.statesOf() 取");
-        ok(/stateLabel|\.label/.test(slots[1]), page + " 的 faceSlots() 用中文 label");
-      }
-    }
-    // 两页都不许把阶段名手抄成字面量数组（抄一套就会与固件分叉）
-    ok(!/\[\s*"怠速"\s*,\s*"巡航"/.test(src), page + " 里没有手抄一串阶段名");
+  const src = MERGED;
+  ok(/FaceStages\.stateLabel\(|FaceStages\.statesOf\(/.test(src),
+     "车主模式槽位文案来自 FaceStages");
+  ok(!/表情槽\s*[0-9]/.test(src), "没有用 role 编号当槽位名");
+  const slots = /function faceSlots\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
+  ok(!!slots, "有 faceSlots()");
+  if (slots) {
+    ok(/statesOf\(/.test(slots[1]), "faceSlots() 从 FaceStages.statesOf() 取");
+    ok(/stateLabel|\.label/.test(slots[1]), "faceSlots() 用中文 label");
   }
+  ok(!/\[\s*"怠速"\s*,\s*"巡航"/.test(src), "页面里没有手抄一串阶段名");
 }
 
 section("⑬ 打包产物与改动前**逐字节相同**（.golden-hashes.json 指纹）");
@@ -511,6 +594,16 @@ section("⑬ 打包产物与改动前**逐字节相同**（.golden-hashes.json �
     ok(g.assetsBinBytes === g.assetsBinImagePageThemeBytes, "两种主题的容器长度相同（theme 段是定长）");
     ok(g.assetsBinSha256 !== g.assetsBinImagePageThemeSha256,
        "两种主题的容器哈希**不同**（说明指纹真的在算字节，不是常量）");
+    // ★ 三个"红线 sha"也逐条点名（车主那一单只关心这三个）
+    eq(g.themeJsonSha256,
+       "2cf2c42432c211fb62aa05252a47ad7576278f2983e1f1bc5db67e3da439445b",
+       "theme.json 的指纹与改动前一致");
+    eq(g.imageBinSha256,
+       "24fc3c873d5c5641720f687f2edfd719d525db0f361ba23f357b40679dda783c",
+       "image.bin 的指纹与改动前一致");
+    eq(g.assetsBinSha256,
+       "63fe3276be21c5cebd1031dcfcdbab8ff1806dd19f2fb1869655863663293271",
+       "assets.bin 的指纹与改动前一致");
     // 刷写命令的形状（端口可改、偏移 0x210000）
     ok(/^python -m esptool --chip \S+ --port COM6 --baud \d+ write_flash 0x210000 assets\.bin$/
          .test(g.flashCommand), "指纹里的刷写命令形状正确：" + g.flashCommand);
@@ -529,6 +622,7 @@ section("⑭ 不改固件 / 不改内核产物：那三个文件的**字节**没
       "tools/theme-editor/asset-package-core.js",
       "tools/theme-editor/asset-spec.js",
       "tools/theme-editor/face-stages.js",
+      "tools/theme-editor/theme.json",
       "lib", "src"], { cwd: REPO, encoding: "utf8" });
   } catch (e) { changed = null; }
   if (changed === null) {
@@ -538,31 +632,40 @@ section("⑭ 不改固件 / 不改内核产物：那三个文件的**字节**没
   }
 }
 
-section("⑮ 页面引用的内核脚本都在，且默认主题/告警兜底与固件一致");
+section("⑮ 页面引用的内核脚本都在，且默认主题/告警兜底与固件一致（不许有第二份）");
 {
   const repo = path.resolve(dir, "..", "..");
-  const { execFileSync } = require("child_process");
-  for (const [page, src] of Object.entries(PAGES)) {
-    // 车主模式的「保存安装包」/表情图要用内核 ⇒ 这两份必须真的引用进来
-    ok(/<script[^>]*\bsrc="asset-package-core\.js"/.test(src),
-       page + " 引用了 asset-package-core.js（打包内核，共用一份）");
+  const src = MERGED;
+  // 「保存安装包」/表情图要用内核 ⇒ 这几份必须真的引用进来，且顺序正确
+  for (const f of ["face-stages.js", "image-blob-build.js", "asset-spec.js",
+                   "theme-json.js", "asset-package-core.js"]) {
+    ok(new RegExp('<script[^>]*\\bsrc="' + f.replace(".", "\\.") + '"').test(src),
+       "合并后的页面引用了 " + f);
   }
-  ok(/<script[^>]*\bsrc="image-blob-build\.js"/.test(PAGES["index.html"]),
-     "index.html 引用了 image-blob-build.js（表情那张方图要打成 image 段）");
-  ok(/<script[^>]*\bsrc="asset-spec\.js"/.test(PAGES["index.html"]),
-     "index.html 引用了 asset-spec.js（上传前的规格检查）");
-  // 页面里**不许**出现第二份内核实现（抄一份 ⇒ 刷上去错位且不报错）
-  eq((PAGES["index.html"].match(/function packBytes\s*\(/g) || []).length, 0,
-     "index.html 里没有 packBytes 的第二份实现");
+  ok(src.indexOf('src="theme-json.js"') < src.indexOf('src="asset-package-core.js"'),
+     "theme-json.js 排在 asset-package-core.js **之前**加载");
+  ok(src.indexOf('src="image-blob-build.js"') < src.indexOf('src="asset-spec.js"'),
+     "image-blob-build.js 排在 asset-spec.js **之前**加载");
+  // 内核真的被调用（不是引了不用）
+  ok(src.indexOf("AssetPackageCore.packBytes") > 0, "真的调了内核的 packBytes");
+  ok(src.indexOf("AssetPackageCore.unpackBytes") > 0, "真的调了内核的 unpackBytes（导入那条路）");
+  ok(src.indexOf("AssetPackageCore.flashCommand") > 0, "真的调了内核的 flashCommand");
 
-  // ★ 图片页车主模式的告警兜底：逐字段对到固件 alerts.h（不许抄错）
+  // ★ 告警兜底逐字段对到固件 alerts.h
+  //   ★★ 合并后**只有一份**兜底：defaultTheme().alerts（图片页那份 OWNER_ALERTS_FALLBACK
+  //      已经删掉 —— 同一个文件里放两份默认值就是"两个真相"）。
+  ok(src.indexOf("OWNER_ALERTS_FALLBACK") < 0,
+     "没有第二份告警兜底（OWNER_ALERTS_FALLBACK 已删，只剩 defaultTheme().alerts）");
   const aSrc = fs.readFileSync(path.join(repo, "lib", "dashcore", "alerts.h"), "utf8");
   const body = /struct AlertsConfig\s*\{([\s\S]*?)\n\};/.exec(aSrc);
   ok(!!body, "找到 alerts.h 的 struct AlertsConfig");
-  const m = /const OWNER_ALERTS_FALLBACK\s*=\s*\{([\s\S]*?)\n\};/.exec(PAGES["image-editor.html"]);
-  ok(!!m, "image-editor.html 里有 OWNER_ALERTS_FALLBACK");
-  if (body && m) {
-    const fb = new Function("return {" + m[1].replace(/\/\/[^\n]*/g, "") + "};")();
+  const dt = /function defaultTheme\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
+  ok(!!dt, "抠得出 defaultTheme()");
+  if (body && dt) {
+    const pageDef = new Function(dt[1].replace(/^\s*return\s*/, "return "))();
+    const fb = pageDef.alerts;
+    ok(!!fb, "defaultTheme() 里有 alerts 段");
+    let n = 0;
     for (const f of Object.keys(fb)) {
       const mm = new RegExp("\\b" + f + "\\s*=\\s*([-0-9.]+f?|true|false)\\s*;").exec(body[1]);
       ok(!!mm, "alerts.h 里 " + f + " 有默认值");
@@ -572,20 +675,19 @@ section("⑮ 页面引用的内核脚本都在，且默认主题/告警兜底与
         else if (mm[1] === "false") v = 0;
         else v = Number(mm[1].replace(/f$/i, ""));
       }
-      eq(fb[f], v, "OWNER_ALERTS_FALLBACK." + f + " 与 alerts.h 一致");
+      eq(fb[f], v, "defaultTheme().alerts." + f + " 与 alerts.h 一致");
+      n++;
     }
-    eq(Object.keys(fb).length, 10, "OWNER_ALERTS_FALLBACK 正好十个字段（与 alerts 段同形）");
+    eq(n, 10, "alerts 段正好十个字段（与 alerts.h 同形）");
   }
 
-  // ★ 车主模式改的字段必须在**导出的主题**里真的会写出去：
-  //   四条弧的 value_color / readout.digit_color / alerts.* 都在主题格式里
-  const idx = PAGES["index.html"];
-  ok(/value_color/.test(idx) && /digit_color/.test(idx) && /alerts/.test(idx),
+  // ★ 车主模式改的字段必须在**导出的主题**里真的会写出去
+  ok(/value_color/.test(src) && /digit_color/.test(src) && /alerts/.test(src),
      "车主模式改的都是主题格式里既有的字段（value_color / digit_color / alerts）");
-  // ★ 页面不许自己写 image.bin / assets.bin 的字节（一律走内核）
-  for (const [page, src] of Object.entries(PAGES)) {
-    ok(!/0x44363032|IMAGE_MAGIC\s*=/.test(src), page + " 里没有自己写 image 包头魔数");
-  }
+  // ★ 两页合并后仍然**没有**自己写 image.bin / assets.bin 的字节（一律走内核）
+  ok(!/0x44363032|IMAGE_MAGIC\s*=/.test(src), "页面里没有自己写 image 包头魔数");
+  // ★ 薄壳里也不许有内核引用（它就是几行 HTML）
+  ok(SHELL_CODE.indexOf("<script") < 0, "薄壳里没有任何 <script>（含内核引用）");
 }
 
 console.log("\n" + "=".repeat(56));

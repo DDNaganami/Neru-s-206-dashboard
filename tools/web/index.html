@@ -2,23 +2,27 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>206Dash 工具入口 · 四个网页</title>
+<title>206Dash 工具入口 · 三个网页</title>
 <!-- ============================================================
-     tools/web/index.html —— 四个网页的**统一入口**（导航页）
+     tools/web/index.html —— 编辑与预览页的**统一入口**（导航页）
 
      ★ 为什么是"导航页"而不是"合并成一个 SPA"：
-       那四页各自都是**已经被实测过的静态页**（双击打开就能用、没有构建、
+       那几页都是**已经被实测过的静态页**（双击打开就能用、没有构建、
        没有框架）。把它们重写成一块应用，等于把验过的逻辑全部翻新一遍 ——
-       收益只有"少点三次"，风险却是"四个页面一起坏"。所以这里只做入口。
+       收益只有"少点三次"，风险却是"几个页面一起坏"。所以这里只做入口。
+       ★ 例外是**配色页与图片页**：2026-10-15 车主口径「图片页和配色页能合并吗，
+         因为感觉功能上其实是统一的」⇒ 这两页真的合并了 —— 但用的是**页内分区**
+         （同一份主题状态、同一份图片清单），不是重写成 SPA：
+         实现在 tools/theme-editor/index.html，image-editor.html 只剩重定向薄壳。
 
      ★ 四条硬规矩（改这一页时别破坏）：
        1. **不引任何 CDN / 框架 / 字体**：这一页要能**离线双击打开**；
-       2. 链接一律用**相对路径**（四页分布在 tools/theme-editor/ 与 preview/
+       2. 链接一律用**相对路径**（页面分布在 tools/theme-editor/ 与 preview/
           两个目录里，写绝对路径或 file:// 都会在换目录/换机器时断掉）；
        3. 刷写命令里的**偏移与大小**不许在这里另抄一份：
           它们的出处是 partitions-s3.csv 的 theme / image 两行
           （0x210000 / 0x4000、0x254000 / 0x800000），
-          tools/theme-editor/README.md 与两个编辑器印的也是同一对数。
+          tools/theme-editor/README.md 与编辑器印的也是同一对数。
           分区表一改，这里要跟着改；
        4. 六个"已知限制"那一段是**口径**，与 docs/PREVIEW.md 第 4 节、
           tools/theme-editor/README.md 是同一份说法 —— 别只改一处。
@@ -32,15 +36,18 @@
   body{margin:0;background:var(--bg);color:var(--text);
        font:14px/1.6 "Segoe UI","Microsoft YaHei",sans-serif}
   .wrap{max-width:980px;margin:0 auto;padding:22px 20px 60px}
-  /* 四页顶部那条统一导航条的样式（纯 CSS，不引任何框架/外部资源）。
+  /* 各页顶部那条统一导航条的样式（纯 CSS，不引任何框架/外部资源）。
      ★ 本页是**入口/首页**，自己不需要那条导航条（没有"返回"可返回），
-       也不需要返回按钮 —— 这几条规则只写在这里，是为了让"四页共用同一套观感"
-       这件事在一处看得见：改导航条样式时，四页各有一份**逐字相同**的副本
-       （tools/theme-editor/index.html、image-editor.html、
+       也不需要返回按钮 —— 这几条规则只写在这里，是为了让"各页共用同一套观感"
+       这件事在一处看得见：改导航条样式时，有导航条的那几页各有一份**逐字相同**的副本
+       （tools/theme-editor/index.html、
         preview/preview.html、preview-28c.html）。
        结构：一个 <div class="navstrip">，里面的 <a> 分两种：
-       a.navback（最左边那个「← 返回导航页」）与 a.navitem（四个页面按钮，
-       当前页加 .on 高亮）；<span class="navsep"> 是那一小道竖线。 */
+       a.navback（最左边那个「← 返回导航页」）与 a.navitem（页面按钮，
+       当前页加 .on 高亮）；<span class="navsep"> 是那一小道竖线。
+       ★ 2026-10-15：配色与图片合并成一个页面 ⇒ 导航条上那两条合成一条
+         （index.html 那一项写「① 配色 + ② 图片」）；image-editor.html
+         那个薄壳**没有**导航条（它不是一页，只是老链接的落脚点）。 */
   .navstrip{background:#171a22;border-bottom:1px solid var(--line)}
   .navstrip-in{max-width:980px;margin:0 auto;padding:7px 16px;
              display:flex;flex-wrap:wrap;gap:6px;align-items:center}
@@ -79,7 +86,7 @@
   .card .kv b{color:var(--dim);font-weight:400}
   .card .go{margin-top:auto;padding-top:8px}
   /* ★ 四张卡的进入按钮：做成**明显的按钮**而不是一行链接字
-     （车主的用法是"点进去"）。四页顶部那条导航条里的「← 返回导航页」就是回到本页。 */
+     （车主的用法是"点进去"）。各页顶部那条导航条里的「← 返回导航页」就是回到本页。 */
   .card .go a{display:block;text-align:center;background:#1d4f6b;border:1px solid #2a6f96;
               border-radius:6px;padding:9px 13px;text-decoration:none;font-size:14px;
               font-weight:600;color:#e6e9f0}
@@ -129,47 +136,45 @@
     用 esptool 刷进仪表的两个分区就生效 —— <b>换配色、换图都不用重新编译固件</b>。
   </p>
   <p class="hint">
-    下面四页都是<b>双击打开就能用的静态网页</b>：不需要联网、不需要装东西、不需要起本地服务。
-    本页只是入口，四页本身一个字节都没被合并。
+    下面这三页都是<b>双击打开就能用的静态网页</b>：不需要联网、不需要装东西、不需要起本地服务。
+    本页只是入口。<b>2026-10-15：配色页与图片页已合并成一页的两个分区</b>
+    （车主口径「功能上其实是统一的」）—— 共用同一份主题状态与同一份图片清单，
+    实现在 <code>tools/theme-editor/index.html</code> 一处；
+    <code>image-editor.html</code> 只剩一个跳转到 <code>index.html#images</code> 的薄壳，
+    老书签仍然能用。两个预览页一个字节都没动。
   </p>
   <p class="hint">
-    四页顶部都有一条<b>同一条导航条</b>：最左边那个「← 返回导航页」就是回到这里，
-    右边四个按钮可以直接在这四页之间互相跳 —— 不需要再用浏览器的后退键。
+    各页顶部都有一条<b>同一条导航条</b>：最左边那个「← 返回导航页」就是回到这里，
+    其余按钮可以直接互相跳 —— 不需要再用浏览器的后退键。
   </p>
 
-  <h2>四个页面</h2>
+  <h2>三个页面</h2>
   <div class="cards">
 
     <div class="card">
-      <h3>① 配色（主题编辑器）</h3>
-      <div class="role">底色 + 四条弧 + 四处读数文字颜色</div>
-      <p class="kv"><b>干什么：</b>调背景色、两条外弧（转速 / 车速）与两条内弧（水温 / 进气温度）的
-        点亮色 / 轨道色 / 角度 / 半径 / 线宽，以及屏上四处文字（大数字、单位、水温、进气温度）的颜色、
-        字号档位与位置；还能播开机动画。</p>
-      <p class="kv"><b>什么时候用：</b>想改颜色、想调弧的开口方向或粗细、觉得读数位置不合适时。
-        换了一张浅色底图之后"屏上的字看不见"也是一个典型场景（那一页和图片页都能改字的颜色）。</p>
-      <p class="kv"><b>产出：</b><code>theme.json</code> ⇒ 刷 <code>theme</code> 分区。</p>
-      <div class="go"><a href="../theme-editor/index.html">打开配色页 →</a>
-        <div class="path">tools/theme-editor/index.html</div></div>
-    </div>
-
-    <div class="card">
-      <h3>② 图片素材（图片编辑器）</h3>
-      <div class="role">加图片 + 选用途 + 导出 image.bin</div>
-      <p class="kv"><b>干什么：</b>把 <b>PNG / JPG / WebP</b> 拖进去，给每张图选<b>用途</b>
-        （表盘背景，或左屏 / 右屏各 5 档表情之一），页面按目标板做规格检查与自动转换
-        （尺寸、透明通道、圆形可视区），并给出两屏合成预览与占空间条。</p>
-      <p class="kv"><b>什么时候用：</b>要放自己的背景图或表情图时 —— <b>这是唯一的上传入口</b>
-        （预览那两页没有上传）。同一页也能改配色并导出 theme.json。</p>
-      <p class="kv"><b>产出：</b><code>image.bin</code> ⇒ 刷 <code>image</code> 分区；
-        <b>也可以一次导出 <code>assets.bin</code></b>（配色 + 图片合成<b>一个</b>文件）
+      <h3>① 主题编辑器（配色 + 图片，同一页两个分区）</h3>
+      <div class="role">① 配色分区：底色 + 四条弧 + 四处读数文字 · ② 图片分区：槽位清单（背景 1 + 表情 10）</div>
+      <p class="kv"><b>干什么：</b><b>① 配色</b>分区调背景色、两条外弧（转速 / 车速）与两条内弧
+        （水温 / 进气温度）的点亮色 / 轨道色 / 角度 / 半径 / 线宽，以及屏上四处文字（大数字、单位、
+        水温、进气温度）的颜色、字号档位与位置，还能播开机动画；<b>② 图片</b>分区是<b>槽位清单</b> ——
+        背景 1 格 + 表情 10 格（转速屏 怠速/巡航/运动/高转/红区、速度屏 静止/市区/快速路/高速/超速），
+        每格都能换图 / 清除，表情格拖入会弹<b>框选</b>（方框内 = 保留区，框外丢掉）。
+        两个分区<b>共用同一份主题状态与同一份图片清单</b>，切分区只是换显示。</p>
+      <p class="kv"><b>什么时候用：</b>要改颜色、调弧的开口方向或粗细、觉得读数位置不合适，
+        或者要放自己的背景图 / 表情图时 —— <b>这是唯一的上传入口</b>（两个预览页没有上传）。</p>
+      <p class="kv"><b>产出：</b><code>theme.json</code> ⇒ 刷 <code>theme</code> 分区；
+        <code>image.bin</code> ⇒ 刷 <code>image</code> 分区；
+        <b>最省事的是 <code>assets.bin</code></b>（配色 + 图片合成<b>一个</b>文件，
+        两个分区各有一个「保存安装包」按钮都打它）
         ⇒ 一条 <code>write_flash 0x210000 assets.bin</code> 刷完两块分区，只拷一个文件。</p>
-      <div class="go"><a href="../theme-editor/image-editor.html">打开图片页 →</a>
-        <div class="path">tools/theme-editor/image-editor.html</div></div>
+      <div class="go"><a href="../theme-editor/index.html">打开主题编辑器 →</a>
+        <div class="path">tools/theme-editor/index.html</div>
+        <a class="faint" href="../theme-editor/image-editor.html">老链接：image-editor.html（会跳到 ② 图片分区）</a>
+        <div class="path">tools/theme-editor/image-editor.html = 重定向薄壳</div></div>
     </div>
 
     <div class="card">
-      <h3>③ 看帧（宿主机预览）</h3>
+      <h3>② 看帧（宿主机预览）</h3>
       <div class="role">看 pcpreview 落盘的真实渲染帧</div>
       <p class="kv"><b>干什么：</b>循环播放 <code>preview/frames/</code> 里的 <code>l_*.bmp</code> /
         <code>r_*.bmp</code> —— 那是 <b>LVGL 在宿主机上用与真屏同一套 UI 代码</b>渲染出来的，
@@ -181,7 +186,7 @@
     </div>
 
     <div class="card">
-      <h3>④ 圆屏参照（双 2.8C）</h3>
+      <h3>③ 圆屏参照（双 2.8C）</h3>
       <div class="role">圆边虚线 + px ↔ mm + 能验 / 验不了</div>
       <p class="kv"><b>干什么：</b>同一个帧播放，但页面上多一圈<b>青色虚线 = 真机能看见的边界</b>
         （虚线圈以外在真机上看不见），另给出画布 px 与面板 mm 的换算表、键盘与控制文件的
@@ -197,24 +202,23 @@
   <h2>工作流顺序（按这个顺序做，不会白做）</h2>
   <ol class="flow">
     <li>
-      <div class="t"><b>先配颜色</b> —— 打开<a href="../theme-editor/index.html">① 配色页</a>，
-        调底色、四条弧、四处读数文字，满意后点右上角「导出主题文件」得到 <code>theme.json</code>。</div>
-      <div class="d">先定色再配图：底色和弧色的深浅会决定你要选什么颜色的表情图。</div>
+      <div class="t"><b>先配颜色，再做图片</b> —— 打开<a href="../theme-editor/index.html">① 主题编辑器</a>：
+        在「<b>① 配色</b>」分区调底色、四条弧、四处读数文字；再切到「<b>② 图片</b>」分区，
+        拖图进槽位（背景 1 格 + 表情 10 格）、表情格会弹框选、看规格检查有没有报警。</div>
+      <div class="d">先定色再配图：底色和弧色的深浅会决定你要选什么颜色的表情图。
+        两个分区共用同一份状态，所以来回切不会丢改动；高级里还有「导出 theme.json / 导出 image.bin」。</div>
     </li>
     <li>
-      <div class="t"><b>再做图片</b> —— 打开<a href="../theme-editor/image-editor.html">② 图片页</a>，
-        拖图进去、逐张选「用途」、看规格检查有没有报警，然后点「导出 image.bin」。</div>
-      <div class="d">配色页导出的 theme.json 可以在这一页「读入」，预览就与配色一致了（两页也共用同一份本机配色）。</div>
-    </li>
-    <li>
-      <div class="t"><b>刷进设备</b> —— 用 esptool 把两个文件写到各自的分区，然后复位。</div>
+      <div class="t"><b>刷进设备</b> —— 用 esptool 把文件写到各自的分区，然后复位。
+        最省事的是页面上的<b>「保存安装包」</b>：配色 + 图片合成一个 <code>assets.bin</code>，
+        一条命令刷完两块分区。</div>
       <div class="d">命令见下面「刷写命令」，偏移与大小都从分区表现场核对过。</div>
     </li>
     <li>
       <div class="t"><b>再跑一次 pcpreview 看效果</b> ——
         跑 <code>python -m platformio run -e pcpreview -t exec</code>（跑够了几秒按 Ctrl+C），
-        然后打开<a href="../../preview/preview.html">③ 看帧页</a>或
-        <a href="../../preview/preview-28c.html">④ 圆屏参照页</a>。</div>
+        然后打开<a href="../../preview/preview.html">② 看帧页</a>或
+        <a href="../../preview/preview-28c.html">③ 圆屏参照页</a>。</div>
       <div class="d">帧里的画面与真屏是同一套 UI 代码渲染的，所以配色与素材的改动在这一步就能看到。</div>
     </li>
   </ol>
@@ -244,7 +248,7 @@
   </p>
 
   <div class="cmdbox">
-<pre><span class="c"># ⓪ 最省事：配色 + 图片已合成一个文件（②图片页「导出 assets.bin」）</span>
+<pre><span class="c"># ⓪ 最省事：配色 + 图片已合成一个文件（主题编辑器里「保存安装包」/「导出 assets.bin」）</span>
 <span class="c">#    一个文件、一条命令刷完两块分区；偏移 0x210000 = theme 分区的偏移（从分区表取）</span>
 python -m esptool --chip <span class="k">esp32s3</span> --port <span class="k">COM6</span> --baud 921600 write_flash <span class="k">0x210000</span> assets.bin
 
@@ -278,7 +282,7 @@ $env:PYTHONPATH='C:\Users\Public\206dash\.pio-core\packages\tool-esptoolpy;C:\Us
     <b>2026-09-29 新增：</b>下面这些页面现在收进了一个本地应用
     <code>tools/app/</code> —— 一个窗口里做配色 / 图片 / 预览 / <b>无线刷固件</b> / 写素材分区，
     还能直接构建固件。启动：双击 <code>tools\app\run.bat</code>（细节见 <code>tools/app/README.md</code>）。
-    <br>★ 下面这套"四个页面 + esptool 命令"<b>照旧可用</b>，一个字没改 —— 应用只是把它们收在一起。
+    <br>★ 下面这套"页面 + esptool 命令"<b>照旧可用</b>，一个字没改 —— 应用只是把它们收在一起。
   </p>
 
   <h2>固件升级：现在可以无线（手机连板子的热点）</h2>
@@ -321,16 +325,16 @@ $env:PYTHONPATH='C:\Users\Public\206dash\.pio-core\packages\tool-esptoolpy;C:\Us
   <h2>已知限制（都是预期，不是故障）</h2>
   <ul class="limits">
     <li>
-      <b>③④ 两页只显示落盘的帧，没有上传入口。</b>
-      要传图片素材请用<a href="../theme-editor/image-editor.html">② 图片页</a>
-      （那里才有"加图片 / 选用途 / 导出 image.bin"）。
+      <b>②③ 两页只显示落盘的帧，没有上传入口。</b>
+      要传图片素材请用<a href="../theme-editor/index.html">① 主题编辑器的「② 图片」分区</a>
+      （那里才有"槽位清单 / 选文件 / 导出 image.bin"）。
       另外这两页显示的是 <code>preview/frames/</code> 里<b>已经存在</b>的帧：
       目录是空的时候页面上就是两块黑画布 —— 先跑一次 <code>pcpreview</code> 再开。
     </li>
     <li>
       <b>底下那六格指示灯是程序化画的占位图形，不需要任何素材。</b>
       它们是代码里的简单几何（方框 + 图形），<b>不占 image 分区</b>、也不用你准备图片；
-      它们的<b>颜色</b>在<a href="../theme-editor/index.html">① 配色页</a>里改。
+      它们的<b>颜色</b>在<a href="../theme-editor/index.html">① 主题编辑器的「① 配色」分区</a>里改。
     </li>
     <li>
       <b>台上不接 VAN 时：六格全灭 + 表盘右缘出现 <code>SIM</code> 角标 = 预期，不是故障。</b>
@@ -344,8 +348,10 @@ $env:PYTHONPATH='C:\Users\Public\206dash\.pio-core\packages\tool-esptoolpy;C:\Us
   <table>
     <tr><th>文件</th><th>讲什么</th></tr>
     <tr><td class="n">tools/theme-editor/README.md</td>
-        <td>两个编辑器的完整说明：素材规格（可接受格式 / 尺寸上限 / 圆形可视区）、
-            <code>image.bin</code> 的二进制格式、刷写命令与踩过的坑</td></tr>
+        <td>主题编辑器的完整说明（配色 + 图片两个分区）：素材规格（可接受格式 / 尺寸上限 /
+            圆形可视区）、<code>image.bin</code> 的二进制格式、刷写命令与踩过的坑</td></tr>
+    <tr><td class="n">tools/theme-editor/OWNER-MODE.md</td>
+        <td>车主模式：默认看到什么、框选怎么工作、<b>"产物逐字节兼容"的证据</b>（打包指纹）</td></tr>
     <tr><td class="n">docs/PREVIEW.md</td>
         <td>宿主机预览怎么跑、每个键与控制文件是什么、<b>第 4 节：预览看不到什么</b></td></tr>
     <tr><td class="n">docs/RGB-PANEL-2.8C.md</td>
@@ -355,7 +361,7 @@ $env:PYTHONPATH='C:\Users\Public\206dash\.pio-core\packages\tool-esptoolpy;C:\Us
   </table>
 
   <p class="hint" style="margin-top:26px">
-    本页与另外四页都是纯 HTML + 内联 CSS：没有框架、没有构建、不引任何外部资源，
+    本页与另外那几页都是纯 HTML + 内联 CSS：没有框架、没有构建、不引任何外部资源，
     所以可以整个目录拷到别的机器上照样双击打开。
     本页不需要 JavaScript —— 没有脚本，也就没有"脚本挂了页面就白"这回事。
   </p>
