@@ -4,6 +4,10 @@
 > 2026-10-15 改版。车主："the client is still not suitable for a user, too complex
 > —— simplify the flow and beautify the UI." ⇒ 七个页签收成**三个屏**，
 > 刷固件变成**看得见的三步**，术语换成人话（技术值收进「高级」）。
+> 2026-10-16 打包 + 客户端集成。车主："把（已经验收的）车主模式编辑器打进 PC 客户端。"
+> ⇒ 表盘屏**只留一个编辑器框**（配色 / 图片是同一个页面里的两个页内分区），
+> 编辑器的那几个静态文件真正**打进 exe**（离了仓库也能改色、换图、导出 `assets.bin`），
+> 而且**在客户端里**保存安装包之后可以直接选串口写进板子。
 
 ## 怎么启动
 
@@ -18,7 +22,7 @@
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\app\build-exe.ps1 -OneFile
-# → tools\app\dist\206Dash-Workbench.exe   （约 8.8MB，单文件，不需要装 Python）
+# → tools\app\dist\206Dash-Workbench.exe   （约 10MB 上下，单文件，不需要装 Python）
 ```
 
 用法（双击也行，双击时自动找仓库、自动开浏览器）：
@@ -32,11 +36,17 @@ powershell -ExecutionPolicy Bypass -File tools\app\build-exe.ps1 -OneFile
 
 设计上的三条（都实测过，见 §"验过什么"）：
 
-1. **界面文件内嵌在 exe 里**（`--add-data`）⇒ **没有仓库也能打开界面**；
-   仓库只在"构建 / 烧写 / 编辑器 / 预览"这些真需要它的地方才用到。
+1. **界面文件与编辑器都内嵌在 exe 里**（`--add-data`）⇒ **没有仓库也能打开界面、
+   也能改配色 / 换图片 / 框选 / 导出 `assets.bin`**；
+   仓库只在"构建固件 / 跑预览"这些真需要它的地方才用到，找不到时**明说缺哪个路径**
+   （不静默失败）。
+   编辑器那几个静态文件是**抓请求日志**定的清单，不是猜的 —— 见 `server.py` 的
+   `ALLOWED_EDITOR_FILES` 与 `build-exe.ps1` 的 `--add-data`（一一对应，含
+   `image-editor.html` 那个老链接的重定向薄壳）。
+   服务时**仓库里那一份优先**，仓库不在才用包内那份。
 2. **exe 自己找仓库**：`--repo` > 环境变量 `DSH_206DASH_REPO` > 从 exe 位置往上找
    （标志是同时存在 `platformio.ini` 与 `tools/app`）> 从当前目录往上找 > 本机默认路径。
-   找不到会在界面右下角明说"没找到仓库"，不装作正常。
+   找不到会在界面上明说**缺哪个路径**（`/api/health` 的 `repo_need`），不装作正常。
 3. **用 `--console` 而不是 `--noconsole`**：日志本身就是这个工具的一部分；
    退出走界面右下角的**「退出应用」**按钮（`POST /api/quit`），不需要去找那个黑窗口。
 
@@ -52,7 +62,7 @@ powershell -ExecutionPolicy Bypass -File tools\app\build-exe.ps1 -OneFile
 | 屏 | 收进来的东西 | 一句话 |
 |---|---|---|
 | ① **刷固件** | 原「无线刷写」+「开发板状态」 | 三步：选哪块表（**转速表（左）/ 速度表（右）**两张卡片）→ 固件（自动挑最新的那个）→ 一个「开始升级」按钮（上传 + 重启 + 确认成功都在它后面） |
-| ② **表盘** | 原「主题配色」+「图片素材」+「预览表盘」 | 二级页签切三块；两个编辑器仍是**同源 iframe**（`tools/theme-editor/*.html` 一行没改），预览仍是 `initPreviewInline()` 那套注入 |
+| ② **表盘** | 原「主题配色」+「图片素材」+「预览表盘」 | 编辑器**只有一个框**（`tools/theme-editor/index.html`）：「主题配色 / 图片素材」两颗页签指的都是它，只是让它切到那个页面里的**页内分区**（图片 = `#images` 锚点，老「图片页」的地址就是这个锚点）；预览仍是 `initPreviewInline()` 那套注入 |
 | ③ **工具** | 原「文件与烧写」+「总览」里的零碎 | USB 写素材、读固件文件；「构建新固件」收进「高级」（车主不需要知道 env 是什么） |
 
 技术值一个没删，只是都收进「高级」折叠区：固件来源（本机选文件）、板子地址、板子串口、
@@ -60,7 +70,22 @@ powershell -ExecutionPolicy Bypass -File tools\app\build-exe.ps1 -OneFile
 车主看不懂的词（OTA / 热点 / 槽位 / running / target / env / bin / slave / master）
 **只允许出现在「高级」里** —— 这一条由静态闸门看着（见下）。
 
-后端一行没改：所有 `/api/*` 路由与白名单照旧（界面可以藏，能力不许丢）。
+### 在客户端里「保存安装包」可以直接写进板子
+
+编辑器页面**在客户端里**打开时（也就是本机那个服务在 `127.0.0.1` 上伺候它），
+「保存安装包（assets.bin）」之后会多出一块「写进板子」：**选串口 → 点一下**，
+就把**刚保存的那一份**（同一个内核、同一份字节）交给客户端刷进 `0x210000`。
+
+- 走的是**现成的三条接口**（与「工具」屏那个按钮同一条路）：
+  `GET /api/ports` → `POST /api/upload` → `POST /api/flash`（`kind=assets`）。
+  **没有第二套刷写实现**。
+- **偏移没有入口**：请求体里根本没有"偏移"这个字段 ⇒ 服务端按分区表白名单取
+  （`assets ⇒ 0x210000`，见 `server.py` 的 `ALLOWED_FLASH`）。页面上那一行只是把它显示出来。
+- 它的显隐由"那个服务答不答得出来"（`GET /api/health`）决定：
+  **用浏览器直接打开这个页面时它一直不出现** —— 页面上就只有原来那条 esptool 命令
+  （端口可改、偏移写死），一个字节都没改。
+- 这条路的正确性有独立判据：`check-flash-offset.py`（把 `run()` 换成假的 ⇒
+  **不碰串口、不跑 esptool**）；真机刷写由车主自己在界面上点。
 
 ## 为什么是"本地服务 + 网页应用"，而不是 Electron / 安装包
 
@@ -79,14 +104,16 @@ powershell -ExecutionPolicy Bypass -File tools\app\build-exe.ps1 -OneFile
 
 | 接口 | 作用 | 边界 |
 |---|---|---|
-| `GET /api/health` | 服务自检（仓库路径 / pio 解释器 / 代理） | 只读 |
+| `GET /tools/app/<4 个文件>` | 应用自己的界面文件 | 只看这 4 个；仓库优先、包内兜底 |
+| `GET /tools/theme-editor/<文件>` | 编辑器页面那几个静态文件 | 只看 `ALLOWED_EDITOR_FILES` 那 7 个；**仓库优先、包内兜底**（离了仓库编辑器仍能用） |
+| `GET /api/health` | 服务自检（仓库路径 / **缺哪个路径** / pio 解释器 / 代理） | 只读 |
 | `GET /api/ports` | 列串口（`pio device list`） | 只读 |
 | `GET /api/bins` | 列各 env 的 `firmware.bin`（大小/时间/是否 `-ota`） | 只读 |
 | `GET /api/bin?env=…` | 把某个 env 的固件吐给页面（OTA 上传用） | env 白名单 |
 | `POST /api/upload` | 页面选的文件落盘到 `C:\206dash-scratch\app-upload\`（≤16MB） | 只接单文件 |
-| `POST /api/flash` | esptool 写素材分区 | 端口必须 `COM\d+`；分区只允许 `theme/assets/image`；文件必须在仓库或 scratch 内 |
-| `POST /api/build` | `platformio run -e <env>` | env 白名单 |
-| `POST /api/preview` | 跑 40 秒 `pcpreview` 落帧 | 固定 env |
+| `POST /api/flash` | esptool 写素材分区 | 端口必须 `COM\d+`；分区只允许 `theme/assets/image`；**偏移只从白名单取**（页面传不进来）；文件必须在仓库或 scratch 内 |
+| `POST /api/build` | `platformio run -e <env>` | env 白名单 + **要求仓库在**（不在就明说缺哪个路径） |
+| `POST /api/preview` | 跑 40 秒 `pcpreview` 落帧 | 固定 env + **要求仓库在** |
 
 ★ 边界就这些：**没有任意 shell、不能越出仓库、不能指定任意偏移**。
   要加能力就照这张表的风格加 —— 新增的每一行都是一次"要不要开放"的决定。
@@ -96,13 +123,28 @@ powershell -ExecutionPolicy Bypass -File tools\app\build-exe.ps1 -OneFile
 ```powershell
 node tools/app/check-app.js
 ```
+
 它钉的是"我在这台机器上点不了浏览器"时最容易漏的几件事：
 `app.js` 用到的每个 `#id` 在 `index.html` 里存在、顶栏就是三个屏且每屏有对应 `<section>`、
 iframe 的 `src` 文件真实存在、`data-go` 指向存在的屏、用到的 `/api/*` 在 `server.py` 里真有路由、
-**32 个能力控件一个都没丢**（构建/烧写/列串口/固件列表/板子状态/确认升级成功/预览/两个编辑器/退出），
-以及**三步流程与去术语**（两张板卡 + 一个「开始升级」按钮；「高级」以外不许出现那批术语）。
+**32 个能力控件一个都没丢**（构建/烧写/列串口/固件列表/板子状态/确认升级成功/预览/编辑器/退出）、
+**三步流程与去术语**（两张板卡 + 一个「开始升级」按钮；「高级」以外不许出现那批术语），
+以及 2026-10-16 新加的两条：
 
-> 改版前它断言"页签 ≥ 6 个"。七页签收成三屏之后这条必然红 —— 所以是**改成"恰好 3 个屏"并补上
+- **表盘屏只有一个编辑器**：外壳里出现的编辑器地址只许有一个
+  （`/tools/theme-editor/index.html`），图片入口落到它的 `#images`，
+  而 `image-editor.html` 仍然只是**无脚本**的跳转薄壳（老链接还能用），外壳不再引用它；
+- **编辑器只在客户端里走本机能力**：用现成的 `/api/ports` + `/api/upload` + `/api/flash`，
+  `kind` 固定 `assets`，**请求体里没有偏移这个字段**，那块面板默认隐藏。
+
+偏移本身的正确性由 Python 那条判据跑（**不碰串口**）：
+
+```powershell
+<真 python> tools\app\check-flash-offset.py     # 把 server.run() 换成假的再看命令
+```
+
+> 改版前它断言"页签 ≥ 6 个""两个编辑器页各一个 iframe"。七页签收成三屏、两页合并成
+> 一个页面之后，那两条必然红 —— 所以是**改成"恰好 3 个屏"与"只有一个编辑器地址"并补上
 > 上面那几条**，不是把门槛调低。静态检查的覆盖面只许变宽。
 
 ## 已知注意

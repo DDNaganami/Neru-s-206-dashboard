@@ -12,11 +12,20 @@
  *     ④ 屏内跳转用的 data-go 必须指向存在的屏；
  *     ⑤ 外壳用到的每个 `/api/*` 在 server.py 里真有路由；
  *     ⑥ **能力表**：每一项老能力（构建/烧写/列串口/固件列表/板子状态/确认升级成功/
- *        预览/两个编辑器/退出）在 index.html 里都还找得到控件 —— 简化界面可以藏，
+ *        预览/编辑器/退出）在 index.html 里都还找得到控件 —— 简化界面可以藏，
  *        但不能把能力弄丢；
  *     ⑦ 三步刷固件 + 去术语：两块大卡片、一个「开始升级」按钮，
  *        并且**折叠区（高级）以外**不许出现那批术语（OTA/热点/槽/校验/env/bin/
  *        slave/master/heap/psram/running/target）—— 车主看不懂的词只能待在「高级」里。
+ *     ⑧ **表盘屏只有一个编辑器**（2026-10-16「打包 + 客户端集成」那一单）：
+ *        配色与图片是**同一个页面**（index.html）里的两个页内分区 ⇒ 外壳里出现的
+ *        编辑器地址只许有一个，图片入口落到那个页面的 `#images`；而 image-editor.html
+ *        仍然只是"老链接还能用"的**无脚本跳转薄壳**，外壳不再引用它。
+ *        （原来那条"两个编辑器页各一个 iframe"的断言必然红 —— 所以是**换成这一条**，
+ *          不是把门槛调低。）
+ *     ⑨ 编辑器在**客户端里**才走本机能力：保存安装包 → 选串口 → 客户端现成的
+ *        /api/ports + /api/upload + /api/flash（kind 固定 assets，**请求体里没有偏移**）；
+ *        没有那个服务（file:// 双击打开）时面板不出现 ⇒ 页面只剩原来那条 esptool 命令。
  *
  * 退出码 0 = 全过；1 = 有问题（逐条打印）。
  */
@@ -45,12 +54,12 @@ console.log('② 屏幕：' + tabs.join(', '));
 say(tabs.length === 3, `顶栏应当是 3 个屏（刷固件/表盘/工具），现在是 ${tabs.length} 个`);
 for (const t of tabs) say(ids.has('tab-' + t), `屏 ${t} 没有对应的 <section id="tab-${t}">`);
 
-// ③ iframe src 存在
+// ③ iframe src 存在（地址里可能带 `#锚点` —— 查文件时先把它去掉）
 const srcs = [...html.matchAll(/<iframe[^>]*\bsrc="([^"]+)"/g)].map((m) => m[1]);
 console.log('③ iframe：' + srcs.join(', '));
 for (const s of srcs) {
   if (s.startsWith('http')) continue;
-  const p = path.join(dir, '..', '..', s.replace(/^\//, ''));
+  const p = path.join(dir, '..', '..', s.replace(/[#?].*$/, '').replace(/^\//, ''));
   say(fs.existsSync(p), `iframe src="${s}" 指向的文件不存在：${p}`);
 }
 
@@ -74,8 +83,9 @@ const KEEP = {
   '固件来源': 'ota-src', '从本机选固件': 'ota-file', '固件下拉': 'ota-bin',
   '开始升级按钮': 'b-ota', '只检查不升级': 'b-ota-check', '检查板子': 'b-board',
   '预览运行': 'b-preview', '预览刷新': 'b-pv-reload', '预览宿主': 'pv-host',
-  '配色编辑器': 'fr-theme', '图片编辑器': 'fr-image', '配色新窗口': 'b-theme-open',
-  '图片新窗口': 'b-image-open', '退出应用': 'b-quit', '两块板状态条(左)': 'chip-left',
+  '编辑器框(唯一)': 'fr-theme', '编辑器面板': 'sub-editor',
+  '编辑器新窗口(配色)': 'b-theme-open', '编辑器新窗口(图片)': 'b-image-open',
+  '退出应用': 'b-quit', '两块板状态条(左)': 'chip-left',
   '两块板状态条(右)': 'chip-right', '升级进度条': 'ota-bar', '升级原始日志': 'ota-log',
 };
 console.log('⑥ 能力控件：' + Object.keys(KEEP).length + ' 项');
@@ -104,6 +114,57 @@ const jargon = ['OTA', '热点', '槽位', '目标槽', '验槽', '校验', 'psr
     /\bslave\b|\bmaster\b/i.test(outside) ? 'slave/master' : null,
   ].filter(Boolean));
 say(jargon.length === 0, '「高级」以外还看得到这些术语：' + jargon.join('、'));
+
+// ⑧ 表盘屏**只有一个编辑器**：配色与图片是同一个页面里的两个页内分区
+//   ★ 这一条替代了原来"两个编辑器页各一个 iframe"的断言（两页合并之后那条必然红）。
+//   判据是**地址**：外壳里出现的编辑器地址只许有一个（图片那颗多一个 #images 锚点），
+//   而且外壳不再指向 image-editor.html —— 它只剩"老链接还能用"这一个职责。
+const EDITOR_ADDR = '/tools/theme-editor/index.html';
+const noHash = (u) => u.replace(/[#?].*$/, '');
+const shellAddrs = srcs
+  .concat([...js.matchAll(/window\.open\(\s*'([^']+)'/g)].map((m) => m[1]))
+  .concat([...js.matchAll(/EDITOR_URL\s*=\s*'([^']+)'/g)].map((m) => m[1]))
+  .filter((u) => u.indexOf('/tools/theme-editor/') >= 0)
+  .map(noHash);
+const uniqAddrs = [...new Set(shellAddrs)];
+console.log('⑧ 外壳里的编辑器地址：' + (uniqAddrs.join(', ') || '（一个都没有）'));
+say(srcs.length === 1, `表盘屏只许有 1 个 iframe（编辑器那一个），现在是 ${srcs.length} 个：${srcs.join(', ')}`);
+say(uniqAddrs.length === 1 && uniqAddrs[0] === EDITOR_ADDR,
+    `编辑器地址只许有这一个：${EDITOR_ADDR}；现在是：${uniqAddrs.join(', ') || '（无）'}`);
+say(noHash(srcs[0] || '') === EDITOR_ADDR,
+    `那个 iframe 加载的是编辑器页面（${EDITOR_ADDR}），现在是 ${srcs[0] || '（无）'}`);
+// 图片入口 ⇒ 落到那个页面的 #images（老「图片页」的地址就是这个锚点）
+say(/data-sub="image"/.test(html), '少了「图片素材」那颗页签（data-sub="image"）');
+say(/image:\s*'images'/.test(js), "「图片素材」映射到编辑器页内的 images 分区（#images）");
+say(/window\.open\(EDITOR_URL \+ '#images', '_blank'\)/.test(js),
+    '「在新窗口打开（图片）」打开的是同一个 index.html + #images');
+say(/theme:\s*'theme'/.test(js) && /window\.open\(EDITOR_URL, '_blank'\)/.test(js),
+    '「主题配色」与它那颗「在新窗口打开」用的是同一个地址（无锚点）');
+say(!/theme-editor\/image-editor\.html/.test(html + js),
+    '外壳不再引用 image-editor.html（老链接仍由那个文件自己兜）');
+// image-editor.html 仍是**无脚本的跳转薄壳**（先剥掉 HTML 注释再查代码）
+const shellHtml = fs.readFileSync(path.join(dir, '..', 'theme-editor', 'image-editor.html'), 'utf8');
+const shellCode = shellHtml.replace(/<!--[\s\S]*?-->/g, '');
+say((shellCode.match(/<script\b/gi) || []).length === 0,
+    'image-editor.html 里没有 <script>（不许有第二份实现）');
+say(/<meta\s+http-equiv="refresh"\s+content="0;\s*url=index\.html#images"/i.test(shellHtml),
+    'image-editor.html 仍是一条跳 index.html#images 的 meta refresh（老链接还能用）');
+
+// ⑨ 编辑器在**客户端里**才走本机能力：保存安装包 → 选串口 → 现成的 /api/flash
+//   ★ 判据都是静态可查的：用哪三条接口、kind 是什么、**请求体里有没有偏移**。
+//     真正的偏移正确性由 tools/app/check-flash-offset.py 拿 server.py 的白名单跑一遍
+//     （它把 run() 换成假的，所以**不碰串口、不跑 esptool**）。
+const page = fs.readFileSync(path.join(dir, '..', 'theme-editor', 'index.html'), 'utf8');
+say(/FLASH_API\s*=\s*\{\s*health:\s*"\/api\/health",\s*ports:\s*"\/api\/ports",\s*upload:\s*"\/api\/upload",\s*flash:\s*"\/api\/flash"\s*\}/.test(page),
+    '编辑器用的是现成的 /api/health + /api/ports + /api/upload + /api/flash（没有第二套刷写）');
+say(/id="owner-flash" style="display:none"/.test(page),
+    '「写进板子」那一块默认是隐藏的（没有那个服务时页面只剩原来那条命令）');
+say(/ownerClientProbe|FLASH_API\.health/.test(page) && /proto !== "http:"/.test(page),
+    '面板的显隐由"那个服务答不答得出来"决定（file:// 下不试）');
+const flashBody = /JSON\.stringify\(\{\s*port:\s*port,\s*kind:\s*"assets",\s*path:\s*up\.path\s*\}\)/.exec(page);
+say(!!flashBody, '刷写请求体恰好是 {port, kind:"assets", path}（与「工具」屏那个按钮同一条路）');
+say(!!flashBody && !/offset|偏移\s*:/.test(flashBody[0]),
+    '刷写请求体里没有"偏移"这个字段 —— 偏移由客户端按分区表白名单取，页面上没有入口');
 
 console.log(bad === 0 ? '\n全部通过。' : `\n${bad} 项没通过。`);
 process.exit(bad === 0 ? 0 : 1);

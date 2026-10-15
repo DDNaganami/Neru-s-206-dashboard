@@ -18,8 +18,9 @@ server.py -- 206Dash 开发台的本地服务（**只用标准库**，不装任�
     python tools/app/server.py --port 8787 --no-open
     python tools/app/server.py --app-window     # 用 Chrome/Edge 的 --app 无地址栏窗口打开
 
-★ 安全边界（写清楚，别越）：它**只监听 127.0.0.1**，只服务**本仓库目录**，
-  只肯执行下面白名单里的命令；不提供任意 shell、不允许路径跳出仓库。
+★ 安全边界（写清楚，别越）：它**只监听 127.0.0.1**，只服务**本仓库目录**（外加内嵌在
+  这个程序里的编辑器那 7 个静态文件，见 ALLOWED_EDITOR_FILES），只肯执行下面白名单里的
+  命令；不提供任意 shell、不允许路径跳出仓库。
 """
 
 import argparse
@@ -116,6 +117,60 @@ ALLOWED_FLASH = {
 }
 PREVIEW_SECONDS = 40
 
+# ---------------------------------------------------------------------------
+# 编辑器页面（配色 + 图片）实际会请求的静态文件
+#
+# ★ 这份清单是**抓服务端请求日志**得来的，不是猜的：起一次服务，用无头 Chrome 打开
+#   /tools/app/index.html（外壳里的那个 iframe）与 /tools/theme-editor/index.html、
+#   以及老的 /tools/theme-editor/image-editor.html，日志里出现的 GET 就这些：
+#     /tools/theme-editor/index.html              （唯一的实现：两个页内分区）
+#     /tools/theme-editor/image-editor.html       （老链接的重定向薄壳）
+#     /tools/theme-editor/face-stages.js
+#     /tools/theme-editor/image-blob-build.js
+#     /tools/theme-editor/asset-spec.js
+#     /tools/theme-editor/theme-json.js
+#     /tools/theme-editor/asset-package-core.js
+#   build-exe.ps1 的 --add-data 与这一份一一对应（多一份没用、少一份 404）。
+#   /favicon.ico 是浏览器自己要的（本来就 404，不算）；preview/* 是仓库那边的构建
+#   产物 ⇒ 那是"预览/构建仍然要求仓库在"的东西，不打包。
+# ---------------------------------------------------------------------------
+ALLOWED_EDITOR_FILES = ("index.html", "image-editor.html",
+                        "face-stages.js", "image-blob-build.js", "asset-spec.js",
+                        "theme-json.js", "asset-package-core.js")
+
+
+def repo_present():
+    """仓库在不在：判据就是 platformio.ini（与 find_repo() 同一把尺子）。"""
+    return os.path.isfile(os.path.join(REPO, "platformio.ini"))
+
+
+def repo_need(*parts):
+    """缺的那个**具体路径**（给用户看一眼就知道缺什么）。"""
+    return os.path.join(REPO, *(parts or ("platformio.ini",)))
+
+
+def repo_missing_out(what):
+    """仓库不在时的统一说法：明说缺哪个路径、还要怎么办 —— **不静默失败**。"""
+    return ("★ 找不到仓库：%s 不存在。\n"
+            "  %s要用整个仓库（PlatformIO 工程：platformio.ini + lib/ + src/）。\n"
+            "  把仓库放到它旁边，或者用 --repo <仓库路径> 启动这个程序，再试。\n"
+            % (repo_need(), what))
+
+
+def editor_dirs():
+    """编辑器那几个静态文件去哪找：**仓库优先，包内兜底**。
+
+    ★ 打包成 exe（--add-data 把 tools/theme-editor 打进去了）之后，没有仓库时也能
+      从 sys._MEIPASS 那一份服务 ⇒ **离了仓库仍然能改色、框选、导出 assets.bin**。
+    ★ 顺序是有意的：仓库里那一份**优先**（有人正在改编辑器时，看到的是他改的那份）。
+    """
+    out = []
+    for d in (os.path.join(REPO, "tools", "theme-editor"),
+              os.path.join(BUNDLE_DIR, "tools", "theme-editor")):
+        if os.path.isdir(d) and os.path.abspath(d) not in [os.path.abspath(x) for x in out]:
+            out.append(d)
+    return out
+
 
 def pio_python():
     """能跑 platformio 的那个 python（没有就用当前解释器）。"""
@@ -200,6 +255,8 @@ def bin_path_for(env):
 def do_build(env):
     if env not in ALLOWED_ENVS:
         return {"ok": False, "out": "env 不在白名单里: %s" % env}
+    if not repo_present():
+        return {"ok": False, "out": repo_missing_out("构建固件")}
     ok, out = run([pio_python(), "-m", "platformio", "run", "-e", env], timeout=1800)
     return {"ok": ok, "env": env, "out": out[-8000:], "bins": list_bins()["bins"]}
 
@@ -309,6 +366,8 @@ def ota_verify(host, port, before, timeout_s=70):
 
 def do_preview():
     """跑宿主机预览（pcpreview）若干秒，生成 preview/frames/*，然后收工。"""
+    if not repo_present():
+        return {"ok": False, "out": repo_missing_out("跑宿主机预览"), "frames": 0}
     frames = os.path.join(REPO, "preview", "frames")
     if os.path.isdir(frames):
         for f in os.listdir(frames):
@@ -373,6 +432,30 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._send_file(p, ct)
         return self._json({"ok": False, "error": "app file not found: %s" % name}, 404)
 
+    def _serve_theme_file(self, name):
+        """编辑器页面（配色 + 图片）那几个静态文件：**仓库优先，包内兜底**。
+
+        ★ 为什么不能只让 SimpleHTTPRequestHandler 从 REPO 服务：打包成 exe 之后
+          （尤其在没有仓库的机器上）那条路会 404 —— 而"离了仓库仍然能改色、框选、
+          导出 assets.bin"正是这一单要的。两份都找不到时**明说**找过哪些目录，
+          不做"悄悄 404"。
+        """
+        if name not in ALLOWED_EDITOR_FILES:
+            return self._json({"ok": False, "error": "编辑器文件不在白名单里: %s" % name}, 404)
+        for d in editor_dirs():
+            p = os.path.join(d, name)
+            if os.path.isfile(p):
+                ct = {"html": "text/html; charset=utf-8",
+                      "js": "application/javascript; charset=utf-8"}.get(
+                          name.rsplit(".", 1)[-1], "application/octet-stream")
+                return self._send_file(p, ct)
+        dirs = " ； ".join(editor_dirs()) or "（一个都没有）"
+        return self._json({"ok": False,
+                           "error": ("找不到编辑器文件 %s；找过：%s\n"
+                                     "★ 仓库里那份不在，包内那份也没打进去 ⇒ "
+                                     "用 build-exe.ps1 重打一次（它带 --add-data）。" % (name, dirs))},
+                          404)
+
     def _body(self):
         n = int(self.headers.get("Content-Length") or 0)
         if n <= 0:
@@ -393,12 +476,19 @@ class Handler(SimpleHTTPRequestHandler):
         m = re.fullmatch(r"/tools/app/(index\.html|app\.css|app\.js|README\.md)", u.path)
         if m:
             return self._serve_app_file(m.group(1))
+        # 编辑器页面（配色 + 图片）那几个静态文件：仓库优先、包内兜底（见 _serve_theme_file）
+        m = re.fullmatch(r"/tools/theme-editor/([A-Za-z0-9._-]+)", u.path)
+        if m:
+            return self._serve_theme_file(m.group(1))
         if u.path == "/api/health":
             # `repo_ok` 是**判据**：仓库里得有 platformio.ini。
-            #   exe 在没有仓库时照样能开界面（应用文件是内嵌的），但"构建/烧写/编辑器"
-            #   会打不开 —— 所以这个字段要如实报，别让用户猜。
-            repo_ok = os.path.isfile(os.path.join(REPO, "platformio.ini"))
+            #   exe 在没有仓库时照样能开界面（应用文件与编辑器都是内嵌的），但
+            #   "构建固件 / 跑预览"要用仓库里的工程 —— 所以这两个字段要如实报，
+            #   别让用户猜：repo_need = 缺的那个**具体路径**。
+            repo_ok = repo_present()
             return self._json({"ok": True, "repo": REPO, "repo_ok": repo_ok,
+                               "repo_need": repo_need(),
+                               "editor_from": (editor_dirs() or [""])[0],
                                "frozen": FROZEN, "exe": sys.executable if FROZEN else "",
                                "pio": pio_python(), "proxy": PROXY,
                                "time": time.strftime("%H:%M:%S")})
@@ -414,7 +504,9 @@ class Handler(SimpleHTTPRequestHandler):
             env = (q.get("env") or [""])[0]
             f = bin_path_for(env)
             if not f:
-                return self._json({"ok": False, "error": "no bin for %s" % env}, 404)
+                # 没有仓库时**明说**缺哪个路径（"没有这个 env 的产物"是另一回事）
+                err = ("no bin for %s" % env) if repo_present() else repo_missing_out("取固件产物").strip()
+                return self._json({"ok": False, "error": err}, 404)
             data = open(f, "rb").read()
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
@@ -476,6 +568,17 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
+    # ★ 打包成 exe 之后，标准输出/错误被重定向到文件时用的是**本机代码页**
+    #   （中文 Windows = GBK），而这里的提示与请求日志里有中文与符号 —— 一旦某个字符
+    #   GBK 编不出来，一条提示就能把整个程序打崩（实测踩过：一句 print 里的 "⇒" 直接
+    #   UnicodeEncodeError，服务都没起来）。所以把编码错误降级成替换字符：
+    #   提示可能缺一个字，程序不许倒。
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--no-open", action="store_true")
@@ -487,9 +590,10 @@ def main():
     global REPO
     if a.repo:
         REPO = os.path.abspath(a.repo)
-    if not os.path.isfile(os.path.join(REPO, "platformio.ini")):
-        print("★ 注意：%s 看起来不是仓库根目录（没有 platformio.ini）——" % REPO)
-        print("  「配色 / 图片 / 预览」这些页会打不开；用 --repo <仓库路径> 指定一下。")
+    if not repo_present():
+        print("★ 注意：%s 看起来不是仓库根目录（%s 不存在）——" % (REPO, repo_need()))
+        print("  「配色 / 图片」编辑器仍然能打开（应用文件与编辑器都内嵌在这个程序里）；")
+        print("  但「构建固件 / 跑预览」要用仓库里的工程：用 --repo <仓库路径> 指一下。")
 
     url = "http://127.0.0.1:%d/tools/app/index.html" % a.port
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)

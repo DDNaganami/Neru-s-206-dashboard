@@ -143,7 +143,7 @@
     </details>
   </section>
 
-  <!-- ==================== ② 表盘（配色 + 图片 + 预览） ==================== -->
+  <!-- ==================== ② 表盘（一个编辑器 + 预览） ==================== -->
   <section id="tab-dash">
     <p class="purpose">改表盘长什么样：颜色、图片，然后在这里看效果 —— 不用碰板子。</p>
 
@@ -154,24 +154,19 @@
     </div>
     <div class="banner" id="dash-warn"></div>
 
-    <div class="panel sel" id="sub-theme">
+    <!-- ★ 编辑器**只有一个框**：配色与图片是**同一个页面**（tools/theme-editor/index.html）
+         里的两个页内分区（① 配色 / ② 图片），共用同一份主题状态与同一份图片清单。
+         「主题配色 / 图片素材」这两颗页签指的都是这个框，区别只是让它切到哪个分区
+         （图片 = 那个页面的 #images 锚点 —— 老「图片页」的地址就是这个锚点）。 -->
+    <div class="panel sel" id="sub-editor">
       <div class="row">
-        <b>主题配色</b>
-        <span class="dim">改颜色、导出 <code>theme.json</code> / <code>assets.bin</code></span>
+        <b>主题编辑器</b>
+        <span class="dim">配色 + 图片在同一个页面里（页内两个分区，共用同一份状态）</span>
         <span class="sp"></span>
-        <button class="btn ghost" id="b-theme-open">在新窗口打开</button>
+        <button class="btn ghost" id="b-theme-open">在新窗口打开（配色）</button>
+        <button class="btn ghost" id="b-image-open">在新窗口打开（图片）</button>
       </div>
-      <iframe class="frame" id="fr-theme" src="/tools/theme-editor/index.html"></iframe>
-    </div>
-
-    <div class="panel" id="sub-image">
-      <div class="row">
-        <b>图片素材</b>
-        <span class="dim">导入图片、导出 <code>image.bin</code> / <code>assets.bin</code></span>
-        <span class="sp"></span>
-        <button class="btn ghost" id="b-image-open">在新窗口打开</button>
-      </div>
-      <iframe class="frame" id="fr-image" src="/tools/theme-editor/image-editor.html"></iframe>
+      <iframe class="frame" id="fr-theme" src="/tools/theme-editor/index.html#theme"></iframe>
     </div>
 
     <div class="panel" id="sub-preview">

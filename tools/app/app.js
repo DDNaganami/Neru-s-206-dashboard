@@ -38,7 +38,7 @@ const ENV_HUMAN = {
   'pcpreview': '电脑上的预览（不是固件）',
 };
 
-const state = { board: 'left', bins: [], upgrading: false };
+const state = { board: 'left', bins: [], upgrading: false, repoOk: null, repoNeed: '' };
 
 const $ = (s) => document.querySelector(s);
 const setStatus = (s) => { $('#f-status').textContent = s; };
@@ -91,12 +91,45 @@ function go(id) {
   document.querySelectorAll('main section').forEach((s) => s.classList.toggle('sel', s.id === 'tab-' + id));
   location.hash = id;
 }
-/* 表盘屏里的二级页签（配色 / 图片 / 预览）—— 三个面板一直都在，只是显示一个 */
+/* 表盘屏的二级页签：三个入口、**两个**面板 ——
+   编辑器只有一个框（同一个页面 index.html），「主题配色 / 图片素材」指的都是它。 */
+const SUB_PANEL = { theme: 'sub-editor', image: 'sub-editor', preview: 'sub-preview' };
+/* 那颗页签 ⇒ 编辑器页内的哪个分区（图片 = 那个页面的 #images 锚点）。 */
+const SUB_PART = { theme: 'theme', image: 'images' };
+/* ★ 编辑器**唯一**的地址：iframe 与两颗「在新窗口打开」都指向它
+   （图片那颗多一个 #images 锚点）。改这里就是改全部入口 —— 别在别处再抄一个地址。 */
+const EDITOR_URL = '/tools/theme-editor/index.html';
+
+/* 表盘屏里的二级页签（编辑器 / 预览）—— 两个面板一直都在，只是显示一个 */
 function subGo(kind) {
-  const panels = { theme: $('#sub-theme'), image: $('#sub-image'), preview: $('#sub-preview') };
-  if (!panels[kind]) kind = 'theme';
-  Object.keys(panels).forEach((k) => { if (panels[k]) panels[k].classList.toggle('sel', k === kind); });
+  if (!SUB_PANEL[kind]) kind = 'theme';
+  const want = SUB_PANEL[kind];
+  const panels = { 'sub-editor': $('#sub-editor'), 'sub-preview': $('#sub-preview') };
+  Object.keys(panels).forEach((id) => {
+    if (panels[id]) panels[id].classList.toggle('sel', id === want);
+  });
   document.querySelectorAll('#subnav button').forEach((b) => b.classList.toggle('sel', b.dataset.sub === kind));
+  if (SUB_PART[kind]) editorPart(SUB_PART[kind]);   // 让那个框切到对应页内分区（#images）
+}
+
+/* 让编辑器那个框切到某个页内分区（配色 / 图片）。
+   ★ 已经加载过就**只改 hash**：编辑器自己认 hashchange（它的「① 配色 / ② 图片」两个
+     标签也是靠 hash 的）⇒ **不重载**页面 —— 重载会把刚拖进去、还没导出的图丢掉。
+   ★ 还没加载就给它 src 带上锚点（与「在新窗口打开（图片）」是同一个地址 + 同一个锚）。 */
+function editorPart(part) {
+  const fr = $('#fr-theme');
+  if (!fr) return;
+  const hash = part === 'images' ? '#images' : '#theme';
+  try {
+    const w = fr.contentWindow;
+    const p = String((w && w.location && w.location.pathname) || '');
+    if (/theme-editor\/index\.html$/.test(p)) {          // 已经加载过 ⇒ 只改 hash
+      if (w.location.hash !== hash) w.location.hash = hash;
+      return;
+    }
+  } catch (e) { /* 取不到（还没提交导航）⇒ 走下面改 src */ }
+  const want = EDITOR_URL + hash;
+  if ((fr.getAttribute('src') || '') !== want) fr.src = want;
 }
 
 /* ---- 服务自检 / 固件列表 -------------------------------------------------*/
@@ -106,15 +139,24 @@ async function initServer() {
     $('#p-srv').textContent = '服务：' + (h.ok ? '在线' : '异常') + (h.frozen ? '（打包版）' : '');
     $('#p-srv').className = 'pill ' + (h.ok ? 'on' : 'off');
     $('#p-repo').textContent = h.repo + (h.frozen ? '  ·  exe: ' + h.exe : '');
-    $('#p-repo').title = '本地服务只监听 127.0.0.1；只服务这个仓库目录';
+    $('#p-repo').title = '本地服务只监听 127.0.0.1；只服务这个仓库目录（外加内嵌在程序里的编辑器那几个文件）';
     if (!h.repo_ok) {
-      const msg = '找不到项目文件夹（仓库）：配色、图片、预览这几页用不了。' +
-        '让这个程序带上仓库路径重开一次就行：<code>--repo &lt;仓库路径&gt;</code>';
+      // ★ 明说**缺哪个路径**（不静默失败）：编辑器（配色 + 图片）已经打包在这个程序里，
+      //   所以改配色、换图、写素材仍然能用；构建固件与预览要用仓库里的 PlatformIO 工程。
+      state.repoOk = false;
+      state.repoNeed = h.repo_need || '';
+      const need = h.repo_need || '（仓库里的 platformio.ini）';
+      const msg = '找不到项目文件夹（仓库）：<code>' + need + '</code> 不存在。' +
+        '改配色、换图片、写素材仍然能用（编辑器就在这个程序里）；' +
+        '构建固件与跑预览要用仓库里的工程 —— 带上仓库路径重开一次就行：' +
+        '<code>--repo &lt;仓库路径&gt;</code>';
       $('#banner').innerHTML = msg;
       $('#banner').className = 'banner on';
       $('#dash-warn').innerHTML = msg;
       $('#dash-warn').className = 'banner on';
-      setStatus('没找到仓库 —— 配色/图片/预览用不了');
+      setStatus('没找到仓库 —— 构建固件/预览用不了（改配色、换图片仍可用）');
+    } else {
+      state.repoOk = true;
     }
   } catch (e) {
     $('#p-srv').textContent = '服务：离线（用 tools/app/run.bat 或那个 exe 启动）';
@@ -420,7 +462,7 @@ function initFlash() {
   $('#b-board').click();          // 开工先看一眼板子在不在
 }
 
-/* ---- ② 表盘：二级页签 + 两个编辑器 + 预览 --------------------------------*/
+/* ---- ② 表盘：一个编辑器框（页内两个分区）+ 预览 --------------------------*/
 /* ---- 预览页内联（不再用 iframe）：取回 /preview/preview.html 再注入 ----
    ★ 两个必须处理的点（不处理必踩）:
      ① `innerHTML` 注入的 <script> **不会执行** ⇒ 要手动重建 <script> 元素；
@@ -432,6 +474,13 @@ function initPreviewInline() {
   const host = $('#pv-host');
   if (!host) return;
   async function load() {
+    // ★ 预览页住在**仓库**里（preview/preview.html 是仓库那边的构建产物）——
+    //   没仓库就明说缺哪个路径，而不是去取一个必然 404 的地址（不静默失败）。
+    if (state.repoOk === false) {
+      host.textContent = '预览要用项目文件夹（仓库）：' + (state.repoNeed || 'platformio.ini') +
+        ' 不存在。带上仓库路径重开一次这个程序就行：--repo <仓库路径>';
+      return;
+    }
     host.textContent = '载入预览页…';
     try {
       const html = await (await fetch('/preview/preview.html', { cache: 'no-store' })).text();
@@ -468,8 +517,10 @@ function initDash() {
     b.onclick = () => subGo(b.dataset.sub);
   });
   subGo('theme');
-  $('#b-theme-open').onclick = () => window.open('/tools/theme-editor/index.html', '_blank');
-  $('#b-image-open').onclick = () => window.open('/tools/theme-editor/image-editor.html', '_blank');
+  /* ★ 两颗「在新窗口打开」打开的是**同一个** index.html：
+     图片那颗带 #images（= 那个页面里的「② 图片」分区）。 */
+  $('#b-theme-open').onclick = () => window.open(EDITOR_URL, '_blank');
+  $('#b-image-open').onclick = () => window.open(EDITOR_URL + '#images', '_blank');
   const runPreview = async () => {
     logTo('#preview-log', '跑一遍电脑上的预览…（约 40 秒，正常会自己停）\n', false);
     setStatus('预览运行中…');
