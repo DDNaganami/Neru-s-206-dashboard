@@ -135,6 +135,8 @@
   .slotpick label{color:var(--dim);font-size:12px;flex:0 0 66px}
   .slotpick select{flex:1;min-width:0;background:#0e1016;color:var(--text);
                    border:1px solid var(--line);border-radius:4px;padding:4px 6px}
+  .slotActions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  .slotActions button{width:100%}
   /* 框选器（模态）：方框内 = 保留区，拖动平移、滚轮缩放，框外丢掉 */
   #crop{position:fixed;inset:0;background:rgba(6,8,12,.88);z-index:99;
         display:none;align-items:center;justify-content:center;padding:20px}
@@ -267,22 +269,39 @@
       </div>
     </section>
     <section>
-      <h2>表情图</h2>
+      <h2>表情 / 背景图 · 槽位清单</h2>
+      <!-- ★★ 2026-10-15（车主实测反馈）：「图片列表应该放到车主模式那边，不然没办法
+           对全部表情和背景进行编辑。」
+
+           ⇒ **槽位清单搬进了「② 图片」页的车主模式**：背景 1 格 + 表情 10 格
+           （名称用中文阶段名、点明哪块屏），每格都能「选文件 / 拖入 / 清除」，
+           表情格拖入照旧弹框选、背景格不弹。
+           ⇒ 本页（配色页）**不再自己做那套槽位清单** —— 图片与它的增删改只有一份主人，
+           否则"我在哪一页换的图"就成了第二个真相（本仓库反复踩过的坑）。
+           本页这两条按钮只是把配色存好、然后过去接着干。 -->
       <div class="note" style="color:var(--dim);margin:0 0 10px">
-        表情<b>必须带透明背景（PNG）</b>：JPEG 没有 alpha，会被拒绝（请另存为 PNG）。
-        拖进来会弹<b>框选</b>：方框内是要保留的部分，拖动平移、滚轮/双指缩放，
-        <b>框外丢掉</b>；确认后得到一张<b>主体居中、四周透明</b>的方图，
-        再走既有的缩放路径（只缩不放、保持比例、居中、RGB565A8）。
-        <b>背景不加框选</b>——背景要铺满 480×480，去「② 图片」页处理。
+        <b>换图请到「② 图片」页</b>：那一页的车主模式里有完整的<b>槽位清单</b> ——
+        <b>背景 1 格 + 表情 10 格</b>（转速屏 怠速/巡航/运动/高转/红区、速度屏
+        静止/市区/快速路/高速/超速），每格都能单独换图或清除。<br>
+        表情<b>必须带透明背景（PNG）</b>：JPEG 没有 alpha，会被拒绝（请另存为 PNG）；
+        表情拖入会弹<b>框选</b>（方框内 = 保留区，框外丢掉，确认后得到一张
+        主体居中、四周透明的方图）。<b>背景不加框选</b> —— 它要铺满 480×480，可用 JPEG。
       </div>
       <div class="facedrop" id="oc-face-drop" data-ocap="face">
         <b>把表情图拖到这里</b><br>（或点一下选文件）<br>PNG（带透明）· 松手就弹框选
       </div>
       <!-- 槽位用**中文阶段名**（从 face-stages.js 取，选项由 JS 填）：
-           左屏 怠速/巡航/运动/高转/红区；右屏 静止/市区/快速路/高速/超速 -->
+           转速屏 怠速/巡航/运动/高转/红区；速度屏 静止/市区/快速路/高速/超速 -->
       <div class="slotpick">
         <label>存进槽位</label>
         <select id="oc-slot"></select>
+      </div>
+      <div class="slotActions">
+        <button id="btn-owner-to-image" class="primary">去「② 图片」页管全部槽位 + 保存安装包</button>
+      </div>
+      <div class="note" style="color:var(--dim)">
+        那 11 格在图片页是<b>同一份</b>图片清单（不是两份）—— 你在这儿框选好的这张会
+        自动交接过去，进到你选好的那一格。
       </div>
     </section>
     <section>
@@ -2274,6 +2293,27 @@ function touchDist(e) {
 document.getElementById("file-face").addEventListener("change", e => {
   ownerFaceFiles(e.target.files);
   e.target.value = "";
+});
+
+// 「去图片页管全部槽位」：与「保存安装包」走**同一条**交接路径
+// （把配色存好 + 把框选好的那张方图交给图片页），只是不重复说一遍"已导出"。
+document.getElementById("btn-owner-to-image").addEventListener("click", () => {
+  saveThemeToLocal();
+  if (ownerLastPick && ownerLastPick.canvas) {
+    try {
+      localStorage.setItem(HANDOFF_KEY, JSON.stringify({
+        v: 1,
+        role: ownerLastPick.role,
+        slotLabel: ownerLastPick.slotLabel,
+        name: ownerLastPick.name,
+        png: ownerLastPick.canvas.toDataURL("image/png")
+      }));
+    } catch (e) {
+      say("这张图太大，浏览器存不下交接数据；到图片页重新拖一次即可。", "err");
+      return;
+    }
+  }
+  location.href = "image-editor.html";
 });
 
 // ---------------- 启动 ----------------

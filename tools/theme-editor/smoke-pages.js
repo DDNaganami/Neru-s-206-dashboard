@@ -34,6 +34,9 @@ function ok(cond, what) {
   if (cond) pass++;
   else { fail++; failures.push(what); console.log("  ✗ " + what); }
 }
+function eq(a, b, what) {
+  ok(a === b, what + "  (期望 " + JSON.stringify(b) + "，得到 " + JSON.stringify(a) + ")");
+}
 function section(t) { console.log("\n== " + t); }
 
 // ------------------------------------------------------------
@@ -319,9 +322,37 @@ for (const page of ["index.html", "image-editor.html"]) {
     ok(r.store["206dash.themeEditorMode"] === "owner", "模式选择记在**另一个**键上（不动主题格式）");
   } else {
     ok(!!doc.getElementById("owner-colors"), "图片页有车主模式配色容器");
-    ok(doc.getElementById("owner-slot").children.length === 10,
-       "图片页槽位下拉也有 10 个中文阶段名（实际 " +
-       doc.getElementById("owner-slot").children.length + "）");
+    // ★★ 2026-10-15（车主反馈那一单）：车主模式里现在有**槽位清单**
+    //   （背景 1 + 表情 10），每一格都有缩略图 + 换图/清除。
+    const grid = doc.getElementById("owner-slots");
+    ok(!!grid, "图片页有槽位清单容器 #owner-slots");
+    if (grid) {
+      eq(grid.children.length, 11, "槽位清单正好 11 格（背景 1 + 表情 10）");
+      const cells = grid.children;
+      eq(cells.filter(c => c.getAttribute("data-ocap") === "bgimage").length, 1,
+         "11 格里恰好 1 格是背景（data-ocap=bgimage）");
+      // 每格：名称 + 缩略图 + 两个按钮（换图/清除）
+      const first = cells[0];
+      ok(first.children.length === 3, "每格三件事：名称 / 缩略图 / 按钮列");
+      ok(/^背景/.test(first.children[0].textContent), "第一格是背景（名称：" +
+         first.children[0].textContent.split("\n")[0] + "）");
+      const bgs = first.children[2];
+      eq(bgs.children.length, 2, "每格两个按钮（换图/清除）");
+      eq(bgs.children[0].textContent, "选文件", "空的格子第一个按钮写「选文件」");
+      ok(bgs.children[1].disabled === true, "空格的「清除」是禁用的");
+      // 10 个表情格的名字必须是中文阶段名、且点明哪块屏
+      const faceCells = cells.filter(c => c.getAttribute("data-ocap") !== "bgimage");
+      eq(faceCells.length, 10, "表情格 10 个");
+      const names = faceCells.map(c => c.children[0].textContent.split("\n")[0]);
+      ok(names.filter(n => n.indexOf("转速表") >= 0).length === 5, "5 格点明「转速表」");
+      ok(names.filter(n => n.indexOf("速度表") >= 0).length === 5, "5 格点明「速度表」");
+      ok(names.join("|").indexOf("怠速") >= 0 && names.join("|").indexOf("红区") >= 0 &&
+         names.join("|").indexOf("静止") >= 0 && names.join("|").indexOf("超速") >= 0,
+         "格名是中文阶段名（" + names.slice(0, 5).join(" / ") + " …）");
+      // 表情格的两个按钮：换图（空时"选文件"）+ 清除
+      const fc = faceCells[0].children[2];
+      eq(fc.children.length, 2, "表情格也有换图/清除两个按钮");
+    }
     ok(doc.getElementById("owner-cmd").value.indexOf("write_flash 0x210000 assets.bin") > 0,
        "图片页那条刷写命令也带写死的偏移 0x210000");
     ok(doc.getElementById("btn-owner-save").getAttribute("data-ocap") === "save",

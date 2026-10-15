@@ -164,6 +164,21 @@
   .slotpick label{color:var(--dim);font-size:12px;flex:0 0 66px}
   .slotpick select{flex:1;min-width:0;background:#0e1016;color:var(--text);
                    border:1px solid var(--line);border-radius:4px;padding:4px 6px}
+  /* 车主模式的**槽位清单**：背景 1 + 表情 10，每格「名称 / 缩略图 / 换图 / 清除」。
+     一格一行（左栏只有 330px，做成格子阵会把中文名压到换行看不清）。 */
+  .slotgrid{display:flex;flex-direction:column;gap:6px}
+  .slotcell{display:grid;grid-template-columns:1fr 54px auto;gap:6px;align-items:center;
+            padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:#12141a}
+  .slotcell.have{border-color:#2a6f96}
+  .slotcell.hot{border-color:var(--accent);background:#12202a}
+  .slotcell .lb{min-width:0;font-size:12px;line-height:1.35;color:var(--text);
+                overflow-wrap:anywhere}
+  .slotcell .lb .dim{display:block;color:var(--dim);font-size:11px}
+  .slotcell canvas{width:54px;height:54px;border-radius:4px;background:#0a0b0f;
+                   border:1px solid var(--line);display:block}
+  .slotcell .btns{display:flex;flex-direction:column;gap:4px}
+  .slotcell .btns button{padding:2px 6px;font-size:11px;white-space:nowrap}
+  .slotActions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
   /* 框选器（模态）：方框内 = 保留区，拖动平移、滚轮/双指缩放，框外丢掉 */
   #crop{position:fixed;inset:0;background:rgba(6,8,12,.88);z-index:99;
         display:none;align-items:center;justify-content:center;padding:20px}
@@ -250,19 +265,33 @@
     </section>
 
     <section>
-      <h2>表情图</h2>
+      <h2>槽位清单（背景 + 表情）</h2>
+      <!-- ★★ 2026-10-15（车主实测反馈）：「图片列表应该放到车主模式那边，不然没办法
+           对全部表情和背景进行编辑。」
+
+           所以车主模式里**直接给出全部 11 个槽位**：背景 1 个 + 表情 10 个，
+           每一格都能「换这张 / 清除」：
+             · 名称用**中文阶段名**（从 face-stages.js 取，与固件 face_stages.h 同源），
+               并且点明是**哪块屏**的槽（转速屏 / 速度屏）—— 不用 role 编号；
+             · 表情格拖入/选文件 ⇒ **弹框选**（方框=保留区）；
+             · 背景格**不弹框选**（背景要铺满 480×480，可用 JPEG）；
+             · ★ **技术参数不进这里**：contain/cover/stretch、裁透明边、目标宽度、
+               顺序这些照旧在「高级 → 图片列表」里（车主模式保持干净）。
+           格子由 JS 生成（数量/名称都来自 face-stages.js，不手抄），
+           但**标签是静态写在这里的**：check-owner-mode.js 按 `data-ocap` 数它们。 -->
       <div class="note" style="color:var(--dim);margin:0 0 10px">
-        表情<b>必须带透明背景（PNG）</b>：JPEG 没有 alpha，会被拒绝（请另存为 PNG）。
-        拖进来会弹<b>框选</b>：方框内是要保留的部分，拖动平移、滚轮/双指缩放，<b>框外丢掉</b>；
-        确认后得到一张<b>主体居中、四周透明</b>的方图，再走既有的缩放路径。
-        背景图不加框选（背景要铺满 480×480）——背景走下面的「高级」。
+        <b>背景</b>要铺满 480×480（可用 JPEG）；<b>表情</b>必须带透明背景（<b>PNG</b>）——
+        JPEG 当表情会被拒绝。表情图拖进来/选文件会弹<b>框选</b>：方框内是要保留的部分，
+        拖动平移、滚轮（或双指）缩放，<b>框外丢掉</b>；确认后得到一张主体居中、
+        四周透明的方图。每格都能单独换图或清除。
       </div>
-      <div class="facedrop" id="owner-face-drop">
-        <b>把表情图拖到这里</b><br>（或点一下选文件）<br>PNG（带透明）· 松手就弹框选
+      <div class="slotgrid" id="owner-slots" data-ocap="face"></div>
+      <div class="note" style="color:var(--dim)">
+        ★ 缩放方式（保持比例 / 铺满 / 拉伸）、裁透明边、目标宽度、播放顺序这些
+        **技术参数在「高级 → 图片列表」里**，在那一格上调 —— 车主模式只负责"哪一格放哪张图"。
       </div>
-      <div class="slotpick">
-        <label>存进槽位</label>
-        <select id="owner-slot"></select>
+      <div class="slotActions">
+        <button id="btn-owner-add" class="tiny">＋ 加一张（按「高级」里的用途规则自动归类）</button>
       </div>
     </section>
 
@@ -1574,16 +1603,177 @@ const OWNER_ARCS = [
 
 // 表情槽 = 两屏各自的 5 个状态，**中文名与顺序都从 face-stages.js 来**
 //   （左屏 怠速/巡航/运动/高转/红区；右屏 静止/市区/快速路/高速/超速）
-function ownerSlots() {
+// ★ label 里点明是**哪块屏**（`转速表` / `速度表` 来自 FaceStages.screen().gaugeLabel）
+//   —— 车主反馈里特意提过"要区分是哪个屏的槽"，两屏的档位名不一样、role 也不一样。
+function faceSlots() {
   const out = [];
   for (let s = 0; s < 2; s++) {
     FaceStages.statesOf(s).forEach(st => {
-      out.push({ side: s, key: st.key, role: st.role,
-                 label: FaceStages.screen(s).short + "屏 · " + FaceStages.screen(s).gaugeLabel +
-                        " · " + st.label });
+      out.push({ role: st.role, face: true, side: s,
+                 label: FaceStages.screen(s).label + " · " + st.label });
     });
   }
   return out;
+}
+
+// ------------------------------------------------------------
+// 车主模式的**槽位清单**（背景 1 + 表情 10）—— 2026-10-15 按车主实测反馈加
+//
+// 车主原话：「图片列表应该放到车主模式那边，不然没办法对全部表情和背景进行编辑。」
+//
+// ★ 为什么"背景 + 表情"是一张表：固件那边它们是**两类 role**
+//   （ImageBlob.ROLE.Background / 每屏 5 个表情 role），但车主看到的是"11 个格子"，
+//   所以在界面上合成一张表；`face: true/false` 决定这一格**要不要弹框选**。
+// ★ 名称一律来自 face-stages.js（与固件 face_stages.h 同源）—— 不写 role 编号，
+//   也不在这里重抄一串中文（抄一套就会在"固件加了档位"时静默分叉）。
+function ownerSlotSpecs() {
+  return [{ role: ImageBlob.ROLE.Background, face: false, side: -1,
+            label: "背景（两屏共用，铺满 " + bgSideFor(curTarget) + "×" +
+                   bgSideFor(curTarget) + "）" }].concat(faceSlots());
+}
+
+function bgSideFor(target) {
+  return ImageBlob.faceTierInfo(target).id === "res240" ? 240 : 480;
+}
+
+// 这一格现在放的是哪张（同 role 取 order 最小的那张 —— 与设备端取用规则一致）
+function slotItem(spec) { return pick(spec.role); }
+
+// 一张图显示在格子里的缩略图：按**当前槽位**的画布画，并标出透明。
+// ★ 直接用 renderToTarget(item, 54, 54) 会走"整图 contain 到 54×54"，
+//   背景是 480×480 时会缩成一小块看不清；所以这里自己按比例缩到 54。
+function drawSlotThumb(cv, item, bgHex) {
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const cw = cv.width, ch = cv.height;
+  const q = 6;
+  for (let y = 0; y < ch; y += q) {
+    for (let x = 0; x < cw; x += q) {
+      ctx.fillStyle = (((x / q) + (y / q)) % 2) ? "#15171d" : "#1d2027";
+      ctx.fillRect(x, y, q, q);
+    }
+  }
+  const src = item.img;
+  const sw = src.naturalWidth || src.width;
+  const sh = src.naturalHeight || src.height;
+  if (!sw || !sh) return;
+  const k = Math.min(cw / sw, ch / sh);
+  const dw = Math.max(1, Math.round(sw * k)), dh = Math.max(1, Math.round(sh * k));
+  ctx.imageSmoothingEnabled = k < 1;
+  ctx.drawImage(src, Math.round((cw - dw) / 2), Math.round((ch - dh) / 2), dw, dh);
+}
+
+// 重建整张槽位清单（refresh() / 切模式 / 增删改之后都要跑）
+function buildOwnerSlots() {
+  const box = document.getElementById("owner-slots");
+  if (!box) return;
+  box.innerHTML = "";
+  ownerSlotSpecs().forEach(spec => {
+    const cell = document.createElement("div");
+    cell.className = "slotcell";
+    // 背景那一格单独一个标记：check-owner-mode.js 用它把"背景 1 个"数出来。
+    // ★ 表情那 10 格不必逐格打标 —— 容器上那一处 `data-ocap="face"` +
+    //   faceSlots() 正好 10 个，这两条加起来就是"表情 10 格"的判据
+    //   （逐格打标会让同一个数字有两处来源，反而容易分叉）。
+    if (!spec.face) cell.setAttribute("data-ocap", "bgimage");
+    cell.setAttribute("data-role", String(spec.role));
+
+    const lb = document.createElement("div");
+    lb.className = "lb";
+    const it = slotItem(spec);
+    lb.textContent = spec.label;
+    const meta = document.createElement("span");
+    meta.className = "dim";
+    meta.textContent = it
+      ? (it.name + "　" + it.w + "×" + it.h +
+         (wantAlpha(it.role) ? "　RGB565A8" : "　RGB565"))
+      : (spec.face ? "空（缺图会按降级链用别的一张）" : "空（会露出主题底色）");
+    lb.appendChild(meta);
+
+    const cv = document.createElement("canvas");
+    cv.width = 54; cv.height = 54;
+    if (it) drawSlotThumb(cv, it, themeBgHex());
+
+    const btns = document.createElement("div");
+    btns.className = "btns";
+    const pickBtn = document.createElement("button");
+    pickBtn.className = "tiny";
+    pickBtn.textContent = it ? "换图" : "选文件";
+    pickBtn.addEventListener("click", () => askSlotFile(spec));
+    const clr = document.createElement("button");
+    clr.className = "tiny danger";
+    clr.textContent = "清除";
+    clr.disabled = !it;
+    clr.addEventListener("click", () => clearSlot(spec, it));
+    btns.append(pickBtn, clr);
+
+    cell.append(lb, cv, btns);
+    wireSlotDrop(cell, spec);
+    box.appendChild(cell);
+  });
+}
+
+// 拖到某一格：高亮 + 松手就按**这一格**的规则处理
+function wireSlotDrop(cell, spec) {
+  ["dragenter", "dragover"].forEach(ev =>
+    cell.addEventListener(ev, e => {
+      e.preventDefault(); e.stopPropagation(); cell.classList.add("hot");
+    }));
+  ["dragleave", "dragend"].forEach(ev =>
+    cell.addEventListener(ev, e => {
+      e.preventDefault(); e.stopPropagation(); cell.classList.remove("hot");
+    }));
+  cell.addEventListener("drop", e => {
+    e.preventDefault(); e.stopPropagation();
+    cell.classList.remove("hot");
+    const files = Array.from(e.dataTransfer.files || []);
+    if (files.length) sendFilesToSlot(spec, files);
+  });
+}
+
+// 「选文件」：把"这一格要收的图"记进 ownerSlotPick，再开文件框
+// （文件框本身拿不到 role，所以必须靠这个中间变量 —— 一次只允许一格在等）
+// ★ 顺手把 role 写到 input 的 data-role 上：不是为了功能，而是让
+//   "点的是哪一格"在 DOM 里留得下痕迹（排查/自动化都看得到），
+//   也避免"点了 A 格、文件却进了 B 格"这种错在日志里查不出来。
+let ownerSlotPick = null;
+function askSlotFile(spec) {
+  ownerSlotPick = spec;
+  const inp = document.getElementById("file-img");
+  inp.setAttribute("data-role", String(spec.role));
+  inp.click();
+}
+
+// 选/拖进来的图按**这一格**的规则入列：
+//   · 表情格 ⇒ 先 checkUpload（JPEG 会被拒），通过后**弹框选**
+//   · 背景格 ⇒ 不弹框选，直接走既有的 addFiles()（角色=背景，可 JPEG）
+function sendFilesToSlot(spec, files) {
+  if (spec.face) {
+    ownerFaceFiles(files, spec);
+    return;
+  }
+  // 背景：不弹框选（背景要铺满整屏，没有"框外"）。
+  // ★ 这里**不能**在 addFiles() 之后立刻 say() 一句"已加入" —— 文件的解码是
+  //   异步的（img.onload 才 push），那句话会在图还没进列表时把 addFiles()
+  //   自己的结果提示**覆盖掉**（车主看到的是"已加入"而列表还是空的）。
+  //   所以背景这一条只说"该怎么期待"，结果由 addFiles() 自己报。
+  say("背景图正在加入（两屏共用）。背景不加框选 —— 它要铺满 " +
+      bgSideFor(curTarget) + "×" + bgSideFor(curTarget) + "，可用 JPEG；" +
+      "缩放方式 / 目标宽度在「高级 → 图片列表」里调。");
+  addFiles(files, spec.role);
+}
+
+// 「清除」：把这个槽位上**所有**图删掉（同 role 多张时一次清干净 —— 车主说"清除"）
+function clearSlot(spec, it) {
+  const n = items.filter(i => i.role === spec.role).length;
+  if (!n) { say("「" + spec.label + "」本来就是空的。"); return; }
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].role === spec.role) items.splice(i, 1);
+  }
+  refresh();
+  say("已清除「" + spec.label + "」（" + n + " 张）。" +
+      (spec.face ? "缺图时设备会按降级链用别的一张表情。" : "背景空着会露出主题底色。"), "ok");
 }
 
 // 车主模式里要保留的弧（屏幕 / 弧序号 / 中文标签）—— 表在下面 OWNER_ARCS
@@ -1711,32 +1901,19 @@ function buildOwnerControls() {
                                           v => { al.overspeed_kmh = v; }, 0, 300, 1);
   }
 
-  // 表情槽下拉（中文阶段名）
-  const slotSel = document.getElementById("owner-slot");
-  if (slotSel) {
-    slotSel.innerHTML = "";
-    ownerSlots().forEach((sl, i) => {
-      const o = document.createElement("option");
-      o.value = String(i);
-      o.textContent = sl.label;
-      if (sl.side === 0 && sl.key === "Idle") o.selected = true;
-      slotSel.appendChild(o);
+  // ★★ 槽位清单（背景 1 + 表情 10）—— 车主模式的图片入口就在这儿。
+  //   格子本身由 buildOwnerSlots() 生成（名称/数量都来自 face-stages.js），
+  //   容器上的 `data-ocap="face"` 是给 check-owner-mode.js 数的静态标签。
+  buildOwnerSlots();
+  const addBtn = document.getElementById("btn-owner-add");
+  if (addBtn && !addBtn.dataset.wired) {
+    addBtn.dataset.wired = "1";
+    // 「＋ 加一张」= 老路径（按「高级」里的用途规则自动归类），
+    // 给"我就是要随便塞一张进去"留个口子；要指定格子就用各格自己的按钮。
+    addBtn.addEventListener("click", () => {
+      ownerSlotPick = null;
+      document.getElementById("file-img").click();
     });
-  }
-
-  // 表情图拖入区（唯一的图片入口）
-  const drop = document.getElementById("owner-face-drop");
-  if (drop) {
-    drop.setAttribute("data-ocap", "face");
-    if (!drop.dataset.wired) {
-      drop.dataset.wired = "1";
-      drop.addEventListener("click", () => document.getElementById("file-face").click());
-      ["dragenter", "dragover"].forEach(ev =>
-        drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("hot"); }));
-      ["dragleave", "drop"].forEach(ev =>
-        drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("hot"); }));
-      drop.addEventListener("drop", e => ownerFaceFiles(e.dataTransfer.files));
-    }
   }
 
   // 保存安装包 + 一条刷写命令（端口可改、偏移不让改）
@@ -1792,18 +1969,12 @@ function updateOwnerFlash() {
 }
 
 // ------------------------------------------------------------
-// 表情图拖入：**先规格检查，再弹框选**
+// 表情图入列：**先规格检查，再弹框选**
 //   ★ JPEG 一律拒绝，并明确告诉车主"表情要透明背景，请用 PNG"
 //     （规则与文案的唯一权威是 asset-spec.js 的 checkUpload()）
+//   ★ **只给表情槽**走这条；背景格走 addFiles()（不弹框选，可 JPEG）
 // ------------------------------------------------------------
-function ownerCurrentSlot() {
-  const slots = ownerSlots();
-  const sel = document.getElementById("owner-slot");
-  const i = sel ? (+sel.value || 0) : 0;
-  return slots[i] || slots[0];
-}
-
-function ownerFaceFiles(files) {
+function ownerFaceFiles(files, slot) {
   const list = Array.from(files || []);
   if (!list.length) return;
   const f = list[0];
@@ -1811,7 +1982,7 @@ function ownerFaceFiles(files) {
     say("「" + f.name + "」不是图片格式。表情请用带透明背景的 PNG。", "err");
     return;
   }
-  const slot = ownerCurrentSlot();
+  slot = slot || ownerSlotSpecs()[1];          // 兜底：没给就按左屏·怠速那一格
   const chk = AssetSpec.checkUpload(f.name, f.type, slot.role, curTarget);
   if (!chk.ok) {
     say("✗ 「" + f.name + "」不能当表情图：\n" + chk.errors.join("\n") +
@@ -1819,7 +1990,7 @@ function ownerFaceFiles(files) {
     return;
   }
   const img = new Image();
-  img.onload = () => { openCropper(img, f.name); };
+  img.onload = () => { openCropper(img, f.name, slot); };
   img.onerror = () => say("✗ 「" + f.name + "」浏览器解不开这张图。请另存为 PNG 再传一次。", "err");
   img.src = URL.createObjectURL(f);
 }
@@ -1834,7 +2005,8 @@ function ownerFaceFiles(files) {
 // ------------------------------------------------------------
 let cropState = null;
 
-function openCropper(img, name) {
+// slot = 这一张要进哪一格（车主模式的槽位清单里点/拖的那一格）
+function openCropper(img, name, slot) {
   const cv = document.getElementById("cropcv");
   const stage = document.getElementById("crop-stage");
   const panelW = Math.max(200, Math.min(460, stage.clientWidth || 460));
@@ -1844,7 +2016,7 @@ function openCropper(img, name) {
   const H = Math.round(panelW * (sh / sw));
   cv.width = W; cv.height = H;
   const F = Math.min(W, H);
-  cropState = { img: img, name: name, W: W, H: H, sw: sw, sh: sh, F: F,
+  cropState = { img: img, name: name, slot: slot || null, W: W, H: H, sw: sw, sh: sh, F: F,
                 k: Math.min(F / sw, F / sh), ix: 0, iy: 0, drag: null, pinch: null };
   cropState.ix = (W - sw * cropState.k) / 2;
   cropState.iy = (H - sh * cropState.k) / 2;
@@ -1968,10 +2140,12 @@ function cropClose() {
 function cropConfirm() {
   const sq = cropRenderSquare();
   if (!sq) return;
-  const slot = ownerCurrentSlot();
+  const slot = cropState.slot || ownerSlotSpecs()[1];   // 哪一格发起的就是哪一格
   const name = (cropState.name || "face").replace(/\.[^.]+$/, "") + "-" + slot.label;
   const w = pickDefaultSize(sq.width, slot.role);   // ★ 复用**既有**那条"只缩不放 + 上限"规则
-  // 进槽：与普通导入的 item 同形 ⇒ 走**同一份** renderToTarget()/buildPayload()
+  // 同 role 再进来一张 ⇒ 旧的同 role 条目挪到后面（设备按 order 最小取用，
+  // 所以"刚换的那张"必须赢 —— 否则车主换了图却看不到变化）。
+  items.forEach(i => { if (i.role === slot.role) i.order += 1; });
   items.push({ id: nextId++, img: sq, name: name, role: slot.role, order: 0,
                fit: "contain", w: w, h: w });
   cropClose();
@@ -2046,8 +2220,7 @@ function initOwnerCropper() {
   document.getElementById("file-face").addEventListener("change", e => {
     ownerFaceFiles(e.target.files);
     e.target.value = "";
-  });
-}
+  });}
 
 function touchDist(e) {
   const dx = e.touches[0].clientX - e.touches[1].clientX;
@@ -2631,6 +2804,7 @@ function refresh(rebuildGrid = true) {
   buildList();
   applyPreviewSize();
   buildOwnerColors();       // ★ 高级里改完色 / 读入主题之后，车主模式那几行跟着更新
+  buildOwnerSlots();        // ★ 槽位清单（背景 + 表情 10 格）的缩略图/元信息跟着 items 走
   const stage = FaceStages.STAGES[curStage] || FaceStages.STAGES[0];
   // 大预览也按屏取:左屏看 stage.left、右屏看 stage.right(可被下拉覆盖)
   drawScreen(document.getElementById("cv0"), 0, stage, stageFaceOverride[0] || null);
@@ -2842,13 +3016,17 @@ function defaultRoleForNewItem() {
   return ImageBlob.ROLE.FaceIdle;
 }
 
-function addFiles(files) {
+// roleOverride（可选）：把这一批图**强制**归到某个用途上。
+//   车主模式的背景格就是靠它（那一格明确是背景，不该再按"自动归类"猜）；
+//   不传时保持老行为（defaultRoleForNewItem 依次给 背景 → 左屏怠速 → 右屏静止）。
+function addFiles(files, roleOverride) {
   const list = Array.from(files || []);
   if (!list.length) return;
   if (items.length + list.length > ImageBlob.MAX_COUNT) {
     say("最多 " + ImageBlob.MAX_COUNT + " 张图（设备端索引表就这么大）。", "err");
     return;
   }
+  const forcedRole = (typeof roleOverride === "number") ? roleOverride : null;
 
   let pending = list.length;
   list.forEach((f, k) => {
@@ -2868,7 +3046,7 @@ function addFiles(files) {
     //     以前这里直接递 role0（数字）⇒ 恒判"不认识的用途：1" ⇒ **任何图片都进不了
     //     列表**，而且页面上一个字都不打（理由被 refresh() 刷掉了，见 #stage-info 处）。
     //     （checkUpload 现在两种入参都收，但这一侧仍然该给名字：语义最清楚。）
-    const role0 = defaultRoleForNewItem();
+    const role0 = forcedRole === null ? defaultRoleForNewItem() : forcedRole;
     const roleName0 = roleIdForNumber(role0);
     const chk = AssetSpec.checkUpload(f.name, f.type, roleName0, curTarget);
     if (!chk.ok) {
@@ -2888,10 +3066,13 @@ function addFiles(files) {
       //   空间直接翻倍，而且用户看不出是被放大了（缩略图一样大）。
       //   角色也要传进去：背景可以铺满屏，表情上限由**目标板那块屏**决定
       //   （480 屏 320、240 屏 160）。
-      const role = defaultRoleForNewItem();
+      const role = forcedRole === null ? defaultRoleForNewItem() : forcedRole;
       const target = pickDefaultSize(img.naturalWidth, role);
       const sh = img.naturalHeight, sw = img.naturalWidth;
       const upscaled = target > (sw || target);
+      // ★ 同 role 再进来一张：把旧的挪到后面。设备按 order **最小**的那张取用，
+      //   所以"刚加的"必须是 order 最小的那个，否则车主换了图却看不到变化。
+      items.forEach(i => { if (i.role === role) i.order += 1; });
       items.push({
         id: nextId++,
         img,
@@ -2910,7 +3091,7 @@ function addFiles(files) {
         const capFx = ImageBlob.faceCanvasMaxFor(curTarget);
         const recFx = ImageBlob.faceSizeRecommendedFor(curTarget);
         const is240 = ImageBlob.faceTierInfo(curTarget).id === "res240";
-        const bgSide = is240 ? 240 : 480;
+        const bgSide = bgSideFor(curTarget);
         say("已添加 " + list.length + " 张，输出尺寸按原图（表情不超过 " +
             capFx + "、背景不超过 " + bgSide + "）。\n" +
             "表情建议 " + recFx + "×" + recFx + "（半径 " + (recFx / 2) +
@@ -3006,8 +3187,16 @@ document.getElementById("btn-copy").addEventListener("click", async () => {
 document.getElementById("btn-add").addEventListener("click", () => {
   document.getElementById("file-img").click();
 });
+// ★ 一个 input 服务两条路（老路径 + 车主模式的"某一格"）：
+//   · ownerSlotPick 非空 ⇒ 这一批图归**那一格**：表情格弹框选，背景格直接入列
+//   · 否则就是老路径（addFiles 按 defaultRoleForNewItem 自动归类）
 document.getElementById("file-img").addEventListener("change", e => {
-  addFiles(e.target.files); e.target.value = "";
+  const files = e.target.files;
+  const spec = ownerSlotPick;
+  ownerSlotPick = null;              // 先清掉：一次只服务一格
+  if (spec) sendFilesToSlot(spec, files);
+  else addFiles(files);
+  e.target.value = "";
 });
 
 // 拖放:图片进图片列表,theme.json / assets.bin / image.bin 走**同一条**读取路径

@@ -69,25 +69,31 @@ const OWNER_EXPECT_COUNT = { bg: 1, arc: 4, digit: 1, redline: 1, overspeed: 1, 
 //   这样"四条"在两页都是可执行的判据，而不是靠注释。
 const ARC_MARK_EXPECT = { "index.html": 4, "image-editor.html": 1 };
 
-section("① 车主模式恰好有那 9 类控件（两个页面各查一遍）");
-// 身份标签有两种合法写法（两页各用一种，都是有意的）：
+section("① 车主模式恰好有那 9 类控件（两个页面各查一遍）");// 身份标签有两种合法写法（两页各用一种，都是有意的）：
 //   · 主题页（index.html）：**静态写在 HTML 里** —— `data-ocap="bg"`。
 //     好处：车主模式下"这一栏是哪几件东西"一眼可读，检查脚本也数得到。
 //   · 图片页（image-editor.html）：那几行弧/读数控件本来由 JS 生成，
 //     所以用**字面量** setAttribute("data-ocap", "arc")。
 //   两种都要求"字面量"：用变量拼出来的标签本脚本数不到，
 //   而"数不到"会让这条守卫静默失效 —— 比报错更糟。
+//   ★ 数之前先把**注释**剥掉：这些注释里会引用 `data-ocap="face"` 这种写法
+//     （本仓库的注释风格就是这样），不剥就会多数出来（实测踩过：3 处里 2 处是注释）。
 function countOwnerCaps(src) {
   const counts = {};
   const add = (k) => { counts[k] = (counts[k] || 0) + 1; };
+  // 只剥 HTML/JS 注释，保留字符串里的内容（我们的标签本来就写在字符串/属性里）
+  const code = src
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
   let m;
   const reAttr = /\bdata-ocap="([a-z]+)"/g;
-  while ((m = reAttr.exec(src)) !== null) add(m[1]);
+  while ((m = reAttr.exec(code)) !== null) add(m[1]);
   const reJs = /setAttribute\(\s*"data-ocap"\s*,\s*"([a-z]+)"\s*\)/g;
-  while ((m = reJs.exec(src)) !== null) add(m[1]);
+  while ((m = reJs.exec(code)) !== null) add(m[1]);
   return counts;
 }
-const KNOWN_MARKS = OWNER_CAPS.concat(["preset", "port"]);
+const KNOWN_MARKS = OWNER_CAPS.concat(["preset", "port", "bgimage", "slots"]);
 for (const [page, src] of Object.entries(PAGES)) {
   const counts = countOwnerCaps(src);
   for (const k of Object.keys(counts)) {
@@ -107,6 +113,24 @@ for (const [page, src] of Object.entries(PAGES)) {
   eq(counts.port || 0, 1, page + " 车主模式恰好一处端口标记");
   // 预设那一行：主题页恰好一处
   if (page === "index.html") eq(counts.preset || 0, 1, page + " 预设那一行恰好一处");
+  // ★★ 槽位清单（2026-10-15 车主实测反馈要求的那一件）：背景 1 + 表情 10
+  if (page === "image-editor.html") {
+    eq(counts.face || 0, 1, page + " 槽位清单容器上一处 face 标记");
+    eq(counts.bgimage || 0, 1, page + " 背景那一格恰好一处 bgimage 标记");
+  }
+  // ★ 每格的工具（换图 / 清除）必须真的在页面里
+  if (page === "image-editor.html") {
+    for (const w of ['"选文件"', '"换图"', '"清除"', "function buildOwnerSlots",
+                     "function sendFilesToSlot", "function clearSlot", "function drawSlotThumb"]) {
+      ok(src.indexOf(w) >= 0, page + " 槽位清单里有 " + w);
+    }
+    // 表情格弹框选、背景格不弹：这两条路必须是**分开**的两个分支
+    ok(/spec\.face\s*\?\s*ownerFaceFiles|if\s*\(\s*spec\.face\s*\)/.test(src),
+       page + " 按 face 标记分流（表情格走框选、背景格不走）");
+    // 清除：同 role 全部删掉
+    ok(/function clearSlot[\s\S]{0,400}role === spec\.role/.test(src),
+       page + " 清除按 role 删干净");
+  }
   // 那张能力表本身也要在页面里（两页同源），并且**不多不少**
   const capsDecl = /const OWNER_CAPS\s*=\s*(\[[^\]]*\])/.exec(src);
   ok(!!capsDecl, page + " 里有 OWNER_CAPS 声明");
@@ -114,6 +138,47 @@ for (const [page, src] of Object.entries(PAGES)) {
     const arr = new Function("return " + capsDecl[1])();
     eq(JSON.stringify(arr), JSON.stringify(OWNER_CAPS), page + " 的 OWNER_CAPS 与能力表一致");
   }
+}
+
+section("①b 槽位清单：背景 1 + 表情 10，名称用中文阶段名（图片页）");
+{
+  const src = PAGES["image-editor.html"];
+  const FSrd = require(path.join(dir, "face-stages.js"));
+  const body = /function faceSlots\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
+  ok(!!body, "图片页有 faceSlots()（从 FaceStages 取 10 个表情槽）");
+  // ★ 把 faceSlots() 真跑一遍：喂**真的** face-stages.js 进去，
+  //   所以"名称是不是中文阶段名、是不是 5+5"是算出来的，不是数注释。
+  if (body) {
+    const fn = new Function("FaceStages", body[0] + "\nreturn faceSlots;");
+    const slots = fn(FSrd)();
+    eq(slots.length, 10, "表情槽正好 10 个");
+    eq(slots.filter(s => s.face).length, 10, "10 个都标了 face:true（要走框选）");
+    eq(slots.filter(s => s.side === 0).length, 5, "转速屏 5 个");
+    eq(slots.filter(s => s.side === 1).length, 5, "速度屏 5 个");
+    const left = slots.filter(s => s.side === 0).map(s => s.label.split(" · ").pop());
+    const right = slots.filter(s => s.side === 1).map(s => s.label.split(" · ").pop());
+    eq(left.join("/"), "怠速/巡航/运动/高转/红区", "转速屏槽位名（中文阶段名，按档位序）");
+    eq(right.join("/"), "静止/市区/快速路/高速/超速", "速度屏槽位名（中文阶段名，按档位序）");
+    // 名字里必须点明是**哪块屏**（车主反馈里特意提了"区分是哪个屏的槽"）
+    ok(slots.every(s => s.label.indexOf("转速表") >= 0 || s.label.indexOf("速度表") >= 0),
+       "每个表情槽名都点明哪块屏（转速表 / 速度表）");
+    // role 必须与 face-stages.js 一致（不许在页面里另造一套编号）
+    const want = [];
+    for (let s = 0; s < 2; s++) FSrd.statesOf(s).forEach(st => want.push(st.role));
+    eq(slots.map(s => s.role).join(","), want.join(","), "10 个 role 与 face-stages.js 逐个一致");
+  }
+  // 背景那一格：1 个、face:false（不弹框选）
+  const sp = /function ownerSlotSpecs\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
+  ok(!!sp, "图片页有 ownerSlotSpecs()（背景 + 表情合成一张表）");
+  if (sp) {
+    ok(/ImageBlob\.ROLE\.Background/.test(sp[1]) && /face:\s*false/.test(sp[1]),
+       "背景那一格 face:false（背景不加框选）");
+    ok(/\.concat\(faceSlots\(\)\)/.test(sp[1]),
+       "ownerSlotSpecs() = 背景 1 格 + faceSlots() 10 格");
+  }
+  // 背景格可以 JPEG（表情不行）—— 这一条由 asset-spec 的 checkUpload 决定，
+  // 这里只断言"背景格**不**去走那条只给表情的检查/框选分支"
+  ok(/背景：不弹框选|背景不加框选/.test(src), "页面里明说背景不加框选");
 }
 
 section("② 车主模式是**默认**（没记录时进车主模式，不是高级）");
@@ -209,6 +274,32 @@ section("⑤ 高级里旧控件一个不少（图片页）");
   const budgetAt = src.indexOf('id="budget-bar"');
   ok(advAt >= 0 && dropAt > advAt && budgetAt > advAt,
      "image-editor.html 的图片列表/占用那些 section 都在 #advanced 之后");
+
+  // ★★ 2026-10-15（车主反馈那一单）：槽位清单进了车主模式，但**技术参数留在高级** ——
+  //   把这条写成判据（"车主模式干净"是车主要求的，不是顺手的）。
+  const ownerAt = src.indexOf('id="owner"');
+  const mainEnd = src.indexOf("</main>");
+  ok(ownerAt >= 0 && ownerAt < advAt, "图片页车主模式那一栏在高级之前");
+  const ownertxt = src.slice(ownerAt, advAt);       // #owner 那一栏的 HTML
+  // ★ 只查"控件"（input/select/button 这些真能调的），不查封面的说明文字 ——
+  //   车主模式里有一行**指路文字**会说"技术参数在高级"，那句话本身不是控件。
+  for (const bad of ["裁透明边", "目标宽度", "顺序", "拉伸"]) {
+    const ctl = new RegExp("<(input|select|button)[^>]*>[^<]*" + bad +
+                           "|<label[^>]*>[^<]*" + bad);
+    ok(!ctl.test(ownertxt), "车主模式那一栏里**没有**「" + bad + "」控件（留在高级）");
+    // 反向：高级那一半必须**有**它（不然就是把控件删了，不是搬走了）
+    ok(src.indexOf(bad) >= 0, "「" + bad + "」这个控件在页面里仍然存在（在高级）");
+  }
+  // 车主模式那一栏里也不许出现"顺序"输入框（那是同角色多帧才要的排法）
+  ok(ownertxt.indexOf("顺序") < 0 || ownertxt.indexOf("顺序") >
+     ownertxt.indexOf("技术参数"), "车主模式里只有那句指路文字提到「顺序」");
+  // 反过来：高级里这几样必须**还在**（既有的那一套，一个字没删）
+  const advtxt = src.slice(advAt, mainEnd);
+  for (const good of ["FITS", "item.fit", "item.trim", "SIZE_PRESETS"]) {
+    ok(src.indexOf(good) >= 0, "技术参数仍然存在：" + good);
+  }
+  ok(/contain|cover|stretch/.test(advtxt) || /const FITS/.test(src),
+     "contain/cover/stretch 三种缩放方式仍在");
 }
 
 section("⑥ 框选器：只给**表情槽**，背景不加");
@@ -381,13 +472,18 @@ section("⑫ 槽位文案用**中文阶段名**（从 face-stages.js 取，不�
        page + " 的车主模式槽位文案来自 FaceStages");
     // 页面里不该出现 "表情槽 3" 这种用 role 编号当名字的写法
     ok(!/表情槽\s*[0-9]/.test(src), page + " 没有用 role 编号当槽位名");
-    // 5+5 个槽位名都要能被拼出来
-    const slots = /function ownerSlots\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
-    ok(!!slots, page + " 有 ownerSlots()");
-    if (slots) {
-      ok(/statesOf\(/.test(slots[1]), page + " 的 ownerSlots() 从 FaceStages.statesOf() 取");
-      ok(/stateLabel|\.label/.test(slots[1]), page + " 的 ownerSlots() 用中文 label");
+    // 5+5 个槽位名都要能被拼出来（图片页叫 faceSlots()；主题页没有槽位清单，
+    // 它只有那个"拖进来弹框选"的入口 —— 见 ①b 那一节）
+    const slots = /function faceSlots\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
+    if (page === "image-editor.html") {
+      ok(!!slots, page + " 有 faceSlots()");
+      if (slots) {
+        ok(/statesOf\(/.test(slots[1]), page + " 的 faceSlots() 从 FaceStages.statesOf() 取");
+        ok(/stateLabel|\.label/.test(slots[1]), page + " 的 faceSlots() 用中文 label");
+      }
     }
+    // 两页都不许把阶段名手抄成字面量数组（抄一套就会与固件分叉）
+    ok(!/\[\s*"怠速"\s*,\s*"巡航"/.test(src), page + " 里没有手抄一串阶段名");
   }
 }
 
