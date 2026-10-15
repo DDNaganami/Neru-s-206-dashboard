@@ -8240,3 +8240,74 @@ kVanLightDashboard = 0x80u;    // 我们叫它"仪表盘灯"
   6 个 `?`=字节数）确认走的是成功分支，而非另两条 fallback。② 另写的 raw 抓取两次开串口都没触发复位，
   没拿到解码前的中文原文。③ 从板主题字节数刷前最后一次记录是 2578（10:39 量程实验），现在是 2579
   —— 与 `docs-msg8` 记载的“实验后已把原主题写回（底稿 2579 B）”吻合，且未越界写入 ⇒ 板上是车主原始主题。
+## 2026-10-15 —— ★ 一次**自己改出来的**故障：逐帧 LVGL 样式写入导致横纹/偏移（已定位并修复）
+
+### 现象与判据
+- 车主报：从板（左屏=转速表）**严重横纹 + 偏移，且持续出现**（刷入 `a076acd` 之后）。
+- 机器侧实测（同板/同采集方式/同一天，`streak-slave.log` 20 s，122 行）：
+  `inv=`（每秒失效=要重绘的像素面积）**130k → 856,980 px²/s（×5~6）**；`flush=` 22–61/s → **80/s**；
+  `copy_avg=` 260–530 µs → **~950 µs**。★ 决定性观察：`rpm=13~24% / face=idle/idle / alert=none`
+  （**根本没进红区**）时 `inv` 就已经是 856,980 ⇒ 元凶必在**逐帧路径**，与红区染色/加粗无关。
+- ★ 同时**没有**任何 ② 类机器签名：`panelguard` 0 条、`timeout=0`、`fullrb=0/s`
+  ⇒ 与历史上"② 无签名"的特性一致；`src/dash_display_rgb.cpp` 的刷新/缓冲参数（`RGB_BOUNCE_LINES`、
+  `RGB_DRAW_BUF_LINES=16`、bounce、fullrb 档、`pclk=12000000Hz`）**一行未动**。
+
+### 元凶（只读代码定位 + LVGL 源码逐行确认）
+`src/dash_ui.cpp:1307`（`dash_ui_render()` 逐帧弧循环内）**无条件**每帧每弧调用
+`arc_apply_red()`（`:329-335`）⇒ 内部执行 `lv_obj_set_style_arc_width()` 与
+`lv_obj_set_style_arc_color()`。**LVGL 的这两个 setter 不比较新旧值**：
+`lv_obj_set_local_style_prop`（`lv_obj_style.c:433`）末尾无条件 `lv_obj_refresh_style`（`:467`），
+后者在 `:279` 与 `:313` 各一次 `lv_obj_invalidate(obj)` ⇒ **值逐位相同也照旧标脏整个弧包围盒**。
+对象尺寸：主弧 410×410（168,100 px²）+ 副弧 336×336（112,896 px²），2 弧 × 2 屏 × 2 次 setter
+⇒ **每帧 ≈56 万 px² 的全包围盒标脏**。旧代码逐帧只有 `arc_set_progress`，它走
+`inv_arc_area`（`lv_arc.c:898`）开头 `if (start_angle == end_angle) return;` ⇒ 值不变**一笔都不脏**。
+★ 交叉验证：`git show 2bc5b38:src/dash_ui.cpp` 中 `arc_apply_red|arc_is_red|digit_red` 命中数 = **0**
+⇒ 确系本单新引入。排除项：`digit_red`（`dash_ui.cpp:614-618`，**写法正确、有守卫**）、
+`lib/dashcore/alert_view.h`（纯值语义、不碰 LVGL）、`build_arcs` 的建屏期一次性 setter。
+
+### A/B（回滚取证）
+把从板刷回**最后一个能编译的改动前提交** `2bc5b38`（注意：`e7d1813` 是**中间态、编译不过** ✗
+—— 它是误提交 `f1268a6` 造成的，`pio FAILED`）⇒ **车主确认横纹与偏移消失** ✓
+⇒ 责任锁定在本次改动。产物留档：`fw-prev-good-2bc5b38-slave.bin`、`fw-new-a076acd-slave.bin`、
+`rollback-slave.log`、`rollback-verify.log`。
+
+### 修复（提交 `af52b98`，仅 `src/dash_ui.cpp`，18+/2-）
+- `ScreenUi` 加 `uint8_t arc_red_mask = 0;`（紧邻 `digit_red`）：★ **按弧位掩码**而非单个 bool ——
+  同屏两弧的 `red` 是**逐弧各自算的**（Rpm 走 `arc_is_red()`、Speed 走 `overspeed_alert`、副表恒 false），
+  单 bool 会漏刷；`kMaxArcs=3 ≤ 8` 够用，且 `ScreenUi` 每屏一个实例 ⇒ 天然按屏隔离。
+- 调用点改"先比后设"：只在**状态真的翻转那一帧**更新掩码并碰样式。
+- `arc_apply_red()` 上方那条与实现不符的注释改为"**守卫由调用方负责**"。
+
+### 修复后实测（`fix-verify.log`，154 行，15 个稳态样本）
+| 指标 | 坏档 | 修后稳态 | 改动前基线 |
+|---|---|---|---|
+| `inv=` | 856,980 px²/s | **5.8万 ~ 17.3万**（仅首样本 231,892） | ~13 万 |
+| `flush=` | 80/s | **23–35/s** | 22–61/s |
+| `copy_avg=` | ~957–969 µs | **166–253 µs** | 260–530 µs |
+全程 `timeout=0`、`fullrb=0/s`、`stall=0`、`drop=0`；`fw: build Oct 15 2026 13:37:50`。
+native 383 用例（381 通过/2 跳过）；`pcpreview`、`esp32s3-rgb-slave-now` `[SUCCESS]`；
+刷写 `[SUCCESS]` + `Hash of data verified`（只写 app：bootloader/partitions/boot_app0/app，
+**未碰 `0x210000`/`0x254000`**）。
+
+### ★★ 教训（规范）
+1. **凡在逐帧路径里碰 LVGL 样式，必须先比值后设**（`if (last != now) { last = now; set_style…; }`）——
+   LVGL 的 style setter 族**不比较值**，无条件 invalidate 整个对象包围盒。可参照的正确范例：
+   `dash_ui.cpp` 的 `digit_red`（`if (ui.digit_red != over_red)`）。
+2. **判据要选"与现象无关的干净量"**：这次能一击定位，靠的是 `inv=`/`copy_avg=`（逐笔微秒计数器）
+   而不是靠肉眼或猜测 ✓。
+3. **回滚基线要挑"能编译的"**：`e7d1813` 是中间态、编译不过 ⇒ 白编一轮 ✗（根因是误提交 `f1268a6`）。
+
+### 诚实保留
+- 车主在修复版上仍报"**轻微**横纹与偏移"（比修复前"严重且持续"明显减轻 ✓）。
+  按判据（重绘量已回到底线以下 + `timeout/fullrb` 恒 0 + `BENCH-LOG` 记录**今天改动之前**
+  从板就犯过同样症状、跑了约 9.7 h、无复位）⇒ **属于既有的边缘状态，不是本次改动遗留** ✓。
+  台面供电（USB 偶发瞬态）仍是历史头号嫌疑，**车测（12V→稳压）才是真判据** ✓。
+- 采集本身会把 115200 串口喂满（`log drain≈10.3 KB/s`、`dropped`、~200 ms `stalled`）
+  ⇒ 那些 `drop/stall` 是**测量伪影**，不得当作固件缺陷。
+- `alert: redline` 在修复后的 25 s 验收窗口里未出现 ⇒ "红区/高速红仍在"只在**代码路径上**成立
+  （判定表达式一字未改、首次进入红区必然翻转必然上色），**真机视觉本次未抓到**。
+- ★ **一条被更正的误读**：当天曾把开机横幅的 `usb: personality=ch343p` 读成"UART 口插着线"（错 ✗）。
+  车主确认未插线；固件该行原文即写明 FSUSB42 的 SEL 跟 R44/R45 分压 ⇒ 默认选边。
+  **后果待验**：若 43/44 在默认状态就被切给板载 CH343P，则排针第 3 针的 `GPIO44`
+  （我们定的 VAN 收发器 RX）可能收不到数据 ⇒ **接 VAN 模块时第一件事必须实测确认 44 连到哪一边**
+  （给已知电平/看边沿）。
