@@ -58,6 +58,13 @@ struct ScreenUi {
   lv_obj_t* unit_lbl = nullptr;
   lv_obj_t* coolant_lbl = nullptr;       // 左屏副表:水温
   lv_obj_t* intake_lbl = nullptr;        // 右屏副表:进气温度
+  // ★★ 2026-10-15：读数底片（"大数字 + 单位"一块、副读数一块；见 build_readout_plates）。
+  //   **静态**对象：建屏时建一次、样式设一次，之后没有任何代码碰它们 ——
+  //   逐帧碰样式会让 LVGL 把整个对象标脏（那是 2026-10-15 那次横纹回归的根因，
+  //   见本文件"读数底片"那一段的注释与 ACCEPTANCE.md）。
+  //   ★ 存下来只是为了让"这一屏有哪些层"在这一处看得全；没有任何 apply 会去读它们。
+  lv_obj_t* plate_main = nullptr;        // 大数字 + 单位（两块屏都有）
+  lv_obj_t* plate_sub = nullptr;         // 副读数（水温/进气；没有就是 nullptr）
   bool unit_set = false;                 // 单位文本写过没有(见 readout_apply)
   ArcKind digit_kind = ArcKind::Speed;   // 大数字跟的是哪条弧(建屏时定)
   int32_t digit_val = INT32_MIN;         // 上次显示的值:不变就不 set_text
@@ -573,6 +580,197 @@ static lv_obj_t* make_readout_label(lv_obj_t* parent, const lv_font_t* font,
   return l;
 }
 
+// ============ 读数底片（2026-10-15）============
+//
+// 车主原话："速度和转速有的时候也会和表情有点冲突" ⇒ 定稿做法：
+//   在读数（大数字 + 单位；副读数水温/进气同样落在表情上，一并垫）**下面**
+//   垫一块半透明近黑圆角矩形，让数字从表情里"浮"出来。
+//   ★ 原生**描边**这条路已经查证走不通：LVGL 的文本描边在点阵字体
+//     （Montserrat 位图字体）上不生效 ⇒ 底片是唯一可行的做法。
+//
+// ★★ 三条铁律（违反任何一条都会立刻出故障，别在别处再写一遍）：
+//   ① **只在建屏时创建、样式只设一次** —— 绝不进 `dash_ui_render()` 这类逐帧路径。
+//      LVGL 的 style setter **不比较新旧值**，无条件 `lv_obj_invalidate()` 整个对象
+//      包围盒 ⇒ 逐帧设样式会让每帧重绘量 ×5、屏上出现**持续横纹/偏移**。
+//      这正是 2026-10-15 那次回归：`inv=` 从 20~26 万涨到 **85.7 万** px²/s
+//      （完整记录见 ACCEPTANCE.md 当天的单）。
+//   ② **不新增主题键**（`lib/themetool/ui_theme.h` 写着 Theme 的字段顺序**就是**
+//      序列化顺序，加字段要升版本号、别人手里已导出的 theme.json 全得重导）
+//      ⇒ 颜色取本文件的编译期常量。与 `THEME_REDLINE_ARC_COLOR` 同一条理由：
+//      "读数要看得清"属于**可读性**，不该是能被主题改没的东西。
+//   ③ 底片**不响应任何状态**：红区/超速只改弧与数字的颜色（见 `arc_apply_red` /
+//      `readout_apply` 里的 digit_red），底片保持中性、一动不动。
+static const uint32_t kReadoutPlateColor  = 0x000000;   // 近黑（屏底色 0x141414 比它浅）
+static const lv_opa_t kReadoutPlateOpa    = LV_OPA_50;  // 50%（定稿区间 45%~60%）
+static const int32_t  kReadoutPlatePad    = 6;          // 四周内边距(480 基准；要求 4~8px)
+static const int32_t  kReadoutPlateRadius = 10;         // 圆角(480 基准；要求 8~12px)
+
+// 一段文字的**墨迹盒**（相对"标签对象中心"）。
+// ★ 为什么不能拿标签对象框去垫：标签对象的高是**行高**（48 号字 52px），而数字
+//   墨迹只有 34px —— 用对象框垫，底片上沿会一路顶到外弧带内沿
+//   （半径 181..205 那一圈）上，正是车主报过的"底片啃弧"。
+//   所以按**字形**量。只用公开 API（`lv_font_t` 的字段在 LVGL 9 里是私有的 ——
+//   见本文件 diagFontTag() 那次编不过的教训）：
+//     · `lv_font_get_line_height()`                     —— 行高；
+//     · `lv_font_get_bottom_trim(font, CAPITAL_BASELINE)` —— 基线到行盒**底**的留白
+//       ⇒ 基线到行盒**顶**的距离 = 行高 − 它；
+//     · `lv_font_get_glyph_dsc()` 的 box_h / ofs_y       —— 墨迹上下沿到基线的距离
+//       （LVGL 自己画字时算的就是 `base - box_h - ofs_y`，见 lv_draw_*_label.c）。
+// 校验（默认主题 480 档，与本文件/ui_theme.h 记的**落帧实测**逐条对上）：
+//   48 号数字：墨迹 34 行、中心正落在 cy 上 ⇒ y[71..104] ✓（cy=88）
+//   24 号副表：17 行 ⇒ y[436..452] ✓（cy=444）
+//   18 号单位：按**实际文本**量（"rpm" 没有升部字符 ⇒ 墨迹是 x-height + p 的下伸）
+//              ⇒ y[107..120] ✓（cy=110）—— 这就是它必须逐字符量、不能拍一个数的原因。
+struct InkMeasure {
+  int32_t half_w = 0;   // 墨迹半宽（标签水平居中 ⇒ 左右对称）
+  int32_t top = 0;      // 墨迹上沿（相对对象中心；负 = 在上）
+  int32_t bot = 0;      // 墨迹下沿
+  bool    ok = false;
+};
+
+static InkMeasure measure_text(const char* s, const lv_font_t* font) {
+  InkMeasure m;
+  if (font == nullptr || s == nullptr || *s == 0) return m;
+  const int32_t line_h = lv_font_get_line_height(font);
+  const int32_t base_off =
+      line_h - lv_font_get_bottom_trim(font, LV_TEXT_LEADING_TRIM_CAPITAL_BASELINE);
+  int32_t up = 0, down = 0;
+  for (uint32_t i = 0; s[i] != 0;) {
+    uint32_t ch = (uint8_t)s[i];
+    uint32_t step = 1;
+    // '°'（U+00B0）是两字节 UTF-8 —— 本项目读数里唯一的非 ASCII 字符。
+    if (ch >= 0xC0u && ch < 0xE0u && s[i + 1] != 0) {
+      ch = ((ch & 0x1Fu) << 6) | ((uint8_t)s[i + 1] & 0x3Fu);
+      step = 2;
+    }
+    lv_font_glyph_dsc_t d;
+    if (lv_font_get_glyph_dsc(font, &d, ch, (uint8_t)s[i + step])) {
+      const int32_t t = (int32_t)d.box_h + (int32_t)d.ofs_y;  // 墨迹顶到基线
+      const int32_t b = -(int32_t)d.ofs_y;                    // 墨迹底到基线(下伸为正)
+      if (t > up) up = t;
+      if (b > down) down = b;
+    }
+    i += step;
+  }
+  lv_point_t sz;
+  lv_text_get_size(&sz, s, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+  m.half_w = sz.x / 2;
+  m.top = (base_off - up) - line_h / 2;
+  m.bot = (base_off + down) - line_h / 2;
+  m.ok = (sz.x > 0) && (m.bot > m.top);
+  return m;
+}
+
+// 一块底片覆盖的范围（相对**屏中心**的设备像素）。
+struct PlateBox {
+  int32_t left = 0, right = 0, top = 0, bot = 0;
+  bool    ok = false;
+};
+
+// 把一段文字的墨迹并进底片范围。
+// ★ `cy480` 与 `make_readout_label()` 里的 `lv_obj_align(..., ts(cy480 - 240))`
+//   是**同一个式子** —— 底片与文字必须用同一个中心；各算一份迟早分叉，
+//   症状是"底片偏出去半个字"（这正是本文件反复吃亏的那类"两套判据"）。
+static void plate_add_text(PlateBox& box, const char* s, const lv_font_t* font,
+                           int32_t cy480) {
+  const InkMeasure m = measure_text(s, font);
+  if (!m.ok) return;
+  const int32_t cy = ts(cy480 - 240);
+  const int32_t l = -m.half_w, r = m.half_w;
+  const int32_t t = cy + m.top, b = cy + m.bot;
+  if (!box.ok) {
+    box.left = l; box.right = r; box.top = t; box.bot = b; box.ok = true;
+    return;
+  }
+  if (l < box.left)  box.left  = l;
+  if (r > box.right) box.right = r;
+  if (t < box.top)   box.top   = t;
+  if (b > box.bot)   box.bot   = b;
+}
+
+// 建一块底片。★★ 本函数**只在建屏时被调用一次**（见上面三条铁律的第 ① 条）：
+//   样式设完就再没有人碰它 —— 它不跟状态、不跟数值、不跟红区。
+static lv_obj_t* make_readout_plate(lv_obj_t* parent, const PlateBox& b, int32_t pad) {
+  if (!b.ok) return nullptr;
+  lv_obj_t* p = lv_obj_create(parent);
+  lv_obj_remove_style_all(p);                       // 只要一块纯色圆角块
+  lv_obj_remove_flag(p, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_size(p, (b.right - b.left) + 2 * pad, (b.bot - b.top) + 2 * pad);
+  lv_obj_set_style_bg_color(p, lv_color_hex(kReadoutPlateColor), 0);
+  lv_obj_set_style_bg_opa(p, kReadoutPlateOpa, 0);
+  lv_obj_set_style_radius(p, ts(kReadoutPlateRadius), 0);
+  lv_obj_align(p, LV_ALIGN_CENTER, 0, (b.top + b.bot) / 2);
+  return p;
+}
+
+// 这一屏的副读数是哪一条（水温/进气），没有就是 None。
+// ★ 判据**只有这一处**：底片与文字两处都走它 —— 条件各写一份迟早分叉，
+//   症状是"数字底下垫着一块空底片"（或反过来，字露在底片外面）。
+enum class SubReadout : uint8_t { None, Coolant, Intake };
+
+static SubReadout sub_readout_kind(const ScreenTheme& cfg, ArcKind pk) {
+  if (READOUT_SHOW_COOLANT && pk != ArcKind::Coolant &&
+      screen_has_kind(cfg, ArcKind::Coolant)) return SubReadout::Coolant;
+  if (READOUT_SHOW_INTAKE && pk != ArcKind::Intake &&
+      screen_has_kind(cfg, ArcKind::Intake)) return SubReadout::Intake;
+  return SubReadout::None;
+}
+
+static int32_t sub_readout_cy480(SubReadout k) {
+  return (k == SubReadout::Intake) ? (int32_t)READOUT_INTAKE_CY : (int32_t)READOUT_COOLANT_CY;
+}
+
+// 建一屏的读数底片。
+// ★ 调用点在**弧之前**（见 dash_ui_init）⇒ 图层顺序：表情 → **底片** → 弧 → 读数。
+//   为什么非要压在弧之下：底片贴着数字，上沿会蹭到外弧带内沿（在数字两端更低）——
+//   建在弧之前，弧就画在底片**之上**，弧一个像素都不会被底片盖住
+//   （车主 2026-09-24 报过"外弧被数字挡住"）。读数标签本身照旧最后建（最高层）。
+static void build_readout_plates(lv_obj_t* parent, const ScreenTheme& cfg, ScreenUi& ui) {
+  const ArcKind pk = primary_kind(cfg);
+  const int32_t pad = ts(kReadoutPlatePad);
+
+  // ---- 主读数：大数字 + 单位算**一组**，垫同一块底片 ----
+  // ★ 为什么不各垫一块：数字墨迹下沿（cy+16）与单位墨迹上沿（cy-3）只隔 3px，
+  //   而两块 50% 底片一重叠就会叠出**更深的接缝**（50% 叠 50% = 75%）——
+  //   屏上表现为一条横在数字与单位之间的暗带。
+  // ★ 宽度按**最宽形态**给：转速会到四位数（8000），车速最多三位（206 的车）。
+  //   底片是静态的 ⇒ 不能跟着当前文本变宽窄（那就成了逐帧改几何）。
+  PlateBox main{};
+  plate_add_text(main, (pk == ArcKind::Rpm) ? "8888" : "888",
+                 READOUT_DIGIT_FONT, READOUT_DIGIT_CY);
+  if (READOUT_SHOW_UNITS) {
+    plate_add_text(main, unit_text(pk), READOUT_UNIT_FONT, READOUT_UNIT_CY);
+  }
+  ui.plate_main = make_readout_plate(parent, main, pad);
+
+  // ---- 副读数（水温/进气）：同样落在表情上，一并垫 ----
+  // ★ 宽度按 5 个字形算（三位数 + °C）：水温会到 105°C、进气冬天会到 -20°C。
+  // ★ 高度只有 17 行（24 号）且**贴着文字** ⇒ 离下半圆那条副弧（半径 168/宽 10，
+  //   最低 y=413）还有 20px 余量，**铺不到弧上**。
+  PlateBox sub{};
+  const SubReadout sk = sub_readout_kind(cfg, pk);
+  if (sk != SubReadout::None) {
+    plate_add_text(sub, "888\xC2\xB0" "C", READOUT_SUB_FONT, sub_readout_cy480(sk));
+    ui.plate_sub = make_readout_plate(parent, sub, pad);
+  }
+
+  // 一行自证：底片到底多大、摆在哪（**只在建屏时打一次**；纯 ASCII）。
+  //   为什么值得打：屏上"数字有没有浮出来"只能人眼看，而"底片有没有跑到弧上"
+  //   可以拿这一行的四个数与弧带几何直接对（弧带内沿在正上方 y=59、
+  //   在数字两端更低；副弧最低 y=413）。
+  if (main.ok) {
+    dash_logf("plate: screen=%u main x[%d..%d] y[%d..%d] opa=%u r=%d pad=%d\n",
+              (unsigned)ui.screen, (int)(main.left - pad), (int)(main.right + pad),
+              (int)(main.top - pad), (int)(main.bot + pad),
+              (unsigned)kReadoutPlateOpa, (int)ts(kReadoutPlateRadius), (int)pad);
+  }
+  if (sub.ok) {
+    dash_logf("plate: screen=%u sub  x[%d..%d] y[%d..%d]\n",
+              (unsigned)ui.screen, (int)(sub.left - pad), (int)(sub.right + pad),
+              (int)(sub.top - pad), (int)(sub.bot + pad));
+  }
+}
+
 static void build_readout(lv_obj_t* parent, const ScreenTheme& cfg, ScreenUi& ui) {
   const ArcKind pk = primary_kind(cfg);
   ui.digit_kind = pk;
@@ -588,21 +786,26 @@ static void build_readout(lv_obj_t* parent, const ScreenTheme& cfg, ScreenUi& ui
   }
 
   // 副表数字:该屏真的有这条弧、主题也允许,才建。
-  // 若这屏唯一那条弧就是副表(大数字已经在显示它了),就别在底下重复一遍。
-  if (READOUT_SHOW_COOLANT && pk != ArcKind::Coolant &&
-      screen_has_kind(cfg, ArcKind::Coolant)) {
-    ui.coolant_lbl = make_readout_label(parent, READOUT_SUB_FONT,
-                                        lv_color_hex(READOUT_COOLANT_COLOR),
-                                        READOUT_COOLANT_CY);
-  }
-  // 进气温度同上一套(右屏副表)。两条副表的位置字段是**分开的**
-  // (coolant_cy / intake_cy),所以万一有人把两条内圈弧放到同一屏,
-  // 也能各自挪开,不会叠在一起。
-  if (READOUT_SHOW_INTAKE && pk != ArcKind::Intake &&
-      screen_has_kind(cfg, ArcKind::Intake)) {
-    ui.intake_lbl = make_readout_label(parent, READOUT_SUB_FONT,
-                                       lv_color_hex(READOUT_INTAKE_COLOR),
-                                       READOUT_INTAKE_CY);
+  // ★ 判据走 `sub_readout_kind()`（与底片**同一个**）：底片垫在哪条数字下面
+  //   由它说了算 —— 两边各写一份条件，分叉的症状是"底片垫着、字没建"。
+  // 若这屏唯一那条弧就是副表(大数字已经在显示它了),它会返回 None,不在底下重复一遍。
+  switch (sub_readout_kind(cfg, pk)) {
+    case SubReadout::Coolant:
+      ui.coolant_lbl = make_readout_label(parent, READOUT_SUB_FONT,
+                                          lv_color_hex(READOUT_COOLANT_COLOR),
+                                          READOUT_COOLANT_CY);
+      break;
+    // 进气温度同上一套(右屏副表)。两条副表的位置字段是**分开的**
+    // (coolant_cy / intake_cy),所以万一有人把两条内圈弧放到同一屏,
+    // 也能各自挪开,不会叠在一起。
+    case SubReadout::Intake:
+      ui.intake_lbl = make_readout_label(parent, READOUT_SUB_FONT,
+                                         lv_color_hex(READOUT_INTAKE_COLOR),
+                                         READOUT_INTAKE_CY);
+      break;
+    case SubReadout::None:
+    default:
+      break;
   }
   // ★ 标签一律以空文本创建:开机动画期间 dash_ui_render 会早退,
   //   于是"扫表时数字栏是空的",扫完第一帧才出现 —— 这正是想要的效果。
@@ -1027,22 +1230,27 @@ static float arc_progress(const ArcStyle& a, const ArcDashView& v) {
 //
 // LVGL 里"后建的画在上面"（子对象顺序就是绘制顺序），而这个函数的每一段
 //   都在建一层 ⇒ **本文件里段的先后 = 屏上谁压谁**。约定的最终层序
-//   （2026-09-24 车主定稿，从下到上；**2026-10-15 删掉六格灯栏后只剩四层**）：
+//   （2026-09-24 车主定稿，从下到上；**2026-10-15 删掉六格灯栏后只剩四层，
+//     同一天又插进"读数底片"这一层 ⇒ 现在是五层**）：
 //
 //     1. 背景图            （最底，`g_bg_img`）
 //     2. 表情              （程序化 `build_face` + 表情图片 `g_face_img`）
-//     3. 表盘弧            （`build_arcs`）
-//     4. 读数              （大数字 / 单位 / 水温 / 进气 —— **最高层**）
+//     3. 读数底片          （`build_readout_plates`，2026-10-15；**静态**，只在建屏时建）
+//     4. 表盘弧            （`build_arcs`）
+//     5. 读数              （大数字 / 单位 / 水温 / 进气 —— **最高层**）
 //
 //   ★★ 原来的第 4 层"六格指示灯"（`build_lamps`）已随车主那道命令删除
 //     （原话："车灯车门原车仪表显示更好"，2026-10-15）。⇒ 弧上面直接就是读数。
 //   · 表情在弧**之下**：车主要"表盘弧永远是最上层"（原话），
 //     代价是表情图的边缘会被弧裁掉一块 —— **这是设计如此**，不是 bug
 //     （见 tools/theme-editor/asset-spec.js 的同一条注明）。
+//   · 底片在表情**之上**（要让数字从表情里浮出来）、在弧**之下**：
+//     底片贴着读数，上沿会蹭到外弧带内沿（在数字两端更低）⇒ 把弧画在它上面，
+//     弧就一个像素都不会被底片盖住。★ 别把 `build_readout_plates` 挪到弧之后 ✗。
 //   · 弧在表情**之上**、但在读数**之下**：读数绝不许被弧压住
 //     （车主原话："读数应该是最高层的"）。★ 别顺手把 `build_arcs` 挪到最后 ✗。
 //   · 诊断页（最末尾建）**不在**这张表里：它平时 HIDDEN，一显示就要盖住
-//     上面**全部**四层（整块不透明面板），所以它刻意建在读数之后。
+//     上面**全部**五层（整块不透明面板），所以它刻意建在读数之后。
 // ============================================================
 void dash_ui_init() {
   // 先落默认主题:保证任何情况下主题都是可用的。
@@ -1124,15 +1332,24 @@ void dash_ui_init() {
       lv_image_set_src(g_face_img[s], &g_face_dsc[g][slot]);
     }
 
-    // ---- 第 3 层：表盘弧（**永远在表情之上**，车主定稿）----
+    // ---- 第 3 层：读数底片（2026-10-15）----
+    // ★ 压在**表情之上、弧之下**：底片是给读数垫的，但它的上沿会蹭到外弧带
+    //   内沿 ⇒ 建在弧之前，弧画在底片之上，弧一个像素都不会被盖住
+    //   （读数标签本身照旧最后建 = 最高层，见下面那一段，层序没变）。
+    // ★ 建屏时建一次，之后**没有任何代码**再碰它（逐帧碰样式 = 整对象标脏，
+    //   见 build_readout_plates 上面那三条铁律与 ACCEPTANCE.md 2026-10-15）。
+    build_readout_plates(g_screens[s], kScreens[g], g_ui[s]);
+
+    // ---- 第 4 层：表盘弧（**永远在表情之上**，车主定稿）----
     build_arcs(g_screens[s], kScreens[g], g_ui[s]);
   }
 
   // ★★ 2026-10-15：这里原来还有"第 4 层：指示灯槽位"（`build_lamps`，两屏各一次）。
-  //   车主把整条六格灯栏删了 ⇒ 这一段整个删掉，图层只剩四层
-  //   （背景 / 表情 / 弧 / 读数）—— 见本文件顶部的图层顺序表。
+  //   车主把整条六格灯栏删了 ⇒ 这一段整个删掉。
+  //   （同一天在弧之前插进了"读数底片"那一层 ⇒ 现在是五层：背景 / 表情 / 底片 /
+  //     弧 / 读数 —— 见本文件上面的图层顺序表。）
 
-  // 数字读数最后建:创建顺序就是图层顺序,读数要压在**弧、表情**之上
+  // 数字读数最后建:创建顺序就是图层顺序,读数要压在**弧、表情、底片**之上
   //   （车主 2026-09-24 定稿："读数应该是最高层的" ⇒ 弧被挪到表情之前之后，
   //     读数仍然是最后一个建的 —— 这一段的**位置**是层序约定的一部分，别动）。
   for (uint8_t s = 0; s < 2; ++s) {
