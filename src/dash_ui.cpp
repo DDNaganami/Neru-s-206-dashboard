@@ -65,6 +65,14 @@ struct ScreenUi {
   //   与 digit_val 同一个纪律：只在**状态真的变了**的时候碰一次样式
   //   （读数每秒都在刷，无脑 set_text_color 会白脏一块）。
   bool digit_red = false;                // 上一次把数字设成红的没有
+  // ★★ 2026-10-15：弧的红区染色**同一个纪律**，但红/不红是**逐条弧各自算的**
+  //   （转速弧看数值跨没跨红线，速度弧看超速告警那一件），所以这里用**位掩码**按弧
+  //   下标 `i` 置位，不是单个 bool。
+  //   ★ 为什么非要这个字段：`lv_obj_set_style_arc_width/_color` 这两个 setter
+  //     **不比较新旧值**，无脑 `lv_obj_invalidate()` 整条弧的包围盒 —— 逐帧无条件调
+  //     就是每帧每弧 2 次整圈标脏（实测 `inv=` 85.7 万 px²/s，是正常档的 5 倍）。
+  //     有了它，**值没变就一个字节都不碰**样式。
+  uint8_t arc_red_mask = 0;              // bit i = 第 i 条弧上一次是不是红的
   int32_t coolant_val = INT32_MIN;
   int32_t intake_val = INT32_MIN;
 
@@ -323,7 +331,9 @@ static bool arc_is_red(ArcKind k, const ArcDashView& v, const AlertsConfig& conf
   return false;
 }
 
-// 把一条弧的"亮/不亮红"落到 LVGL 上。★ 只在状态真的变了的时候碰样式。
+// 把一条弧的"亮/不亮红"落到 LVGL 上。
+//   ★ 守卫**由调用方负责**（`arc_red_mask` 那一位没翻转就别调本函数）——
+//     本函数自己**不比较**，每次调用都会真的写样式。
 //   ★ 回退用的"正常色"从 `ArcStyle` 现取 —— 这样主题换了配色，
 //     "退出红区"之后回去的仍然是主题色，不会被我这里写死一个数覆盖掉。
 static void arc_apply_red(lv_obj_t* arc, const ArcStyle& a, bool red) {
@@ -1304,7 +1314,13 @@ void dash_ui_render(const ArcDashView& v, const AlertsConfig& alerts_cfg,
       const bool red = (a.kind == ArcKind::Rpm)
                            ? arc_is_red(a.kind, v, alerts_cfg)
                            : (a.kind == ArcKind::Speed ? overspeed_alert : false);
-      arc_apply_red(ui.arcs[i], a, red);
+      // ★ 先比后设：**只有这一条弧的红/不红真的翻转的那一帧**才碰样式
+      //   （`i < 8` 是位掩码的前提；kMaxArcs 现在是 3，见 ui_theme.h）。
+      const uint8_t bit = (uint8_t)(1u << (i & 7u));
+      if ((ui.arc_red_mask & bit) != (red ? bit : 0u)) {
+        if (red) ui.arc_red_mask |= bit; else ui.arc_red_mask &= (uint8_t)~bit;
+        arc_apply_red(ui.arcs[i], a, red);
+      }
     }
     if (kScreens[ti].show_face && ui.face_bg) {
       // 表情的显隐/形变只在 face_apply 里按状态变化时改一次,这里不重复 set。
