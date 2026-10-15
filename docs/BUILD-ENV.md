@@ -216,3 +216,16 @@ $py = 'C:\.platformio\penv\Scripts\python.exe'
 ⇒ 脚本里**不要写字面 CJK 路径**，用 `Join-Path $env:USERPROFILE '206Dash\Neru-s-206-dashboard'`；
 脚本正文**保持纯 ASCII**（与 `tools/build/pio.ps1` 同一条规矩）。
 
+## 坑 9 ★★ — `PLATFORMIO_BUILD_DIR` 也必须指到**纯 ASCII** 路径
+
+坑 5 只写了“仓库路径要 ASCII”。2026-10-15 实测：**只把仓库镜像放 ASCII 还不够** ——
+`esp32s3-rgb-master-now` 在 pioarduino 自己的 `arduino.py:531` 抛
+`TypeError: argument should be a str or an os.PathLike object where __fspath__ returns a str,
+not 'NoneType'`。
+
+⇒ 与坑 5 同源（CJK 路径让 pioarduino 解析不出路径），解法也一样：
+```powershell
+$env:PLATFORMIO_BUILD_DIR = 'C:\206dash-scratch\final-builds\master'   # 每块板一个子目录
+```
+（同一天用这套拿到了 master/slave 双 `[SUCCESS]`，见 `ACCEPTANCE.md` 的 2026-10-15 一节。）
+

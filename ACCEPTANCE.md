@@ -8202,3 +8202,41 @@ kVanLightDashboard = 0x80u;    // 我们叫它"仪表盘灯"
 - **示宽灯**（车主提到也开了）**在外部定义里没有对应位**。
   可能与 `0x40`/`0x80` 那两位的解释有关（示宽灯常与近光同回路），
   也可能走别的族 —— **本轮没有证据，别下结论**。
+
+## 2026-10-15 —— 删整条指示灯栏 + 砍蜂鸣器 + 红区 5500 / 高速 150（上板）
+
+- **固件提交**：`a076acd`（34 files, +930/−1610）。native **383 用例：381 通过、2 跳过、0 失败**；
+  `pcpreview` / `esp32s3-rgb-master-now` / `esp32s3-rgb-slave-now` **三项构建 `[SUCCESS]`**；
+  前端用例 theme-json 320、face-stages 429、gauge-geometry 71 全过。
+- **改动**：① 指示灯栏（六格）整条删（`lib/dashcore/lamp_view.h` 删文件 + `dash_ui.cpp` 七段绘制 +
+  图层第 4 层 + `THEME_LAMP_*`）；② 蜂鸣器整条砍（4 个驱动文件删 + `dash_buzzer_set()`/
+  `BUZZER_EXIO_BIT`/自检段 + 串口 `b`/`m` + NVS 静音 + 2 秒上限；**同芯片的 `LCD_RST`/`LCD_CS`
+  与 `tca9554_set()` 未动**）；③ 红区阈值 **5800→5500**、高速 **120→150**，弧的点亮段染红并加粗
+  1.25 倍、速度大数字一并变红。
+- ★ **判断留痕（三处与原始需求不完全一致，都是为了让功能真的生效）**：
+  （a）真正决定“脸变红”的是 `src/`/`lib/dashcore/expression.cpp` 的 `kRpmRedlineFrom`（不是 6200），
+  只改 `alerts.h` + `face_stages.h` 的话脸要到 5880 才红、红区仍不可见 ⇒ 一并降到 5500；
+  （b）`face_stages.h` 那一行的样本值**保持 6200**（填 5500 会掉进“高转”档）；
+  （c）预览注入键 `PreviewKey::Overspeed` 的注入值 130→160（否则够不着新阈值、按键无反应），并新增
+  用例钉住“注入值必须够得着阈值”。
+- ★ 顺带修正：`overspeed_kmh` 旧默认 `120.0f` 一直没被一致性对账抓到 —— 原因是 `alerts.h`
+  注释里写了“旧值 120.0f”，而 `test-theme-json.js` 用正则从结构体抓默认值，注释把对账带歪；
+  注释已改写，编辑器模板 `index.html` 与 `tools/theme-editor/theme-default.json` 已一并对齐到 150/5500。
+- **上板（2026-10-15 12:2x）**：master=COM9、slave=COM8，各 4 段写入（0x0/0x8000/0xe000/0x10000）、
+  4×`Hash of data verified`、`[SUCCESS]`（58.14 s / 57.94 s）；**一块一次过、零重刷、无 GBK 崩溃**。
+  日志：`C:\206dash-scratch\flash-{master,slave}.log`、`verify-{master,slave}.log`。
+- **机器侧六项验证（两块都过）**：① `role=MASTER`/`role=SLAVE` 正确；② `fw: build Oct 15 2026`
+  （刷前 master 是 Oct 14 18:41、slave 是 Oct 10 18:21）；③ `theme: 已加载 (2579 字节, bg=0x141414,
+  face=200)` 与刷前逐位相同；④ 蜂鸣器痕迹清零（`mute:` 0 处；`BEEP|beeps=|muted|buzz` 0 处）；
+  ⑤ `206 dash ok` 周期行照常；⑥ `rgb: … pclk=12000000Hz` 未变。
+- ★★ **最硬的前后对照**：周期性行 `SRC-VAN … | alert=overspeed beeps=0 muted | buzz safety=0`
+  （刷前）⇒ 现在只剩 `SRC-VAN … | alert=overspeed`。
+- ★ **分区边界（零改动的证据）**：app 镜像 1495184 B(master)/1491552 B(slave) @0x10000，
+  止于 ≈0x17D090；`partitions-s3-now.csv` 的 app0=0x10000+0x200000（止 0x210000）⇒
+  **theme@0x210000 / spiffs@0x214000 / image@0x254000 一个字节都没碰**（0xe000 那次是 pio 正常的
+  `boot_app0.bin`）。
+- **诚实保留**：① 那行中文主题日志**不是直接读出来的** —— `probe-retry.ps1` 用 `SerialPort.ReadLine()`
+  默认 ASCII 解码，中文全变 `?`；按 `src/theme_load.cpp:58` 的格式串骨架逐位比对（9 个 `?`=“已加载”、
+  6 个 `?`=字节数）确认走的是成功分支，而非另两条 fallback。② 另写的 raw 抓取两次开串口都没触发复位，
+  没拿到解码前的中文原文。③ 从板主题字节数刷前最后一次记录是 2578（10:39 量程实验），现在是 2579
+  —— 与 `docs-msg8` 记载的“实验后已把原主题写回（底稿 2579 B）”吻合，且未越界写入 ⇒ 板上是车主原始主题。
