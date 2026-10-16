@@ -194,14 +194,48 @@ def pages_source():
     return "exe", BUNDLE_DIR
 
 
+def editor_markers():
+    """只读解析编辑器页面**自己暴露**的版本与能力（那一页的约定，**只加不改语义**）：
+
+        window.__OWNER_MODE_VERSION = "2026-10-15.3"
+        window.__OWNER_MODE_CAPS    = { flashNoSave: true, importRestoresImages: true, … }
+        <html data-owner-mode-version="…">          （同一个版本号的 DOM 侧副本）
+
+    ★ 为什么服务端也要读一份：外壳靠它**在发出去之前**就知道"我发的编辑器页是哪一版、
+      有没有 flashNoSave"—— /api/health 里一眼看得见，排查时不用去点按钮。
+    ★ 这里**不改那一页**，只是把它的字读出来（没有这些标记 = 老页面，如实报空）。
+    """
+    path = os.path.join(pages_source()[1], "tools", "theme-editor", "index.html")
+    out = {"editor_version": "", "editor_caps": {}}
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return out
+    m = (re.search(r'__OWNER_MODE_VERSION\s*=\s*"([^"]+)"', text)
+         or re.search(r'\bOWNER_MODE_VERSION\s*=\s*"([^"]+)"', text)
+         or re.search(r'data-owner-mode-version="([^"]+)"', text))
+    if m:
+        out["editor_version"] = m.group(1)
+    m = re.search(r"OWNER_MODE_CAPS\s*=\s*\{([\s\S]*?)\n\};", text)
+    if m:
+        caps = {}
+        for cm in re.finditer(r"([A-Za-z_]\w*)\s*:\s*(true|false)", m.group(1)):
+            caps[cm.group(1)] = (cm.group(2) == "true")
+        out["editor_caps"] = caps
+    return out
+
+
 def pages_info():
     """给 /api/health 与页面看的一小份"我发的是哪一份"自检。"""
     src, base = pages_source()
     app_js = os.path.join(base, "tools", "app", "app.js")
     ed_html = os.path.join(base, "tools", "theme-editor", "index.html")
-    return {"pages_from": src, "pages_dir": base,
+    info = {"pages_from": src, "pages_dir": base,
             "app_js": {"sha8": sha8(app_js), "mtime": mtime_text(app_js)},
             "editor_html": {"sha8": sha8(ed_html), "mtime": mtime_text(ed_html)}}
+    info.update(editor_markers())
+    return info
 
 
 def app_files_dir():

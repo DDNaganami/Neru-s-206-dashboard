@@ -327,18 +327,59 @@ def main():
         ok(not [f for f in files if f.lower().endswith(".bin")],
            "★ 刷一次没有产生 .bin 文件")
 
-        section("④ 编辑器页缺 exportAssetsBin（版本旧）⇒ 当场喊出来，且不发 /api/flash")
+        section("④ 编辑器页缺 exportAssetsBin（老约定那条）⇒ 当场喊出来，且不发 /api/flash")
         ev(ws, "(function(){var w=document.querySelector('#fr-theme').contentWindow;"
-               "try{w.exportAssetsBin=undefined;}catch(e){}return 1;})()")
+               "window.__savedExport=w.exportAssetsBin; try{w.exportAssetsBin=undefined;}catch(e){}"
+               "return 1;})()")
         ev(ws, "(function(){window.__flash=0;document.querySelector('#b-dash-flash').click();return 1;})()")
         time.sleep(3)
         st4 = ev(ws, "({pill:((document.querySelector('#dash-flash-say')||{}).textContent||''),"
                      "banner:((document.querySelector('#dash-warn')||{}).textContent||''),"
                      "flash:window.__flash||0})")
         print("   牌子：" + str(st4.get("pill"))[:160])
-        ok("版本过旧" in str(st4.get("pill")), "★ 喊的是「版本过旧」（并告诉怎么更新）")
-        ok("版本过旧" in str(st4.get("banner")), "表盘屏那条横幅也一起说（显眼）")
-        ok((st4.get("flash") or 0) == 0, "版本不对时**不发** /api/flash（不拿旧页面瞎写）")
+        ok("太旧" in str(st4.get("pill")) and "exportAssetsBin" in str(st4.get("pill")),
+           "★ 喊的是「太旧」+ 点名缺 exportAssetsBin")
+        ok("太旧" in str(st4.get("banner")), "表盘屏那条横幅也一起说（显眼）")
+        ok((st4.get("flash") or 0) == 0, "缺函数时**不发** /api/flash（不拿旧页面瞎写）")
+        # 把函数还回去（后面的 ⑥⑦ 要用正常页面）
+        ev(ws, "(function(){var w=document.querySelector('#fr-theme').contentWindow;"
+               "w.exportAssetsBin=window.__savedExport;return 1;})()")
+
+        section("⑥ 造一个「旧编辑器页」：缺 flashNoSave ⇒ 喊出来 + 拦下（不发 flash）")
+        #   ★ 就是在 iframe 的 window 上把那两个标记改成"老页面"的样子（真页面当然不改）。
+        ev(ws, "(function(){var w=document.querySelector('#fr-theme').contentWindow;"
+               "if(!w.__CAPS_SAVE)w.__CAPS_SAVE=w.__OWNER_MODE_CAPS;"
+               "w.__OWNER_MODE_CAPS={importRestoresImages:true};"       # 老页面：没有 flashNoSave
+               "w.__OWNER_MODE_VERSION='2026-10-15.2';"
+               "var de=w.document.documentElement;"
+               "if(de)de.setAttribute('data-owner-mode-version','2026-10-15.2');"
+               "return 1;})()")
+        old_flash = ev(ws, "({caps:JSON.stringify((document.querySelector('#fr-theme')"
+                           ".contentWindow.__OWNER_MODE_CAPS)),"
+                           "ver:(document.querySelector('#fr-theme').contentWindow.__OWNER_MODE_VERSION)})")
+        print("   造出来的旧页：" + json.dumps(old_flash, ensure_ascii=False)[:120])
+        ev(ws, "(function(){window.__flash=0;document.querySelector('#b-dash-flash').click();return 1;})()")
+        time.sleep(3)
+        old = ev(ws, "({pill:((document.querySelector('#dash-flash-say')||{}).textContent||''),"
+                     "flash:window.__flash||0})")
+        print("   牌子：" + str(old.get("pill"))[:170])
+        ok("flashNoSave" in str(old.get("pill")), "★ 点名缺的是 flashNoSave（说清缺什么）")
+        ok(("太旧" in str(old.get("pill"))) and ("退出应用" in str(old.get("pill"))),
+           "★ 告诉他怎么办（退出应用再重新双击 / Ctrl+F5）")
+        ok((old.get("flash") or 0) == 0, "★ 旧页面被**拦下**：一个 /api/flash 都没发")
+
+        section("⑦ 版本低但**能力齐全** ⇒ 不误拦（照写）")
+        ev(ws, "(function(){var w=document.querySelector('#fr-theme').contentWindow;"
+               "w.__OWNER_MODE_CAPS=w.__CAPS_SAVE;"                     # 能力恢复
+               "w.__OWNER_MODE_VERSION='2026-10-15.1';"                 # 版本仍然低
+               "return 1;})()")
+        ev(ws, "(function(){window.__flash=0;document.querySelector('#b-dash-flash').click();return 1;})()")
+        time.sleep(4)
+        lowver = ev(ws, "({flash:window.__flash||0,"
+                        "pill:((document.querySelector('#dash-flash-say')||{}).textContent||'')})")
+        print("   牌子：" + str(lowver.get("pill"))[:120])
+        ok((lowver.get("flash") or 0) >= 1,
+           "★ 能力齐全 ⇒ 照写（走到了 /api/flash），不因为版本号旧就误拦")
 
         section("⑤ 真 /api/flash 一次都没到服务端（没碰板子）")
         ok(not any("POST /api/flash" in l for l in log_lines),

@@ -140,10 +140,26 @@ powershell -ExecutionPolicy Bypass -File tools\app\build-exe.ps1 -OneFile
    **哪一份**从 `/api/health` 的 `pages_from` / `pages_dir` / `app_js.sha8` /
    `editor_html.sha8` 如实报出来，页面右上角也显示一行：
    `界面：仓库（app.js 1a2b3c4d · 编辑器 5e6f7a8b · 2026-10-16 18:47）`。
-3. **版本自检**：外壳在编辑器框载入时（以及每次要写之前）校验它需要的函数
-   （`exportAssetsBin` / `download`）**在不在**；缺就当场喊
-   「编辑器页面版本过旧：缺 XXX —— 右下角「退出应用」之后重新双击那个 exe
-   （或按 Ctrl+F5）」，并且**不发** `/api/flash`（不拿旧页面瞎写）。
+3. **版本/能力自检**：外壳在编辑器框**载入之后**（iframe 的 `load` 事件）以及**每次要写
+   之前**，读编辑器页面**自己暴露**的三样（那一页的约定，**只加不改语义**）：
+
+   ```js
+   window.__OWNER_MODE_VERSION = "2026-10-15.3"
+   window.__OWNER_MODE_CAPS    = { flashNoSave: true, importRestoresImages: true, … }
+   <html data-owner-mode-version="…">        // 同一个版本号的 DOM 侧副本
+   ```
+
+   - **缺 `flashNoSave`**（或整个标记都没有 = 老页面）、**缺 `exportAssetsBin` / `download`**
+     ⇒ **显眼报错**（表盘屏红横幅 + 牌子）：「编辑器页面太旧：缺能力 flashNoSave ⇒ 请点
+     右下角『退出应用』再重新双击那个 exe（或按 Ctrl+F5）」，并**拦下「写进板子」**
+     （`doWrite` 第一句就是自检 ⇒ **绝不发** `/api/flash`）。
+   - 版本比外壳要的 `EDITOR_MIN_VERSION`（`2026-10-15.3`）旧、但**能力齐全** ⇒ 照写，
+     只提一句（老页面恰好能用就不误拦）。
+   - iframe **必须同源**才读得到；跨源会抛 `SecurityError` ⇒ 明确说
+     「读不到编辑器页面里的版本标记（外壳与编辑器必须都从这个客户端打开）」，不静默。
+   - 通过后把**实际读到的版本/能力**显示在页面右上角那一行里（和「界面：仓库（…）」同一行）；
+     `/api/health` 也报 `editor_version` / `editor_caps`（服务端只读解析**要发出去的那一份**，
+     不改那一页）——以后只读排查不用点按钮。
 4. **所有静态响应一律 `no-cache`**（`Handler.end_headers()` 里统一加一处
    `Cache-Control: no-store, no-cache, must-revalidate`）：本地工具页每次都从磁盘读，
    不再出现"改了代码、重启了客户端，页面上还是旧的、非得 Ctrl+F5"。
@@ -159,8 +175,11 @@ powershell -ExecutionPolicy Bypass -File tools\app\build-exe.ps1 -OneFile
 
 它点那颗按钮、一路跟到 `/api/flash`，查：点下去 0.25 秒内有没有可见变化、
 请求体是不是 `{port, kind:"assets", path}`（**没有偏移字段**）、
-没图片时是不是说清了原因、版本旧时是不是当场喊、下载目录里有没有多出 `.bin`。
-★ `/api/flash` **在页面里被拦掉**（fetch 换成假的，只记账）⇒ **绝不碰板子**；
+没图片时是不是说清了原因、下载目录里有没有多出 `.bin`；
+★ 还会**造一个"旧编辑器页"**（把 iframe 里的 `__OWNER_MODE_CAPS` 改成缺 `flashNoSave`、
+版本号写低）⇒ 断言它**喊出"缺能力 flashNoSave"** 并且**一个 `/api/flash` 都不发**；
+再把"版本低但能力齐全"跑一遍 ⇒ 断言**照写**（不误拦）。
+`/api/flash` **在页面里被拦掉**（fetch 换成假的，只记账）⇒ **绝不碰板子**；
 服务端日志里也不许出现 `POST /api/flash`（这一条也查）。本机没 Chrome 时它会说一声跳过。
 
 ## 为什么是"本地服务 + 网页应用"，而不是 Electron / 安装包

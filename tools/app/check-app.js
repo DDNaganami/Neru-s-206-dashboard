@@ -277,8 +277,8 @@ say(/绝不会有"点了没反应"|绝不会点了什么都不说/.test(html),
 say(/点下去应该看到/.test(html), '页面上写清"点完应该看到什么"（便于车主自己判断）');
 say(/退出应用/.test(html) && /重新双击/.test(html) && /别让旧进程继续跑/.test(html),
     '页面上有"换过 exe 要完全退出再启动"的提示');
-say(/function checkEditorApi\(\)/.test(js) && /版本过旧/.test(js) && /Ctrl\+F5/.test(js),
-    '★ 编辑器页缺函数 ⇒ 显眼报错（版本过旧 + 怎么更新），不静默');
+say(/function checkEditorApi\(\)/.test(js) && /编辑器页面太旧/.test(js) && /Ctrl\+F5/.test(js),
+    '★ 编辑器页缺东西 ⇒ 显眼报错（太旧 + 怎么更新），不静默');
 say(/addEventListener\('load', \(\) => checkEditorApi\(\)\)/.test(js) &&
     /checkEditorApi\(\)\)/.test(js) && /if \(!checkEditorApi\(\)\) return;/.test(js),
     '版本自检接在"编辑器框载入"上，并且**写入之前**先过它');
@@ -292,6 +292,38 @@ say(/def pages_source\(\)/.test(srvSrc) && /def app_files_dir\(\)/.test(srvSrc) 
 say(/def end_headers\(self\)/.test(srvSrc) && /no-store, no-cache, must-revalidate/.test(srvSrc) &&
     (srvSrc.match(/send_header\("Cache-Control"/g) || []).length === 1,
     '★ 所有静态响应都 no-cache（在 end_headers 里统一加一处）⇒ 重启/刷新就能拿到新版');
+
+// ⑬ 读编辑器**自己暴露**的版本/能力标记（车主 2026-10-16 拍板："这样'发的是旧页面'这类坑彻底关上"）
+//   约定（编辑器那一页，**只加不改语义**）：
+//     window.__OWNER_MODE_VERSION / window.__OWNER_MODE_CAPS / <html data-owner-mode-version>
+//   ★ 动态判据（真点、真拦）在 check-click-flash.py：那里会造一个"旧编辑器页"真跑一遍。
+say(/const EDITOR_MIN_VERSION = '2026-10-15\.3'/.test(js) &&
+    /const EDITOR_NEED_CAPS = \['flashNoSave'\]/.test(js),
+    '外壳声明了最低版本 EDITOR_MIN_VERSION 与必需能力 EDITOR_NEED_CAPS（flashNoSave）');
+say(/w\.__OWNER_MODE_VERSION/.test(js) && /w\.__OWNER_MODE_CAPS/.test(js) &&
+    /data-owner-mode-version/.test(js),
+    '★ 三个读法都读了：__OWNER_MODE_VERSION / __OWNER_MODE_CAPS / data-owner-mode-version');
+say(/function readEditorMarkers\(\)/.test(js) && /不同源/.test(js) && /catch \(e\) \{/.test(js),
+    '读标记失败（跨源 SecurityError）⇒ **明确说"不同源"**，不静默');
+say(/缺能力 ' \+ c/.test(js) && /EDITOR_NEED_CAPS\.forEach/.test(js),
+    '缺 flashNoSave ⇒ 报的是"缺能力 flashNoSave"（不是笼统一句失败）');
+say(/编辑器页面太旧/.test(js) && /退出应用/.test(js) && /Ctrl\+F5/.test(js),
+    '★ 报错文案点明「太旧」+ 怎么更新（退出应用 / Ctrl+F5）');
+say(/if \(!checkEditorApi\(\)\) return;/.test(js) && /if \(both\) return await writeBothBoards/.test(js),
+    '★ 自检不过就 return ⇒ 单块/两块都**不会**往下走（绝不发 /api/flash）');
+say(/cmpVersion\(m\.version, EDITOR_MIN_VERSION\) < 0/.test(js) && /能力齐全/.test(js),
+    '版本低于最低版但**能力齐全** ⇒ 照写（只提一句），不误拦');
+say(/state\.editorVersion = m\.version/.test(js) && /function renderPagesLine\(\)/.test(js) &&
+    /编辑器 v' \+ \(state\.editorVersion \|\| '未报版本'\)/.test(js),
+    '读到的**实际版本**显示在页面上（和「界面：仓库（…）」同一行）');
+say(/state\.editorVersion = h\.editor_version/.test(js) && /h\.editor_caps/.test(js),
+    '页面那行的初值来自 /api/health（服务端从"要发出去的那一份"里读的）');
+say(/def editor_markers\(\)/.test(srvSrc) && /"editor_version": ""/.test(srvSrc) &&
+    /"editor_caps": \{\}/.test(srvSrc),
+    '/api/health 里报 editor_version 与 editor_caps（只读解析，不改那一页）');
+say(/__OWNER_MODE_VERSION/.test(srvSrc) && /OWNER_MODE_CAPS/.test(srvSrc) &&
+    /data-owner-mode-version/.test(srvSrc),
+    'server.py 的三个读法与编辑器约定一致（JS 变量 + DOM 属性都认）');
 
 console.log(bad === 0 ? '\n全部通过。' : `\n${bad} 项没通过。`);
 process.exit(bad === 0 ? 0 : 1);

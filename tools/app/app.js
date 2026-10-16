@@ -147,22 +147,19 @@ async function initServer() {
     $('#p-repo').textContent = h.repo + (h.frozen ? '  ·  exe: ' + h.exe : '');
     $('#p-repo').title = '本地服务只监听 127.0.0.1；只服务这个仓库目录（外加内嵌在程序里的编辑器那几个文件）';
     /* ★ 「我看到的这一份界面是哪来的」：来源 = 仓库 / 包内（exe 自带）+ 两个文件的 sha 前 8 位
-       + 改动时间。判据在 server.py 的 pages_source()：仓库里 tools/app 与 tools/theme-editor
-       都在 ⇒ 整份用仓库；否则整份用包内（**不许混搭**）。这一行就是给车主看的"是不是新版"。 */
+       + 改动时间 + **编辑器自己报的版本与能力**（服务端从"要发出去的那一份"里只读解析的；
+       等编辑器框载入后，checkEditorApi() 会用 iframe 里的实况再校一遍）。
+       判据在 server.py 的 pages_source()：仓库里 tools/app 与 tools/theme-editor 都在 ⇒
+       整份用仓库；否则整份用包内（**不许混搭**）。这一行就是给车主看的"是不是新版"。 */
     state.pagesFrom = h.pages_from || '';
     state.pagesDir = h.pages_dir || '';
     state.appSha = (h.app_js && h.app_js.sha8) || '';
     state.editorSha = (h.editor_html && h.editor_html.sha8) || '';
     state.editorMtime = (h.editor_html && h.editor_html.mtime) || '';
-    const pages = $('#p-pages');
-    if (pages) {
-      pages.textContent = '界面：' + (state.pagesFrom === 'repo' ? '仓库' : 'exe 包内') +
-        '（app.js ' + (state.appSha || '?') + ' · 编辑器 ' + (state.editorSha || '?') +
-        (state.editorMtime ? ' · ' + state.editorMtime : '') + '）';
-      pages.title = '界面来源：' + (state.pagesFrom || '?') + '（' + (state.pagesDir || '?') + '）\n' +
-        '仓库里 tools/app 与 tools/theme-editor 都在 ⇒ 整份用仓库；否则整份用 exe 包内那一份（不许混搭）。\n' +
-        '改了代码/换过 exe 之后：右下角「退出应用」，再重新双击那个 exe。';
-    }
+    state.editorVersion = h.editor_version || '';
+    const capsObj = h.editor_caps || {};
+    state.editorCaps = Object.keys(capsObj).filter((k) => capsObj[k] === true);
+    renderPagesLine();
     if (!h.repo_ok) {
       // ★ 明说**缺哪个路径**（不静默失败）：编辑器（配色 + 图片）已经打包在这个程序里，
       //   所以改配色、换图、写素材仍然能用；构建固件与预览要用仓库里的 PlatformIO 工程。
@@ -741,35 +738,114 @@ async function ensurePorts() {
   return state.ports.length > 0;
 }
 
-/* ★ 版本/来源自检：外壳启动时（以及每次要写之前）校验编辑器框里有没有它需要的函数。
-   缺 ⇒ **显眼报错**（表盘屏那条红 banner + 牌子），绝不"点了没反应"。
-   ★ 为什么会有"缺"：界面分两份发（仓库 / exe 包内）—— 一份新一份旧就会这样；
-     所以 pages_* 把"我发的是哪一份"也一起报出来（见 server.py 的 pages_source()）。 */
+/* ★★ 版本/能力自检（2026-10-16 车主拍板："让外壳读编辑器暴露的版本/能力标记"）
+ *
+ * 编辑器页面**自己**暴露三样（那一页的约定，**只加不改语义**）：
+ *     window.__OWNER_MODE_VERSION = "2026-10-15.3"
+ *     window.__OWNER_MODE_CAPS    = { flashNoSave: true, importRestoresImages: true, … }
+ *     <html data-owner-mode-version="…">      （同一个版本号的 DOM 侧副本）
+ *
+ * 外壳在**编辑器框载入之后**读它们（iframe ⇒ 必须**同源**才读得到；跨源会抛，那就明说，
+ * 不静默），然后：
+ *   · 缺 `flashNoSave`（或整个标记都没有 = 老页面）⇒ **显眼报错 + 拦下"写进板子"**
+ *     （`doWrite` 第一句就是它 ⇒ **绝不发** /api/flash）；
+ *   · 版本比 `EDITOR_MIN_VERSION` 旧、但**能力齐全** ⇒ 照写，只提一句（老页面恰好能用就不拦）；
+ *   · 通过 ⇒ 把**实际读到的版本/能力**显示在页面上（就在「界面：…」那一行里）。
+ */
+const EDITOR_MIN_VERSION = '2026-10-15.3';   // 低于它就得看能力表（能力齐也照用）
+const EDITOR_NEED_CAPS = ['flashNoSave'];    // 「写进板子」**必须**有的能力（缺了不能写）
+
+/* "2026-10-15.3" 这种数字段逐段比大小（不认的段当 0） */
+function cmpVersion(a, b) {
+  const A = String(a || '').split(/[^\d]+/).filter((x) => x !== '').map(Number);
+  const B = String(b || '').split(/[^\d]+/).filter((x) => x !== '').map(Number);
+  for (let i = 0; i < Math.max(A.length, B.length); i++) {
+    const x = A[i] || 0;
+    const y = B[i] || 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+/* 读编辑器页面暴露的版本/能力。★ 跨源读不到 ⇒ ok:false + 原因（明确说"不同源"） */
+function readEditorMarkers() {
+  const w = editorWindow();
+  if (!w) return { ok: false, why: '拿不到编辑器那个框（iframe 还没建出来）' };
+  try {
+    const version = String(w.__OWNER_MODE_VERSION || '');
+    const caps = w.__OWNER_MODE_CAPS || null;
+    const de = w.document && w.document.documentElement;
+    const domVersion = (de && de.getAttribute)
+      ? String(de.getAttribute('data-owner-mode-version') || '') : '';
+    return { ok: true, version: version || domVersion, domVersion: domVersion, caps: caps || {} };
+  } catch (e) {
+    // ★ iframe 跨源时，读它的 document / 全局都会抛 SecurityError ⇒ 这就是"不同源"
+    return { ok: false, why: '读不到编辑器页面里的版本标记（外壳与编辑器**必须都从这个客户端**' +
+      '打开，也就是同一个 http://127.0.0.1:端口 ）：' + e };
+  }
+}
+
+/* 页面上那一行「界面：仓库（app.js … · 编辑器 … · v版本 · 能力…）」 */
+function renderPagesLine() {
+  const pages = $('#p-pages');
+  if (!pages) return;
+  const caps = (state.editorCaps || []);
+  pages.textContent = '界面：' + (state.pagesFrom === 'repo' ? '仓库' : 'exe 包内') +
+    '（app.js ' + (state.appSha || '?') + ' · 编辑器 ' + (state.editorSha || '?') +
+    (state.editorMtime ? ' · ' + state.editorMtime : '') +
+    ' · 编辑器 v' + (state.editorVersion || '未报版本') +
+    (caps.length ? ' · 能力 ' + caps.join('/') : ' · 没读到能力') + '）';
+  pages.title = '界面来源：' + (state.pagesFrom || '?') + '（' + (state.pagesDir || '?') + '）\n' +
+    '编辑器页面自报的版本：' + (state.editorVersion || '（没有）') + '；能力：' + (caps.join('、') || '（没读到）') + '\n' +
+    '外壳要的最低版：' + EDITOR_MIN_VERSION + '；写进板子必须有：' + EDITOR_NEED_CAPS.join('、') + '\n' +
+    '改了代码/换过 exe 之后：右下角「退出应用」，再重新双击那个 exe（或按 Ctrl+F5）。';
+}
+
+/* 自检：通过了返回 true；不通过就把原因**喊出来**（横幅 + 牌子）并返回 false */
 function checkEditorApi() {
-  const need = ['exportAssetsBin', 'download'];
-  let w = null;
-  try { w = editorWindow(); } catch (e) { w = null; }
-  const missing = w ? need.filter((k) => typeof w[k] !== 'function') : need.slice();
+  const m = readEditorMarkers();
+  const w = editorWindow();
+  const problems = [];
+  const needFns = ['exportAssetsBin', 'download'];   // 老约定：这两个函数名（缺了也写不了）
+  if (!m.ok) {
+    problems.push(m.why);
+  } else {
+    if (!m.version) problems.push('它没报版本号（__OWNER_MODE_VERSION 与 data-owner-mode-version 都没有）');
+    EDITOR_NEED_CAPS.forEach((c) => {
+      if (!(m.caps && m.caps[c] === true)) problems.push('缺能力 ' + c);
+    });
+  }
+  if (w) needFns.forEach((k) => { if (typeof w[k] !== 'function') problems.push('缺函数 ' + k + '()'); });
+
+  state.editorVersion = m.version || '';
+  state.editorCaps = (m.ok && m.caps) ? Object.keys(m.caps).filter((k) => m.caps[k] === true) : [];
+  renderPagesLine();
+
   const box = $('#dash-warn');
-  if (w && !missing.length) {
-    // 之前喊过"版本旧"，现在好了 ⇒ 把那条横幅收掉（但别把"找不到仓库"那条横幅收掉）
-    if (state.warnKind === 'editor' && box) {
+  if (!problems.length) {
+    if (state.warnKind === 'editor' && box) {       // 之前喊过，现在好了 ⇒ 收掉横幅
       box.className = 'banner';
       box.innerHTML = '';
       state.warnKind = '';
     }
+    if (m.version && cmpVersion(m.version, EDITOR_MIN_VERSION) < 0) {
+      // 版本比期望旧，但能力齐 ⇒ **照写**，只提一句（车主那一单：老页面恰好能用就别拦）
+      dashSay('编辑器版本 ' + m.version + ' 比期望的 ' + EDITOR_MIN_VERSION + ' 旧，' +
+        '但它报的能力齐全 ⇒ 照写。', 'busy');
+    }
     return true;
   }
   const src = '（界面来源：' + (state.pagesFrom === 'repo' ? '仓库' : 'exe 包内') +
-    ' · 编辑器 ' + (state.editorSha || '?') + (state.editorMtime ? ' · ' + state.editorMtime : '') + '）';
+    ' · 编辑器 ' + (state.editorSha || '?') + (state.editorMtime ? ' · ' + state.editorMtime : '') +
+    ' · 自报版本 ' + (m.version || '没有') + '）';
   const msg = w
-    ? '编辑器页面版本过旧：缺 ' + missing.join(' / ') +
-      ' —— 右下角「退出应用」之后重新双击那个 exe（或者在页面里按 Ctrl+F5 强制刷新）。' + src
+    ? '编辑器页面太旧：' + problems.join('；') +
+      ' ⇒ 请点右下角「退出应用」再重新双击那个 exe（或者按 Ctrl+F5 强制刷新）。' + src
     : '编辑器框还没载入（或外壳不是从这个客户端打开的）—— 先在「表盘」屏看它一眼；' + src;
   if (box) { box.innerHTML = msg; box.className = 'banner on'; }
   dashSay(msg, 'bad');
   state.warnKind = 'editor';
-  console.error('[206Dash] editor api check failed:', msg);
+  console.error('[206Dash] editor check failed:', msg);
   return false;
 }
 
