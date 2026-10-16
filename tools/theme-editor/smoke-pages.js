@@ -162,12 +162,36 @@ function makeCtx() {  const noop = function () {};
 function makeDoc(html) {
   const doc = makeEl("document");
   doc._byId = {};
+  doc._byCap = [];                 // 没有 id、但有 data-ocap 的静态元素（见 seedStaticIds）
   doc.ids = [];
   doc.createElement = function (tag) { return makeEl(tag, doc); };
   doc.createElementNS = function (ns, tag) { return makeEl(tag, doc); };
   doc.createTextNode = function (t) { const e = makeEl("#text"); e.textContent = t; return e; };
   doc.getElementById = function (id) { return doc._byId[id] || null; };
-  doc.querySelector = function () { return null; };
+  // ★ 桩里的 document 没有 HTML 解析器 ⇒ 静态元素只是"按 id 建出来的空壳"，
+  //   挂在 body 下面（`walk` 走不到它们）。所以 document.querySelector 要**也查
+  //   那张 id 表**，否则 `doc.querySelector('[data-ocap="legend"]')` 永远拿不到 ——
+  //   那会让断言变成"查不到 ⇒ 页面错了"的假红（实测踩过）。
+  doc.querySelector = function (sel) {
+    const s = String(sel).trim();
+    const attr = /^\[([\w-]+)(?:=["']?([^"'\]]+)["']?)?\]$/.exec(s);
+    if (attr) {
+      const k = attr[1], v = attr[2];
+      for (const el of doc._byCap) {
+        const got = el.getAttribute(k);
+        if (got !== null && (v === undefined || got === v)) return el;
+      }
+      for (const id of Object.keys(doc._byId)) {
+        const el = doc._byId[id];
+        const got = el.getAttribute(k);
+        if (got !== null && (v === undefined || got === v)) return el;
+      }
+      return null;
+    }
+    const byId = s.charAt(0) === "#" ? doc._byId[s.slice(1)] : null;
+    if (byId) return byId;
+    return findIn(doc.body, s);
+  };
   doc.querySelectorAll = function () { return []; };
   doc.body = makeEl("body", doc);
   doc.documentElement = makeEl("html", doc);
@@ -205,6 +229,17 @@ function seedStaticIds(doc, html) {
   //   关系显式补上（就这么一处，别扩散成半个解析器）。
   const bar = doc._byId["budget-bar"];
   if (bar) bar.appendChild(makeEl("i", doc));
+
+  // ★ **没有 id、但有 data-ocap 的静态元素**（例如配色区那行说明）也建一份：
+  //   它们没进 _byId，而桩里的 body 又没有子节点 ⇒ 按属性查会永远查不到。
+  //   只收 `data-ocap=...` 这一种属性（就是测试要按属性点名的那些），
+  //   不当成通用 HTML 解析器。
+  const reCap = /<([a-zA-Z][\w-]*)\b[^>]*\bdata-ocap="([a-z]+)"[^>]*>/g;
+  while ((m = reCap.exec(html)) !== null) {
+    const el = makeEl(m[1], doc);
+    el.attributes["data-ocap"] = m[2];
+    doc._byCap.push(el);
+  }
 }
 
 // ------------------------------------------------------------
@@ -295,6 +330,32 @@ const results = {};
     }
     ok(String(doc.getElementById("oc-redline").value) !== "", "红区滑块被灌了当前值");
     ok(String(doc.getElementById("oc-overspeed").value) !== "", "超速滑块被灌了当前值");
+    // ---- ★ 2026-10-15：水温 / 进气两块色板（接的是**已有的键**）----
+    for (const [id, label] of [["oc-coolant", "水温颜色"], ["oc-intake", "进气颜色"]]) {
+      const c = doc.getElementById(id), t = doc.getElementById(id + "-txt");
+      ok(!!c && !!t, "有「" + label + "」色板 #" + id);
+      ok(!!c && String(c.value) !== "", label + "色板的色块被灌了当前值：" + (c && c.value));
+      ok(!!t && String(t.value) !== "", label + "色板的色号被灌了当前值：" + (t && t.value));
+    }
+    // ★ 转速 / 速度**没有**独立色板（键不存在；要做得改固件 + 升版本）
+    for (const bad of ["oc-rpm", "oc-speed", "oc-rpm_color", "oc-speed_color"]) {
+      ok(!doc.getElementById(bad), "车主模式里没有 #" + bad + "（转速/速度共用数字颜色）");
+    }
+    // ★ 那句说明在（一句话、不是控件）
+    //   ★ DOM 桩没有 HTML 解析器 ⇒ 静态元素只"建"出一个空壳，textContent 是空的。
+    //     所以这里按**静态源码**判它的内容（"它写着什么"），控件层那条（"它不是
+    //     控件"）由 check-owner-mode.js 的 ①c 判 —— 两边各管一头，不重复也不留空。
+    {
+      const legend = doc.querySelector('[data-ocap="legend"]');
+      ok(!!legend, "配色区里有那句「转速与速度目前共用『数字颜色』」的说明（元素在）");
+      const m = /<div class="note"[^>]*data-ocap="legend"[^>]*>([\s\S]*?)<\/div>/.exec(SOURCE);
+      ok(!!m, "说明那一行的静态 HTML 找得到");
+      if (m) {
+        ok(/转速与速度目前共用/.test(m[1]), "说明文字点明了共用关系");
+        ok(/需要一次固件改动/.test(m[1]), "说明文字点明了出路（要改固件）");
+        ok(!/<input|<select|<button/.test(m[1]), "那一行里没有控件（是纯文字说明）");
+      }
+    }
     ok(doc.getElementById("owner-presets").children.length === 1,
        "3 个预设那一行被挂上界面");
 
@@ -381,6 +442,34 @@ const results = {};
        "高级里的「预览底色」跟着变（同一个 T）：" + doc.getElementById("bg-color").value);
     const jsonVal = JSON.parse(doc.getElementById("json").value);
     ok(jsonVal.theme.bg_color === 0x123456, "主题 JSON 文本框里的 bg_color 也是新的");
+
+    // ---- ★ 交互 1b：改「水温颜色」⇒ 写的**就是 readout.coolant_color** 那个键 ----
+    //   （车主那一单：两块新色板只暴露既有键，不新增格式）
+    {
+      const c = doc.getElementById("oc-coolant");
+      c.value = "#bf4153";                  // 车主实拍里那两个板的颜色
+      c.dispatch("input");
+      const s2 = JSON.parse(r.store["206dash.theme"]);
+      ok(s2.theme.readout.coolant_color === 0xBF4153,
+         "改「水温颜色」写进 readout.coolant_color = 0x" +
+         s2.theme.readout.coolant_color.toString(16));
+      ok(Object.keys(s2.theme.readout).sort().join(",") ===
+         Object.keys(JSON.parse(doc.getElementById("json").value).theme.readout).sort().join(","),
+         "readout 段的键集合没变（不多不少 —— 没有新增格式）");
+      // 进水温**不该**动到进气/数字
+      const i2 = doc.getElementById("oc-intake");
+      i2.value = "#7cff6b";
+      i2.dispatch("input");
+      const s3 = JSON.parse(r.store["206dash.theme"]);
+      ok(s3.theme.readout.intake_color === 0x7CFF6B,
+         "改「进气颜色」写进 readout.intake_color = 0x" +
+         s3.theme.readout.intake_color.toString(16));
+      ok(s3.theme.readout.coolant_color === 0xBF4153,
+         "两次改动各归各的键（水温那次没被覆盖）");
+      // 高级里那两行也跟着变（一份状态两处显隐）
+      ok(JSON.parse(doc.getElementById("json").value).theme.readout.intake_color === 0x7CFF6B,
+         "主题 JSON 文本框里的 intake_color 也是新的");
+    }
 
     // ---- 交互 2：套一个预设 ⇒ 写进同一份状态 ----
     const presetRow = doc.getElementById("owner-presets").children[0];

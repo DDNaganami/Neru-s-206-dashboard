@@ -115,6 +115,9 @@
   .modebar .modesw button.on{background:#1d4f6b;border-color:#2a6f96;font-weight:600}
   .modebar .grow{flex:1}
   .owner-note{color:var(--dim);font-size:12px}
+  /* 车主模式某个色板下面那行小字（例如"左屏底部 · 转速屏的副表"）：
+     它只是**说清这块色板管哪一格**，不是控件 —— 标签本身仍然是一个 <label>。 */
+  .oc-sub{display:block;color:var(--dim);font-size:11px;line-height:1.25;margin-top:1px}
   details.advanced{margin:0;border-bottom:1px solid var(--line)}
   details.advanced > summary{padding:12px 16px;color:var(--accent);font-size:13px;
                              font-weight:600;letter-spacing:.04em;list-style:none}
@@ -378,6 +381,26 @@
       <div class="row" data-ocap="digit">
         <label>数字颜色</label>
         <input type="color" id="oc-digit"><input type="text" id="oc-digit-txt">
+      </div>
+      <!-- ★★ 2026-10-15（车主问："进气、水温、转速、速度的字体颜色要不要独立出来进行选择"）：
+           能**独立**的只有水温与进气这两个 —— 主题里**本来就有**这两个键
+           （readout.coolant_color / readout.intake_color，解析器见 theme_store.cpp:
+            "coolant_color" / "intake_color" 两行），原来只是没在车主模式暴露出来。
+           ⇒ 加两个色板，**不新增任何键、不动任何格式**。
+           ★ 转速与速度**没有**独立的键：它们共用「数字颜色」。要拆开必须改固件
+             （新增 readout 字段 + 升序列化版本），所以这里只放**一句话**说明，
+             不放控件 —— 见下面那行 .note。 -->
+      <div class="row" data-ocap="coolant">
+        <label>水温颜色<span class="oc-sub">左屏底部 · 转速屏的副表</span></label>
+        <input type="color" id="oc-coolant"><input type="text" id="oc-coolant-txt">
+      </div>
+      <div class="row" data-ocap="intake">
+        <label>进气颜色<span class="oc-sub">右屏底部 · 速度屏的副表</span></label>
+        <input type="color" id="oc-intake"><input type="text" id="oc-intake-txt">
+      </div>
+      <div class="note" style="color:var(--dim);margin:6px 0 0" data-ocap="legend">
+        <b>转速与速度目前共用「数字颜色」</b>；水温、进气各自独立（就是上面两块）。
+        要把转速与速度也拆开，需要一次固件改动（新增读数颜色字段）。
       </div>
     </section>
 
@@ -2189,11 +2212,13 @@ function clearSlot(spec, it) {
 //     拼出来的标签检查脚本数不到，而"数不到"会让这条守卫静默失效。
 //   ★ `save` 是 2：合并后**两个分区各有一个「保存安装包」**（车主口径：
 //     两边都要能存）—— 两个按钮都调 saveOwnerPackage()，不是两套打包。
-const OWNER_CAPS = ["bg", "arc", "digit", "redline", "overspeed", "face", "save"];
+const OWNER_CAPS = ["bg", "arc", "digit", "coolant", "intake", "redline", "overspeed", "face", "save"];
 const OWNER_EXPECT = {
   bg: 1,          // 背景色
   arc: 4,         // 四条弧的点亮色（转速外弧 / 水温内弧 / 车速外弧 / 进气内弧）
-  digit: 1,       // 数字读数颜色
+  digit: 1,       // 数字读数颜色（转速与速度**共用**这一个）
+  coolant: 1,     // 水温颜色（readout.coolant_color —— 主题里本来就有这个键）
+  intake: 1,      // 进气颜色（readout.intake_color  —— 同上）
   redline: 1,     // 红区转速
   overspeed: 1,   // 超速
   face: 1,        // 图片入口（槽位清单容器：背景 1 + 表情 10）
@@ -2289,6 +2314,15 @@ function buildOwnerControls() {
   });
   const digit = ownerColorBind("oc-digit", null, null,
                                () => T.readout.digit_color, v => { T.readout.digit_color = v; });
+  // ★ 水温 / 进气：主题里**本来就有**这两个键（readout.coolant_color / intake_color），
+  //   只是原先没在车主模式暴露 ⇒ 车主只能在「高级」里找到它们。
+  //   这里只是把它们接到同一个 ownerColorBind —— **不加键、不改格式**。
+  //   ★ 初值就是主题里的当前值（车主自己存的那一份，例如 0xBF4153），
+  //     不是把兜底默认写死：读的是 T.readout.*（见 sync/commit 两头）。
+  const coolant = ownerColorBind("oc-coolant", null, null,
+                                 () => T.readout.coolant_color, v => { T.readout.coolant_color = v; });
+  const intake = ownerColorBind("oc-intake", null, null,
+                                () => T.readout.intake_color, v => { T.readout.intake_color = v; });
 
   // ---- ② 红区 / 超速（蜂鸣器已删，这两个阈值**仍然生效**）----
   const redline = ownerSliderBind("oc-redline", () => T.alerts.redline_rpm,
@@ -2340,7 +2374,7 @@ function buildOwnerControls() {
     });
   }
 
-  ownerControls = { bg: bg, arcs: arcs, digit: digit,
+  ownerControls = { bg: bg, arcs: arcs, digit: digit, coolant: coolant, intake: intake,
                     redline: redline, overspeed: overspeed };
   // ---- ⑥ 客户端里的「写进板子」：接上按钮 + 问一句"本地客户端在不在" ----
   //   接事件**无条件做**（没有客户端时那些按钮点不到，但接线必须在）；
@@ -2361,6 +2395,9 @@ function renderOwner(rebuildSlots) {
   if (ownerControls.bg) ownerControls.bg.sync();
   (ownerControls.arcs || []).forEach(r => r.sync && r.sync());
   if (ownerControls.digit) ownerControls.digit.sync();
+  // ★ 水温 / 进气两个色板也要跟着同步（高级里改、套预设、读入主题之后都会走这里）
+  if (ownerControls.coolant) ownerControls.coolant.sync();
+  if (ownerControls.intake) ownerControls.intake.sync();
   if (ownerControls.redline) ownerControls.redline.sync();
   if (ownerControls.overspeed) ownerControls.overspeed.sync();
   if (rebuildSlots) buildOwnerSlots();

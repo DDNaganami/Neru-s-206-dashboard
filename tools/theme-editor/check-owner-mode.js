@@ -79,9 +79,16 @@ const SHELL_CODE = SHELL.replace(/<!--[\s\S]*?-->/g, "");
 //   ★★ 合并后 save 是 **2**：两个分区**各有一个**「保存安装包」（车主口径：
 //      两边都要能存）—— 两个按钮都调同一个 saveOwnerPackage()，不是两套打包。
 //      端口输入框同理是 2（同一个值、同一条命令）。
+//   ★★ 2026-10-15（车主问"进气/水温/转速/速度的字体颜色要不要独立"）：
+//      coolant / intake 两块色板进了车主模式 —— 这两个键**主题里本来就有**
+//      （readout.coolant_color / intake_color，theme_store.cpp 照旧解析），
+//      所以是"把已有的键暴露出来"，**不是新增格式**。
+//      ★ 转速与速度**没有**独立的键（它们共用 digit）⇒ 车主模式里**不许**出现
+//        任何"转速颜色 / 速度颜色"的色板（见 ①c 那一节）。
 // ------------------------------------------------------------
-const OWNER_CAPS = ["bg", "arc", "digit", "redline", "overspeed", "face", "save"];
-const OWNER_EXPECT_COUNT = { bg: 1, arc: 4, digit: 1, redline: 1, overspeed: 1, face: 1, save: 2 };
+const OWNER_CAPS = ["bg", "arc", "digit", "coolant", "intake", "redline", "overspeed", "face", "save"];
+const OWNER_EXPECT_COUNT = { bg: 1, arc: 4, digit: 1, coolant: 1, intake: 1,
+                             redline: 1, overspeed: 1, face: 1, save: 2 };
 const PORT_MARK_EXPECT = 2;
 
 // ------------------------------------------------------------
@@ -178,7 +185,7 @@ function countOwnerCaps(src) {
   while ((m = reJs.exec(code)) !== null) add(m[1]);
   return counts;
 }
-const KNOWN_MARKS = OWNER_CAPS.concat(["preset", "port", "bgimage", "slots"]);
+const KNOWN_MARKS = OWNER_CAPS.concat(["preset", "port", "bgimage", "slots", "legend"]);
 {
   const counts = countOwnerCaps(MERGED);
   for (const k of Object.keys(counts)) {
@@ -268,6 +275,62 @@ section("①b 槽位清单：背景 1 + 表情 10，名称用中文阶段名");
   ok(/背景取景|框内就是最终画面/.test(src), "页面里明说背景是「取景（框内就是最终画面）」");
   ok(!/背景：不弹框选|背景不加框选/.test(src),
      "不再写「背景不加框选」（车主已推翻这条）");
+}
+
+section("①c 水温 / 进气两块色板：接的是**已有的键**，且转速/速度不许有独立色板");
+{
+  const src = MERGED;
+  // ① 两块色板接的键必须**主题里本来就有**（不是新键）
+  const bindC = /ownerColorBind\(\s*"oc-coolant"[\s\S]{0,200}?T\.readout\.coolant_color/.exec(src);
+  const bindI = /ownerColorBind\(\s*"oc-intake"[\s\S]{0,200}?T\.readout\.intake_color/.exec(src);
+  ok(!!bindC, "「水温颜色」接 readout.coolant_color");
+  ok(!!bindI, "「进气颜色」接 readout.intake_color");
+  // ② 初值来源 = 主题当前值（sync 读的是同一个 getter，不是写死常量）
+  ok(/coolant:\s*coolant/.test(src) && /intake:\s*intake/.test(src),
+     "两块色板进了 ownerControls（render 时会被同步成主题当前值）");
+  ok(/ownerControls\.coolant\.sync\(\)/.test(src) &&
+     /ownerControls\.intake\.sync\(\)/.test(src),
+     "renderOwner() 里会同步这两块（高级里改 / 套预设 / 读入主题都会走到）");
+  // ③ 键**确实在主题默认值里**（不是这一单新加的）：对 defaultTheme() 与 theme-default.json
+  const dFn = /function defaultTheme\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
+  ok(!!dFn, "合并后的页面里有 defaultTheme()");
+  const d = new Function(dFn[1].replace(/^\s*return\s*/, "return "))();
+  eq(typeof d.readout.coolant_color, "number", "defaultTheme().readout.coolant_color 本来就有");
+  eq(typeof d.readout.intake_color, "number", "defaultTheme().readout.intake_color 本来就有");
+  const tpl = JSON.parse(fs.readFileSync(path.join(dir, "theme-default.json"), "utf8")
+    .replace(/0x([0-9a-fA-F]+)/g, (m, h) => String(parseInt(h, 16))));
+  const tplTheme = tpl.theme || tpl;
+  eq(tplTheme.readout.coolant_color, d.readout.coolant_color,
+     "theme-default.json 的 coolant_color 与页面默认值一致");
+  eq(tplTheme.readout.intake_color, d.readout.intake_color,
+     "theme-default.json 的 intake_color 与页面默认值一致");
+  // ④ 固件解析器认得这两个键（权威：lib/themetool/theme_store.cpp）
+  const ts = fs.readFileSync(path.join(REPO, "lib", "themetool", "theme_store.cpp"), "utf8");
+  ok(ts.indexOf('"coolant_color"') >= 0, "theme_store.cpp 解析 coolant_color");
+  ok(ts.indexOf('"intake_color"') >= 0, "theme_store.cpp 解析 intake_color");
+  // ⑤ ★★ 转速 / 速度**不许**有独立色板（键不存在；要做得改固件 + 升版本）
+  const ownerTheme = src.slice(src.indexOf('id="owner-theme"'), src.indexOf('id="owner-images"'));
+  for (const bad of ["oc-rpm", "oc-speed", "转速颜色", "速度颜色", "rpm_color", "speed_color"]) {
+    ok(ownerTheme.indexOf(bad) < 0,
+       "车主模式配色区里**没有**「" + bad + "」（转速/速度共用 digit_color）");
+  }
+  // 固件侧**确实没有**这两个键（所以"加色板"不是漏做，是不能做）
+  ok(ts.indexOf('"rpm_color"') < 0 && ts.indexOf('"speed_color"') < 0,
+     "theme_store.cpp 里没有 rpm_color / speed_color（键不存在）");
+  // ⑥ ★ 那句说明必须在（一句话、不是控件）
+  ok(/转速与速度目前共用「数字颜色」/.test(ownerTheme),
+     "配色区里有一句话说明「转速与速度目前共用『数字颜色』」");
+  ok(/需要一次固件改动/.test(ownerTheme), "那句话点明「要拆开需要一次固件改动」");
+  // 那句话附近**不许**冒出色板/滑块（说明归说明，别顺手做成控件）
+  const legend = /<div class="note"[^>]*data-ocap="legend"[^>]*>([\s\S]*?)<\/div>/.exec(ownerTheme);
+  ok(!!legend, "那行说明带 data-ocap=\"legend\" 标记（便于本脚本点名）");
+  if (legend) {
+    ok(!/<input|<select|<button/.test(legend[1]),
+       "说明那一行里没有 input/select/button（是纯文字）");
+  }
+  // ⑦ 高级里那两行也还在（一份状态两处显隐）
+  ok(/colorRow\(wrap,\s*"水温（左屏）"/.test(src), "高级里仍有「水温（左屏）」色板");
+  ok(/colorRow\(wrap,\s*"进气温度（右屏）"/.test(src), "高级里仍有「进气温度（右屏）」色板");
 }
 
 section("② 车主模式是**默认**（没记录时进车主模式，不是高级）");
