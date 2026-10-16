@@ -209,7 +209,20 @@
           <button class="btn ghost" id="b-ports">刷新串口</button>
           <button class="btn primary" id="b-flash">写进板子</button>
         </div>
-        <p class="note">★ 写错了不会报错，只是屏上什么都没变 —— 所以先看清文件名再点。</p>
+        <!-- ★ 2026-10-15 新增（车主："标出角色吧…你写进板子这个只有一个按钮，也没区分主/从板"）：
+             ① 下拉里标出角色（主板/从板，认法见 server.py 的 ROLE_CACHE_PATH 那一段：
+                MAC 不变 ⇒ 用 USB 的 SER= 认板子，角色来自板子自己起的 AP 名或它自报的
+                role=；**拿不到证据就写「角色未知」，不猜**）；
+             ② 「写进两块板」：两块板通常同时插着 ⇒ 一次点击依次写完，逐块报结果。 -->
+        <div class="row">
+          <span class="dim" id="roles-line">角色：还没读过。</span>
+          <span class="sp"></span>
+          <button class="btn ghost" id="b-roles">读一下角色</button>
+          <button class="btn primary" id="b-flash-both">写进两块板（配色+图片）</button>
+        </div>
+        <p class="note">★ 写错了不会报错，只是屏上什么都没变 —— 所以先看清文件名再点。
+          「写进两块板」写的是**整套素材**（配色 + 图片，偏移固定 <code>0x210000</code>、不可改），
+          只写认出来的本项目的板（主板板载串口那种不会碰）；哪块没写成会单独报出来，可以单独重刷它。</p>
         <pre class="log" id="flash-log"></pre>
       </div>
 

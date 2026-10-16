@@ -85,6 +85,7 @@ const KEEP = {
   '预览运行': 'b-preview', '预览刷新': 'b-pv-reload', '预览宿主': 'pv-host',
   '编辑器框(唯一)': 'fr-theme', '编辑器面板': 'sub-editor',
   '编辑器新窗口(配色)': 'b-theme-open', '编辑器新窗口(图片)': 'b-image-open',
+  '写两块板按钮': 'b-flash-both', '读角色按钮': 'b-roles', '角色那一行': 'roles-line',
   '退出应用': 'b-quit', '两块板状态条(左)': 'chip-left',
   '两块板状态条(右)': 'chip-right', '升级进度条': 'ota-bar', '升级原始日志': 'ota-log',
 };
@@ -165,6 +166,53 @@ const flashBody = /JSON\.stringify\(\{\s*port:\s*port,\s*kind:\s*"assets",\s*pat
 say(!!flashBody, '刷写请求体恰好是 {port, kind:"assets", path}（与「工具」屏那个按钮同一条路）');
 say(!!flashBody && !/offset|偏移\s*:/.test(flashBody[0]),
     '刷写请求体里没有"偏移"这个字段 —— 偏移由客户端按分区表白名单取，页面上没有入口');
+
+// ⑩ 端口下拉**标出角色** + 一次写两块板（2026-10-15 车主："标出角色吧…你写进板子这个
+//   只有一个按钮，也没区分主/从板啊"）
+//   ★ 角色是**认出来**的，不是猜的：判据在 server.py（不变的 MAC ↔ USB 的 SER= /
+//     板子自己起的 AP 名 / 它自报的 role=）。这里钉的是"外壳有没有按那套显示、
+//     有没有偷偷按 COM 号推、两块那条路有没有退化成第二套刷写"。
+const srvSrc = fs.readFileSync(path.join(dir, 'server.py'), 'utf8');
+say(/id="b-flash-both"[^>]*>写进两块板/.test(html), '少了「写进两块板」那颗按钮（车主的核心诉求）');
+say(/id="b-roles"/.test(html) && /id="roles-line"/.test(html),
+    '少了「读一下角色」按钮 / 角色那一行');
+say(/state\.boards = state\.ports\.filter\(\(p\) => p\.is_project_board\)/.test(js),
+    '「本项目的板」由服务端的 is_project_board 说了算（外壳不自己认）');
+say(/p\.label \|\| p\.port/.test(js),
+    '下拉用的是服务端给的**带角色**标签（p.label），不是光一个 COM 号');
+say(/state\.ports\.some\(\(p\) => p\.port === keep\)/.test(js),
+    '刷新串口不会把用户已经选好的那一个清掉');
+// ★ 不猜：外壳里不许有"按 COM 号推角色"的写法，也不许自己造一个默认角色
+say(!/COM\d+[^\n]{0,40}(MASTER|SLAVE)|(MASTER|SLAVE)[^\n]{0,40}COM\d+/.test(js),
+    '外壳里没有"哪个 COM 号 = 哪个角色"的硬编码（COM 号会变，不能靠它）');
+say(!/role\s*[:=]\s*['"](MASTER|SLAVE)['"]/.test(js),
+    '外壳没有自己造角色（角色只从服务端来；认不出就是「角色未知」）');
+// 两块那条路：先亮出目标 → 只写认出来的板 → 只调现成的 /api/flash（kind=assets）
+say(/将要写这两块：/.test(js), '动手前先把"将要写这两块"逐行亮出来（确认框）');
+say(/if \(!state\.boards\.length\)/.test(js), '一块都没认出来时不硬写（给一句能照做的说明）');
+const bothCall = /api\('\/api\/flash', \{ port: b\.port, kind: 'assets', path: up\.path \}\)/.exec(js);
+say(!!bothCall, '两块那条路也是调现成的 /api/flash（kind=assets）——没有第二套刷写实现');
+say(!!bothCall && !/offset/.test(bothCall[0]), '那个请求体里同样没有偏移字段');
+say(/for \(let i = 0; i < state\.boards\.length; i\+\+\)/.test(js),
+    '两块是**依次**写（逐块 await），不是并发冲两个口');
+// 逐块报结果，失败不许被说成成功
+say(/逐块结果/.test(js) && /没写成/.test(js), '写完之后逐块摊开结果（成功/失败各自一行）');
+say(/bad\.length/.test(js) && /单独重刷/.test(js),
+    '有失败就点出来是哪块、并说明可以单独重刷（不假装成功）');
+say(/setStatus\(`有 \$\{bad\.length\} 块没写成/.test(js),
+    '状态栏在有失败时说的是"没写成"，不是"写完了"');
+// 服务端那半边：角色怎么来的、未知怎么写、有没有多开一个刷写口子
+say(/角色未知/.test(srvSrc) && /不是本项目的板/.test(srvSrc),
+    'server.py 里"认不出角色"与"不是本项目的板"都有明确说法（未知不猜）');
+say(/AP_SSID_ROLE = \{"206dash-master": "MASTER", "206dash-slave": "SLAVE"\}/.test(srvSrc),
+    '角色来自板子自己起的 AP 名（206dash-MASTER|SLAVE）—— 不是按 COM 号推的');
+say(/BSSID/.test(srvSrc), 'server.py 会读 BSSID（= 板子的 MAC）');
+say(/ssid_role == role and mac/.test(srvSrc),
+    '★ 只有"连的就是这个角色的板子 AP"才写缓存（连着家里路由器读 /status 时不许凭空记）');
+say((srvSrc.match(/"\/api\/flash"/g) || []).length === 1,
+    'server.py 里 /api/flash 只有一个入口（两块那条路没有在服务端另开一个刷写实现）');
+say(!/^\s*(?:import|from)\s+serial\b/m.test(srvSrc),
+    'server.py 没有引入任何串口库（认角色走的是既有能力：pio device list + netsh + /status）');
 
 console.log(bad === 0 ? '\n全部通过。' : `\n${bad} 项没通过。`);
 process.exit(bad === 0 ? 0 : 1);

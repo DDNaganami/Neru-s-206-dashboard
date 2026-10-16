@@ -172,6 +172,234 @@ def editor_dirs():
     return out
 
 
+# ---------------------------------------------------------------------------
+# 串口 ↔ 角色：哪一块是主板、哪一块是从板
+#
+# 车主 2026-10-15 的反馈："标出角色吧，分别是新板（未定义），主板，从板，而且你写进
+# 板子这个只有一个按钮，也没区分主/从板啊。"
+#
+# ★ 判据（三条，按证据强弱）：
+#   ① **COM 号会变**（Windows 按枚举顺序分配，换口/重插就换号）⇒ **不能**靠它认板子；
+#   ② **MAC 不变** ⇒ 认板子用 MAC：`pio device list` 那一行里的 `SER=` 就是板子烧在
+#      芯片里的 MAC（303A:1001 这两个口就是；实测 COM9 = SER 80:45:6B:35:A3:C4 = MASTER、
+#      COM8 = SER 90:70:69:EA:F6:B4 = SLAVE）。★ 这不是"新写一套串口实现"：
+#      pio device list → pyserial 读的就是 Windows 的 PnP 属性（车主截图里那个 USB SER=）。
+#   ③ 角色来自**板子自己**：它起的 AP 名就是 `206dash-MASTER|SLAVE`
+#      （固件 lib/dashcore/ota_wifi.cpp:186/188），电脑连上那个 AP 时
+#      `netsh wlan show interfaces` 给出 SSID + BSSID(= 板子的 MAC) ⇒ 这一对就把
+#      "角色 ↔ MAC"绑上了；`/status` 里的 `role=` 是同一件事的第二份证据（既有能力）。
+#
+# ★ 拿不到证据 ⇒ **显示"角色未知"，绝不猜**（车主那一条）。
+# ★ 学到了就**缓存**（SCRATCH 下的一个小 JSON）：板子是哑的、或电脑没连它的 WiFi 时，
+#   还能显示"上次已知角色"，并带一个 **未确认** 标记 —— 未确认就是未确认，不装成现场读到的。
+# ---------------------------------------------------------------------------
+ROLE_CACHE_PATH = os.path.join(SCRATCH, "app-board-roles.json")
+ROLE_TEXT = {
+    "MASTER": {"side": "主板", "screen": "右屏", "shows": "速度+进气"},
+    "SLAVE":  {"side": "从板", "screen": "左屏", "shows": "转速+水温"},
+}
+# 板子自己起的 AP 名（固件 ota_wifi.cpp：`206dash-<ROLE>`）—— 认角色用它
+AP_SSID_ROLE = {"206dash-master": "MASTER", "206dash-slave": "SLAVE"}
+# 乐鑫原生 USB（USB-CDC）的 VID 前缀：这种口的 `SER=` 才是**板子的 MAC**
+ESP_USB_VID = "303A"
+
+
+def norm_mac(s):
+    """MAC / 序列号统一成大写冒号写法；不是 12 位十六进制就原样大写返回。
+
+    ★ 为什么两种都收：CH34x 那种串口桥的 `SER=` 是**桥片**的序列号，不是板子 MAC。
+      它不会等于 AP 的 BSSID ⇒ 天然不会误配（不需要特判），但也认不出角色（显示未知）。
+    """
+    t = re.sub(r"[^0-9A-Fa-f]", "", str(s or ""))
+    if len(t) == 12:
+        return ":".join(t[i:i + 2] for i in range(0, 12, 2)).upper()
+    return (str(s or "").strip().upper() or None)
+
+
+def parse_port_detail(detail):
+    """从 `pio device list` 那一行里抠出 VID:PID / SER（= MAC）/ 描述。"""
+    d = str(detail or "")
+    out = {"vid_pid": None, "ser": None, "desc": None}
+    m = re.search(r"VID:PID=([0-9A-Fa-f]{4}:[0-9A-Fa-f]{4})", d)
+    if m:
+        out["vid_pid"] = m.group(1).upper()
+    m = re.search(r"\bSER=([0-9A-Fa-f:.\-]+)", d)
+    if m:
+        out["ser"] = norm_mac(m.group(1))
+    m = re.search(r"Description:\s*(.+?)\s*$", d)
+    if m:
+        out["desc"] = m.group(1)[:120]
+    return out
+
+
+def load_role_cache():
+    """角色缓存（MAC ⇒ 角色 + 证据来源 + 时间）。读不出来就是空的 —— 不编。"""
+    try:
+        with open(ROLE_CACHE_PATH, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+    except Exception:
+        return {"version": 1, "roles": {}}
+    if not isinstance(d, dict):
+        return {"version": 1, "roles": {}}
+    if not isinstance(d.get("roles"), dict):
+        d["roles"] = {}
+    d["version"] = 1
+    return d
+
+
+def save_role_cache(d):
+    try:
+        os.makedirs(SCRATCH, exist_ok=True)
+        tmp = ROLE_CACHE_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(d, fh, ensure_ascii=False, indent=2, sort_keys=True)
+        os.replace(tmp, ROLE_CACHE_PATH)
+    except OSError:
+        pass
+
+
+def learn_role(mac, role, source):
+    """记下"这块 MAC 的角色"。★ 只有**有证据**的调用方才该调它（见下面两处）。"""
+    mac = norm_mac(mac)
+    role = str(role or "").upper()
+    if not mac or role not in ROLE_TEXT:
+        return None
+    d = load_role_cache()
+    cur = d["roles"].get(mac)
+    if cur and cur.get("role") == role and cur.get("source") == source:
+        return mac
+    d["roles"][mac] = {"role": role, "source": source,
+                       "at": time.strftime("%Y-%m-%d %H:%M")}
+    save_role_cache(d)
+    return mac
+
+
+def wifi_link():
+    """电脑现在连着的 WiFi（SSID + BSSID）。读不到就返回空 —— **不猜**。
+
+    ★ BSSID 就是那个 AP 的 MAC；板子的 AP 叫 `206dash-MASTER|SLAVE` ⇒ 这一对是
+      "角色 ↔ MAC"的现场证据。字段名 SSID/BSSID 是 ASCII（不随系统语言变），
+      解析不依赖中文。
+    """
+    out = {"ssid": None, "bssid": None}
+    try:
+        p = subprocess.run(["netsh", "wlan", "show", "interfaces"],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20)
+        text = (p.stdout or b"").decode("utf-8", "replace")
+    except Exception:
+        return out
+    for line in text.splitlines():
+        m = re.match(r"^\s*(?:AP\s+)?BSSID\s*:\s*(\S+)\s*$", line, re.I)
+        if m:
+            out["bssid"] = norm_mac(m.group(1))
+            continue
+        m = re.match(r"^\s*SSID\s*:\s*(\S.*?)\s*$", line, re.I)
+        if m:
+            out["ssid"] = m.group(1)
+    return out
+
+
+def live_role_for_ser(wifi, ser):
+    """现场证据：SSID 说角色、BSSID 说 MAC，而且**两个都要对得上**才算数。"""
+    ssid = (wifi or {}).get("ssid") or ""
+    role = AP_SSID_ROLE.get(ssid.strip().lower())
+    bssid = norm_mac((wifi or {}).get("bssid"))
+    mine = norm_mac(ser)
+    if role and bssid and mine and mine == bssid:
+        return role
+    return None
+
+
+def learn_role_from_status(st):
+    """板子自报的 `role=` + 电脑此刻连着的 AP 的 BSSID(= 板子的 MAC) ⇒ 绑定并缓存。
+
+    ★ 判据要严：**只有"电脑此刻连着的就是**这个角色的**板子 AP"才算证据** ——
+      SSID 必须是 `206dash-<同一个 role>` 且 BSSID 拿得到。
+      （实测踩过：连着家里路由器去读板子 /status，会把**路由器**的 MAC 记成板子的角色 ——
+        那是臆造，不是证据。所以这条写成两半对得上才算。）
+    ★ 证据不齐就**不写缓存**，只回一句说明给前端。
+    ★ 这是"既有能力"顺带做的事：`/api/board-status` 本来就是读板子 /status 的那条路
+      （「看看板子连上没有」/升级后确认成功都用它）—— 没有新开串口、没有新开接口。
+    """
+    wifi = wifi_link()
+    role = str((st or {}).get("role", "") or "").upper()
+    if role not in ROLE_TEXT:
+        return None
+    ssid = (wifi or {}).get("ssid") or ""
+    ssid_role = AP_SSID_ROLE.get(ssid.strip().lower())
+    mac = norm_mac((wifi or {}).get("bssid"))
+    if ssid_role == role and mac:
+        learn_role(mac, role, "板子自报 role=%s" % role)
+        return ("把 %s（BSSID %s）记成了 %s ⇒ 端口下拉里那块板就带角色了"
+                % (ssid, mac, role))
+    if ssid_role and ssid_role != role:
+        return ("板子自报 role=%s，但它自己的 AP 叫 %s（对不上）⇒ 不写缓存，"
+                "先看清是不是同一块板" % (role, ssid))
+    return ("读到板子自报 role=%s 了，但电脑现在连的不是它的 WiFi（当前：%s）"
+            "⇒ 绑不到具体那个串口，不写缓存" % (role, ssid or "没连 WiFi"))
+
+
+def role_text(role, state):
+    """人话的角色那一格：`MASTER · 右屏 速度+进气`（缓存来的加「未确认」）。"""
+    if role not in ROLE_TEXT:
+        return "角色未知"
+    info = ROLE_TEXT[role]
+    t = "%s · %s %s" % (role, info["screen"], info["shows"])
+    if state == "cached":
+        t += " · 未确认"
+    return t
+
+
+def port_label(port, is_board, role, state):
+    """下拉里那一行：`COM9（MASTER · 右屏 速度+进气）` / `COM1（不是本项目的板）`。"""
+    if not is_board:
+        return "%s（不是本项目的板）" % port
+    return "%s（%s）" % (port, role_text(role, state))
+
+
+def annotate_ports(raw_ports):
+    """给"列串口"的结果补上：MAC / 是不是本项目的板 / 角色（+ 证据来源）。
+
+    ★ `detail` 这一格**换成角色那一行**是有意的：编辑器页面的串口下拉直接显示
+      `port + detail`（那一页本单不碰）⇒ "下拉里标出角色"这件事在服务端做完就生效。
+      原始硬件串留在 `hw` 里，谁想看都还在。
+    """
+    wifi = wifi_link()
+    roles = load_role_cache()["roles"]
+    out = []
+    for p in raw_ports:
+        pnp = parse_port_detail(p.get("detail"))
+        ser = pnp["ser"]
+        role, state, source = None, "unknown", None
+        live = live_role_for_ser(wifi, ser)
+        if live:
+            role, state = live, "confirmed"
+            source = "板子的 WiFi（SSID+BSSID）"
+            learn_role(ser, live, source)          # 现场证据 ⇒ 记下来
+        elif ser and ser in roles and roles[ser].get("role") in ROLE_TEXT:
+            role, state = roles[ser]["role"], "cached"
+            source = roles[ser].get("source") or "上次记下来的"
+        is_board = bool((pnp["vid_pid"] or "").startswith(ESP_USB_VID)) or bool(ser and ser in roles)
+        out.append({
+            "port": p.get("port"),
+            # detail：给编辑器那个下拉用的**角色那一行**（见上面的注释）。
+            #   不是本项目的板也明说 —— 那一页自己只显示 `port + detail`，
+            #   所以"是不是板子"这件事也在服务端说清，就不必去改那一页。
+            "detail": "（%s）" % ("不是本项目的板" if not is_board else role_text(role, state)),
+            "hw": p.get("detail") or "",
+            "vid_pid": pnp["vid_pid"],
+            "ser": ser,
+            "desc": pnp["desc"],
+            "is_project_board": is_board,
+            "role": role,
+            "role_state": state,                   # confirmed / cached / unknown
+            "role_text": role_text(role, state),
+            "role_source": source,
+            "label": port_label(p.get("port"), is_board, role, state),
+        })
+    return {"ports": out, "wifi": wifi, "role_cache": ROLE_CACHE_PATH}
+
+
 def pio_python():
     """能跑 platformio 的那个 python（没有就用当前解释器）。"""
     return PIO_PY if os.path.exists(PIO_PY) else sys.executable
@@ -215,14 +443,23 @@ def run(cmd, timeout=900, cwd=REPO):
 # 业务动作
 # ---------------------------------------------------------------------------
 def list_ports():
-    """列串口。优先 `pio device list`（配方里就是这么用的），失败再退回 pyserial。"""
+    """列串口。优先 `pio device list`（配方里就是这么用的），失败再退回 pyserial。
+
+    ★ 返回的每一格都带**角色**（哪块是主板/从板）与"是不是本项目的板"——
+      判据与缓存的来龙去脉见上面 ROLE_CACHE_PATH 那一段注释。
+    ★ `detail` 是给编辑器那个下拉看的**角色那一行**；原始硬件串在 `hw` 里。
+    """
     ok, out = run([pio_python(), "-m", "platformio", "device", "list"], timeout=120)
     ports = []
     if ok:
-        # 形如：  COM8\n----\nHardware ID: USB VID:PID=303A:1001 ...
+        # 形如：  COM8\n----\nHardware ID: USB VID:PID=303A:1001 SER=90:70:69:EA:F6:B4 ...
         for m in re.finditer(r"^(COM\d+)\s*$([\s\S]*?)(?=^COM\d+\s*$|\Z)", out, re.M):
             ports.append({"port": m.group(1), "detail": " ".join(m.group(2).split())[:160]})
-    return {"ok": True, "ports": ports, "raw": out[-1500:]}
+    info = annotate_ports(ports)
+    info["ok"] = True
+    info["raw"] = out[-1500:]
+    info["boards"] = [p for p in info["ports"] if p["is_project_board"]]
+    return info
 
 
 def list_bins():
@@ -493,7 +730,14 @@ class Handler(SimpleHTTPRequestHandler):
                                "pio": pio_python(), "proxy": PROXY,
                                "time": time.strftime("%H:%M:%S")})
         if u.path == "/api/board-status":
-            return self._json(board_status((q.get("host") or [""])[0]))
+            st = board_status((q.get("host") or [""])[0])
+            # ★ 顺手把"角色 ↔ MAC"学下来（既有能力，不新开一条路、不碰串口）：
+            #   板子自报 `role=`（固件 /status）+ 电脑此刻连着的 AP 的 BSSID(= 板子的 MAC)
+            #   ⇒ 两个证据凑齐就缓存；缺一个就只留一句说明（**不猜**）。
+            note = learn_role_from_status(st)
+            if note:
+                st["_role_note"] = note
+            return self._json(st)
         if u.path == "/api/ports":
             return self._json(list_ports())
         if u.path == "/api/bins":

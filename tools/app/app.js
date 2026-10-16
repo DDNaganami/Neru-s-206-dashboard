@@ -38,7 +38,8 @@ const ENV_HUMAN = {
   'pcpreview': '电脑上的预览（不是固件）',
 };
 
-const state = { board: 'left', bins: [], upgrading: false, repoOk: null, repoNeed: '' };
+const state = { board: 'left', bins: [], upgrading: false, repoOk: null, repoNeed: '',
+                ports: [], boards: [], portsLoaded: false, flashing: false };
 
 const $ = (s) => document.querySelector(s);
 const setStatus = (s) => { $('#f-status').textContent = s; };
@@ -90,6 +91,8 @@ function go(id) {
   document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('sel', b.dataset.tab === id));
   document.querySelectorAll('main section').forEach((s) => s.classList.toggle('sel', s.id === 'tab-' + id));
   location.hash = id;
+  /* 打开「工具」屏时才去列串口（`pio device list` 慢，别堵启动）—— 让下拉里直接带角色 */
+  if (id === 'tools' && !state.portsLoaded && !state.flashing) refreshPorts();
 }
 /* 表盘屏的二级页签：三个入口、**两个**面板 ——
    编辑器只有一个框（同一个页面 index.html），「主题配色 / 图片素材」指的都是它。 */
@@ -533,7 +536,50 @@ function initDash() {
   $('#b-preview-open').onclick = () => window.open('/preview/preview.html', '_blank');
 }
 
-/* ---- ③ 工具：USB 写素材 + 构建 -------------------------------------------*/
+/* ---- ③ 工具：USB 写素材（单块 / 两块）+ 构建 ------------------------------*/
+/* 串口那一格：**标出角色**（主板/从板）。判据与缓存全在服务端（见 server.py 的
+   ROLE_CACHE_PATH 那一段）：COM 号会变 ⇒ 用**不变的 MAC**（USB 描述里的 SER=）认板子；
+   角色来自板子自己起的 AP 名（206dash-MASTER|SLAVE）+ BSSID，或它自报的 role=。
+   ★ 拿不到证据就是「角色未知」—— 这里**不做任何猜测**（不按 COM 号推、不按插拔顺序推）。 */
+async function refreshPorts() {
+  const r = await api('/api/ports');
+  state.ports = r.ports || [];
+  state.boards = state.ports.filter((p) => p.is_project_board);
+  state.portsLoaded = true;
+  const sel = $('#f-port');
+  const keep = sel.value;
+  sel.innerHTML = state.ports.map((p) => `<option value="${p.port}">${p.label || p.port}</option>`).join('')
+    || '<option value="">（没发现串口）</option>';
+  if (keep && state.ports.some((p) => p.port === keep)) sel.value = keep;   // 刷新别把用户选的清掉
+  renderRoles(r);
+  return r;
+}
+
+/* 角色那一行：把"哪块是主板、哪块是从板"如实摊开；认不出来就说认不出来（附缓存文件路径） */
+function renderRoles(r) {
+  const el = $('#roles-line');
+  if (!el) return;
+  const bs = state.boards || [];
+  const bits = [bs.length
+    ? '认出来的板：' + bs.map((b) => b.label).join(' · ')
+    : '还没认出本项目的板（插好 USB 线，再点「刷新串口」）'];
+  const wifi = (r && r.wifi) || {};
+  if (wifi.ssid) bits.push('电脑 WiFi 现在是 ' + wifi.ssid + '（不是板子的 WiFi 就认不出角色）');
+  el.textContent = '角色：' + bits.join('；');
+  el.title = '角色是**认出来**的，不是猜的：MAC（USB 里的 SER=）不变，角色来自板子自己起的 AP 名'
+    + '（206dash-MASTER/SLAVE）或它自报的 role=；认不出就写「未知」。'
+    + '识别缓存（删掉就等于忘掉，下次重认）：' + ((r && r.role_cache) || '（服务端未提供）');
+}
+
+/* 把文件交给本地服务落盘（页面拿不到文件的真实路径）—— 单块/两块两条路共用这一个 */
+async function uploadBin(file) {
+  return await fetch('/api/upload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': file.name },
+    body: file,
+  }).then((r) => r.json());
+}
+
 function initFiles() {
   $('#f-bin').onchange = async (e) => {
     const f = e.target.files[0];
@@ -545,33 +591,111 @@ function initFiles() {
   };
   $('#b-ports').onclick = async () => {
     setStatus('读串口…');
-    const r = await api('/api/ports');
-    const ps = r.ports || [];
-    $('#f-port').innerHTML = ps.map((p) => `<option value="${p.port}">${p.port} ${p.detail || ''}</option>`).join('')
-      || '<option value="">（没发现串口）</option>';
-    logTo('#flash-log', ps.length ? '串口：' + ps.map((p) => p.port).join(', ') + '\n'
-      : '没发现串口（板子插好了吗？）\n' + (r.raw || ''), false);
+    const r = await refreshPorts();
+    logTo('#flash-log', (state.ports.length
+      ? '串口：\n' + state.ports.map((p) => '  ' + (p.label || p.port)).join('\n')
+      : '没发现串口（板子插好了吗？）\n' + (r.raw || '')), false);
+    setStatus('就绪');
+  };
+  /* 「读一下角色」：走**既有**那条读板子 /status 的路（readBoard → /api/board-status）。
+     服务端顺手把"板子自报的 role="与"电脑此刻连着的那个 AP 的 BSSID(= 板子的 MAC)"
+     绑起来缓存 ⇒ 以后板子是哑的也认得（显示"上次已知"+「未确认」）。没有新开接口。 */
+  $('#b-roles').onclick = async () => {
+    setStatus('读板子…');
+    const host = ($('#ota-host').value.trim() || '192.168.4.1');
+    const st = await readBoard(host);
+    await refreshPorts();
+    const note = (st && st._role_note)
+      ? st._role_note
+      : '没读到板子自报的角色 —— 把电脑 WiFi 连到这个板子自己的 WiFi（206dash-…）再点一次。';
+    logTo('#flash-log', '读角色：' + note + '\n' + '现在认出来的：' +
+      (state.boards.length ? state.boards.map((b) => b.label).join(' · ') : '（还没认出本项目的板）') + '\n', false);
     setStatus('就绪');
   };
   $('#b-flash').onclick = async () => {
+    if (state.flashing) return;
     const file = $('#f-bin').files[0];
     if (!file) { alert('先在上面「选一个文件」里选要写的文件'); return; }
     const port = $('#f-port').value;
     if (!port) { alert('先刷新串口并选一个'); return; }
     const kind = $('#f-kind').value;
+    const who = state.ports.find((p) => p.port === port) || {};
     setStatus('上传文件到本地服务…');
-    // 页面拿不到文件的真实路径 ⇒ 先传给本地服务落盘（scratch/app-upload），再交给 esptool
-    const up = await fetch('/api/upload', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': file.name },
-      body: file,
-    }).then((r) => r.json());
+    const up = await uploadBin(file);
     if (!up.ok) { logTo('#flash-log', '上传失败：' + JSON.stringify(up) + '\n', false); return; }
-    logTo('#flash-log', `文件已落到 ${up.path}（${human(up.bytes)}）\n写进板子中…\n`, false);
+    logTo('#flash-log', `文件已落到 ${up.path}（${human(up.bytes)}）\n写进板子中：${who.label || port}\n`, false);
     setStatus('写进板子中…');
     const r = await api('/api/flash', { port, kind, path: up.path });
     logTo('#flash-log', r.out || '', true);
     setStatus(r.ok ? '写完了 ✓（细节见下面的日志）' : '写失败（看下面的日志）');
+  };
+  /* ★ 「写进两块板」：车主不想分辨哪块是哪块 ⇒ 一次点击**依次**写完。
+     · 只写**认出来的本项目的板**（state.boards）—— 主板板载串口那种不会进这个列表；
+     · 动手前先把"将要写哪几块"逐行亮出来（确认框里）；
+     · 仍然只调现成的 /api/flash（kind=assets、偏移由服务端白名单取 0x210000）——
+       **没有第二套刷写实现**；请求体里也没有偏移这个字段；
+     · **逐块报结果**：成功/失败各自一行；有失败就说清哪块没写成、可以单独重刷它。 */
+  $('#b-flash-both').onclick = async () => {
+    if (state.flashing) return;
+    const file = $('#f-bin').files[0];
+    if (!file) {
+      alert('先在「选一个文件」里选刚保存的那个 assets.bin（编辑器里点「保存安装包」存下来的）');
+      return;
+    }
+    if (!state.boards.length) {
+      alert('还没认出本项目的板 —— 先点「刷新串口」；两块板插好后应该能看到 COMx（主板/从板）。');
+      return;
+    }
+    const list = state.boards.map((b, i) => `${i + 1}. ${b.label}`).join('\n');
+    const unknown = state.boards.filter((b) => !b.role).length;
+    const msg = '将要写这两块：\n' + list + '\n\n文件：' + file.name +
+      '\n写的是整套素材（配色 + 图片）；偏移固定 0x210000（不可改，由本地服务按分区表取）。' +
+      (unknown ? `\n\n★ 其中 ${unknown} 块的角色还没认出来（认不出就写「未知」，绝不猜）—— 照样会写，你确认一下插的就是这两块。` : '') +
+      '\n\n写的时候别拔线、别关这个窗口。开始？';
+    if (!confirm(msg)) return;
+    state.flashing = true;
+    $('#b-flash-both').disabled = true;
+    $('#b-flash').disabled = true;
+    setStatus('上传文件到本地服务…');
+    const up = await uploadBin(file);
+    if (!up.ok) {
+      logTo('#flash-log', '上传失败：' + JSON.stringify(up) + '\n', false);
+      setStatus('上传失败（看下面的日志）');
+      state.flashing = false;
+      $('#b-flash-both').disabled = false;
+      $('#b-flash').disabled = false;
+      return;
+    }
+    logTo('#flash-log', `写两块板：${state.boards.map((b) => b.port).join(' → ')}\n` +
+      `文件已落到 ${up.path}（${human(up.bytes)}）\n`, false);
+    const results = [];
+    for (let i = 0; i < state.boards.length; i++) {
+      const b = state.boards[i];
+      setStatus(`正在写 ${b.port}（第 ${i + 1}/${state.boards.length} 块）…`);
+      logTo('#flash-log', `\n—— [${i + 1}/${state.boards.length}] ${b.label} ——\n`, true);
+      let r;
+      try {
+        r = await api('/api/flash', { port: b.port, kind: 'assets', path: up.path });
+      } catch (e) {
+        r = { ok: false, out: '写的时候出错：' + e };
+      }
+      logTo('#flash-log', (r.out || '') + '\n', true);
+      results.push({ b, r });
+    }
+    const bad = results.filter((x) => !x.r.ok);
+    logTo('#flash-log', '\n=== 逐块结果 ===\n' + results.map(({ b, r }) => b.label + '：' +
+      (r.ok ? '写完了 ✓（偏移 ' + (r.offset || '0x210000') + '）' : '**没写成** ✗')).join('\n') + '\n', true);
+    if (!bad.length) {
+      setStatus(`两块都写完了 ✓（${state.boards.map((b) => b.port).join(' + ')}）`);
+      logTo('#flash-log', '两块都写完了 ✓\n', true);
+    } else {
+      setStatus(`有 ${bad.length} 块没写成：${bad.map((x) => x.b.port).join('、')} —— 可以单独重刷`);
+      logTo('#flash-log', `★ 有 ${bad.length} 块没写成：${bad.map((x) => x.b.label).join('、')}\n` +
+        '它们可以单独重刷：在上面选那个串口、点「写进板子」，同样一个文件再刷一次就行。\n', true);
+    }
+    state.flashing = false;
+    $('#b-flash-both').disabled = false;
+    $('#b-flash').disabled = false;
   };
 }
 function initBuild() {

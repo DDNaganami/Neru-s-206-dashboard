@@ -221,6 +221,22 @@ finally:
         pass
 
 # ---------------------------------------------------------------------------
+section("⑦ 客户端外壳那两条路（单块 / 两块）也都没有偏移字段")
+#   ★ 2026-10-15 新增「写进两块板」：它**也**只调现成的 /api/flash（kind=assets），
+#     偏移仍然由服务端白名单给 —— 这一节就是"没有在客户端另开一个偏移入口"的判据。
+js = open(os.path.join(APP_DIR, "app.js"), encoding="utf-8").read()
+one = re.search(r"api\('/api/flash', \{ port, kind, path: up\.path \}\)", js)
+two = re.search(r"api\('/api/flash', \{ port: b\.port, kind: 'assets', path: up\.path \}\)", js)
+ok(bool(one), "单块那条路：/api/flash {port, kind, path}")
+ok(bool(two), "两块那条路：/api/flash {port, kind:'assets', path}（逐块 await）")
+ok(bool(one) and "offset" not in one.group(0) and bool(two) and "offset" not in two.group(0),
+   "两条路的请求体里都没有 offset / 偏移 —— 页面上没有能改偏移的地方")
+ok("state.boards" in js and "is_project_board" in js,
+   "两块那条路只写认出来的本项目的板（is_project_board），主板板载口不会被写")
+ok(not re.search(r"COM\d+\s*[:=]\s*['\"](MASTER|SLAVE)", js),
+   "外壳里没有「哪个 COM 号 = 哪个角色」的硬编码（角色只从服务端来）")
+
+# ---------------------------------------------------------------------------
 print("\n" + "=" * 56)
 if fail_n == 0:
     print("全部通过:%d 项判据（全程没有碰串口、没有跑 esptool）" % pass_n)
