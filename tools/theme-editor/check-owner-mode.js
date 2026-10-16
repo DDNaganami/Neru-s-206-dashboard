@@ -750,6 +750,49 @@ section("⑧c 快照文件名带时间戳 + 「保存」与「写进板子」两
   eq(countOf(own, /data-ocap="import"/g), 2, "「打开安装包…」仍然是 2 个（没有新增控件）");
 }
 
+section("⑧d 「写进板子」不再要求先保存（车主：『点了写进板子没反应』）");
+//   真因：点的是编辑器这块面板的 #btn-owner-flash，而它当时要求"先点过保存安装包"
+//   （pending 为空就只说一句"先点上面的…"）。现在：**当场用当前状态打包**再 POST。
+{
+  const src = MERGED;
+  // ① 打包**只有一条路**：两个入口共用 packCurrentAssets()
+  ok(/function packCurrentAssets\(\)/.test(src), "有 packCurrentAssets()（唯一那条打包路）");
+  const expBody = /function exportAssetsBin\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
+  ok(!!expBody && /packCurrentAssets\(\)/.test(expBody[1]), "「保存安装包」走 packCurrentAssets()");
+  ok(!!expBody && /\bdownload\(/.test(expBody[1]),
+     "★ exportAssetsBin() 里仍然直接调 download()（外壳靠『截下它』拿字节 —— 约定不许断）");
+  const flashBody = /async function ownerFlashWrite\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
+  ok(!!flashBody && /packCurrentAssets\(\)/.test(flashBody[1]),
+     "「写进板子」也走同一个 packCurrentAssets()（没有第二套打包）");
+  ok(!!flashBody && !/\bdownload\(/.test(flashBody[1]),
+     "「写进板子」那条路里**没有** download() ⇒ 不产生下载文件");
+  // ② "先保存"那道门槛已经删掉（pending 这个隐式状态也不留）
+  ok(!/ownerClient\.pending/.test(src), "没有 ownerClient.pending 了（不再留『上一次保存的字节』）");
+  ok(!/先点上面的「保存安装包/.test(src), "那句『先点上面的保存安装包』已删（它就是车主看到的『没反应』）");
+  ok(/const ownerClient = \{ on: false, ports: \[\] \};/.test(src),
+     "ownerClient 里只剩 on / ports 两个字段");
+  // ③ 偏移仍然没有入口：请求体只有 port / kind / path
+  ok(/\{ port: port, kind: "assets", path: up\.path \}/.test(src),
+     "POST /api/flash 的请求体还是那三个字段");
+  ok(!/offset\s*:/.test(flashBody ? flashBody[1] : ""),
+     "「写进板子」的请求体里没有偏移字段（想改也没地方改）");
+  // ④ 非客户端场景**一个字没变**：不是 http(s) 就早退（面板不出现），esptool 命令照旧
+  ok(/if \(proto !== "http:" && proto !== "https:"\) return;/.test(src),
+     "file:// 双击打开 ⇒ 探测直接返回（那块面板一直 display:none）");
+  ok(/<div id="owner-flash" style="display:none">/.test(src),
+     "面板默认是 display:none（只有客户端答了才露出来）");
+  ok(/function updateOwnerFlash\(\)/.test(src) && /id="owner-cmd"/.test(src),
+     "没有客户端时那条 esptool 命令（#owner-cmd）与端口框照旧在");
+  // ⑤ 版本 / 能力标记（外壳据此提前发现"老页面"）
+  ok(/window\.__OWNER_MODE_VERSION = OWNER_MODE_VERSION/.test(src),
+     "暴露 window.__OWNER_MODE_VERSION");
+  ok(/window\.__OWNER_MODE_CAPS = OWNER_MODE_CAPS/.test(src) && /flashNoSave: true/.test(src),
+     "暴露 window.__OWNER_MODE_CAPS（含 flashNoSave）");
+  ok(/data-owner-mode-version/.test(src), "<html> 上也有同一份版本号（DOM 侧副本）");
+  // ⑥ 文案：不要"先保存"那套说法
+  ok(/不需要先保存/.test(src), "面板文案点明『不需要先保存』");
+}
+
 section("⑨ 3 个预设写进**现有主题状态**（当前默认 / 夜间 / 浅底）");
 {
   const src = MERGED;

@@ -598,14 +598,18 @@
         <span class="owner-note">偏移</span>
         <span id="owner-flash-offset" style="color:var(--dim);font-size:12px">0x210000（固定，不可改）</span>
       </div>
-      <button id="btn-owner-flash" class="primary" style="width:100%">写进板子（assets.bin）</button>
+      <button id="btn-owner-flash" class="primary" style="width:100%">写进板子（用当前状态，不下载）</button>
       <div class="note" id="owner-flash-status" style="color:var(--dim)">…</div>
       <pre id="owner-flash-log" style="color:var(--dim);font-size:12px;white-space:pre-wrap;
            max-height:180px;overflow:auto;margin:6px 0 0"></pre>
+      <!-- ★★ 2026-10-15（车主："点了写进板子没反应"）：这句原来说的是"先点保存安装包，
+           再在这里点写进板子" —— 那个门槛就是车主看到的"没反应"。
+           现在点它**当场用当前状态**打一份交给客户端，**不需要先保存、不产生下载**。 -->
       <div class="note" style="color:var(--dim)">
-        写的是<b>刚点「保存安装包」时打包出来的那一份</b>（同一个内核、同一份字节，不另打一份）
-        —— 所以先保存、再在这里选串口点「写进板子」。偏移由客户端按分区表白名单取，
-        页面上没有能改它的地方。
+        <b>「写进板子」= 直接把当前状态刷进板子</b>：点下去就用现在的配色与图片在**内存里**
+        打一份（<b>不需要先保存、也不会产生下载文件</b>），交给本地客户端按分区表写进去。
+        偏移由客户端按白名单取，页面上<b>没有</b>能改它的地方。
+        （要留一份快照时再用上面的「保存安装包」——那一个会下载文件。）
       </div>
     </section>
     </div>
@@ -1755,30 +1759,43 @@ function coreForTarget() {
   };
 }
 
-function exportAssetsBin() {
+// ------------------------------------------------------------
+// 打一份"当前状态"的容器 —— **唯一**那条打包路（不下载、不提示、不写状态）。
+//
+// ★★ 2026-10-15（车主："点了写进板子没反应"）：这次把打包从 exportAssetsBin() 里
+//    **提出来**，于是两个入口共用同一份实现：
+//      · 「保存安装包」= 它 + download()（留一份快照，会下载）；
+//      · 「写进板子」  = 它 + POST 给客户端（**当场用当前状态**，不下载、不必先保存）。
+//    ★ 为什么必须共用：第二套打包实现迟早分叉 —— 而分叉在这里的表现是
+//      "屏上刷进去的和你保存下来的不是同一份"，本仓库最贵的那类 bug。
+//    ★ 前置条件不满足时**返回 { error }**（调用方负责怎么说话：say 还是面板状态）。
+//    ★ 外壳（tools/app）那条 `buildAssetsInMemory()` 仍然走 exportAssetsBin()，
+//      它靠临时截下 download() 拿字节 —— 所以 `download(` 必须留在
+//      exportAssetsBin() 的**函数体里**（check-live-flash.js 盯着这条约定）。
+// ------------------------------------------------------------
+function packCurrentAssets() {
   if (!T) {
-    say("还没有配色，导不出合并文件。\n\n" +
-        "配色会自动存到本机（键 " + THEME_KEY + "）。\n" +
-        "先在本页「① 配色」分区把色改好，或者把一份 theme.json 拖进来，再导出。", "err");
-    return;
+    return { error: "还没有配色，导不出合并文件。\n\n" +
+                    "配色会自动存到本机（键 " + THEME_KEY + "）。\n" +
+                    "先在本页「① 配色」分区把色改好，或者把一份 theme.json 拖进来，再导出。" };
   }
   if (!items.length) {
-    say("还没有图片，导不出合并文件。\n先到「② 图片」分区加图（拖进来、或点上面的「＋ 添加图片」）再导出。", "err");
-    return;
+    return { error: "还没有图片，导不出合并文件。\n" +
+                    "先到「② 图片」分区加图（拖进来、或点上面的「＋ 添加图片」）再导出。" };
   }
 
   // 图片那一段 = 本页"导出 image.bin"的**同一份产物**（同一个 buildPayload →
   // 同一个 ImageBlob.build），所以不用担心两边图不一样。
   let built;
   try { built = ImageBlob.build(buildPayload()); }
-  catch (e) { say("打包失败：" + e.message, "err"); return; }
+  catch (e) { return { error: "打包失败：" + e.message }; }
   if (built.totalBytes > partBytes()) {
-    say("打包结果是 " + built.totalBytes + " 字节，超过 image 分区（" +
-        (partBytes() / 1024) + " KB，目标板：" + ImageBlob.targetInfo(curTarget).label + "），" +
-        "刷进去会被截断 ⇒ 合并文件也装不下。\n" +
-        "两条路：① 把「目标宽度」改小；② 板上如果是 S3 那块(16MB)，" +
-        "把「目标板」切到它 —— 它的 image 分区是 8MB。", "err");
-    return;
+    return { error: "打包结果是 " + built.totalBytes + " 字节，超过 image 分区（" +
+                    (partBytes() / 1024) + " KB，目标板：" +
+                    ImageBlob.targetInfo(curTarget).label + "），" +
+                    "刷进去会被截断 ⇒ 合并文件也装不下。\n" +
+                    "两条路：① 把「目标宽度」改小；② 板上如果是 S3 那块(16MB)，" +
+                    "把「目标板」切到它 —— 它的 image 分区是 8MB。" };
   }
 
   // 配色那一段：
@@ -1798,9 +1815,15 @@ function exportAssetsBin() {
       imageLabel: "本页的图片"
     });
   } catch (e) {
-    say(e.message, "err");
-    return;
+    return { error: e.message };
   }
+  return { packed: packed, themeFrom: themeFrom };
+}
+
+function exportAssetsBin() {
+  const r = packCurrentAssets();
+  if (r.error) { say(r.error, "err"); return; }
+  const packed = r.packed, themeFrom = r.themeFrom;
 
   // ★★ 2026-10-15（车主："为什么每次刷写都要保存一次 bin 呢，这样我的下载文件夹会有
   //   很多个相同的 bin"）：下载名带**时间戳**，多份快照一眼分得清 ——
@@ -1814,7 +1837,7 @@ function exportAssetsBin() {
   // ★ 客户端在的时候，这一份可以**直接写进板子**（面板在车主模式那两栏下面）。
   //   这里只是把本次打包的产物记下来 —— **不自己拼字节、也不自己刷**；
   //   不在客户端里时它返回空串，下面的提示与以前**一模一样**。
-  const clientHint = ownerClientAfterSave(packed.bytes, packed.totalLen);
+  const clientHint = ownerClientAfterSave(packed.totalLen);
 
   // 那条刷写命令：芯片跟着目标板走，端口提示"改成你自己的"
   //   ★ 文件名用**刚下载的那一个**（带时间戳）—— 复制粘贴就能直接跑；
@@ -5304,9 +5327,12 @@ function saveOwnerPackage() {
 // ============================================================
 const FLASH_API = { health: "/api/health", ports: "/api/ports",
                     upload: "/api/upload", flash: "/api/flash" };
-// on = 本地客户端在（面板露出来）；ports = 客户端报的串口；
-// pending = 刚保存的那一份字节（要写进板子的就是它，没保存过就是 null）。
-const ownerClient = { on: false, ports: [], pending: null, len: 0 };
+// on = 本地客户端在（面板露出来）；ports = 客户端报的串口。
+// ★★ 2026-10-15：原来还有一个 `pending`（"刚保存的那一份字节"）+ 一道"先保存"的门槛 ——
+//   车主点了「写进板子」只看到"先点上面的保存安装包"，那就是他说的"没反应"。
+//   现在**不留 pending**：点下去当场用当前状态打一份（packCurrentAssets()），
+//   所以这个对象里没有任何"上一次保存的字节"这种隐式状态。
+const ownerClient = { on: false, ports: [] };
 
 function ownerFlashEl(id) { return document.getElementById(id); }
 
@@ -5389,22 +5415,29 @@ async function ownerFlashPorts(quiet) {
 
 // 「保存安装包」存好之后由 exportAssetsBin() 调（返回一句给页面日志的提示）。
 // ★ 它**不发起任何写操作**：写不进板子是车主自己按「写进板子」那个按钮决定的。
-function ownerClientAfterSave(bytes, totalLen) {
+// ★★ 2026-10-15：它**不再**把字节记成"待写"（那个 pending 已删）——
+//   「写进板子」现在是当场打包，不依赖"先保存"。
+function ownerClientAfterSave(totalLen) {
   if (!ownerClient.on) return "";                 // 不在客户端里 ⇒ 一个字节都不外发
-  ownerClient.pending = new Uint8Array(bytes);    // 就是刚保存的那一份（同一次打包的产物）
-  ownerClient.len = totalLen;
   ownerFlashShow();
-  ownerFlashSay("已保存 assets.bin（" + totalLen + " 字节）。选好串口，点下面的「写进板子」——" +
-                "写进去的就是这一份。");
+  ownerFlashSay("已保存一份快照（" + totalLen + " 字节，会下载一个带时间戳的文件）。" +
+                "想直接刷进板子就点下面的「写进板子」——它用**当前状态**，不需要先保存。");
   ownerFlashLog("");
   const box = ownerFlashEl("owner-flash");
   if (box && box.scrollIntoView) box.scrollIntoView({ block: "nearest" });
   if (!ownerClient.ports.length) ownerFlashPorts(true);
-  return "\n\n★ 在客户端里：这一份可以直接写进板子（下面「写进板子」那一块，选串口就行）——" +
-         "偏移由客户端按分区表取，页面上没有改它的地方。";
+  return "\n\n★ 在客户端里：想少留快照就直接点「写进板子」——它用当前状态当场打包，" +
+         "**不产生下载**（偏移由客户端按分区表取，页面上没有改它的地方）。";
 }
 
-// 「写进板子」：把**刚保存的那一份**交给客户端（落盘 → esptool）。
+// 「写进板子」：**当场用当前状态**打一份容器交给客户端（落盘 → esptool）。
+//
+// ★★ 2026-10-15（车主："点了写进板子没反应"）：以前它要求"先点过保存安装包"
+//   （pending 为空就只说一句"先点上面的…"）—— 那道门槛就是车主看到的"没反应"。
+//   现在：点下去直接 packCurrentAssets()（本页**唯一**那条打包路，与「保存安装包」
+//   同一个函数）+ POST。于是：
+//     · **不需要先保存** ✓；· **不产生任何下载** ✓（车主的下载文件夹不会再堆快照）；
+//     · 偏移仍然没有入口 —— 请求体还是 {port, kind, path} 三个字段（见下）。
 // ★ 请求体只有 {port, kind, path}：没有偏移这个字段（想改也没有地方改）。
 async function ownerFlashWrite() {
   if (!ownerClient.on) return;
@@ -5415,18 +5448,22 @@ async function ownerFlashWrite() {
     ownerFlashSay("先在这个下拉里选一个串口（形如 COM8）；没看到你的串口就先点「刷新串口」。");
     return;
   }
-  if (!ownerClient.pending) {
-    ownerFlashSay("先点上面的「保存安装包（assets.bin）」——写进板子的就是刚保存的那一份" +
-                  "（同一个内核、同一份字节，不另打一份）。");
+  // ★ 当场打包（不下载、不必先保存）。失败时把原因原样说清 —— 不静默。
+  const pack = packCurrentAssets();
+  if (pack.error) {
+    ownerFlashSay(pack.error.replace(/\s*\n\s*/g, " "));
     return;
   }
+  const bytes = pack.packed.bytes;
+  const totalLen = pack.packed.totalLen;
   if (btn) btn.disabled = true;
-  ownerFlashSay("正在把 assets.bin 交给客户端…写 " + ownerFlashOffsetText() + " 这一区，中途别拔线。");
+  ownerFlashSay("正在用**当前状态**打一份（" + totalLen + " 字节，不产生下载）交给客户端…写 " +
+                ownerFlashOffsetText() + " 这一区，中途别拔线。");
   try {
     const up = await fetch(FLASH_API.upload, {
       method: "POST",
       headers: { "Content-Type": "application/octet-stream", "X-Filename": "assets.bin" },
-      body: ownerClient.pending
+      body: bytes
     }).then(function (r) { return r.json(); });
     if (!up || !up.ok) {
       ownerFlashSay("交给客户端没成功：" + JSON.stringify(up || {}) + "（客户端还在吗？）");
@@ -5440,9 +5477,9 @@ async function ownerFlashWrite() {
     }).then(function (x) { return x.json(); });
     ownerFlashLog((r && r.out) || "");
     if (r && r.ok) {
-      ownerClient.pending = null;               // 写完就作废：下次要写必须先再保存一次
+      // ★ 没有 pending 要清：写进板子的那份是**当场**打的，写完即弃（不留隐式状态）。
       ownerFlashSay("写完了 ✓ 客户端报的实际偏移 " + (r.offset || "?") +
-                    "（板子会立刻用上新配色与新图）。");
+                    "（板子会立刻用上新配色与新图）。这一次**没有**产生下载文件。");
     } else {
       ownerFlashSay("没写成功 —— 看下面的日志：串口选对了吗？那个口是不是被别的程序占着？");
     }
@@ -5469,8 +5506,9 @@ async function ownerClientProbe() {
     if (!h || !h.ok) return;                               // 别的地方的静态服务器：不是客户端
     ownerClient.on = true;
     ownerFlashShow();
-    ownerFlashSay("在客户端里：先点上面的「保存安装包」，再在这里选串口点「写进板子」。" +
-                  "偏移由客户端按分区表取（页面上没有改它的地方）。");
+    ownerFlashSay("在客户端里：选好串口点「写进板子」——它用**当前状态**当场打包，" +
+                  "**不需要先保存、也不会产生下载**。偏移由客户端按分区表取（页面上没有改它的地方）。"
+                  );
     ownerFlashPorts(true);
   } catch (e) { /* 探测失败就当"不在客户端里" */ }
 }
@@ -5620,6 +5658,38 @@ say("就绪。本页 = **配色 + 图片两页合并后的一页**：① 配色 
           " 并忽略 —— 现在的预览是当前默认值。如果你之前改过配色，重新调一次即可；" +
           "从现在起会连基线一起记，不会再挡住默认值。）"
         : ""));
+
+// ============================================================
+// ★★ 版本 / 能力标记（2026-10-15）—— 给**外壳**（tools/app 那个本地客户端）看的。
+//
+// 为什么要有它：这个页面是被外壳**当 iframe 加载**的，两边各自在改。一旦外壳加载到
+//   一份"老页面"（例如 exe 包里打包的那一份），表现就是"某个按钮点了没反应"这种
+//   最难查的错。⇒ 把**版本**与**能力**明写成标志，外壳可以当场喊出来（比猜强）。
+//
+// 约定（外壳按名字查，**只加不改语义**：老外壳认得的名字不许换意思）：
+//   · window.__OWNER_MODE_VERSION —— 页面自身的版本（行为有变就加一）
+//   · window.__OWNER_MODE_CAPS    —— 这一版**保证**具备的能力（见下面每个 true 的注释）
+//   · <html data-owner-mode-version="…"> —— 同一个版本号的 DOM 侧副本
+//     （外壳从 iframe 的 documentElement 上也能读到，不必进 JS 世界）
+//   · 没有这些标志 = 老页面或没跑起来 —— 外壳该就此喊一声，而不是等车主点空按钮
+// ============================================================
+const OWNER_MODE_VERSION = "2026-10-15.3";
+const OWNER_MODE_CAPS = {
+  // 「写进板子」当场用当前状态打包：**不需要先保存**、**不产生下载**
+  flashNoSave: true,
+  // 「打开安装包…」把图片**装回槽位清单**（不再是"只应用配色"）
+  importRestoresImages: true,
+  // 「保存安装包」的下载名带时间戳（assets-2026-10-15-2130.bin）
+  snapshotStampName: true,
+  // 页面上仍然给一条 esptool 命令（没有客户端时的唯一出路）
+  cliCommand: true
+};
+try {
+  window.__OWNER_MODE_VERSION = OWNER_MODE_VERSION;
+  window.__OWNER_MODE_CAPS = OWNER_MODE_CAPS;
+  document.documentElement.setAttribute("data-owner-mode-version", OWNER_MODE_VERSION);
+} catch (e) { /* 极端环境（没有 window/documentElement）也不影响页面功能 */ }
+
 
 </script>
 </body>

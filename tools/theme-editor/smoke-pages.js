@@ -968,11 +968,107 @@ section("一个页面、一份状态（合并后不再是\"两页共用同一个
   }
 }
 
-console.log("\n" + "=".repeat(56));
-if (fail === 0) console.log("全部通过:" + pass + " 项断言");
-else {
-  console.log("失败 " + fail + " 项 / 共 " + (pass + fail) + " 项:");
-  failures.forEach(f => console.log("  - " + f));
+// ------------------------------------------------------------
+// ★★ 2026-10-15（车主："点了写进板子没反应"）：**客户端场景**那一条是异步的
+//    （要假装"在客户端里"：fetch 返回 thenable、`ownerFlashWrite()` 里有两处 await）。
+//    ⇒ 摘要与退出码挪进这个 async 收尾里，顺序与以前一样（前面的同步小节已经跑完了）。
+// ------------------------------------------------------------
+async function clientFlashSection(r) {
+  if (!r) return;
+  section("客户端场景：「写进板子」当场打包 —— 不需要先保存、不产生下载、请求体里没有偏移");
+  const doc = r.doc;
+  const calls = [];
+  // fetch 桩：把每一次请求记下来（url + body），答成客户端那三个接口的形状
+  r.sandbox.fetch = async function (url, opt) {
+    const u = String(url);
+    calls.push({ url: u, opt: opt || {} });
+    if (u.indexOf("/api/health") >= 0) return { ok: true, json: async () => ({ ok: true }) };
+    if (u.indexOf("/api/ports") >= 0) {
+      return { ok: true, json: async () => ({ ports: [{ port: "COM8", detail: "" }] }) };
+    }
+    if (u.indexOf("/api/upload") >= 0) {
+      return { ok: true, json: async () => ({ ok: true, path: "C:\\scratch\\assets.bin",
+                                              bytes: (opt && opt.body && opt.body.length) || 0 }) };
+    }
+    if (u.indexOf("/api/flash") >= 0) {
+      return { ok: true, json: async () => ({ ok: true, offset: "0x210000",
+                                              out: "Hash of data verified." }) };
+    }
+    return { ok: false, json: async () => ({ ok: false }) };
+  };
+  const flush = () => new Promise(res => setTimeout(res, 0));
+
+  // 探测：同一个页面函数，只是这次 fetch 答得出来 ⇒ 客户端"在"
+  //   ★ 桩里的 location 默认是空对象 ⇒ 页面会当成 file:// 直接早退，所以先给个协议。
+  r.sandbox.location.protocol = "http:";
+  await r.sandbox.ownerClientProbe();
+  await flush();
+  ok(doc.getElementById("owner-flash").style.display === "",
+     "客户端答了 /api/health ⇒ 「写进板子」那块面板露出来（非客户端场景它一直 display:none）");
+
+  // 放一张图：直接灌夹具（打包要求至少一张图 —— 两条路的前置条件完全一样）
+  const fx = buildTinyContainer(r.sandbox);
+  const fi = doc.getElementById("file-theme");
+  fi.files = [{ name: "fixture-assets.bin", _buffer: fx.bytes.buffer }];
+  fi.dispatch("change", { target: fi });
+
+  // 数一下"下载"有没有发生：这一整段里 <a download> 与 createObjectURL 都不许被用到
+  let downloads = 0;
+  const realCreate = doc.createElement;
+  doc.createElement = function (tag) {
+    const el = realCreate.call(doc, tag);
+    if (String(tag).toLowerCase() === "a" && el.download !== undefined) downloads++;
+    return el;
+  };
+  const realUrl = r.sandbox.URL.createObjectURL;
+  r.sandbox.URL.createObjectURL = function () { downloads++; return "blob:x"; };
+
+  const before = calls.length;
+  doc.getElementById("btn-owner-flash").click();          // ★ **没有**点过「保存安装包」
+  for (let i = 0; i < 8; i++) await flush();              // 让里面那两处 await 跑完
+  doc.createElement = realCreate;
+  r.sandbox.URL.createObjectURL = realUrl;
+
+  const mine = calls.slice(before);
+  const upload = mine.find(c => c.url.indexOf("/api/upload") >= 0);
+  const flash = mine.find(c => c.url.indexOf("/api/flash") >= 0);
+  ok(!!upload, "点「写进板子」发起了 POST /api/upload（没先保存也照发）");
+  ok(!!upload && upload.opt.body && upload.opt.body.length > 0,
+     "上传的就是**当场**打出来的那份容器（" + (upload && upload.opt.body && upload.opt.body.length) +
+     " 字节 —— 与夹具整包 " + fx.bytes.length + " 相同）");
+  ok(!!flash, "接着发了 POST /api/flash");
+  if (flash) {
+    const body = JSON.parse(flash.opt.body);
+    eq(JSON.stringify(Object.keys(body).sort()), JSON.stringify(["kind", "path", "port"]),
+       "★ 请求体只有三个字段（port / kind / path）—— **没有偏移**这个字段");
+    ok(!("offset" in body), "★ 偏移确实不在请求体里（想改也没地方改）");
+    eq(body.kind, "assets", "kind=assets（客户端按白名单取 0x210000）");
+  }
+  eq(downloads, 0, "★ 整个过程**没有产生任何下载**（<a download> / createObjectURL 都没被用到）");
+  ok(/写完了/.test(doc.getElementById("owner-flash-status").textContent),
+     "面板给了结果：" + doc.getElementById("owner-flash-status").textContent.split("\n")[0]);
+  ok(/Hash of data verified/.test(doc.getElementById("owner-flash-log").textContent),
+     "日志里带上了客户端的输出（" +
+     doc.getElementById("owner-flash-log").textContent.split("\n")[0] + "）");
+  // ★ 版本/能力标记（外壳据此提前发现"老页面"）
+  ok(typeof r.sandbox.window.__OWNER_MODE_VERSION === "string" &&
+     r.sandbox.window.__OWNER_MODE_VERSION.length > 0,
+     "页面暴露了 window.__OWNER_MODE_VERSION（" + r.sandbox.window.__OWNER_MODE_VERSION + "）");
+  ok(r.sandbox.window.__OWNER_MODE_CAPS && r.sandbox.window.__OWNER_MODE_CAPS.flashNoSave === true,
+     "能力标记里写明 flashNoSave: true（外壳可以据此提前喊『页面太老』）");
+  ok(doc.documentElement.getAttribute("data-owner-mode-version") ===
+     r.sandbox.window.__OWNER_MODE_VERSION,
+     "DOM 侧同一份版本号（<html data-owner-mode-version=…>）");
 }
-console.log("=".repeat(56));
-process.exit(fail === 0 ? 0 : 1);
+
+(async function finishSmoke() {
+  await clientFlashSection(results["index.html"]);
+  console.log("\n" + "=".repeat(56));
+  if (fail === 0) console.log("全部通过:" + pass + " 项断言");
+  else {
+    console.log("失败 " + fail + " 项 / 共 " + (pass + fail) + " 项:");
+    failures.forEach(f => console.log("  - " + f));
+  }
+  console.log("=".repeat(56));
+  process.exit(fail === 0 ? 0 : 1);
+})();
