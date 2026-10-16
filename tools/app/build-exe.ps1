@@ -3,16 +3,18 @@
 #   powershell -ExecutionPolicy Bypass -File tools\app\build-exe.ps1
 #
 # WHY THIS EXISTS: the user asked "can't it be packaged into an executable?".
-#   The app is a stdlib-only Python server + a handful of static files, so packaging
-#   is boring on purpose -- no dependency hell. What DOES need care is that the exe
-#   must still find the repository (that is where PlatformIO lives, and where the
-#   preview frames come from), so:
+#   2026-10-16: the exe now opens a REAL native window (WebView2 via pywebview --
+#   the runtime Windows already ships, not a bundled browser engine), hosted by
+#   native.py which starts the very same server.py handler on 127.0.0.1.
+#   What DOES need care is that the exe must still find the repository (that is
+#   where PlatformIO lives, and where the preview frames come from), so:
 #     * the app files AND the editor's static files are embedded (--add-data) so the
 #       UI and the editor (colors + images) work with no repository in sight;
+#     * pywebview + pythonnet/clr_loader are collected (see below);
 #     * the exe locates the repo itself (see find_repo() in server.py), and
 #       --repo lets you point it explicitly;
 #     * console build (not --noconsole) so the log stays visible, and the UI has
-#       a "quit" button that stops the server cleanly.
+#       a "quit" button that stops the server cleanly (closing the window does too).
 #
 #   WHERE THE EDITOR FILE LIST COMES FROM (do not guess it):
 #     started the server and loaded it with a headless browser, then read the
@@ -60,6 +62,7 @@ $editorFiles = @(
 )
 $missing = @()
 foreach ($f in $editorFiles) { if (-not (Test-Path (Join-Path $editor $f))) { $missing += $f } }
+if (-not (Test-Path (Join-Path $here 'native.py'))) { $missing += 'native.py (the WebView2 window host)' }
 if ($missing.Count -gt 0) {
   Write-Host "FAILED: missing editor files under $editor :"
   $missing | ForEach-Object { Write-Host "  - $_" }
@@ -87,16 +90,42 @@ $args = @(
   '--add-data', "$editor\asset-spec.js;tools/theme-editor",
   '--add-data', "$editor\theme-json.js;tools/theme-editor",
   '--add-data', "$editor\asset-package-core.js;tools/theme-editor",
+  # native window host (2026-10-16): pywebview drives the **WebView2 runtime the
+  # system already has** -- not a bundled browser engine. Collect its code/data
+  # plus pythonnet/clr_loader, otherwise the frozen exe cannot build the window.
+  '--collect-all', 'webview',
+  '--collect-all', 'clr_loader',
+  '--collect-all', 'pythonnet',
+  '--hidden-import', 'clr',
+  '--hidden-import', 'webview.platforms.winforms',
+  '--hidden-import', 'webview.platforms.edgechromium',
   # console build: the log is the point (and --noconsole would hide it)
   '--console'
 )
 if ($OneFile) { $args += '--onefile' }
-$args += (Join-Path $here 'server.py')
+# entry = the native-window host; it starts the very same server.py handler
+$args += (Join-Path $here 'native.py')
 
 Write-Host "running: $py $($args -join ' ')"
-& $py @args 2>&1 | Select-Object -Last 12
-
+# ★ UTF-8 for the build itself: our sources are UTF-8 with a coding cookie, but a
+#   locale/codepage detour inside the build made PyInstaller read them as GBK and
+#   die with "invalid character" (2026-10-16, exactly that). Forcing UTF-8 mode
+#   (same recipe server.py's child_env() uses for its subprocesses) fixes it.
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
+# ★ Remove the old exe FIRST: otherwise a failed build leaves the previous file in
+#   place and `Test-Path` below happily reports it as "OK" (silent failure -- the
+#   exact class of bug this project keeps getting bitten by).
 $exe = if ($OneFile) { Join-Path $OutDir "$Name.exe" } else { Join-Path $OutDir "$Name\$Name.exe" }
+if (Test-Path $exe) { Remove-Item $exe -Force -ErrorAction SilentlyContinue }
+& $py @args 2>&1 | Select-Object -Last 14
+$buildCode = $LASTEXITCODE
+
+if ($buildCode -ne 0) {
+  Write-Host ""
+  Write-Host "FAILED: PyInstaller exited with code $buildCode (see the log above)"
+  exit 1
+}
 if (Test-Path $exe) {
   $f = Get-Item $exe
   Write-Host ""
@@ -104,13 +133,15 @@ if (Test-Path $exe) {
   Write-Host ("     {0:N1} MB   {1}" -f ($f.Length / 1MB), $f.LastWriteTime)
   Write-Host ""
   Write-Host "run it:"
-  Write-Host "  `"$($f.FullName)`"                       # auto-detects the repo, opens the browser"
-  Write-Host "  `"$($f.FullName)`" --app-window          # chromeless window"
+  Write-Host "  `"$($f.FullName)`"                       # native WebView2 window + local server"
+  Write-Host "  `"$($f.FullName)`" --devtools            # same, with DevTools open"
+  Write-Host "  `"$($f.FullName)`" --browser             # fall back to the system browser"
   Write-Host "  `"$($f.FullName)`" --repo <repo path>    # point it at the repo explicitly"
-  Write-Host "  `"$($f.FullName)`" --port 8899 --no-open"
+  Write-Host "  `"$($f.FullName)`" --port 8899"
   Write-Host ""
-  Write-Host "without a repo the editor still works (colors + images + assets.bin);"
-  Write-Host "building firmware and the preview need the repo and will say which path is missing."
+  Write-Host "closing the window stops the server (same as the UI's quit button);"
+  Write-Host "no WebView2 runtime => it says so and falls back to the system browser."
+  Write-Host "without a repo the editor still works (colors + images + assets.bin)."
 } else {
   Write-Host "FAILED: no exe at $exe"
   exit 1

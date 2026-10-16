@@ -325,5 +325,38 @@ say(/__OWNER_MODE_VERSION/.test(srvSrc) && /OWNER_MODE_CAPS/.test(srvSrc) &&
     /data-owner-mode-version/.test(srvSrc),
     'server.py 的三个读法与编辑器约定一致（JS 变量 + DOM 属性都认）');
 
+// ⑭ 原生窗口（WebView2）那一层：native.py + 打包脚本 + 界面里的「重新载入」
+//   车主 2026-10-16："打开 exe 为什么还是在浏览器里进行操作呢" ⇒ 用**系统已有**的
+//   WebView2 开真窗口（不是 Electron/Tauri、不自带内核）。★ 真窗口与"关窗即停服务"
+//   是在**打好后的 exe 上实测**的（见 README 的回报），这里钉的是结构别退化。
+const nativePy = path.join(dir, 'native.py');
+const nativeSrc = fs.existsSync(nativePy) ? fs.readFileSync(nativePy, 'utf8') : '';
+const buildPs1 = fs.readFileSync(path.join(dir, 'build-exe.ps1'), 'utf8');
+say(!!nativeSrc, '有 native.py（原生窗口宿主）');
+say(/import server as app_server/.test(nativeSrc) &&
+    /ThreadingHTTPServer\(\("127\.0\.0\.1", port\), app_server\.Handler\)/.test(nativeSrc),
+    '★ 用的是**同一个** server.Handler，服务仍只听 127.0.0.1（没有第二套服务）');
+say(!/class\s+Handler\b/.test(nativeSrc), 'native.py 里没有另写一个 Handler（路由/白名单不复制）');
+say(/webview\.start\(gui="edgechromium"/.test(nativeSrc),
+    'pywebview 走 edgechromium（= 系统自带的 WebView2 运行时，不自带内核）');
+say(/--devtools/.test(nativeSrc) && /debug=bool\(a\.devtools\)/.test(nativeSrc),
+    '--devtools 才开 DevTools（默认关）');
+say(/def open_in_browser\(url, why\)/.test(nativeSrc) && /webbrowser\.open\(url\)/.test(nativeSrc) &&
+    /WebView2 运行时/.test(nativeSrc),
+    '★ 窗口起不来 ⇒ 明确提示（点名 WebView2 怎么装）+ 回退系统浏览器，不静默');
+say(/win\.events\.closed \+= on_closed/.test(nativeSrc) && /srv\.shutdown\(\)/.test(nativeSrc),
+    '★ 关窗 = 停服务（closed 事件里 shutdown）');
+say(/stopped\.wait\(\)/.test(nativeSrc) && /win\.destroy\(\)/.test(nativeSrc),
+    '反过来：界面点「退出应用」把服务停了 ⇒ 窗口也一起关（不留空窗口）');
+say(/'--console'/.test(buildPs1) && !/'--noconsole'/.test(buildPs1),
+    '--console 没被改成 --noconsole（日志照旧看得见）');
+say(/'--collect-all', 'webview'/.test(buildPs1) && /'--hidden-import', 'clr'/.test(buildPs1) &&
+    /Join-Path \$here 'native\.py'/.test(buildPs1),
+    '打包带上 pywebview/pythonnet（--collect-all + hidden-import），入口是 native.py');
+say(/if \(\$buildCode -ne 0\)/.test(buildPs1) && /Remove-Item \$exe -Force/.test(buildPs1),
+    '★ 打包失败要**当场报错**（先删旧的 exe + 查退出码）—— 免得拿旧 exe 当成功');
+say(/id="b-reload"/.test(html) && /\$\('#b-reload'\)\.onclick/.test(js) && /location\.reload\(\)/.test(js),
+    '界面上有「重新载入这个窗口」（原生窗口里没有 Ctrl+F5；服务端已 no-cache）');
+
 console.log(bad === 0 ? '\n全部通过。' : `\n${bad} 项没通过。`);
 process.exit(bad === 0 ? 0 : 1);

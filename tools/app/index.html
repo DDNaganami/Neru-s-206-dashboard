@@ -296,6 +296,9 @@
 <footer>
   <span id="f-status">就绪</span>
   <span class="sp"></span>
+  <!-- ★ 2026-10-16（原生窗口那一单）：WebView2 窗口里没有 Ctrl+F5 ⇒ 给一颗"重新载入"。
+       服务端已经 no-cache（每个静态响应都 no-store）⇒ 普通 reload 就能拿到新版。 -->
+  <button class="btn ghost" id="b-reload" title="重新载入这个窗口（原生窗口里没有 Ctrl+F5）">重新载入这个窗口</button>
   <button class="btn ghost" id="b-quit" title="关掉本地服务（打包成 exe 之后就用这个退出）">退出应用</button>
 </footer>
 

@@ -1045,6 +1045,12 @@ function initBuild() {
 
 /* ---- 退出 ---------------------------------------------------------------*/
 function initQuit() {
+  /* 「重新载入这个窗口」：原生窗口（WebView2）里没有 Ctrl+F5 ⇒ 给一颗按钮。
+     服务端每个静态响应都 no-cache ⇒ 普通 reload 就能拿到新版（不用强制刷新）。 */
+  $('#b-reload').onclick = () => {
+    setStatus('重新载入…');
+    location.reload();
+  };
   $('#b-quit').onclick = async () => {
     if (!confirm('退出 206Dash 表盘助手？（本地服务会停掉，页面随后失效）')) return;
     try { await api('/api/quit', {}); } catch (e) { /* 服务已经把连接断了，正常 */ }

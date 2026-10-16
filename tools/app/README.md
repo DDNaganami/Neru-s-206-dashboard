@@ -182,6 +182,30 @@ powershell -ExecutionPolicy Bypass -File tools\app\build-exe.ps1 -OneFile
 `/api/flash` **在页面里被拦掉**（fetch 换成假的，只记账）⇒ **绝不碰板子**；
 服务端日志里也不许出现 `POST /api/flash`（这一条也查）。本机没 Chrome 时它会说一声跳过。
 
+## 原生窗口（WebView2）——2026-10-16
+
+车主："打开 exe 为什么还是在浏览器里进行操作呢" ⇒ 双击 exe 现在开的是**真原生窗口**：
+
+- **宿主**：`tools/app/native.py` —— 用 [pywebview](https://pywebview.flowrl.com/) 驱动
+  **系统自带的 Edge WebView2 运行时**（`Microsoft\EdgeWebView`，Win10/11 基本都装了）。
+  **不是 Electron / Tauri、也不自带浏览器内核** —— 页面还是原来那一份，服务还是原来那个
+  `server.py` 的 Handler（native.py 只是 `import server` 起它在 `127.0.0.1` 上，
+  **没有第二套服务、没有第二份路由/白名单**）。
+- **关窗 = 停服务**：窗口一关就 `shutdown()`；反过来界面右下角「退出应用」（`POST /api/quit`）
+  把服务停了，窗口也一起关 —— 两条路**同一个结果**，不会"窗口关了服务还在"。
+- **没有 Ctrl+F5 也能刷新**：界面右下角有一颗「**重新载入这个窗口**」；服务端每个静态响应
+  都是 no-cache，所以普通 reload 就能拿到新版。要 DevTools 就用 `--devtools`（**默认关**）。
+- **WebView2 没装 / 窗口起不来** ⇒ **明确打印**（点名缺 WebView2 + 怎么装 + `--browser` 这条退路）
+  然后**回退到系统浏览器**（老行为）—— **绝不静默失败**。
+- 参数：`--port`（默认 8787）/ `--repo <路径>` / `--devtools` / `--browser` /
+  `--no-window`（只起服务不开窗口，给自动化测试用）。`run.bat` 现在也走 native.py。
+- 打包：`build-exe.ps1` 带上 `--collect-all webview / clr_loader / pythonnet` +
+  `--hidden-import clr`，入口换成 `native.py`；**仍然 `--console`**（日志看得见）。
+  实的（在**打好后的 exe** 上实测）：窗口是真窗口（有标题栏/任务栏条目，标题
+  `206Dash 表盘助手`）、服务只听 `127.0.0.1`、**关窗后进程退出、端口释放、HTTP 连不上**。
+  ★ 顺带修好一个真坑：以前打包失败时脚本会因为"旧 exe 还在"而报 OK ✗ —— 现在先删旧 exe
+  再查退出码，失败**当场报错**。
+
 ## 为什么是"本地服务 + 网页应用"，而不是 Electron / 安装包
 
 - **零安装**：只用 Python 标准库 + 一个浏览器。Electron/Tauri 要 Node/Rust 工具链

@@ -191,8 +191,10 @@ def main():
     os.makedirs(dl, exist_ok=True)
     port, cdp = free_port(), free_port()
     log_lines = []
-    # 默认起**开发态**的 server.py；给了 --exe 就起那个 exe（判据一样，用它验打包产物）
-    cmd = ([exe, "--repo", REPO, "--port", str(port), "--no-open"] if exe else
+    # 默认起**开发态**的 server.py；给了 --exe 就起那个 exe（判据一样，用它验打包产物）。
+    #   ★ exe 的入口是 native.py（原生窗口宿主）⇒ 用 --no-window 只起服务、**不弹窗口**
+    #     （测试不该在车主屏幕上闪一个窗口）。
+    cmd = ([exe, "--repo", REPO, "--port", str(port), "--no-window"] if exe else
            [sys.executable, os.path.join(APP_DIR, "server.py"),
             "--repo", REPO, "--port", str(port), "--no-open"])
     print("被测服务：%s" % (" ".join(cmd)))

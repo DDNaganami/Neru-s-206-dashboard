@@ -10,11 +10,12 @@ REM
 REM  What it does:
 REM    1. finds the python that can run platformio (the project venv, which sits
 REM       on an ASCII path on purpose); falls back to whatever "python" is,
-REM    2. starts tools\app\server.py (listening on 127.0.0.1 only),
-REM    3. the server itself opens the app.
-REM  Close this window (or Ctrl+C) to stop the server.
+REM    2. starts tools\app\native.py: a REAL native window (WebView2 -- the runtime
+REM       the system already has) over the local server, which still listens on
+REM       127.0.0.1 only. Use "run.bat --browser" for the old system-browser path,
+REM    3. closing the window stops the server (same as the UI's quit button).
 REM
-REM  Pass-through flags, e.g.:  run.bat --port 8899 --app-window
+REM  Pass-through flags, e.g.:  run.bat --port 8899 --devtools   |   run.bat --browser
 REM ============================================================
 setlocal
 set HERE=%~dp0
@@ -25,7 +26,7 @@ if not defined PY if exist "C:\Users\Public\206dash\.pio-core\penv\Scripts\pytho
 if not defined PY set PY=python
 
 echo Using python: %PY%
-"%PY%" "%HERE%server.py" %*
+"%PY%" "%HERE%native.py" %*
 echo.
 echo Server stopped.
 pause >nul
