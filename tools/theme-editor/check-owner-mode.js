@@ -715,6 +715,41 @@ section("⑧b 导入：车主模式两个按钮，与高级那两个**共用同�
      "快照连缩放方式与裁透明边一起比（改了就回渲染路径）");
 }
 
+section("⑧c 快照文件名带时间戳 + 「保存」与「写进板子」两件事的文案");
+//   车主原话："为什么每次刷写都要保存一次 bin 呢，这样我的下载文件夹会有很多个相同的 bin。"
+//   ⇒ 编辑器这边只做两件事：① 下载名带时间戳（字节不变）；② 把两件事写清。
+{
+  const src = MERGED;
+  const own = src.slice(src.indexOf('id="owner"'), src.indexOf('id="advanced"'));
+  // ① 时间戳文件名：只改**文件名生成**，不碰字节
+  ok(/function stampName\(base\)/.test(src), "有 stampName()（只生成文件名）");
+  ok(/const outName = stampName\("assets\.bin"\)/.test(src),
+     "「保存安装包」用它生成下载名");
+  ok(/download\(new Blob\(\[packed\.bytes\][\s\S]{0,80}?outName\)/.test(src),
+     "下载时用的是那个带时间戳的名字（字节还是 packed.bytes）");
+  ok(/flashCommand\(packed\.layout, outName,/.test(src),
+     "状态栏给的刷写命令也用同一个文件名（复制粘贴不会对不上）");
+  ok(/padStart\(2, "0"\)/.test(src) && /getFullYear\(\)/.test(src),
+     "时间戳按 年-月-日-时分 补零（assets-2026-10-15-2130.bin 这种）");
+  // ② 文案：两件事写清（保存 = 快照会下载；写进板子 = 直接刷、不下载）
+  ok(/「保存安装包」= 留一份快照/.test(own), "文案点明「保存安装包」= 留一份快照");
+  ok(/「写进板子」= 直接把当前状态刷进板子/.test(own),
+     "文案点明「写进板子」= 直接把当前状态刷进板子");
+  ok(/不产生下载/.test(own), "文案点明写进板子**不产生下载**");
+  ok(/assets-2026-10-15-2130\.bin/.test(own), "文案里给了文件名示例（带时间戳）");
+  // ★ 只是文案：这几句所在的那几行里**没有**控件（控件个数由 §① 的能力表钉着）
+  let checkedNotes = 0;
+  for (const m of own.matchAll(/<div class="note"[^>]*>([\s\S]*?)<\/div>/g)) {
+    if (/留一份快照|不产生下载/.test(m[1])) {
+      checkedNotes++;
+      ok(!/<input|<select|<button/.test(m[1]), "那几句说明里没有控件（是纯文字）");
+    }
+  }
+  ok(checkedNotes >= 2, "两个分区里都写了这几句（找到 " + checkedNotes + " 处）");
+  eq(countOf(own, /data-ocap="save"/g), 2, "「保存安装包」仍然是 2 个按钮（没有新增控件）");
+  eq(countOf(own, /data-ocap="import"/g), 2, "「打开安装包…」仍然是 2 个（没有新增控件）");
+}
+
 section("⑨ 3 个预设写进**现有主题状态**（当前默认 / 夜间 / 浅底）");
 {
   const src = MERGED;

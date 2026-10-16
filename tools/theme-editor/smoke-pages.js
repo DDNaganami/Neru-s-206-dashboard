@@ -295,20 +295,31 @@ function buildTinyContainer(sandbox) {
 }
 
 // ------------------------------------------------------------
-// 点「保存安装包」并把导出的字节接回来（桩里 Blob 留住 parts、URL 换成钩子）。
+// 点「保存安装包」并把导出的**字节 + 下载文件名**接回来
+//   （桩里 Blob 留住 parts、URL 换成钩子、createElement 记账那个 <a download=…>）。
 //   ★ 用**真按钮**：这一条要覆盖的就是"车主会走的那条路"。
 // ------------------------------------------------------------
 function exportViaButton(r, doc) {
-  let captured = null;
+  let captured = null, anchor = null;
   const real = r.sandbox.URL.createObjectURL;
   r.sandbox.URL.createObjectURL = function (b) { captured = b; return "blob:x"; };
+  const realCreate = doc.createElement;
+  doc.createElement = function (tag) {
+    const el = realCreate.call(doc, tag);
+    if (String(tag).toLowerCase() === "a") anchor = el;     // download() 建的那个 <a>
+    return el;
+  };
   try {
     doc.getElementById("btn-owner-save").click();
   } finally {
     r.sandbox.URL.createObjectURL = real;
+    doc.createElement = realCreate;
   }
   if (!captured || !captured._parts || !captured._parts.length) return null;
-  return Buffer.concat(captured._parts.map(p => Buffer.from(p)));
+  return {
+    bytes: Buffer.concat(captured._parts.map(p => Buffer.from(p))),
+    name: anchor ? anchor.download : null
+  };
 }
 
 // ------------------------------------------------------------
@@ -786,9 +797,17 @@ const results = {};
       //    这一条同时覆盖"按钮那条路"与**整包**（theme 段走 themeSrcBytes 原始字节 +
       //    image 段走 packed 透传）。
       const saved = exportViaButton(r, doc);
-      ok(saved && saved.equals(Buffer.from(fx.bytes)),
+      ok(saved && saved.bytes.equals(Buffer.from(fx.bytes)),
          "★★ 整包往返：点「保存安装包」导出的 assets.bin 与夹具**逐字节相同**" +
-         (saved ? "（" + saved.length + " vs " + fx.bytes.length + " 字节）" : "（没拿到字节）"));
+         (saved ? "（" + saved.bytes.length + " vs " + fx.bytes.length + " 字节）" : "（没拿到字节）"));
+      // ★★ 2026-10-15（车主："每次刷写都要保存一次 bin ⇒ 下载文件夹一堆相同的 bin"）：
+      //    下载名带**时间戳**，字节一个都没变（上面那条刚证明过）。
+      ok(!!saved && /^assets-\d{4}-\d{2}-\d{2}-\d{4}\.bin$/.test(saved.name || ""),
+         "下载文件名带时间戳：" + (saved && saved.name));
+      ok(!!saved && /\.bin$/.test(saved.name || ""), "后缀仍是 .bin");
+      ok(!!saved && new RegExp(saved.name.replace(/\./g, "\\.")).test(
+           doc.getElementById("status").textContent),
+         "状态栏里写的也是同一个文件名（复制命令时不会对不上）");
 
       // ★★ 透传的**收口判据**：改过就不能再透传（否则"改了没反应"）。
       //   这里直接把页面那个纯函数拿出来喂几种"改法" —— 比在四个控件里各试一遍结实。
@@ -846,12 +865,14 @@ const results = {};
            "★★ 真文件往返：导入后再打包出的 image 段与原件**逐字节相同**（" +
            rebuiltR.length + " vs " + rImage.length + " 字节）");
         const savedR = exportViaButton(r, doc);
-        ok(savedR && savedR.equals(Buffer.from(rb)),
+        ok(savedR && savedR.bytes.equals(Buffer.from(rb)),
            "★★ 真文件整包往返：点「保存安装包」导出的 assets.bin 与车主那份文件**逐字节相同**" +
-           (savedR ? "（" + savedR.length + " vs " + rb.length + " 字节）" : "（没拿到字节）"));
+           (savedR ? "（" + savedR.bytes.length + " vs " + rb.length + " 字节）" : "（没拿到字节）"));
+        ok(!!savedR && /^assets-\d{4}-\d{2}-\d{2}-\d{4}\.bin$/.test(savedR.name || ""),
+           "真文件那次下载名也带时间戳：" + (savedR && savedR.name));
         console.log("  · 真文件往返已跑：" + rInfo.count + " 张，" +
                     rebuiltR.length + " 字节，逐字节相同 ✓" +
-                    (savedR && savedR.equals(Buffer.from(rb)) ? "（整包也相同 ✓）" : "（整包不同 ✗）"));
+                    (savedR && savedR.bytes.equals(Buffer.from(rb)) ? "（整包也相同 ✓）" : "（整包不同 ✗）"));
       } else {
         console.log("  · （未设 REAL_PKG ⇒ 真文件那一条跳过；夹具那条已经跑了）");
       }

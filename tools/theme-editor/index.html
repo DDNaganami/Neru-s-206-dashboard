@@ -468,6 +468,15 @@
         走的是现有 asset-package 内核（asset-package-core.js）⇒ 与手工导出的
         assets.bin 逐字节相同。
       </div>
+      <!-- ★★ 2026-10-15（车主："为什么每次刷写都要保存一次 bin 呢，这样我的下载文件夹
+           会有很多个相同的 bin"）：把"保存"和"写进板子"这两件事在这里写清 ——
+           ★ 只是**文案**，没有新增控件（能力表 check-owner-mode.js 会数控件个数）。 -->
+      <div class="note" style="color:var(--dim)">
+        <b>「保存安装包」= 留一份快照</b>：会下载一个文件，名字带时间戳
+        （例如 <code>assets-2026-10-15-2130.bin</code>），多存几份也一眼看得出是哪一次。
+        <b>「写进板子」= 直接把当前状态刷进板子</b>：在客户端里点它<b>不会</b>产生下载
+        （字节直接从内存交给客户端；那块面板在下面，没开客户端时看不到）。
+      </div>
       <div class="note" style="color:var(--dim)">
         3 个预设（当前默认 / 夜间 / 浅底）：点一下就把配色写进当前主题状态 ——
         导出的还是同一份 theme.json，不新造格式。
@@ -537,6 +546,12 @@
         与「① 配色」分区那个按钮是<b>同一条路</b>（同一个 <code>saveOwnerPackage()</code>）：
         <b>端口可改，偏移不让改</b>（写死 <code>0x210000</code>），
         一个文件刷完「配色 + 图片」两块分区。两个端口输入框是同一个值。
+      </div>
+      <!-- ★ 与「① 配色」那一份同一口径：保存 = 下载快照（名字带时间戳）；
+           「写进板子」在客户端里**不下载**。文案而已，不加控件。 -->
+      <div class="note" style="color:var(--dim)">
+        <b>「保存安装包」= 留一份快照</b>（下载的文件名带时间戳）；
+        <b>「写进板子」= 直接刷进板子、不产生下载</b>。
       </div>
 
       <!-- ★★ 2026-10-15：导入也在这里给一个（与「① 配色」那个同一个输入框、同一条路）。
@@ -1787,7 +1802,14 @@ function exportAssetsBin() {
     return;
   }
 
-  download(new Blob([packed.bytes], { type: "application/octet-stream" }), "assets.bin");
+  // ★★ 2026-10-15（车主："为什么每次刷写都要保存一次 bin 呢，这样我的下载文件夹会有
+  //   很多个相同的 bin"）：下载名带**时间戳**，多份快照一眼分得清 ——
+  //   同名重复下载会被浏览器改叫 "assets (3).bin"，反而看不出是哪一次存的。
+  //   ★ 只改**文件名**：字节一个都没动（容器里也不记录文件名 —— 它装的只有
+  //     theme 段 + image 段），所以往返逐字节判据与它无关。
+  //   ★ 客户端那条路（「写进板子」）**不产生下载**，用的是内存里的同一份字节。
+  const outName = stampName("assets.bin");
+  download(new Blob([packed.bytes], { type: "application/octet-stream" }), outName);
 
   // ★ 客户端在的时候，这一份可以**直接写进板子**（面板在车主模式那两栏下面）。
   //   这里只是把本次打包的产物记下来 —— **不自己拼字节、也不自己刷**；
@@ -1795,24 +1817,39 @@ function exportAssetsBin() {
   const clientHint = ownerClientAfterSave(packed.bytes, packed.totalLen);
 
   // 那条刷写命令：芯片跟着目标板走，端口提示"改成你自己的"
-  const cmd = AssetPackageCore.flashCommand(packed.layout, "assets.bin", {
+  //   ★ 文件名用**刚下载的那一个**（带时间戳）—— 复制粘贴就能直接跑；
+  //     「写进板子」那条路不看文件名（客户端拿的是内存里的字节）。
+  const cmd = AssetPackageCore.flashCommand(packed.layout, outName, {
     chip: ImageBlob.targetInfo(curTarget).chip
   });
-  say("已导出 assets.bin（" + packed.totalLen + " 字节，共 " +
+  say("已导出 " + outName + "（" + packed.totalLen + " 字节，共 " +
       packed.imageInfo.count + " 张图）。\n" +
-      "文件名：assets.bin　大小：" + packed.totalLen + " 字节（" +
+      "文件名：" + outName + "　大小：" + packed.totalLen + " 字节（" +
       (packed.totalLen / 1024 / 1024).toFixed(2) + " MB）\n" +
       "里面：配色 " + packed.themeBytes + " 字节（" + themeFrom + "）+ 中间 " +
       packed.layout.spiffsBytes + " 字节 0 填充 + 图片 " + packed.imageBytes + " 字节。\n\n" +
       "刷进去只需要这一条命令（偏移 = theme 分区 " +
       AssetPackageCore.hex(packed.layout.base) +
       "，从分区表取的；端口换成你自己的）：\n" + cmd + "\n\n" +
-      "一个文件刷完「配色 + 图片」两块分区。\n" +
+      "一个文件刷完「配色 + 图片」两块分区；想少留快照就直接用「写进板子」——" +
+      "那条路不下载文件。\n" +
       "老办法（两份文件两条命令）仍有效：theme.json 刷 " +
       AssetPackageCore.hex(packed.layout.base) + "、image.bin 刷 " +
       AssetPackageCore.hex(packed.layout.base + packed.layout.imageOffset) + "。" +
       clientHint,
       "ok");
+}
+
+// 下载文件名加**时间戳**：assets.bin → assets-2026-10-15-2130.bin
+//   ★ 保留 .bin 后缀（刷写命令/双击都能认），分钟精度（同一分钟内多次保存仍会重名，
+//     但那种情况极少，而且浏览器会给 "(1)" 后缀 —— 一天内的多次保存已经分得清）。
+//   ★ 只动文件名，不动任何字节；也不进容器。
+function stampName(base) {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return String(base).replace(/\.bin$/i, "") + "-" +
+         d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) +
+         "-" + p(d.getHours()) + p(d.getMinutes()) + ".bin";
 }
 
 // 这一个阶段下,某条弧该点亮多少(与固件 arc_progress 同一套:按弧自己那一维算)
