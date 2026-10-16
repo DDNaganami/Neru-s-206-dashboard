@@ -268,6 +268,15 @@ static void test_readout_rpm_speed_colors(void) {
                                   "rpm_color 默认必须 = digit_color 默认");
   TEST_ASSERT_EQUAL_HEX32_MESSAGE(def.readout.digit_color, def.readout.speed_color,
                                   "speed_color 默认必须 = digit_color 默认");
+  // ★★ 主题格式修订 R4（2026-10-15，车主："rpm / km/h 的字体颜色是不是漏掉了"）：
+  //   **主读数单位**的颜色自 R4 起跟随该屏的数字颜色（渲染侧见 dash_ui.cpp 的
+  //   build_readout()：单位与数字共用同一个 digit_base_color(pk)）。
+  //   `unit_color` 这个**键保留**（字段、默认值、解析、转发宏都不动）—— 它是给人手改的
+  //   主题文件里既有的键，删掉或改默认都会让已导出的主题"静默换意思"；只是它现在
+  //   **没有任何渲染消费者**。下面这条就是钉住"保留"这件事。
+  //     （渲染那一半在 src/ 里，native 不编 src ⇒ 由 test-theme-json.js 读源码对账。）
+  TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x9AA0A6, def.readout.unit_color,
+                                  "unit_color 保留：默认值仍是 0x9AA0A6（R4 不许删、不许改默认）");
 
   // ---- ① 两个新键都写了：各自生效，且互不相等（真的拆开了）----
   {

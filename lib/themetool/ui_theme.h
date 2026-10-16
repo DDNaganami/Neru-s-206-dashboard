@@ -150,7 +150,22 @@ struct ReadoutTheme {
   uint32_t digit_color;     // 大数字颜色(回落值;也是"主读数既非转速也非速度"时的中立色)
   uint32_t rpm_color;       // 转速屏(左屏)大数字颜色(缺键 → digit_color)
   uint32_t speed_color;     // 速度屏(右屏)大数字颜色(缺键 → digit_color)
-  uint32_t unit_color;      // 单位文字颜色(km/h / rpm)
+  // ---- ★★ 主题格式修订 R4（2026-10-15，车主："rpm / km/h 的字体颜色是不是漏掉了，
+  //      分别和转速/速度两个字体颜色绑定好了"）----
+  //   **主读数单位**（大数字下面那行 "rpm" / "km/h"）自 R4 起**跟随该屏的数字颜色**：
+  //     左屏（转速屏）单位 = rpm_color；右屏（速度屏）单位 = speed_color。
+  //   渲染侧只有一处判据：src/dash_ui.cpp 的 build_readout() —— 它与大数字**共用**
+  //     digit_base_color(pk) 同一个值，而且**仍然只在建屏时设一次样式**（铁律 ①：
+  //     逐帧碰样式 = 整对象标脏 ⇒ 重绘 ×5 ⇒ 持续横纹）。
+  //   ⇒ 车主报的那件事就消失了："数字改成自己的颜色了，单位还挂在旧灰上"。
+  //   ★★ `unit_color` **保留**（字段、默认值 0x9AA0A6、theme_store.cpp 的解析、
+  //      转发宏 READOUT_UNIT_COLOR 一个都不动）：
+  //        · 它是**给人手改**的主题文件里既有的键 —— 删掉或改语义会让已导出的
+  //          主题文件"静默换意思"（本仓库最忌这一类）；
+  //        · R4 起**主读数单位不再读它**，它现在没有任何渲染消费者（此前只有那一处）。
+  //      ⇒ 兼容性：老主题里的 unit_color 照旧被解析、照旧留在文件里，只是画面上不再生效；
+  //        想让单位换颜色，改的是该屏的 rpm_color / speed_color。
+  uint32_t unit_color;      // 单位文字颜色 —— R4 起**主读数单位不再用它**（键保留）
   uint32_t coolant_color;   // 水温数字颜色(左屏副表)
   uint32_t intake_color;    // 进气温度数字颜色(右屏副表)
 
@@ -200,10 +215,15 @@ const lv_font_t* readout_font(uint8_t which);
 //                             就是它（见 theme_store.cpp）；主读数既不是转速也不是
 //                             速度时（副表当了唯一那条弧）也用它。
 //   ⇒ 渲染侧**只**按角色取前两个；直译 `READOUT_DIGIT_COLOR` 会让两屏又变成同一个颜色。
+//   ★★ R4（2026-10-15）：上面那句里的 `READOUT_DIGIT_COLOR` 现在**只有两种情形**会用到 ——
+//     "主读数既不是转速也不是速度"（副表当了唯一那条弧）、以及"数字颜色缺键时的回落值"。
+//     主读数的**单位**也改读同一个 `digit_base_color()`（左屏 rpm_color / 右屏 speed_color）。
+//   ★★ `READOUT_UNIT_COLOR` **保留但不再被任何渲染代码使用**（R4 起主读数单位跟随数字色）；
+//     见上面 ReadoutTheme 里 R4 那段注记 —— 谁要再拿它画东西，先想清楚"单位为什么又独立了"。
 #define READOUT_DIGIT_COLOR   (g_theme.readout.digit_color)
 #define READOUT_RPM_COLOR     (g_theme.readout.rpm_color)
 #define READOUT_SPEED_COLOR   (g_theme.readout.speed_color)
-#define READOUT_UNIT_COLOR    (g_theme.readout.unit_color)
+#define READOUT_UNIT_COLOR    (g_theme.readout.unit_color)   // R4 起无渲染消费者(键保留)
 #define READOUT_COOLANT_COLOR (g_theme.readout.coolant_color)
 #define READOUT_INTAKE_COLOR  (g_theme.readout.intake_color)
 #define READOUT_DIGIT_FONT    readout_font(g_theme.readout.digit_font)
@@ -329,7 +349,7 @@ inline void theme_set_defaults(Theme& t) {
   //   主题文件里**不写**这两个键时，两屏大数字的颜色与拆分前**逐像素一致**。
   t.readout.rpm_color     = t.readout.digit_color;   // 转速屏(左屏)
   t.readout.speed_color   = t.readout.digit_color;   // 速度屏(右屏)
-  t.readout.unit_color    = 0x9AA0A6;   // 灰(单位不该抢数字的注意力)
+  t.readout.unit_color    = 0x9AA0A6;   // 灰 —— R4 起主读数单位不再用它(键与默认值保留)
   t.readout.coolant_color = 0x7CFF6B;   // 与水温弧同色,一眼能对上
   t.readout.intake_color  = 0xFFB020;   // 与进气弧同色(琥珀 —— 速度表主色是蓝,不撞)
   // ★ 主题格式修订 R3（2026-10-15）：底板深浅成了主题键 `plate_opa`（0..255）。

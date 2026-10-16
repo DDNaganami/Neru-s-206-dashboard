@@ -374,6 +374,30 @@ section("①c 读数颜色四块板 + 底板深浅：键都在固件里，色板
      "高级里保留了 digit_color 的入口（它是缺键回落值，不是死键）");
   ok(/opaRow\(wrap,\s*"读数底板深浅/.test(src),
      "高级里也有底板深浅那一行（opaRow 与弧的「轨道透明」共用同一个控件）");
+  // ⑩ ★★ R4（2026-10-15，车主："rpm / km/h 的字体颜色是不是漏掉了"）：
+  //   主读数**单位**颜色跟随**该屏的数字颜色**；`unit_color` 键保留但已无渲染消费者。
+  {
+    const dSrc = fs.readFileSync(path.join(REPO, "src", "dash_ui.cpp"), "utf8");
+    const hSrc2 = fs.readFileSync(path.join(REPO, "lib", "themetool", "ui_theme.h"), "utf8");
+    ok(/主题格式修订 R4/.test(hSrc2), "ui_theme.h 里有 R4 的修订注记");
+    ok(/unit_lbl\s*=\s*make_readout_label\(\s*parent,\s*READOUT_UNIT_FONT,\s*lv_color_hex\(digit_base_color\(pk\)\)/
+         .test(dSrc),
+       "dash_ui.cpp：单位标签用 digit_base_color(pk)（跟该屏数字同一个值）");
+    ok(!/lv_color_hex\(READOUT_UNIT_COLOR\)/.test(dSrc),
+       "dash_ui.cpp 不再用 unit_color 画单位（它已无渲染消费者）");
+    ok(/uint32_t\s+unit_color\s*;/.test(hSrc2) && /t\.readout\.unit_color\s*=\s*0x9AA0A6/.test(hSrc2),
+       "unit_color 的字段与默认值都**保留**（老主题文件不许静默换意思）");
+    ok(ts.indexOf('"unit_color"') >= 0, "theme_store.cpp 照旧解析 unit_color");
+    // 预览侧也必须跟随（否则又是"真机与预览不一致"）
+    ok(/drawReadoutLabel\(ctx, W, L\.unit_cy, u, unitPx, hexOf\(digitColor\)\)/.test(src),
+       "预览里单位用的是 digitColor（该屏数字色），不是 r.unit_color");
+    ok(!/hexOf\(r\.unit_color\)/.test(src), "预览里不再用 r.unit_color 画任何东西");
+    // 两处「单位颜色」控件仍在（键保留），且标签写明它已不生效
+    ok(/单位颜色（R4 起跟随数字色，已不生效）/.test(src),
+       "高级里「单位颜色」控件保留，并注明 R4 起已不生效");
+    ok(/单位 km\/h · rpm（R4 起跟随该屏数字色，本行已不生效）/.test(src),
+       "「高级 → 读数颜色」里那一行也注明了");
+  }
 }
 
 section("② 车主模式是**默认**（没记录时进车主模式，不是高级）");

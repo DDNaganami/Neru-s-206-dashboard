@@ -838,8 +838,15 @@ static void build_readout(lv_obj_t* parent, const ScreenTheme& cfg, ScreenUi& ui
     // ★ 单位文本**故意留到第一次 readout_apply 才写**(见下面的 unit_set):
     //   建屏时写上,开机扫表那一段就会孤零零挂着个 "rpm" —— 数字出场前
     //   先出来一个单位,看起来像残影。
+    // ★★ 2026-10-15（主题格式修订 R4，车主："rpm / km/h 的字体颜色是不是漏掉了"）：
+    //   单位颜色**跟随该屏的数字颜色**（同一个 digit_base_color(pk)：左屏 rpm_color、
+    //   右屏 speed_color）—— 以前它读的是全屏共用的 `readout.unit_color`，
+    //   于是车主把数字拆成两色之后，"数字是新的、单位还是旧灰"看着像漏了。
+    //   ★ `unit_color` 那个键**仍然存在、仍然被解析**（老主题文件不许"静默换意思"），
+    //     只是主读数单位不再读它；详见 ui_theme.h 里 R4 那段注记。
+    //   ★ 这一次写仍然只发生在**建屏**（dash_ui_init）里 —— 不在逐帧路径上（铁律 ①）。
     ui.unit_lbl = make_readout_label(parent, READOUT_UNIT_FONT,
-                                     lv_color_hex(READOUT_UNIT_COLOR), READOUT_UNIT_CY);
+                                     lv_color_hex(digit_base_color(pk)), READOUT_UNIT_CY);
   }
 
   // 副表数字:该屏真的有这条弧、主题也允许,才建。

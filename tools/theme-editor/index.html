@@ -3194,7 +3194,12 @@ function buildReadoutEditors() {
   colorRow(wrap, "大数字 · 转速（左屏）", () => r.rpm_color, v => r.rpm_color = v);
   colorRow(wrap, "大数字 · 速度（右屏）", () => r.speed_color, v => r.speed_color = v);
   colorRow(wrap, "大数字 · 回落值（两屏共用）", () => r.digit_color, v => r.digit_color = v);
-  colorRow(wrap, "单位 km/h · rpm", () => r.unit_color, v => r.unit_color = v);
+  // ★★ R4（2026-10-15）：`unit_color` 这一行**保留**（键还在、老主题文件里可能写着它），
+  //   但**主读数单位自 R4 起跟随该屏的数字颜色**（左屏 rpm_color / 右屏 speed_color）
+  //   ⇒ 改这一行**不会**改到屏上那行 "rpm" / "km/h" 的颜色，它现在没有渲染消费者。
+  //   标签里写明这件事，免得有人以为"调了没反应是坏了"（本仓库最忌静默无效的控件）。
+  colorRow(wrap, "单位 km/h · rpm（R4 起跟随该屏数字色，本行已不生效）",
+           () => r.unit_color, v => r.unit_color = v);
 
   // ★★ 2026-10-15 晚（R3）：读数**底板的深浅**（readout.plate_opa，0..255）。
   //   它就是读数后面那块半透明近黑垫片的浓淡（真机那一份见 src/dash_ui.cpp 的
@@ -3345,7 +3350,12 @@ function drawReadout(ctx, W, which, sc, st) {
   drawReadoutLabel(ctx, W, L.digit_cy, readoutText(pk, st), digitPx, hexOf(digitColor));
   const u = unitText(pk);
   if (L.show_units && u) {
-    drawReadoutLabel(ctx, W, L.unit_cy, u, unitPx, hexOf(r.unit_color));
+    // ★★ R4（2026-10-15，车主："rpm / km/h 的字体颜色是不是漏掉了"）：单位颜色
+    //   **跟随该屏的数字颜色** —— 与固件 build_readout() 是同一个值（digit_base_color）。
+    //   以前这里读 `r.unit_color`（那个全屏共用的键）⇒ 真机改了、预览还用旧灰，
+    //   又是一处"真机与预览不一致"。★ `unit_color` 键仍在（老主题文件不许"静默换意思"），
+    //   只是主读数单位不再读它 —— 见 ui_theme.h 的 R4 注记。
+    drawReadoutLabel(ctx, W, L.unit_cy, u, unitPx, hexOf(digitColor));
   }
 
   const aux = AUX_OF_SCREEN[which];
@@ -4371,7 +4381,11 @@ function buildControls() {
   const g5 = group("数字读数（转速/速度/水温）");
   const r = T.readout;
   syncers.push(color(g5, "数字颜色", () => r.digit_color, v => r.digit_color = v));
-  syncers.push(color(g5, "单位颜色", () => r.unit_color, v => r.unit_color = v));
+  // ★★ R4（2026-10-15）：主读数单位跟随该屏的数字颜色 ⇒ 这一行**已无渲染消费者**。
+  //   保留它是因为 `unit_color` 这个键还在主题文件里（老文件不许"静默换意思"）；
+  //   标签保持"单位颜色"这个名字，后面注明它已不生效。
+  syncers.push(color(g5, "单位颜色（R4 起跟随数字色，已不生效）",
+                     () => r.unit_color, v => r.unit_color = v));
   syncers.push(color(g5, "水温颜色", () => r.coolant_color, v => r.coolant_color = v));
   syncers.push(select(g5, "数字字号", () => r.digit_font, v => r.digit_font = v,
                       [{ v: 0, t: "48 号（大）" }, { v: 1, t: "18 号（小）" }]));

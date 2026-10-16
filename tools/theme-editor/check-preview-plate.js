@@ -305,6 +305,32 @@ section("逐值对账：固件 ↔ 预览镜像");
   ok(pRead < 0 || pArc < pRead || pArc < 0, "预览里读数在弧之后（最高层）");
 }
 
+// ------------------------------------------------------------
+// 三、R4（2026-10-15）：**主读数单位**的颜色 = 该屏数字颜色（两边同一套）
+//
+//   车主原话："rpm / km/h 的字体颜色是不是漏掉了，分别和转速/速度两个字体颜色绑定好了。"
+//   ⇒ 单位不再读共用的 `readout.unit_color`，而是跟着本屏的数字色（左屏 rpm_color /
+//     右屏 speed_color）。这一节钉的正是"两边都跟、而且都没有再回头去读 unit_color"
+//     —— 属于本脚本的份内事（真机与预览的漂移检查）。
+//   ★ `unit_color` 键**保留**（老主题文件不许"静默换意思"）：所以这里断言的是
+//     "没有任何渲染代码用它"，而不是"它不存在"。
+// ------------------------------------------------------------
+section("R4：主读数单位颜色 = 该屏数字颜色（固件 ↔ 预览镜像）");
+{
+  ok(/unit_lbl\s*=\s*make_readout_label\(\s*parent,\s*READOUT_UNIT_FONT,\s*lv_color_hex\(digit_base_color\(pk\)\)/
+       .test(cRaw),
+     "固件：单位标签用 digit_base_color(pk) 建（与数字同一个值）");
+  ok(!/lv_color_hex\(READOUT_UNIT_COLOR\)/.test(cRaw),
+     "固件：没有任何地方再拿 unit_color 画单位");
+  ok(/uint32_t\s+unit_color\s*;/.test(hRaw),
+     "固件：unit_color 字段**保留**（键还在，只是没有渲染消费者）");
+  ok(/drawReadoutLabel\(ctx, W, L\.unit_cy, u, unitPx, hexOf\(digitColor\)\)/.test(pageCode),
+     "预览：单位用的是 digitColor（该屏数字色）");
+  ok(!/hexOf\(r\.unit_color\)/.test(pageCode),
+     "预览：没有任何地方再拿 unit_color 画东西");
+  ok(/主题格式修订 R4/.test(hRaw), "固件头文件里有 R4 的修订注记");
+}
+
 console.log("\n" + "=".repeat(56));
 if (fail === 0) {
   console.log("全部通过:" + pass + " 项断言（固件与预览镜像一致）");

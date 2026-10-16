@@ -471,10 +471,25 @@ section("读数颜色:合并后的页面 vs ui_theme.h / dash_ui.cpp");
      "建读数标签时用的是 digit_base_color()（不是写死的 READOUT_DIGIT_COLOR）");
   ok(/digit_base_color\(ui\.digit_kind\)/.test(cSrc),
      "退出红区时回到的也是**这一屏自己的**基础色（否则红区闪一次两屏就同色了）");
-  for (const k of ["unit_color", "coolant_color", "intake_color"]) {
+  for (const k of ["coolant_color", "intake_color"]) {
     ok(cSrc.indexOf("lv_color_hex(READOUT_" + k.toUpperCase() + ")") >= 0,
        "dash_ui.cpp 用 " + k + " 建读数标签");
   }
+  //   ★★ R4（2026-10-15，车主："rpm / km/h 的字体颜色是不是漏掉了"）：
+  //     **主读数单位**的颜色跟随**该屏的数字颜色** ⇒ 单位标签必须与数字一样走
+  //     digit_base_color(pk)，而**不再**读共用的 `unit_color`。
+  //     （`unit_color` 这个键保留、照旧解析 —— 老主题文件不许"静默换意思"。）
+  ok(/unit_lbl\s*=\s*make_readout_label\(\s*parent,\s*READOUT_UNIT_FONT,\s*lv_color_hex\(digit_base_color\(pk\)\)/
+       .test(cSrc),
+     "dash_ui.cpp：单位标签用 digit_base_color(pk) 建（R4 起跟随该屏数字色）");
+  ok(!/lv_color_hex\(READOUT_UNIT_COLOR\)/.test(cSrc),
+     "dash_ui.cpp 不再用 unit_color 画单位（R4 起它没有渲染消费者）");
+  ok(/uint32_t\s+unit_color\s*;/.test(hSrc) && /t\.readout\.unit_color\s*=\s*0x9AA0A6/.test(hSrc),
+     "ui_theme.h：unit_color 的字段与默认值都**保留**（键不许删）");
+  ok(/"unit_color"/.test(
+       fs.readFileSync(path.join(repo, "lib", "themetool", "theme_store.cpp"), "utf8")),
+     "theme_store.cpp 照旧解析 unit_color（老主题文件里可能写着它）");
+  ok(/主题格式修订 R4/.test(hSrc), "ui_theme.h 里写了 R4 的修订注记");
   //   ★ R3：底板的深浅也来自主题（不再是自己文件里的常量）
   ok(/lv_obj_set_style_bg_opa\(p,\s*\(lv_opa_t\)READOUT_PLATE_OPA/.test(cSrc),
      "dash_ui.cpp 用主题的 READOUT_PLATE_OPA 设底板透明度");
@@ -672,7 +687,8 @@ section("读数颜色:合并后的页面 vs ui_theme.h / dash_ui.cpp");
     eq(left[0].text, "2730", "左屏大数字 = 转速");
     eq(left[0].color, "#FFFFFF", "左屏大数字用 rpm_color(默认与 digit_color 同值)");
     eq(left[1].text, "rpm", "左屏单位");
-    eq(left[1].color, "#9AA0A6", "单位用 unit_color");
+    // ★★ R4：单位颜色**跟随该屏的数字颜色**（不再是共用的 unit_color）
+    eq(left[1].color, left[0].color, "左屏单位颜色 = 左屏数字颜色（R4）");
     eq(left[2].text, "88°C", "左屏底部 = 水温");
     eq(left[2].color, "#7CFF6B", "水温数字用 coolant_color");
 
@@ -681,6 +697,7 @@ section("读数颜色:合并后的页面 vs ui_theme.h / dash_ui.cpp");
     eq(right[0].text, "62", "右屏大数字 = 车速");
     eq(right[0].color, "#FFFFFF", "右屏大数字用 speed_color(默认与 digit_color 同值)");
     eq(right[1].text, "km/h", "右屏单位");
+    eq(right[1].color, right[0].color, "右屏单位颜色 = 右屏数字颜色（R4）");
     eq(right[2].text, "31°C", "右屏底部 = 进气温度");
     eq(right[2].color, "#FFB020", "进气温度数字用 intake_color");
 
@@ -692,6 +709,13 @@ section("读数颜色:合并后的页面 vs ui_theme.h / dash_ui.cpp");
     split.readout.digit_color = 0x00FF88;      // 回落值故意取第三个颜色
     eq(render(split, 0, 480, 480)[0].color, "#AA0001", "转速屏大数字 = rpm_color");
     eq(render(split, 1, 480, 480)[0].color, "#BB0002", "速度屏大数字 = speed_color");
+    //   ★★ R4 的机器证明：单位跟着**本屏**的数字走（左边红、右边蓝，单位各自跟上）
+    {
+      const sl = render(split, 0, 480, 480), sr = render(split, 1, 480, 480);
+      eq(sl[1].color, "#AA0001", "转速屏单位('rpm') = rpm_color（R4）");
+      eq(sr[1].color, "#BB0002", "速度屏单位('km/h') = speed_color（R4）");
+      eq(sl[1].color !== sr[1].color, true, "两块屏的单位颜色**不一样**（各自跟随本屏数字）");
+    }
     //   主读数既不是转速也不是速度（副表当了唯一那条弧）时用中立的 digit_color
     const auxOnly = JSON.parse(JSON.stringify(def));
     auxOnly.readout.digit_color = 0x00FF88;
@@ -704,13 +728,16 @@ section("读数颜色:合并后的页面 vs ui_theme.h / dash_ui.cpp");
     dark.readout.digit_color = 0x101010;
     dark.readout.rpm_color = 0x515151;
     dark.readout.speed_color = 0x616161;
-    dark.readout.unit_color = 0x202020;
+    dark.readout.unit_color = 0x202020;        // ★ R4 起这个键已无渲染消费者
     dark.readout.coolant_color = 0x303030;
     dark.readout.intake_color = 0x404040;
     const dl = render(dark, 0, 480, 480), dr = render(dark, 1, 480, 480);
     eq(dl[0].color, "#515151", "改成深色的转速数字 → 预览里就是深色");
     eq(dr[0].color, "#616161", "改成深色的速度数字 → 预览里就是深色");
-    eq(dl[1].color, "#202020", "改成深色的单位 → 预览里就是深色");
+    eq(dl[1].color, "#515151",
+       "单位跟着本屏数字色走（R4）—— 不是那个已经失效的 unit_color 0x202020");
+    eq(dl[1].color !== "#202020", true,
+       "unit_color 改了也**不再**影响单位（键保留但已不生效）");
     eq(dl[2].color, "#303030", "改成深色的水温 → 预览里就是深色");
     eq(dr[2].color, "#404040", "改成深色的进气温度 → 预览里就是深色");
 
