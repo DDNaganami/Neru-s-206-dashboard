@@ -309,6 +309,70 @@ section("build():每项的名字必须各写各的");
 }
 
 // ------------------------------------------------------------
+section("build():名字写 **UTF-8** 字节（中文名不再被截成乱码）+ nameRaw 原样回写");
+//
+// ★★ 2026-10-15（车主导入自己的 assets.bin 时暴露的两件事）：
+//   ① 老写法 `charCodeAt(c) & 0xFF` 把"痛"这种码点 > 0xFF 的字**截成低 8 位** ⇒
+//      设备端日志/清单里是乱码（取图不受影响：固件按 role 找图）。
+//      现在按 UTF-8 写，并且**按字符边界**截到 23 字节（不切半个字）。
+//   ② 反过来的那一半：**老包里的名字就是那种截断字节**（不一定是合法 UTF-8）
+//      ⇒ "导入 → 再导出必须逐字节相同"要求把它们**原样写回**：带 nameRaw 的项
+//      走"原样"那条路，不重新编码。车主的真文件（2.4MB、11 张）实测逐字节相同。
+{
+  const mk = (w) => new Uint8Array(w * 2 * 2);
+  const nameBytesOf = (blob, i) => {
+    const base = 12 + i * IB.ENTRY_SIZE;
+    const out = [];
+    for (let c = 0; c < IB.NAME_MAX; c++) {
+      const ch = blob[base + 18 + c];
+      if (ch === 0) break;
+      out.push(ch);
+    }
+    return out;
+  };
+
+  // ① 纯 ASCII：与老行为**逐字节相同**（这是 golden 的 imageBin 不变的原因）
+  eq(JSON.stringify(IB.nameToBytes("bg")), "[98,103]", "ASCII 名 → 就是那些字节");
+  eq(JSON.stringify(IB.nameToBytes("face.png")),
+     JSON.stringify([...Buffer.from("face.png", "utf8")]), "带点的 ASCII 名");
+
+  // ② 中文名：按 UTF-8 写（不是码点低 8 位）
+  const cn = "痛.png";
+  eq(JSON.stringify(IB.nameToBytes(cn)),
+     JSON.stringify([...Buffer.from(cn, "utf8")]), "中文名 → UTF-8 字节");
+  ok(IB.nameToBytes(cn).indexOf(0xDB) < 0,
+     "不再出现『码点低 8 位』那种字节（老写法 痛 U+75DB → 0xDB）");
+
+  // ③ 有界：UTF-8 名超过 23 字节时按**字符边界**截断，不切半个字
+  {
+    const long = "表".repeat(10);            // 3 字节/字 = 30 字节
+    const res = IB.build([{ name: long, w: 2, h: 2, pixels: mk(2) }]);
+    const nb = nameBytesOf(res.blob, 0);
+    ok(nb.length <= IB.NAME_MAX - 1, "名字字节数 ≤ " + (IB.NAME_MAX - 1) + "（得到 " + nb.length + "）");
+    eq(nb.length % 3, 0, "截断落在**字符边界**上（3 字节一个汉字 ⇒ 长度是 3 的倍数）");
+    const back = Buffer.from(nb).toString("utf8");
+    ok(back === "表".repeat(nb.length / 3), "截出来的还是完整的汉字：" + back);
+  }
+  //   纯 ASCII 名超长仍然**报错**（与老行为一致：静默截断会让人以为存进去了）
+  throws(() => IB.build([{ name: "x".repeat(24), w: 2, h: 2, pixels: mk(2) }]),
+         "纯 ASCII 名太长仍然报错");
+
+  // ④ nameRaw：**原样写回**（老包里的截断字节 / 任何非 UTF-8 字节）
+  {
+    const raw = [0x6C, 0x1F, 0x68, 0x2D, 0x31, 0x2D, 0xE6, 0x4F, 0x5F, 0x5F, 0x5F];
+    const res = IB.build([{ name: "ignored", nameRaw: raw, w: 2, h: 2, pixels: mk(2) }]);
+    eq(JSON.stringify(nameBytesOf(res.blob, 0)), JSON.stringify(raw),
+       "带 nameRaw 的项：字节**原样**写回（逐字节相同）");
+  }
+  {
+    const raw = [...Buffer.from("😀中文.png", "utf8")];
+    const res = IB.build([{ name: "ignored", nameRaw: raw, w: 2, h: 2, pixels: mk(2) }]);
+    eq(JSON.stringify(nameBytesOf(res.blob, 0)), JSON.stringify(raw),
+       "合法 UTF-8 的 nameRaw 也原样写回（emoji 4 字节也照样）");
+  }
+}
+
+// ------------------------------------------------------------
 section("build():多项偏移要累加");
 {
   // 每张图的大小必须和声明的 w/h/cf/pad 自洽,否则 build() 会拒收

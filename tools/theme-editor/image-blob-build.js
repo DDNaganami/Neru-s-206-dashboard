@@ -353,11 +353,60 @@
   }
 
   //
-  // items: [{ name, w, h, cf, role, order, pixels(Uint8Array), stridePad }]
+  // items: [{ name, w, h, cf, role, order, pixels(Uint8Array), stridePad, nameRaw? }]
   // 返回 { blob: Uint8Array, entries: [...], dataBytes, totalBytes }
   //
   // 校验从严:宁可在这里报错,也不要产出一个设备端读不了的 bin。
   // ------------------------------------------------------------
+
+  // ------------------------------------------------------------
+  // 名字 → 那 24 字节字段里的字节串（**格式一个字没改**：还是 char[24]、NUL 结尾）
+  //
+  // ★★ 2026-10-15 修的两件事（车主导入自己的 assets.bin 时暴露的）：
+  //   ① **中文名被写坏**：老代码是 `name.charCodeAt(c) & 0xFF` —— 对"痛"这种
+  //      码点 > 0xFF 的字，写出去的是**码点低 8 位**，不是 UTF-8（也不是 GBK），
+  //      设备端日志/清单里就是乱码串（**取图不受影响**：固件按 role 找图）。
+  //      现在按 **UTF-8** 写，并按**字符边界**截到 23 字节 —— 有界、不切半个字。
+  //   ② **导入 → 导出要逐字节相同**：老文件里的名字**就是**上面那种截断字节
+  //      （不一定是合法 UTF-8）⇒ 把它解成字符串再按 UTF-8 编码**回不去**。
+  //      所以从包里恢复出来的项会带上 `nameRaw`（原始字节），这里**原样写回**。
+  //      ⇒ 判据只有一条：**有 nameRaw 就用它，没有才自己编码**。
+  // ------------------------------------------------------------
+  function utf8Encode(cp) {
+    if (cp < 0x80) return [cp];
+    if (cp < 0x800) return [0xC0 | (cp >> 6), 0x80 | (cp & 0x3F)];
+    if (cp < 0x10000) {
+      return [0xE0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F)];
+    }
+    return [0xF0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3F),
+            0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F)];
+  }
+
+  // 把 UTF-8 字节串截到 max 字节，且**不切半个字**（回退到最后一个完整字符的边界）
+  function truncateUtf8(bytes, max) {
+    if (bytes.length <= max) return bytes;
+    var n = max;
+    // bytes[n] 是第一个被丢掉的字节：只要它还是"续字节"(10xxxxxx)，
+    // 就说明它前面那个字符没写完 ⇒ 继续往前退，直到落在一个首字节上。
+    while (n > 0 && (bytes[n] & 0xC0) === 0x80) n--;
+    return bytes.slice(0, n);
+  }
+
+  // 返回**完整**编码（不截断）—— 截不截、要不要报错由 build() 决定（见那里的两条口径）
+  function nameToBytes(name, nameRaw) {
+    if (nameRaw && nameRaw.length) {
+      return Array.prototype.slice.call(nameRaw, 0, NAME_MAX - 1);   // 原样
+    }
+    var s = String(name === undefined || name === null ? "" : name);
+    var out = [];
+    for (var i = 0; i < s.length; i++) {
+      var cp = s.codePointAt(i);
+      if (cp > 0xFFFF) i++;                     // 代理对：一次吃掉两个 code unit
+      out = out.concat(utf8Encode(cp));
+    }
+    return out;
+  }
+
   function build(items) {
     if (!items || !items.length) throw new Error("没有图片可打包");
     if (items.length > MAX_COUNT) {
@@ -424,14 +473,28 @@
       }
 
       var name = String(it.name || ("img" + i));
-      if (name.length >= NAME_MAX) {
-        throw new Error("第 " + (i + 1) + " 张:名字最多 " + (NAME_MAX - 1) + " 个字符");
+      // ★ 名字按**字节**算（UTF-8），见上面 nameToBytes() 那一段说明。
+      var nb = nameToBytes(name, it.nameRaw);
+      var nbLen = nb.length;
+      if (nbLen > NAME_MAX - 1) {
+        // 两条口径（都在 nameToBytes 的注释里）：
+        //   · **纯 ASCII**（每字符 1 字节）⇒ 报错 —— 与老行为逐字一致；
+        //     静默截断会让用户以为"这个名字存进去了"。
+        //   · **含多字节字符**（中文文件名，3 字节/字）⇒ 按**字符边界**截断：
+        //     否则车主的中文文件名一律进不来（24 字节字段装不下 8 个汉字）。
+        var ascii = true;
+        for (var q = 0; q < name.length; q++) { if (name.charCodeAt(q) > 0x7F) { ascii = false; break; } }
+        if (ascii) {
+          throw new Error("第 " + (i + 1) + " 张:名字最多 " + (NAME_MAX - 1) +
+                          " 个字符（现在是 " + name.length + "）");
+        }
+        nb = truncateUtf8(nb, NAME_MAX - 1);
       }
 
       entries.push({
         offset: off, size: size, w: w, h: h, cf: cf, stridePad: pad,
         role: it.role || ROLE.Background, order: it.order | 0,
-        name: name, pixels: px
+        name: name, nameBytes: nb, pixels: px
       });
       off += size;
     }
@@ -475,14 +538,15 @@
       blob[base + 13] = e.stridePad;
       dv.setUint16(base + 14, e.role, true);
       dv.setUint16(base + 16, e.order, true);
-      // ★ 必须用 e.name。这里曾经写成上一轮循环遗留的 `name` 变量(var 不按块作用域),
-      //   结果**每一项都被写成最后一张图的名字** —— 编译不报错、
-      //   设备端只是"按名字找图找不到",极难查。测试里专门有一条防它。
-      for (var c = 0; c < e.name.length && c < NAME_MAX - 1; c++) {
-        blob[base + 18 + c] = e.name.charCodeAt(c) & 0xFF;
+      // ★ 必须用 e.nameBytes（不是上一轮循环遗留的 `name` 变量）——
+      //   这里曾经踩过"每项都被写成最后一张图的名字"那个坑（见下面的用例）。
+      //   nameBytes 有三种来源：导入项的**原始字节**（逐字节回写）、
+      //   纯 ASCII 名的低字节（= UTF-8）、中文名的 UTF-8（有界，不切半个字）。
+      for (var c = 0; c < e.nameBytes.length; c++) {
+        blob[base + 18 + c] = e.nameBytes[c];
       }
       // 名字之后必须留 '\0':设备端靠它判断字符串合法
-      blob[base + 18 + Math.min(e.name.length, NAME_MAX - 1)] = 0;
+      blob[base + 18 + e.nameBytes.length] = 0;
     }
 
     // ---- 像素数据 ----
@@ -567,6 +631,9 @@
     pack565: pack565,
     rgbaToRgb565: rgbaToRgb565,
     rgbaToRgb565A8: rgbaToRgb565A8,
+    // ★ 名字 → 那 24 字节字段里的字节（UTF-8；导入项带 nameRaw 时原样回写）。
+    //   导出出来是为了让用例能直接钉"中文名写成 UTF-8 字节、不被切半个字"。
+    nameToBytes: nameToBytes,
     build: build,
     esptoolCommand: esptoolCommand,
     toCHeader: toCHeader

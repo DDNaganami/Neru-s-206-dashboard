@@ -4038,6 +4038,22 @@ function buildStageGrid() {
 //   两条路的**渲染输入**也不同(transparent 参数),别只改一边。
 function buildPayload() {
   return items.map(item => {
+    // ★★ 2026-10-15（车主："打开安装包…之后没有看见图片载入"）：
+    //   **从安装包里恢复出来的项**带着设备格式的**原始像素字节**（item.packed）
+    //   ⇒ 直接透传，**不重新渲染**。两条理由：
+    //     ① 渲染要过 canvas，透明像素的 RGB 会被预乘/合成改写 ⇒
+    //        "导出 → 导入 → 再导出逐字节相同"就站不住了；
+    //     ② 这几张图的像素本来就是设备要的最终形态（w/h/cf/stride_pad 都是从包里读的）。
+    //   ★ nameRaw 也要带上：老包里的名字是**截断过的字节**，重新按 UTF-8 编码回不去
+    //     （见 image-blob-build.js 的 nameToBytes）。
+    //   ★★ 但**改过就不能再透传**：车主一旦改了宽度/缩放方式/裁透明边/用途，
+    //     导出还写老像素就是"改了没反应"（本仓库最忌讳的静默无效）⇒ 回到渲染路径。
+    //     判据收口在 packedUnchanged() 一处，不在四个控件里各加一句（漏一处就失效）。
+    if (item.packed && item.packedMeta && packedUnchanged(item)) {
+      return { name: item.name, nameRaw: item.nameRaw,
+               w: item.w, h: item.h, cf: item.cf, role: item.role,
+               order: item.order, stridePad: item.stridePad, pixels: item.packed };
+    }
     const alpha = wantAlpha(item.role);
     const rgba = renderToTarget(item, item.w, item.h, alpha);
     if (!rgba) throw new Error("「" + item.name + "」读不出像素，请重新添加");
@@ -4052,6 +4068,139 @@ function buildPayload() {
                     : ImageBlob.rgbaToRgb565(rgba, item.w, item.h)
     };
   });
+}
+
+// 从包里恢复出来的那一项**还是不是原样**？
+//   ★ 只有"从导入到现在一个字都没改"才允许原字节透传（那是"导出 → 导入 → 再导出
+//     逐字节相同"的前提）；改过任何一样就回渲染路径。
+//   ★ `order` **不算改动**：它只影响打包时写的 order 字段（照实写），不影响像素。
+function packedUnchanged(item) {
+  const m = item.packedMeta;
+  if (!m) return false;
+  return m.w === item.w && m.h === item.h && m.cf === item.cf &&
+         m.role === item.role && m.stridePad === item.stridePad &&
+         m.fit === item.fit && m.trim === !!item.trim;
+}
+
+// ============================================================
+// ★★ 2026-10-15：**从 image 段把图片装回槽位清单**
+//
+// 之前为什么不行：读入容器那条路只把 image 段**记在手里**（给"另存为 image.bin"用），
+//   从来没有变成 `items` ⇒ 槽位清单照旧是空的。车主看到的就是"没有图片载入"。
+//
+// ★ 像素**不重新编码**：每张图的原始设备字节（RGB565 / RGB565A8，含 padding）
+//   原样挂在 `item.packed` 上，导出时由 buildPayload() 直接透传 ⇒
+//   **导出 → 导入 → 再导出逐字节相同**（走 canvas 重渲染做不到，理由见那里）。
+// ★ 名字：raw 字节留给导出（老包里的名字是"码点低 8 位"那种截断字节，见
+//   image-blob-build.js 的 nameToBytes），另存一份**给人看的**名字。
+// ============================================================
+
+// 名字字节 → 给人看的字符串
+function displayNameOf(bytes) {
+  const arr = Array.from(bytes || []);
+  if (arr.every(b => b <= 0x7F)) return String.fromCharCode.apply(null, arr);
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(arr));
+  } catch (e) {
+    // 老包里那种截断字节不是合法 UTF-8 ⇒ 按字节显示（长度/形态与包里一致，
+    // 而不是变成一串 U+FFFD 问号）。raw 字节无论如何都留着，导出时原样写回。
+    return String.fromCharCode.apply(null, arr);
+  }
+}
+
+// 设备格式的像素 → RGBA（**只为了显示**：缩略图 + 预览；导出走 item.packed 透传）
+//   565 → 8 位用"左移补低位"（r5 << 3）：它是编码端 `pack565(r >> 3 …)` 的**严格逆**
+//   （(r5 << 3) >> 3 === r5）。
+function packedToRgba(pixels, w, h, cf, stridePad) {
+  const pad = stridePad | 0;
+  const out = new Uint8ClampedArray(w * h * 4);
+  const colorStride = w * 2 + pad;
+  const colorBytes = colorStride * h;
+  const hasA8 = (cf === ImageBlob.CF.RGB565A8);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const s = y * colorStride + x * 2;
+      const v = pixels[s] | (pixels[s + 1] << 8);      // 小端
+      const a = hasA8 ? pixels[colorBytes + y * (colorStride >> 1) + x] : 255;
+      const o = (y * w + x) * 4;
+      out[o]     = ((v >> 11) & 0x1F) << 3;
+      out[o + 1] = ((v >> 5) & 0x3F) << 2;
+      out[o + 2] = (v & 0x1F) << 3;
+      out[o + 3] = a;
+    }
+  }
+  return out;
+}
+
+// 一张 RGBA 当作**可画的源**（item.img —— 缩略图/预览都只认"能被 drawImage 的东西"）
+function canvasFromRgba(rgba, w, h) {
+  const cv = document.createElement("canvas");
+  cv.width = Math.max(1, w); cv.height = Math.max(1, h);
+  const c = cv.getContext("2d", { willReadFrequently: true });
+  const id = c.createImageData(cv.width, cv.height);
+  id.data.set(rgba);
+  c.putImageData(id, 0, 0);
+  return cv;
+}
+
+// 把一份 image 段装回槽位清单，返回摘要（张数 / 背景 / 表情 / 字节数）。
+//   imageBytes —— image 段（**含 1420 字节包头**）
+//   info       —— AssetPackageCore.parseImageBlob()/unpackBytes() 给的清单：
+//                 offset/size/cf/stridePad/role/order/w/h 全部来自**既有解析**，
+//                 这里不另写一套（名字字段的位置与长度也走它导出的常量）。
+function restoreImagesFromInfo(imageBytes, info, label) {
+  const entries = (info.entries || []).slice().sort((a, b) => a.index - b.index);
+  const empty = { count: 0, bg: 0, face: 0, bytes: 0 };
+  if (!entries.length) return empty;
+  const entrySize = AssetPackageCore.IMAGE_ENTRY_SIZE;
+  const nameMax = AssetPackageCore.IMAGE_NAME_MAX;
+  const headerBytes = info.headerBytes || AssetPackageCore.IMAGE_HEADER_SIZE;
+  let bytes = 0, bg = 0, face = 0;
+  for (const e of entries) {
+    const at = headerBytes + e.offset;
+    const raw = imageBytes.subarray(at, at + e.bytes);
+    const nameAt = 12 + e.index * entrySize + 18;     // 项内 +18 起是 char[24]（权威：image-blob-build.js）
+    const nameField = imageBytes.subarray(nameAt, nameAt + nameMax);
+    let nEnd = nameField.indexOf(0);
+    if (nEnd < 0) nEnd = nameField.length;
+    const nameRaw = nameField.subarray(0, nEnd);
+    let img = null;
+    try {
+      img = canvasFromRgba(packedToRgba(raw, e.w, e.h, e.cf, e.stridePad), e.w, e.h);
+    } catch (err) { img = null; }    // 不认识的格式：照样记账，只是先给个空缩略图
+    if (!img) img = canvasFromRgba(new Uint8ClampedArray(e.w * e.h * 4), e.w, e.h);
+    // ★ 同一个用途（role）上的旧项**被这份包替换**：导入两次结果一样，
+    //   而包里没有的角色原样保留（不把车主别的改动清掉）。
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (items[i].role === e.role) items.splice(i, 1);
+    }
+    items.push({
+      img: img, name: displayNameOf(nameRaw),
+      role: e.role, order: e.order, fit: "contain", w: e.w, h: e.h,
+      cf: e.cf, stridePad: e.stridePad,
+      packed: raw,        // ★ 导出透传的**原始像素字节**
+      nameRaw: nameRaw,   // ★ 导出原样写回的名字字节
+      // ★ 导入时的快照：packedUnchanged() 拿它跟当前值比 —— 车主改过任何一样，
+      //   这一项就回渲染路径（不会"改了没反应"）。
+      packedMeta: { w: e.w, h: e.h, cf: e.cf, role: e.role, stridePad: e.stridePad,
+                    fit: "contain", trim: false },
+      fromPackage: label
+    });
+    bytes += e.bytes;
+    if (wantAlpha(e.role)) face++; else bg++;
+  }
+  return { count: entries.length, bg: bg, face: face, bytes: bytes };
+}
+
+// 读进来的图片清单要显示在**两处**（高级 + 车主模式）：
+//   ★ 车主模式里看不到「高级」那一段，而"到底读进来了什么"正是他要知道的 ——
+//     所以**一处生成、两处显示**（同一个字符串，不是两份描述）。
+function showAssetsInfo(text) {
+  assetsInfoEl.textContent = text;
+  assetsInfoEl.style.display = "";
+  document.getElementById("assets-image-row").style.display = "";
+  const own = document.getElementById("owner-assets-info");
+  if (own) { own.textContent = text; own.style.display = ""; }   // 车主模式那一份
 }
 
 // 设备端名字是 char[24] 且只当标识用，这里去掉可能出问题的字符
@@ -4805,17 +4954,6 @@ document.getElementById("btn-assets-image-save").addEventListener("click", () =>
       "拿它单独刷 image 分区、或喂给别的工具都行。");
 });
 
-// 图片清单要显示在**两处**（高级 + 车主模式）：
-//   ★ 车主模式里看不到「高级」那一段，而"到底读进来了什么"正是他要知道的 ——
-//     所以**一处生成、两处显示**（同一个字符串，不是两份描述）。
-function showAssetsInfo(text) {
-  assetsInfoEl.textContent = text;
-  assetsInfoEl.style.display = "";
-  document.getElementById("assets-image-row").style.display = "";
-  const own = document.getElementById("owner-assets-info");
-  if (own) { own.textContent = text; own.style.display = ""; }   // 车主模式那一份
-}
-
 // 这一份字节是"本工具产出的容器"吗？
 // 只做两个便宜的检查：长度落在合法区间内、theme 段尾部有 0 填充。
 // ★ 为什么必须要它：单独导出的 image.bin 也可能正好落在这个区间里，
@@ -4840,9 +4978,9 @@ function readAssetFile(f) {
     // ---- ① 老路：.json 就是一份主题（与加这个按钮之前完全一样）----
     if (/\.json$/i.test(f.name)) { loadThemeText(new TextDecoder("utf-8").decode(bytes), f.name); return; }
 
-    // ---- ② 不是容器 ⇒ 回到老路（单独导出的 image.bin 照样能读进来核对）----
+    // ---- ② 不是容器 ⇒ 单独一份 image.bin / theme.json 那条路 ----
     const layout = coreForTarget();
-    if (!looksLikeContainer(bytes, layout)) { legacyFileInfo(f, bytes.length); return; }
+    if (!looksLikeContainer(bytes, layout)) { legacyFileInfo(f, bytes); return; }
 
     // ---- ③ 合并容器 ----
     let res;
@@ -4855,17 +4993,25 @@ function readAssetFile(f) {
     const themeText = new TextDecoder("utf-8").decode(res.themeBytes);
     if (!loadThemeText(themeText, f.name + " 里的 theme 段")) return;   // 失败时它已经 say 过了
 
-    // 图片：v1 不展开成可编辑的列表项，但**如实显示**清单（张数/用途/尺寸/字节数）
-    //   ★ 显示在两处：高级那一段 + 车主模式那一段（同一个字符串，见 showAssetsInfo）。
+    // ★★ 图片：**装回槽位清单**（2026-10-15 修的那条真 bug —— 车主原话：
+    //    "打开安装包这个选项我点击后没有看见图片载入"）。
+    //    以前这里只 rememberImagePart()（留给"另存为 image.bin"）+ 显示清单，
+    //    从来没有变成 items ⇒ 槽位照旧是空的。
+    //    ★ 用既有解析（unpackBytes 给的 imageInfo）+ 既有常量，不另写一套。
     rememberImagePart(res.imageBytes, f.name);
-    showAssetsInfo(describeImageInfo(res.imageInfo));
+    const restored = restoreImagesFromInfo(res.imageBytes, res.imageInfo, f.name);
+    showAssetsInfo(describeImageInfo(res.imageInfo));   // 清单：高级 + 车主模式各一份
+    render(true);        // ★ 把装回来的图**画出来**：槽位缩略图 + 预览 + 各色板
 
     say("已读入 " + f.name + "（" + res.containerBytes + " 字节）：配色已应用（来源 " +
-        themeSource + "），图片 " + res.imageInfo.count + " 张已记账。\n\n" +
-        "图片那 " + res.imageInfo.count + " 张的清单在「图片部分」那一行下面" +
-        "（每张的用途 / 尺寸 / 字节数）。\n" +
-        "★ 本版**不**把每张图还原成可编辑的列表项 —— 想改哪张，就点「把图片部分另存为 " +
-        imagePartName + "」，再像以前那样刷它或另作处理。\n\n" +
+        themeSource + "）。\n\n" +
+        "图片已装回槽位清单：" + restored.count + " 张（背景 " + restored.bg +
+        " + 表情 " + restored.face + "，共 " + restored.bytes + " 字节）——" +
+        "同一个用途上的旧图被这份包替换。\n\n" +
+        "图片清单在「图片部分」那一行下面（每张的用途 / 尺寸 / 字节数），" +
+        "槽位清单里每格也都有缩略图了。\n" +
+        "★ 这些图是**按包里的原始字节**恢复的（不重新编码）⇒ 直接再导出，" +
+        "image 段与这份文件逐字节相同。\n\n" +
         "现在直接刷这一份就行（端口换成你自己的）：\n" +
         AssetPackageCore.flashCommand(layout, f.name, {
           chip: ImageBlob.targetInfo(curTarget).chip
@@ -4874,10 +5020,31 @@ function readAssetFile(f) {
   r.readAsArrayBuffer(f);
 }
 
-// 老路：只报"读到了多少字节"+ 刷写命令（这是加合并文件之前的行为，保留）
-function legacyFileInfo(f, byteLength) {
+// 单独一份 `image.bin`（没有配色）走这里。
+//
+// ★★ 2026-10-15（车主："打开安装包…之后没有看见图片载入"）：这条老路以前**只报
+//    字节数 + 刷写命令**（原文还写着"本工具不解析已有 bin 的像素"）—— 与容器那条路
+//    是同一个毛病：读进来之后槽位清单照旧是空的。现在**先按 image 段装回槽位**
+//    （用既有解析 AssetPackageCore.parseImageBlob；一份实现，见 restoreImagesFromInfo），
+//    只有"这份字节根本不是 image.bin"时才退回老口径。
+function legacyFileInfo(f, bytes) {
+  const byteLength = bytes.length;
+  try {
+    const info = AssetPackageCore.parseImageBlob(bytes, { label: f.name });
+    const r = restoreImagesFromInfo(bytes, info, f.name);
+    render(true);                     // ★ 把装回来的图画出来（槽位缩略图 + 预览）
+    showAssetsInfo(describeImageInfo(info));
+    say("已读入 " + f.name + "（" + byteLength + " 字节）：图片已装回槽位清单 —— " +
+        r.count + " 张（背景 " + r.bg + " + 表情 " + r.face + "，共 " + r.bytes + " 字节）。\n" +
+        "★ 这一份只是 image 段（不含配色）⇒ 配色仍是当前主题；" +
+        "同一个用途上的旧图被这份文件替换。", "ok");
+    document.getElementById("cmd").value = ImageBlob.esptoolCommand("COM3", f.name, curTarget);
+    return;
+  } catch (e) { /* 不是一份合法的 image.bin ⇒ 落到老口径（只报字节数） */ }
+
   say("已读取 " + f.name + "（" + byteLength + " 字节）。\n" +
-      "注意：本工具不解析已有 bin 的像素，只用于核对大小与刷写命令。\n" +
+      "注意：这份字节**不是**本工具认的 image.bin（包头对不上），" +
+      "所以只用于核对大小与刷写命令。\n" +
       "（如果这是「导出 assets.bin」存下来的合并文件，按说会认出它 —— " +
       "认不出来说明它不是本工具产出的容器。）", "ok");
   document.getElementById("cmd").value = ImageBlob.esptoolCommand("COM3", f.name, curTarget);
@@ -4894,6 +5061,8 @@ document.getElementById("file-theme").addEventListener("change", e => {
 //   把"两个分区看的是同一份主题"破坏掉。
 
 // 载入已有 bin（方便在已有资源上继续改）
+//   ★ 2026-10-15：与 #file-theme 那条路**共用 legacyFileInfo()** —— 一份实现。
+//     （以前这个监听器自己写了一遍"只报字节数"的逻辑，两条路各一份。）
 document.getElementById("btn-import-bin").addEventListener("click", () =>
   document.getElementById("file-bin").click());
 document.getElementById("file-bin").addEventListener("change", e => {
@@ -4901,11 +5070,7 @@ document.getElementById("file-bin").addEventListener("change", e => {
   e.target.value = "";
   if (!f) return;
   const r = new FileReader();
-  r.onload = () => {
-    say("已读取 " + f.name + "（" + r.result.byteLength + " 字节）。\n" +
-        "注意：本工具不解析已有 bin 的像素，只用于核对大小与刷写命令。", "ok");
-    document.getElementById("cmd").value = ImageBlob.esptoolCommand("COM3", f.name, curTarget);
-  };
+  r.onload = () => legacyFileInfo(f, new Uint8Array(r.result));
   r.readAsArrayBuffer(f);
 });
 

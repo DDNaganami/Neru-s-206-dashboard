@@ -680,6 +680,39 @@ section("⑧b 导入：车主模式两个按钮，与高级那两个**共用同�
   ok(/id="owner-assets-info"/.test(ownerImages), "车主模式里有显示清单的容器 #owner-assets-info");
   ok(/showAssetsInfo\(describeImageInfo/.test(src),
      "读入容器后把清单同时写到两处（高级 + 车主模式）");
+  // ⑤ ★★ 2026-10-15（车主："打开安装包…之后没有看见图片载入"）：读进来的图必须
+  //    **装回槽位清单** —— 以前只应用配色，image 段只记在手里 ⇒ 槽位照旧是空的。
+  ok(/function restoreImagesFromInfo\(/.test(src), "有 restoreImagesFromInfo()（装回槽位）");
+  ok(/restoreImagesFromInfo\(res\.imageBytes,\s*res\.imageInfo,\s*f\.name\)/.test(src),
+     "容器那条路用它把 image 段装回槽位（用 unpackBytes 给的既有解析）");
+  ok(/items\.splice\(i,\s*1\)/.test(src) && /items\.push\(/.test(src),
+     "装回时同一用途上的旧项被替换、其余角色保留（导入两次结果一样）");
+  //    单独一份 image.bin 那条老路也要装回（以前只报字节数 + 刷写命令）
+  ok(/function legacyFileInfo\(f,\s*bytes\)/.test(src),
+     "legacyFileInfo() 收的是**字节**（不是长度）");
+  ok(/AssetPackageCore\.parseImageBlob\(bytes/.test(src),
+     "它用既有的 parseImageBlob 解析（image.bin 也就装回槽位）");
+  ok(/legacyFileInfo\(f,\s*new Uint8Array\(r\.result\)\)/.test(src),
+     "#file-bin（载入已有 bin）走**同一个** legacyFileInfo（没有第二份实现）");
+  //   ★ 判据盯**状态栏那句话**，不是全文搜四个字 —— 代码注释里会引用老文案
+  //     （"以前写的是…"），全文搜会把注释也算成"还在"（实测踩过这个假红）。
+  ok(!/"注意：本工具不解析已有 bin 的像素/.test(src),
+     "状态栏不再说『本工具不解析已有 bin 的像素』（它现在是假的）");
+  ok(/不是\*\*本工具认的\*\* image\.bin|不是.{0,4}本工具认的.{0,4}image\.bin/.test(src),
+     "读不懂的字节仍然给一句准确的话（『这不是本工具认的 image.bin』）");
+  // ⑥ ★★ 往返判据的**实现**：导入来的项带着原始设备字节 ⇒ buildPayload 直接透传
+  ok(/if \(item\.packed/.test(src), "buildPayload() 对导入项走 item.packed 透传（带收口判据）");
+  ok(/nameRaw: item\.nameRaw/.test(src), "透传时连**名字的原始字节**一起带上");
+  ok(/packed: raw,/.test(src) && /nameRaw: nameRaw,/.test(src),
+     "restoreImagesFromInfo() 把原始像素与原始名字字节都挂在项上");
+  // ⑦ ★★ 透传要**收口**：改过就不许再透传（否则"改了没反应"）。
+  ok(/function packedUnchanged\(item\)/.test(src),
+     "有 packedUnchanged()（唯一那处判据，不在四个控件里各加一句）");
+  ok(/item\.packed && item\.packedMeta && packedUnchanged\(item\)/.test(src),
+     "buildPayload() 只在『没改过』时才透传");
+  ok(/packedMeta:\s*\{/.test(src), "导入时把快照（w/h/cf/role/stridePad/fit/trim）挂在项上");
+  ok(/m\.fit === item\.fit && m\.trim === !!item\.trim/.test(src),
+     "快照连缩放方式与裁透明边一起比（改了就回渲染路径）");
 }
 
 section("⑨ 3 个预设写进**现有主题状态**（当前默认 / 夜间 / 浅底）");
@@ -817,21 +850,22 @@ section("⑬ 打包产物指纹（.golden-hashes.json）—— R2/R3 之后**主
   }
 }
 
-section("⑭ 图片那一半的字节布局定义者：一个字都没动");
+section("⑭ 图片那一半：**字节布局**一个字没动（谁动过 + 布局本身，两条一起钉）");
 {
-  // ★★ 2026-10-15 晚（R2/R3）**改了这条守卫的口径**（旧口径见下面那段注释）：
-  //   上一单的红线是"不动任何产物格式"，所以旧版把 `theme-json.js`、`lib/`、`src/`
-  //   一起列进"不许出现在 git 改动里"。本单**有意**扩了主题格式（两个颜色键 +
-  //   一个底板深浅键）⇒ 那三处**本来就该改**，再用旧口径就会把"做对了"判成红。
-  //   现在它只钉**图片那一半**（车主的红线原话：`asset-package-core.js` /
-  //   `image-blob-build.js` / `asset-spec.js` / `face-stages.js` 一行都不许动）。
-  //   ★ 主题那一半的证据在 ⑬：三个 sha 逐条点名（变没变、为什么变都写在那儿），
-  //     比"git status 里有没有这个文件名"结实。
+  // ★★ 2026-10-15 晚（车主："打开安装包…之后没有看见图片载入"）**口径再改一次**：
+  //    `image-blob-build.js` 这一单**有意**动了 —— 名字字段从"码点低 8 位"改成
+  //    **UTF-8**（中文名不再变乱码），并支持 `nameRaw` 原样回写（那是"导入 → 再导出
+  //    逐字节相同"的前提）。⇒ 再按老口径"这个文件不许出现在 git 改动里"就会把
+  //    **做对了**判成红。所以这一节现在钉两件事：
+  //      ① **谁动过**：asset-package-core / face-stages / theme.json 必须干净；
+  //      ② **布局本身**：常量与项内偏移逐条对账 —— 这才是"格式没变"的真判据
+  //         （C 侧另有 offsetof/sizeof 断言，JS 侧有 test-image-blob-build.js，
+  //           这里再按"格式定义"重列一遍，谁改坏了当场红）。
+  //    ★ 主题那一半的证据在 ⑬（三个 sha 逐条点名，含 imageBin 不变）。
   const { execFileSync } = require("child_process");
   let changed = null;
   try {
     changed = execFileSync("git", ["status", "--porcelain", "--",
-      "tools/theme-editor/image-blob-build.js",
       "tools/theme-editor/asset-package-core.js",
       "tools/theme-editor/face-stages.js",
       "tools/theme-editor/theme.json"], { cwd: REPO, encoding: "utf8" });
@@ -840,7 +874,29 @@ section("⑭ 图片那一半的字节布局定义者：一个字都没动");
     console.log("  - 不是 git 仓库（或 git 不可用），这条跳过");
   } else {
     eq(changed.trim(), "",
-       "图片的字节布局定义者（image-blob-build / asset-package-core / face-stages）没改动");
+       "容器内核与表情表（asset-package-core / face-stages）没改动");
+  }
+  // ② image.bin 的**布局**（image-blob-build.js ↔ lib/themetool/image_blob.h）：
+  //    常量 + 项内偏移，一个都不许动。
+  {
+    const IB = require(path.join(dir, "image-blob-build.js"));
+    const hBlob = fs.readFileSync(path.join(REPO, "lib", "themetool", "image_blob.h"), "utf8");
+    eq(IB.MAGIC, 0x44363032, "魔数 '206D'（与 image_blob.h 同值）");
+    eq(IB.VERSION, 1, "版本号 1");
+    eq(IB.NAME_MAX, 24, "name[24]");
+    eq(IB.MAX_COUNT, 32, "最多 32 项");
+    eq(IB.ENTRY_SIZE, 44, "项大小 44（没有对齐空洞）");
+    eq(IB.HEADER_SIZE, 12 + 32 * 44, "包头 1420 = 12 + 32×44");
+    ok(/kImageBlobVersion\s*=\s*1\b/.test(hBlob), "C 侧版本号仍是 1（两边一起钉）");
+    // 项内偏移：名字在 +18（24 字节），顺序与前 18 字节一个字节没变
+    const src2 = fs.readFileSync(path.join(dir, "image-blob-build.js"), "utf8");
+    for (const [off, what] of [["base + 0", "offset u32"], ["base + 4", "size u32"],
+                               ["base + 8", "w u16"], ["base + 10", "h u16"],
+                               ["base + 12", "cf u8"], ["base + 13", "stride_pad u8"],
+                               ["base + 14", "role u16"], ["base + 16", "order u16"],
+                               ["base + 18", "name[24]"]]) {
+      ok(src2.indexOf(off) >= 0, "项内还有 " + what + "（" + off + "）");
+    }
   }
   // ★ 主题格式那一半：这一单**必须**动过（那几个键 + 解析 + 取用都在）
   //   —— 判据用**源码内容**而不是 git 状态：提交之后 git 状态就干净了，

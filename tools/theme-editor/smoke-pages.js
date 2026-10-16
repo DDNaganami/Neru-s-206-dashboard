@@ -252,9 +252,14 @@ function seedStaticIds(doc, html) {
 }
 
 // ------------------------------------------------------------
-// ★★ 2026-10-15（车主："光有导出，没有导入 bin 啊？"）：造一个**极小**的 assets.bin
-//    夹具来喂"打开安装包…"那条路 —— **内联在这里，不往仓库里塞二进制**。
-//    内容：一份只有 bg_color / readout.rpm_color 的主题 + 一张 8×8 的背景图。
+// ★★ 2026-10-15（车主："光有导出，没有导入 bin 啊？" / "没有看见图片载入"）：
+//    造一个**极小**的 assets.bin 夹具来喂"打开安装包…"那条路 ——
+//    **内联在这里，不往仓库里塞二进制**。
+//    内容（两条项，两条编码路都覆盖）：
+//      · 背景 8×8 / RGB565（不透明路）
+//      · 一方表情 4×4 / RGB565A8（带 alpha 路），名字故意用**老包那种截断字节**
+//        （不是合法 UTF-8 —— 真实文件里的中文名就是这样，见 image-blob-build.js
+//         的 nameToBytes）⇒ 往返要逐字节相同就必须把原始名字字节写回去。
 //    ★ 布局**问页面自己**（`coreForTarget()`）：目标板是页面选的，
 //      在测试里另抄一份常量会变成"页面换了默认板 ⇒ 夹具被当成不是容器"。
 // ------------------------------------------------------------
@@ -262,16 +267,48 @@ function buildTinyContainer(sandbox) {
   const layout = sandbox.coreForTarget();
   const themeBytes = new TextEncoder().encode(JSON.stringify(
     { theme: { bg_color: 0x123456, readout: { rpm_color: 0xAB12CD } } }, null, 2));
+
   const px = new Uint8Array(8 * 8 * 4);
   for (let i = 0; i < px.length; i += 4) {
     px[i] = 10; px[i + 1] = 20; px[i + 2] = 30; px[i + 3] = 255;   // 纯色 RGBA
   }
-  const img = IB.build([{ name: "bg", w: 8, h: 8, cf: IB.CF.RGB565,
-                          role: IB.ROLE.Background, order: 0,
-                          pixels: IB.rgbaToRgb565(px, 8, 8) }]).blob;
+  const face = new Uint8Array(4 * 4 * 4);
+  for (let i = 0; i < face.length; i += 4) {
+    face[i] = 200; face[i + 1] = 100; face[i + 2] = 50; face[i + 3] = (i / 4) % 2 ? 255 : 0;
+  }
+  const items = [
+    { name: "bg", w: 8, h: 8, cf: IB.CF.RGB565, role: IB.ROLE.Background, order: 0,
+      pixels: IB.rgbaToRgb565(px, 8, 8) },
+    { name: "l\u001fh-1-\uFFFD", w: 4, h: 4, cf: IB.CF.RGB565A8, role: IB.ROLE.FaceIdle,
+      order: 0, pixels: IB.rgbaToRgb565A8(face, 4, 4),
+      // ★ 老包里的名字字节：不是合法 UTF-8（0x6C 0x1F 0x68 …）——
+      //   nameRaw 走"原样写回"，往返才可能逐字节相同
+      nameRaw: [0x6C, 0x1F, 0x68, 0x2D, 0x31, 0x2D, 0xE6, 0x4F, 0x5F, 0x5F, 0x5F] }
+  ];
+  const img = IB.build(items).blob;
   const packed = APC.packBytes({ themeBytes: themeBytes, imageBytes: img, layout: layout,
                                  themeLabel: "fixture", imageLabel: "fixture" });
-  return { bytes: new Uint8Array(packed.bytes), layout: layout };
+  // ★ packBytes 返回的 `imageBytes` 是**长度**（不是字节）—— 夹具自己留着那份 blob
+  return { bytes: new Uint8Array(packed.bytes), layout: layout,
+           imageBytes: new Uint8Array(img),
+           info: APC.parseImageBlob(new Uint8Array(img), { label: "fixture" }) };
+}
+
+// ------------------------------------------------------------
+// 点「保存安装包」并把导出的字节接回来（桩里 Blob 留住 parts、URL 换成钩子）。
+//   ★ 用**真按钮**：这一条要覆盖的就是"车主会走的那条路"。
+// ------------------------------------------------------------
+function exportViaButton(r, doc) {
+  let captured = null;
+  const real = r.sandbox.URL.createObjectURL;
+  r.sandbox.URL.createObjectURL = function (b) { captured = b; return "blob:x"; };
+  try {
+    doc.getElementById("btn-owner-save").click();
+  } finally {
+    r.sandbox.URL.createObjectURL = real;
+  }
+  if (!captured || !captured._parts || !captured._parts.length) return null;
+  return Buffer.concat(captured._parts.map(p => Buffer.from(p)));
 }
 
 // ------------------------------------------------------------
@@ -302,7 +339,12 @@ function runPage(pageFile, opts) {
       self.naturalWidth = 0; self.naturalHeight = 0; self.width = 0; self.height = 0;
       Object.defineProperty(self, "src", { set: function () { /* 不加载 */ }, get: function () { return ""; } });
     },
-    Blob: function (parts) { this.size = (parts && parts[0] && parts[0].length) || 0; },
+    // ★★ 2026-10-15：Blob 桩留住 parts —— "保存安装包"导出的字节要能拿回来做
+    //    **逐字节比对**（这一单的核心判据就是"导出 → 导入 → 再导出相同"）。
+    Blob: function (parts) {
+      this._parts = parts || [];
+      this.size = (parts && parts[0] && parts[0].length) || 0;
+    },
     URL: { createObjectURL: function () { return "blob:x"; }, revokeObjectURL: function () {} },
     TextEncoder: TextEncoder, TextDecoder: TextDecoder,
     Uint8Array: Uint8Array, Uint8ClampedArray: Uint8ClampedArray,
@@ -704,7 +746,7 @@ const results = {};
       // 图片清单：**两处**显示同一个字符串（高级 + 车主模式）
       const ownInfo = doc.getElementById("owner-assets-info");
       const advInfo = doc.getElementById("assets-info");
-      ok(/共 1 张/.test(ownInfo.textContent),
+      ok(/共 2 张/.test(ownInfo.textContent),
          "车主模式里也显示了导入的图片清单（" + ownInfo.textContent.split("\n")[0] + "）");
       ok(ownInfo.style.display === "", "车主模式那份清单从隐藏变成可见");
       eq(ownInfo.textContent, advInfo.textContent,
@@ -713,9 +755,118 @@ const results = {};
          "预览跟着重画了（画布笔数 " + drawsBefore + " → " + ctxDraws + "）");
       ok(doc.getElementById("owner-slots").children.length === 11,
          "槽位清单刷新后仍是 11 格（背景 1 + 表情 10）");
+      // ★★ 槽位**真的被填上**了（车主报的正是"没有图片载入"）：
+      //   夹具那两条项一条是背景（第 1 格）、一条是左屏·怠速（第 2 格），
+      //   两格的「清除」都从"禁用"变成"可用" —— 这是"格子里真有图"的界面证据
+      //   （桩里没有真 canvas，缩略图像素判不了；像素判据在 check-*.js 那一批）。
+      const cells = doc.getElementById("owner-slots").children;
+      ok(cells[0].children[2].children[1].disabled === false,
+         "背景格被填上了（「清除」可用）");
+      ok(cells[1].children[2].children[1].disabled === false,
+         "左屏·怠速那一格也被填上了（「清除」可用）");
+      ok(cells[2].children[2].children[1].disabled === true,
+         "没在包里的格子照旧是空的（第 3 格「清除」仍禁用）");
       ok(/已读入/.test(doc.getElementById("status").textContent),
          "状态栏说明了读进来了什么：" +
          doc.getElementById("status").textContent.split("\n")[0]);
+      ok(/背景 1 \+ 表情 1/.test(doc.getElementById("status").textContent),
+         "状态栏给了可读摘要（背景 1 + 表情 1）");
+
+      // ★★★ 往返判据（本仓库的核心口径）：**导出 → 导入 → 再导出逐字节相同**。
+      //   走页面自己的打包入口 buildPayload()（不是在这里另拼一份 payload），
+      //   再喂给同一份 ImageBlob.build() —— 字节要**完全一样**。
+      //   这一条同时钉住两件事：像素透传（item.packed）与**名字原始字节回写**
+      //   （夹具里那条第 2 项的名字故意不是合法 UTF-8，重新编码就回不去）。
+      const rebuilt = IB.build(r.sandbox.buildPayload()).blob;
+      ok(Buffer.from(rebuilt).equals(Buffer.from(fx.imageBytes)),
+         "★ 往返：导入后再打包出的 image 段与夹具**逐字节相同**（" +
+         rebuilt.length + " vs " + fx.imageBytes.length + " 字节）");
+      // ★★ 更进一步：点**真的那个按钮**（「保存安装包」）拿回导出的字节 ——
+      //    桩里把 URL.createObjectURL 换成一个钩子，就能把 Blob 的 parts 接出来。
+      //    这一条同时覆盖"按钮那条路"与**整包**（theme 段走 themeSrcBytes 原始字节 +
+      //    image 段走 packed 透传）。
+      const saved = exportViaButton(r, doc);
+      ok(saved && saved.equals(Buffer.from(fx.bytes)),
+         "★★ 整包往返：点「保存安装包」导出的 assets.bin 与夹具**逐字节相同**" +
+         (saved ? "（" + saved.length + " vs " + fx.bytes.length + " 字节）" : "（没拿到字节）"));
+
+      // ★★ 透传的**收口判据**：改过就不能再透传（否则"改了没反应"）。
+      //   这里直接把页面那个纯函数拿出来喂几种"改法" —— 比在四个控件里各试一遍结实。
+      {
+        const meta = { w: 4, h: 4, cf: 0x14, role: 3, stridePad: 0, fit: "contain", trim: false };
+        const mk = (over) => Object.assign({
+          w: 4, h: 4, cf: 0x14, role: 3, stridePad: 0, fit: "contain", trim: false,
+          packedMeta: meta, packed: new Uint8Array(48)
+        }, over);
+        ok(r.sandbox.packedUnchanged(mk({})) === true,
+           "一个字没改 ⇒ 仍然按原字节透传（往返的前提）");
+        ok(r.sandbox.packedUnchanged(mk({ w: 5 })) === false,
+           "改了宽度 ⇒ 回渲染路径（不会拿老像素糊过去）");
+        ok(r.sandbox.packedUnchanged(mk({ fit: "cover" })) === false, "改了缩放方式 ⇒ 同上");
+        ok(r.sandbox.packedUnchanged(mk({ trim: true })) === false, "勾了「裁透明边」⇒ 同上");
+        ok(r.sandbox.packedUnchanged(mk({ role: 1 })) === false, "改了用途 ⇒ 同上");
+        ok(r.sandbox.packedUnchanged(mk({ order: 7 })) === true,
+           "只改顺序 ⇒ 仍然透传（顺序照实写进文件，不影响像素）");
+        ok(Object.assign(mk({ w: 5 }), {}).packed !== undefined, "（透传字节本身还在项上）");
+      }
+      const rePack = APC.packBytes({ themeBytes: new TextEncoder().encode(
+                                       JSON.stringify({ theme: r.sandbox.T }, null, 2)),
+                                     imageBytes: rebuilt, layout: fx.layout,
+                                     themeLabel: "again", imageLabel: "again" });
+      const tail = Buffer.from(rePack.bytes).subarray(fx.layout.imageOffset,
+                                                      fx.layout.imageOffset + fx.imageBytes.length);
+      ok(tail.equals(Buffer.from(fx.imageBytes)),
+         "★ 整包里那一段 image 也逐字节相同（走 packBytes 那条真路径）");
+
+      // ★★★ 可选：拿**车主那份真文件**再跑一遍（`REAL_PKG=<路径>` 时才跑）。
+      //   为什么做成可选：那个 bin 在仓库外（2.4MB），不能进仓库；但"导入 → 再导出
+      //   逐字节相同"这条判据值得在**真数据**上复现一次 —— 车主导入自己的包
+      //   就是这个场景（11 项：背景 1 + 表情 10，名字还是老的截断字节）。
+      const realPkg = process.env.REAL_PKG;
+      if (realPkg && fs.existsSync(realPkg)) {
+        const rb = new Uint8Array(fs.readFileSync(realPkg));
+        const rLayout = r.sandbox.coreForTarget();
+        const rInfo = APC.parseImageBlob(
+          rb.subarray(rLayout.imageOffset), { label: "真文件" });
+        const rImage = rb.subarray(rLayout.imageOffset,
+                                   rLayout.imageOffset + rInfo.totalBytes);
+        fi.files = [{ name: "real-assets.bin", _buffer: rb.buffer.slice(
+                        rb.byteOffset, rb.byteOffset + rb.byteLength) }];
+        fi.dispatch("change", { target: fi });
+        // ★ items 是页面里的 `let`（词法绑定，拿不到）⇒ 用**打包入口**数项数：
+        //   buildPayload() 一项一条，它就是"当前图片列表"的快照。
+        eq(r.sandbox.buildPayload().length, rInfo.count,
+           "★ 真文件（" + realPkg.split(/[\\/]/).pop() + "）：导入后图片列表项数 = 包里的项数 " +
+           rInfo.count);
+        const cellsR = doc.getElementById("owner-slots").children;
+        eq(cellsR.filter(c => c.children[2].children[1].disabled === false).length, 11,
+           "★ 真文件导入后**11 格全部被填上**（车主看到的『没有图片载入』就是这里原本是空的）");
+        const rebuiltR = IB.build(r.sandbox.buildPayload()).blob;
+        ok(Buffer.from(rebuiltR).equals(Buffer.from(rImage)),
+           "★★ 真文件往返：导入后再打包出的 image 段与原件**逐字节相同**（" +
+           rebuiltR.length + " vs " + rImage.length + " 字节）");
+        const savedR = exportViaButton(r, doc);
+        ok(savedR && savedR.equals(Buffer.from(rb)),
+           "★★ 真文件整包往返：点「保存安装包」导出的 assets.bin 与车主那份文件**逐字节相同**" +
+           (savedR ? "（" + savedR.length + " vs " + rb.length + " 字节）" : "（没拿到字节）"));
+        console.log("  · 真文件往返已跑：" + rInfo.count + " 张，" +
+                    rebuiltR.length + " 字节，逐字节相同 ✓" +
+                    (savedR && savedR.equals(Buffer.from(rb)) ? "（整包也相同 ✓）" : "（整包不同 ✗）"));
+      } else {
+        console.log("  · （未设 REAL_PKG ⇒ 真文件那一条跳过；夹具那条已经跑了）");
+      }
+
+      // ★ 复原成"没有图片"：后面几条交互（点导出 ⇒ 应当说"还没有图片"）的前提就是
+      //   空的图片列表 —— 这里把**每一格**的「清除」都点一遍（走车主真会走的那条路：
+      //   桩里每格的结构是「名称 / 缩略图 / 按钮列」，按钮列第 2 个 = 清除）。
+      const cells2 = doc.getElementById("owner-slots").children;
+      eq(cells2[0].children.length, 3, "槽位格三件事（名称 / 缩略图 / 按钮列）");
+      for (const c of cells2) {
+        const btn = c.children[2].children[1];
+        if (btn.disabled === false) btn.click();
+      }
+      ok(cells2.every(c => c.children[2].children[1].disabled === true),
+         "每一格都清掉之后回到『空』（后续交互的前提恢复了）");
     }
 
     // ---- 交互 7：**每一个静态按钮都被接上了**（不是停留在 HTML 里没人管）----
