@@ -123,6 +123,46 @@ powershell -ExecutionPolicy Bypass -File tools\app\build-exe.ps1 -OneFile
 `check-port-roles.py`（喂今天真机那份 `pio device list` 文本 + 构造的 netsh 文本，
 **不打开任何串口**；其中一条就是"连着家里路由器读 /status 时不许把路由器的 MAC 记成板子的角色"）。
 
+### 「点了没反应」那一课：界面是哪一份、有没有缓存、要不要重启（2026-10-16）
+
+车主实测："点了 写进板子 按钮好像没反应。" 查下来是三件事叠在一起，现在都钉住了：
+
+1. **写入按钮放到了车主正在看的那一屏**：「表盘」屏编辑器框上面就是
+   「写进这块板（配色+图片，不存文件）」/「写进两块板（不存文件）」——
+   不用先去编辑器里「保存安装包」（那是留快照），也不用跑去「工具」屏。
+   点下去**立刻**有反馈：按钮自己变成「正在写 COMx…」、旁边那个小牌子跟着变；
+   每种失败都说清为什么（还没放图片 / 没认出串口 / 端口被占用 / 版本不对…），
+   **绝不"点了什么都不说"**。
+2. **界面只从一处发，不许混搭**：`server.py` 的 `pages_source()` 一处决定
+   —— 仓库里 `tools/app` 与 `tools/theme-editor` **都在** ⇒ 整份用**仓库**；
+   否则整份用 **exe 包内**。以前是"每个文件各自兜底"，会出现"外壳是新的、编辑器是旧的"
+   这类混搭（症状正是"按钮在、点了没反应"）。
+   **哪一份**从 `/api/health` 的 `pages_from` / `pages_dir` / `app_js.sha8` /
+   `editor_html.sha8` 如实报出来，页面右上角也显示一行：
+   `界面：仓库（app.js 1a2b3c4d · 编辑器 5e6f7a8b · 2026-10-16 18:47）`。
+3. **版本自检**：外壳在编辑器框载入时（以及每次要写之前）校验它需要的函数
+   （`exportAssetsBin` / `download`）**在不在**；缺就当场喊
+   「编辑器页面版本过旧：缺 XXX —— 右下角「退出应用」之后重新双击那个 exe
+   （或按 Ctrl+F5）」，并且**不发** `/api/flash`（不拿旧页面瞎写）。
+4. **所有静态响应一律 `no-cache`**（`Handler.end_headers()` 里统一加一处
+   `Cache-Control: no-store, no-cache, must-revalidate`）：本地工具页每次都从磁盘读，
+   不再出现"改了代码、重启了客户端，页面上还是旧的、非得 Ctrl+F5"。
+5. ★ **换过 exe / 更新过代码之后**：右下角「退出应用」把旧进程关掉，**再重新双击**
+   那个 exe —— 让旧进程继续跑，看到的就还是旧的那一份。
+
+判据（**真浏览器真点击**，不是静态字符串）：
+
+```powershell
+<真 python> tools\app\check-click-flash.py            # 起 server.py + headless Chrome
+<真 python> tools\app\check-click-flash.py --exe tools\app\dist\206Dash-Workbench.exe
+```
+
+它点那颗按钮、一路跟到 `/api/flash`，查：点下去 0.25 秒内有没有可见变化、
+请求体是不是 `{port, kind:"assets", path}`（**没有偏移字段**）、
+没图片时是不是说清了原因、版本旧时是不是当场喊、下载目录里有没有多出 `.bin`。
+★ `/api/flash` **在页面里被拦掉**（fetch 换成假的，只记账）⇒ **绝不碰板子**；
+服务端日志里也不许出现 `POST /api/flash`（这一条也查）。本机没 Chrome 时它会说一声跳过。
+
 ## 为什么是"本地服务 + 网页应用"，而不是 Electron / 安装包
 
 - **零安装**：只用 Python 标准库 + 一个浏览器。Electron/Tauri 要 Node/Rust 工具链
@@ -182,14 +222,25 @@ iframe 的 `src` 文件真实存在、`data-go` 指向存在的屏、用到的 `
 - **刷之前不用保存、不产生下载**（15 条）：两颗写入按钮都走 `buildAssetsInMemory()`
   （现场用编辑器当前状态打容器）；外壳里没有 `createObjectURL`、没有 `<a download>`、
   不调编辑器的「保存安装包」、也不自己打容器（`AssetPackageCore.packBytes` 一次都没调）；
-  构建失败以「构建失败：」开头；原来那条"刷手上这个文件"的路仍在（收进折叠区）。
+  构建失败以「构建失败：」开头；原来那条"刷手上这个文件"的路仍在（收进折叠区）；
+- **「点了没反应」那一课**（14 条）：表盘屏上就有那两颗写入按钮（与工具屏同一份实现
+  `doWrite`）；点下去按钮自己变「正在写…」；编辑器页缺函数 ⇒ 喊「版本过旧」+ 怎么更新；
+  外壳与编辑器**同一个来源**（`pages_source()` 一处决定）；**所有静态响应 no-cache**；
+  页面上有"界面：仓库/exe 包内（sha · 时间）"那一行 + "换过 exe 要完全退出再启动"的提示。
 
-偏移本身的正确性由 Python 那条判据跑（**不碰串口**），**不产生下载**由 Node 那条跑：
+判据一共四条（都**不碰板子**）：
 
 ```powershell
-<真 python> tools\app\check-flash-offset.py     # 把 server.run() 换成假的再看命令
-<真 python> tools\app\check-port-roles.py       # 角色怎么认的、未知为什么不猜
+node        tools\app\check-app.js              # 静态闸门（含上面那些断言）
 node        tools\app\check-live-flash.js       # 假编辑器 window：真 download() 一次都没被调到
+<真 python> tools\app\check-flash-offset.py     # 把 server.run() 换成假的再看命令（偏移）
+<真 python> tools\app\check-port-roles.py       # 角色怎么认的、未知为什么不猜
+<真 python> tools\app\check-click-flash.py      # ★ 真浏览器**真点**那颗按钮，一路跟到 /api/flash
+```
+
+```powershell
+# 也可以拿打包好的 exe 当被测服务（同一条判据）
+<真 python> tools\app\check-click-flash.py --exe tools\app\dist\206Dash-Workbench.exe
 ```
 
 > 改版前它断言"页签 ≥ 6 个""两个编辑器页各一个 iframe"。七页签收成三屏、两页合并成

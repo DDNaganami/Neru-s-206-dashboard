@@ -24,6 +24,7 @@ server.py -- 206Dash 开发台的本地服务（**只用标准库**，不装任�
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -41,13 +42,13 @@ from urllib.parse import urlparse, parse_qs
 # ---------------------------------------------------------------------------
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 # ★ 打包成 exe 之后（`sys.frozen`）`__file__` 指向解包出来的临时目录，
-#   所以"应用自己的三个文件"要分两种情况找：
+#   所以"界面自己的文件"要分两种情况找：
 #     · 开发态：就在 APP_DIR 里；
 #     · exe 态：PyInstaller 用 --add-data 把它们放在 sys._MEIPASS 下的 tools/app。
+#   ★ 具体取哪一份由 pages_source() 一处决定（整份用仓库、或整份用包内，不许混搭），
+#     见下面那一段的注释；"我发的是哪一份"从 /api/health 的 pages_* 字段看。
 FROZEN = getattr(sys, "frozen", False)
 BUNDLE_DIR = getattr(sys, "_MEIPASS", APP_DIR)
-APP_FILES_DIR = (os.path.join(BUNDLE_DIR, "tools", "app")
-                 if os.path.isdir(os.path.join(BUNDLE_DIR, "tools", "app")) else APP_DIR)
 
 
 def find_repo(explicit=None):
@@ -157,19 +158,63 @@ def repo_missing_out(what):
             % (repo_need(), what))
 
 
-def editor_dirs():
-    """编辑器那几个静态文件去哪找：**仓库优先，包内兜底**。
+# ---------------------------------------------------------------------------
+# 界面（外壳 + 编辑器）从**哪一份**发 —— 只认一个来源，不许混搭
+#
+# ★ 2026-10-16（车主实测："点了 写进板子 好像没反应"）：
+#   外壳与编辑器**必须是同一份、同一个版本**。以前是"每个文件各自兜底"（这一个文件从
+#   仓库、那一个从包内），于是出现"外壳是新的、编辑器是旧的"这类**混搭** ——
+#   表现就是"按钮在、点了没反应"，最难查。现在先定**整份**的来源：
+#     ① 仓库里 `tools/app` 与 `tools/theme-editor` **都在** ⇒ 整份用**仓库**（开发/更新时就是它）；
+#     ② 否则（仓库不在、或它缺这两个目录）⇒ 整份用**包内**（exe 自带的 --add-data 那一份）。
+#   哪一份、目录、app.js/编辑器页的 sha 前 8 位与改动时间，都从 /api/health 如实报出来，
+#   页面上也显示一行 ⇒ "我看到的到底是哪一份"不用猜。
+# ---------------------------------------------------------------------------
+def sha8(path):
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()[:8]
+    except Exception:
+        return ""
 
-    ★ 打包成 exe（--add-data 把 tools/theme-editor 打进去了）之后，没有仓库时也能
-      从 sys._MEIPASS 那一份服务 ⇒ **离了仓库仍然能改色、框选、导出 assets.bin**。
-    ★ 顺序是有意的：仓库里那一份**优先**（有人正在改编辑器时，看到的是他改的那份）。
+
+def mtime_text(path):
+    try:
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(path)))
+    except Exception:
+        return ""
+
+
+def pages_source():
+    """(来源, 目录)：`repo` 或 `exe`。判据就是那两个目录**都在**（见上面那段注释）。"""
+    repo_app = os.path.join(REPO, "tools", "app")
+    repo_ed = os.path.join(REPO, "tools", "theme-editor")
+    if os.path.isdir(repo_app) and os.path.isdir(repo_ed):
+        return "repo", REPO
+    return "exe", BUNDLE_DIR
+
+
+def pages_info():
+    """给 /api/health 与页面看的一小份"我发的是哪一份"自检。"""
+    src, base = pages_source()
+    app_js = os.path.join(base, "tools", "app", "app.js")
+    ed_html = os.path.join(base, "tools", "theme-editor", "index.html")
+    return {"pages_from": src, "pages_dir": base,
+            "app_js": {"sha8": sha8(app_js), "mtime": mtime_text(app_js)},
+            "editor_html": {"sha8": sha8(ed_html), "mtime": mtime_text(ed_html)}}
+
+
+def app_files_dir():
+    """外壳那 4 个文件从哪找（与编辑器同一个来源 —— 不许混搭）。"""
+    return os.path.join(pages_source()[1], "tools", "app")
+
+
+def editor_dirs():
+    """编辑器那几个静态文件从哪找（与外壳同一个来源 —— 不许混搭）。
+
+    ★ 仍然返回一个列表（保持原来的调用形状），但正常情况下只有**一项**。
     """
-    out = []
-    for d in (os.path.join(REPO, "tools", "theme-editor"),
-              os.path.join(BUNDLE_DIR, "tools", "theme-editor")):
-        if os.path.isdir(d) and os.path.abspath(d) not in [os.path.abspath(x) for x in out]:
-            out.append(d)
-    return out
+    return [os.path.join(pages_source()[1], "tools", "theme-editor")]
 
 
 # ---------------------------------------------------------------------------
@@ -639,12 +684,27 @@ class Handler(SimpleHTTPRequestHandler):
         super().__init__(*a, directory=REPO, **kw)
 
     # -- 工具 ---------------------------------------------------------------
+    def end_headers(self):
+        """★ 本地工具页**一律不许缓存**（在一个地方统一加，别在每个 send_header 里抄）。
+
+        车主 2026-10-16 那一课：编辑器页以前是 SimpleHTTPRequestHandler 直接发的
+        （带 Last-Modified、**没有** Cache-Control）⇒ 浏览器启发式缓存 ⇒
+        "改了代码、重启了客户端，页面上还是旧的"，只有 Ctrl+F5 才更新 ✗。
+        这里是本地工具，每次都从磁盘读，正确性比省那几毫秒重要得多。
+        """
+        try:
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+        except Exception:
+            pass
+        super().end_headers()
+
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -653,29 +713,33 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
 
     def _serve_app_file(self, name):
-        """应用自己的文件（index.html / app.css / app.js / check-app.js）：
-        先看仓库，再看 exe 内嵌的那一份 —— 这样**没有仓库也能打开界面**。"""
-        for d in (os.path.join(REPO, "tools", "app"), APP_FILES_DIR):
-            p = os.path.join(d, name)
-            if os.path.isfile(p):
-                ct = {"html": "text/html; charset=utf-8",
-                      "js": "application/javascript; charset=utf-8",
-                      "css": "text/css; charset=utf-8"}.get(name.rsplit(".", 1)[-1], "application/octet-stream")
-                return self._send_file(p, ct)
-        return self._json({"ok": False, "error": "app file not found: %s" % name}, 404)
+        """外壳自己的文件（index.html / app.css / app.js / README.md）。
+
+        ★ 来源与编辑器**同一个**（见 pages_source()）：整份用仓库，或整份用包内 ——
+          不许"外壳新、编辑器旧"这种混搭（那是"点了没反应"的温床）。
+        """
+        p = os.path.join(app_files_dir(), name)
+        if os.path.isfile(p):
+            ct = {"html": "text/html; charset=utf-8",
+                  "js": "application/javascript; charset=utf-8",
+                  "css": "text/css; charset=utf-8"}.get(name.rsplit(".", 1)[-1], "application/octet-stream")
+            return self._send_file(p, ct)
+        src, base = pages_source()
+        return self._json({"ok": False,
+                           "error": ("找不到界面文件 %s；来源=%s（%s）\n"
+                                     "★ 用 build-exe.ps1 重打一次（它带 --add-data），"
+                                     "或者确认仓库里 tools/app 是齐的。" % (name, src, base))}, 404)
 
     def _serve_theme_file(self, name):
-        """编辑器页面（配色 + 图片）那几个静态文件：**仓库优先，包内兜底**。
+        """编辑器页面（配色 + 图片）那几个静态文件 —— 来源与外壳**同一个**（不许混搭）。
 
         ★ 为什么不能只让 SimpleHTTPRequestHandler 从 REPO 服务：打包成 exe 之后
           （尤其在没有仓库的机器上）那条路会 404 —— 而"离了仓库仍然能改色、框选、
-          导出 assets.bin"正是这一单要的。两份都找不到时**明说**找过哪些目录，
-          不做"悄悄 404"。
+          导出 assets.bin"是必须的。所以显式按 pages_source() 找，找不到就**明说**。
         """
         if name not in ALLOWED_EDITOR_FILES:
             return self._json({"ok": False, "error": "编辑器文件不在白名单里: %s" % name}, 404)
@@ -686,11 +750,12 @@ class Handler(SimpleHTTPRequestHandler):
                       "js": "application/javascript; charset=utf-8"}.get(
                           name.rsplit(".", 1)[-1], "application/octet-stream")
                 return self._send_file(p, ct)
+        src, base = pages_source()
         dirs = " ； ".join(editor_dirs()) or "（一个都没有）"
         return self._json({"ok": False,
-                           "error": ("找不到编辑器文件 %s；找过：%s\n"
-                                     "★ 仓库里那份不在，包内那份也没打进去 ⇒ "
-                                     "用 build-exe.ps1 重打一次（它带 --add-data）。" % (name, dirs))},
+                           "error": ("找不到编辑器文件 %s；来源=%s（找过：%s）\n"
+                                     "★ 用 build-exe.ps1 重打一次（它带 --add-data），"
+                                     "或者确认仓库里 tools/theme-editor 是齐的。" % (name, src, dirs))},
                           404)
 
     def _body(self):
@@ -722,13 +787,17 @@ class Handler(SimpleHTTPRequestHandler):
             #   exe 在没有仓库时照样能开界面（应用文件与编辑器都是内嵌的），但
             #   "构建固件 / 跑预览"要用仓库里的工程 —— 所以这两个字段要如实报，
             #   别让用户猜：repo_need = 缺的那个**具体路径**。
+            # ★ pages_* 是"**我发的是哪一份界面**"：来源（repo/exe）、目录、
+            #   app.js / 编辑器页的 sha 前 8 位与改动时间 —— 都在这儿，不用猜。
             repo_ok = repo_present()
-            return self._json({"ok": True, "repo": REPO, "repo_ok": repo_ok,
-                               "repo_need": repo_need(),
-                               "editor_from": (editor_dirs() or [""])[0],
-                               "frozen": FROZEN, "exe": sys.executable if FROZEN else "",
-                               "pio": pio_python(), "proxy": PROXY,
-                               "time": time.strftime("%H:%M:%S")})
+            info = {"ok": True, "repo": REPO, "repo_ok": repo_ok,
+                    "repo_need": repo_need(),
+                    "editor_from": (editor_dirs() or [""])[0],
+                    "frozen": FROZEN, "exe": sys.executable if FROZEN else "",
+                    "pio": pio_python(), "proxy": PROXY,
+                    "time": time.strftime("%H:%M:%S")}
+            info.update(pages_info())
+            return self._json(info)
         if u.path == "/api/board-status":
             st = board_status((q.get("host") or [""])[0])
             # ★ 顺手把"角色 ↔ MAC"学下来（既有能力，不新开一条路、不碰串口）：

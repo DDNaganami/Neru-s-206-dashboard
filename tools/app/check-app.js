@@ -197,11 +197,11 @@ say(!!bothCall && !/offset/.test(bothCall[0]), '那个请求体里同样没有�
 say(/for \(let i = 0; i < state\.boards\.length; i\+\+\)/.test(js),
     '两块是**依次**写（逐块 await），不是并发冲两个口');
 // 逐块报结果，失败不许被说成成功
-say(/逐块结果/.test(js) && /没写成/.test(js), '写完之后逐块摊开结果（成功/失败各自一行）');
+say(/'✓ ' : '✗ '/.test(js) && /没写成/.test(js), '写完之后逐块摊开结果（成功/失败各自一行）');
 say(/bad\.length/.test(js) && /单独重刷/.test(js),
     '有失败就点出来是哪块、并说明可以单独重刷（不假装成功）');
-say(/setStatus\(`有 \$\{bad\.length\} 块没写成/.test(js),
-    '状态栏在有失败时说的是"没写成"，不是"写完了"');
+say(/say\('有 ' \+ bad\.length \+ ' 块没写成/.test(js),
+    '有失败时说的是"没写成"，不是"写完了"');
 // 服务端那半边：角色怎么来的、未知怎么写、有没有多开一个刷写口子
 say(/角色未知/.test(srvSrc) && /不是本项目的板/.test(srvSrc),
     'server.py 里"认不出角色"与"不是本项目的板"都有明确说法（未知不猜）');
@@ -229,9 +229,14 @@ say(/保存 = 留一份快照/.test(html) && /写进板子 = 直接刷/.test(htm
 say((js.match(/buildAssetsInMemory\(\)/g) || []).length >= 3,
     '两颗按钮（这块板 / 两块板）都是现场用 buildAssetsInMemory() 打容器');
 // 两条路各查各的：主按钮**不看文件输入**（不要求先选文件/先保存）；刷文件那条仍然读文件
-const liveBody = /\$\('#b-flash'\)\.onclick[\s\S]*?\n  \};/.exec(js);
-say(!!liveBody && !/f-bin/.test(liveBody[0]) && /buildAssetsInMemory\(\)/.test(liveBody[0]),
+const liveBody = /\$\('#b-flash'\)\.onclick[\s\S]*?\)\);\n/.exec(js);
+say(!!liveBody && !/f-bin/.test(liveBody[0]) && /doWrite\(false/.test(liveBody[0]),
     '「写进这块板」这条路**不看文件输入**（不要求先选文件、也不要求先保存）');
+say(/async function doWrite\(/.test(js) && /if \(!checkEditorApi\(\)\) return;/.test(js),
+    '两条路都先过 doWrite：版本自检不过就当场喊，不往下走（绝不静默）');
+say(/async function writeOneBoard\(/.test(js) && /async function writeBothBoards\(/.test(js) &&
+    (js.match(/function buildAssetsInMemory\(/g) || []).length === 1,
+    '单块/两块共用同一份实现（buildAssetsInMemory 只有一份）');
 const fileBody = /\$\('#b-flash-file'\)\.onclick[\s\S]*?\n  \};/.exec(js);
 say(!!fileBody && /f-bin/.test(fileBody[0]),
     '「把这个文件写进上面选的那块板」那条路仍然读文件输入（能力不丢）');
@@ -250,6 +255,43 @@ say(/id="b-flash-file"/.test(html) && /id="f-kind"/.test(html),
     '原来那条"刷手上这个文件"的路**没删**（藏在折叠区里，能力不丢）');
 say(/<summary>想刷一份已经存下来的文件/.test(html),
     '它被收进「想刷一份已经存下来的文件」那个折叠区（默认看不见，但还在）');
+
+// ⑫ 「点了没反应」那一课（2026-10-16 车主实测）—— 五条一起钉住：
+//   ① 写入按钮**放到车主正在看的那一屏**（表盘屏，编辑器框上面）；
+//   ② 点下去**立刻**有反馈（按钮自己变「正在写…」+ 旁边牌子）；
+//   ③ 每种失败都说话（没图片/没串口/版本旧/端口占用），**没有静默 return**；
+//   ④ 界面来源（仓库 / exe 包内）+ 版本自检，**不许混搭**，缺函数就显眼报错；
+//   ⑤ 静态响应 no-cache（改了代码/重启客户端之后不该还看旧页面）。
+say(/id="b-dash-flash"[^>]*>写进这块板（配色\+图片，不存文件）/.test(html) &&
+    /id="b-dash-flash-both"[^>]*>写进两块板（不存文件）/.test(html),
+    '表盘屏（车主那一屏）上有那两颗写入按钮');
+say(/\$\('#b-dash-flash'\)\.onclick = \(\) => doWrite\(false/.test(js) &&
+    /\$\('#b-dash-flash-both'\)\.onclick = \(\) => doWrite\(true/.test(js),
+    '表盘屏那两颗与工具屏走**同一份实现**（doWrite），不是抄一份');
+say(/id="dash-flash-say"/.test(html) && /function dashSay\(/.test(js),
+    '按钮旁边有一个牌子（#dash-flash-say）：写没写成一眼看得见');
+say(/function btnBusy\(btn, text\)/.test(js) && /btnBusy\(btn, '正在写 ' \+ port \+ '…'\)/.test(js),
+    '★ 点下去按钮自己变成「正在写 COMx…」（最直白的"它动了"），完事还原');
+say(/绝不会有"点了没反应"|绝不会点了什么都不说/.test(html),
+    '页面上明说"绝不会点了什么都不说"（车主那一课）');
+say(/点下去应该看到/.test(html), '页面上写清"点完应该看到什么"（便于车主自己判断）');
+say(/退出应用/.test(html) && /重新双击/.test(html) && /别让旧进程继续跑/.test(html),
+    '页面上有"换过 exe 要完全退出再启动"的提示');
+say(/function checkEditorApi\(\)/.test(js) && /版本过旧/.test(js) && /Ctrl\+F5/.test(js),
+    '★ 编辑器页缺函数 ⇒ 显眼报错（版本过旧 + 怎么更新），不静默');
+say(/addEventListener\('load', \(\) => checkEditorApi\(\)\)/.test(js) &&
+    /checkEditorApi\(\)\)/.test(js) && /if \(!checkEditorApi\(\)\) return;/.test(js),
+    '版本自检接在"编辑器框载入"上，并且**写入之前**先过它');
+say(/id="p-pages"/.test(html) && /state\.pagesFrom = h\.pages_from/.test(js) &&
+    /pages_from/.test(srvSrc) && /app_js/.test(srvSrc) && /editor_html/.test(srvSrc),
+    '页面上有一行「界面：仓库/exe 包内（app.js sha · 编辑器 sha · 时间）」；服务端如实报');
+say(/def pages_source\(\)/.test(srvSrc) && /def app_files_dir\(\)/.test(srvSrc) &&
+    /p = os\.path\.join\(app_files_dir\(\), name\)/.test(srvSrc) &&
+    /return \[os\.path\.join\(pages_source\(\)\[1\], "tools", "theme-editor"\)\]/.test(srvSrc),
+    '★ 外壳与编辑器**同一个来源**（pages_source 一处决定）—— 不许"外壳新、编辑器旧"混搭');
+say(/def end_headers\(self\)/.test(srvSrc) && /no-store, no-cache, must-revalidate/.test(srvSrc) &&
+    (srvSrc.match(/send_header\("Cache-Control"/g) || []).length === 1,
+    '★ 所有静态响应都 no-cache（在 end_headers 里统一加一处）⇒ 重启/刷新就能拿到新版');
 
 console.log(bad === 0 ? '\n全部通过。' : `\n${bad} 项没通过。`);
 process.exit(bad === 0 ? 0 : 1);

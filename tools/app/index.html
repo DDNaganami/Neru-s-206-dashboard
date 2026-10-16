@@ -14,6 +14,9 @@
   <span class="pill" id="p-board">板子：未连接</span>
   <span class="sp"></span>
   <span class="dim" id="p-repo"></span>
+  <!-- ★ 「我看到的界面是哪一份」：来源（仓库/包内）+ app.js 与编辑器页的 sha 前 8 位 + 改动时间。
+       车主那一课（"点了没反应"）就是分不清"我这份是不是新的" ⇒ 把这一行显出来，别猜。 -->
+  <span class="dim" id="p-pages" title="界面来源：仓库里那一份，还是 exe 包内那一份"></span>
 </header>
 
 <!-- 三个屏：① 刷固件 ② 表盘 ③ 工具 —— 顶栏由 app.js 里那张 SCREENS 表生成 -->
@@ -166,6 +169,24 @@
         <button class="btn ghost" id="b-theme-open">在新窗口打开（配色）</button>
         <button class="btn ghost" id="b-image-open">在新窗口打开（图片）</button>
       </div>
+      <!-- ★★ 2026-10-16（车主："点了 写进板子 好像没反应"）：把「用当前状态直接刷」放到
+           **他正在看的这一屏**（就在编辑器框上面），不用先去编辑器里「保存安装包」、
+           也不用跑去「工具」屏。编辑器里那块面板是另一条路（它要你先保存一份文件），
+           面板里的按钮归编辑器那个页面管；这一屏这两颗**不看文件、不产生下载**。
+           反馈就在按钮右边那个小牌子（#dash-flash-say），按钮自己也会变成「正在写…」。 -->
+      <div class="row" id="dash-flash">
+        <button class="btn primary" id="b-dash-flash">写进这块板（配色+图片，不存文件）</button>
+        <button class="btn primary" id="b-dash-flash-both">写进两块板（不存文件）</button>
+        <span class="pill" id="dash-flash-say">还没写</span>
+        <span class="sp"></span>
+        <button class="btn ghost" id="b-dash-ports">刷新串口</button>
+      </div>
+      <p class="dim" id="dash-flash-hint">点下去应该看到：按钮变成 <b>「正在写 COM8…」</b>（带那一块的角色），
+        右边牌子跟着变；写完是 <b>「写完了 ✓（偏移 0x210000）」</b>。
+        没写成会说清为什么（还没放图片 / 没认出串口 / 端口被别的程序占着…），
+        <b>绝不会点了什么都不说</b>。想留一份文件才去编辑器里点「保存安装包」——
+        <b>写进板子不产生文件</b>。换过 exe 或更新过代码之后，要右下角「退出应用」再重新双击，
+        别让旧进程继续跑。</p>
       <iframe class="frame" id="fr-theme" src="/tools/theme-editor/index.html#theme"></iframe>
     </div>
 

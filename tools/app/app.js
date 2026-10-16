@@ -39,7 +39,10 @@ const ENV_HUMAN = {
 };
 
 const state = { board: 'left', bins: [], upgrading: false, repoOk: null, repoNeed: '',
-                ports: [], boards: [], portsLoaded: false, flashing: false };
+                ports: [], boards: [], portsLoaded: false, flashing: false,
+                /* 界面是哪一份（来自 /api/health 的 pages_*）+ 版本自检用的小字段 */
+                pagesFrom: '', pagesDir: '', appSha: '', editorSha: '', editorMtime: '',
+                warnKind: '' };
 
 const $ = (s) => document.querySelector(s);
 const setStatus = (s) => { $('#f-status').textContent = s; };
@@ -143,6 +146,23 @@ async function initServer() {
     $('#p-srv').className = 'pill ' + (h.ok ? 'on' : 'off');
     $('#p-repo').textContent = h.repo + (h.frozen ? '  ·  exe: ' + h.exe : '');
     $('#p-repo').title = '本地服务只监听 127.0.0.1；只服务这个仓库目录（外加内嵌在程序里的编辑器那几个文件）';
+    /* ★ 「我看到的这一份界面是哪来的」：来源 = 仓库 / 包内（exe 自带）+ 两个文件的 sha 前 8 位
+       + 改动时间。判据在 server.py 的 pages_source()：仓库里 tools/app 与 tools/theme-editor
+       都在 ⇒ 整份用仓库；否则整份用包内（**不许混搭**）。这一行就是给车主看的"是不是新版"。 */
+    state.pagesFrom = h.pages_from || '';
+    state.pagesDir = h.pages_dir || '';
+    state.appSha = (h.app_js && h.app_js.sha8) || '';
+    state.editorSha = (h.editor_html && h.editor_html.sha8) || '';
+    state.editorMtime = (h.editor_html && h.editor_html.mtime) || '';
+    const pages = $('#p-pages');
+    if (pages) {
+      pages.textContent = '界面：' + (state.pagesFrom === 'repo' ? '仓库' : 'exe 包内') +
+        '（app.js ' + (state.appSha || '?') + ' · 编辑器 ' + (state.editorSha || '?') +
+        (state.editorMtime ? ' · ' + state.editorMtime : '') + '）';
+      pages.title = '界面来源：' + (state.pagesFrom || '?') + '（' + (state.pagesDir || '?') + '）\n' +
+        '仓库里 tools/app 与 tools/theme-editor 都在 ⇒ 整份用仓库；否则整份用 exe 包内那一份（不许混搭）。\n' +
+        '改了代码/换过 exe 之后：右下角「退出应用」，再重新双击那个 exe。';
+    }
     if (!h.repo_ok) {
       // ★ 明说**缺哪个路径**（不静默失败）：编辑器（配色 + 图片）已经打包在这个程序里，
       //   所以改配色、换图、写素材仍然能用；构建固件与预览要用仓库里的 PlatformIO 工程。
@@ -524,6 +544,29 @@ function initDash() {
      图片那颗带 #images（= 那个页面里的「② 图片」分区）。 */
   $('#b-theme-open').onclick = () => window.open(EDITOR_URL, '_blank');
   $('#b-image-open').onclick = () => window.open(EDITOR_URL + '#images', '_blank');
+  /* ★★ 「写进板子」就放在**车主正在看的这一屏**（编辑器框上面那一行）——
+     不用先去编辑器里「保存安装包」、也不用跑去「工具」屏。与工具屏那颗走同一份实现。
+     车主 2026-10-16："点了 写进板子 好像没反应" ⇒ 现在点下去**立刻**有反馈：
+     按钮变成「正在写 …」+ 右边牌子跟着变；每种失败都说清为什么。 */
+  const dashSink = (t, kind) => dashSay(t, kind);
+  $('#b-dash-flash').onclick = () => doWrite(false, dashSink, $('#b-dash-flash'), null);
+  $('#b-dash-flash-both').onclick = () => doWrite(true, dashSink, $('#b-dash-flash-both'), null);
+  $('#b-dash-ports').onclick = async () => {
+    dashSay('读串口…', 'busy');
+    try {
+      await refreshPorts();
+      dashSay(state.boards.length
+        ? '认出来的板：' + state.boards.map((b) => b.label).join(' · ')
+        : '没发现本项目的板（USB 线插好了吗？）', state.boards.length ? 'ok' : 'bad');
+    } catch (e) {
+      dashSay('读串口失败：' + e, 'bad');
+    }
+  };
+  /* 编辑器框载入 / 每次切到这一屏，都做一次**版本自检**：编辑器页缺函数就当场喊出来
+     （绝不让"点了没反应"发生）。 */
+  const fr = $('#fr-theme');
+  if (fr) fr.addEventListener('load', () => checkEditorApi());
+  setTimeout(() => checkEditorApi(), 2500);
   const runPreview = async () => {
     logTo('#preview-log', '跑一遍电脑上的预览…（约 40 秒，正常会自己停）\n', false);
     setStatus('预览运行中…');
@@ -633,6 +676,215 @@ function buildAssetsInMemory() {
   return { ok: true, blob: captured };
 }
 
+/* ============================================================================
+ * 「写进板子」那一整套 —— **表盘屏与工具屏共用这一份实现**（不写两遍）
+ *
+ * 车主 2026-10-16："点了 写进板子 按钮好像没反应" ⇒ 这一版起：
+ *   · 按钮在**他正在看的那一屏**（表盘屏，编辑器框上面）也有一份；
+ *   · 点下去**立刻**有反馈：按钮自己变成「正在写…」+ 旁边牌子跟着变；
+ *   · 每一步、每一种失败都说话（没图片 / 没串口 / 端口占用 / 版本不对…），
+ *     **绝不"点了什么都不说"**；
+ *   · 用编辑器**当前状态**在内存里打容器（不产生文件），落盘/刷写仍走现成的
+ *     /api/upload + /api/flash（kind=assets、偏移服务端白名单取 0x210000）。
+ * ==========================================================================*/
+
+/* 点下去先把按钮变成「正在写…」——最直白的"它动了"（原文字回来时还原） */
+function btnBusy(btn, text) {
+  if (!btn) return function () {};
+  const old = btn.textContent;
+  const wasDisabled = btn.disabled;
+  btn.disabled = true;
+  if (text) btn.textContent = text;
+  return function () { btn.textContent = old; btn.disabled = wasDisabled; };
+}
+
+/* 表盘屏那个牌子：成功/失败/进行中都要看得见（颜色也跟着变） */
+function dashSay(text, kind) {
+  const el = $('#dash-flash-say');
+  if (el) {
+    el.textContent = text;
+    el.className = 'pill' + (kind === 'ok' ? ' on' : (kind ? ' off' : ''));
+    el.title = text;
+  }
+  setStatus(text);
+  return text;
+}
+
+/* 要写哪一块（**表盘屏那颗用的默认值**）：
+   ① 「工具」屏选的**如果是本项目的板**，就用它；
+   ② 否则用第一块认出来的板；
+   ③ 一块都没认出来时，才用它选的那个（下面还会先说一句"看着不是本项目的板"）。
+   ★ 为什么不直接用它选的那个：`#f-port` 的下拉第一项往往是**主板板载口**（COM1 之类），
+     拿它当默认目标就是"点了一下、什么也没发生"（今天这一课的另一种形态）。 */
+function targetPort() {
+  const sel = $('#f-port');
+  const v = (sel && sel.value) || '';
+  const boards = state.boards || [];
+  if (v && boards.some((b) => b.port === v)) return v;
+  if (boards.length) return boards[0].port;
+  return v;
+}
+
+function isProjectPort(port) {
+  return (state.ports || []).some((p) => p.port === port && p.is_project_board);
+}
+
+function portLabelOf(port) {
+  const p = (state.ports || []).find((x) => x.port === port);
+  return p ? (p.label || port) : port;
+}
+
+/* 确保串口列过（第一次点的时候可能要等 `pio device list` 几秒 —— 有反馈，不是卡住） */
+async function ensurePorts() {
+  if (state.ports.length) return true;
+  await refreshPorts();
+  return state.ports.length > 0;
+}
+
+/* ★ 版本/来源自检：外壳启动时（以及每次要写之前）校验编辑器框里有没有它需要的函数。
+   缺 ⇒ **显眼报错**（表盘屏那条红 banner + 牌子），绝不"点了没反应"。
+   ★ 为什么会有"缺"：界面分两份发（仓库 / exe 包内）—— 一份新一份旧就会这样；
+     所以 pages_* 把"我发的是哪一份"也一起报出来（见 server.py 的 pages_source()）。 */
+function checkEditorApi() {
+  const need = ['exportAssetsBin', 'download'];
+  let w = null;
+  try { w = editorWindow(); } catch (e) { w = null; }
+  const missing = w ? need.filter((k) => typeof w[k] !== 'function') : need.slice();
+  const box = $('#dash-warn');
+  if (w && !missing.length) {
+    // 之前喊过"版本旧"，现在好了 ⇒ 把那条横幅收掉（但别把"找不到仓库"那条横幅收掉）
+    if (state.warnKind === 'editor' && box) {
+      box.className = 'banner';
+      box.innerHTML = '';
+      state.warnKind = '';
+    }
+    return true;
+  }
+  const src = '（界面来源：' + (state.pagesFrom === 'repo' ? '仓库' : 'exe 包内') +
+    ' · 编辑器 ' + (state.editorSha || '?') + (state.editorMtime ? ' · ' + state.editorMtime : '') + '）';
+  const msg = w
+    ? '编辑器页面版本过旧：缺 ' + missing.join(' / ') +
+      ' —— 右下角「退出应用」之后重新双击那个 exe（或者在页面里按 Ctrl+F5 强制刷新）。' + src
+    : '编辑器框还没载入（或外壳不是从这个客户端打开的）—— 先在「表盘」屏看它一眼；' + src;
+  if (box) { box.innerHTML = msg; box.className = 'banner on'; }
+  dashSay(msg, 'bad');
+  state.warnKind = 'editor';
+  console.error('[206Dash] editor api check failed:', msg);
+  return false;
+}
+
+/* 单块：内存里打容器 → /api/upload → /api/flash（返回 {ok, offset, out, why}） */
+async function writeOneBoard(port, say, btn, onOut) {
+  const restore = btnBusy(btn, '正在写 ' + port + '…');
+  say('正在写 ' + portLabelOf(port) + '…', 'busy');
+  try {
+    const built = buildAssetsInMemory();
+    if (!built.ok) { say(built.why, 'bad'); return { ok: false, why: built.why }; }
+    const up = await uploadBytes(built.blob, 'assets.bin');
+    if (!up || !up.ok) {
+      const why = '交给本地服务失败：' + JSON.stringify(up || {}) + '（客户端还在吗？）';
+      say(why, 'bad');
+      return { ok: false, why: why };
+    }
+    const r = await api('/api/flash', { port, kind: 'assets', path: up.path });
+    if (onOut) onOut((r && r.out) || '');
+    if (r && r.ok) {
+      say('写完了 ✓（' + portLabelOf(port) + ' · 偏移 ' + (r.offset || '0x210000') + '）', 'ok');
+    } else {
+      say('没写成 ✗ ' + portLabelOf(port) + '：' + ((r && r.out) || '（没有输出）').slice(-160), 'bad');
+    }
+    return { ok: !!(r && r.ok), offset: r && r.offset, out: (r && r.out) || '' };
+  } catch (e) {
+    say('写的时候出错：' + e + '（客户端还在吗？）', 'bad');
+    return { ok: false, why: String(e) };
+  } finally {
+    restore();
+  }
+}
+
+/* 两块：确认框先亮出"将要写这两块" → 逐块 await 调同一个 /api/flash → 逐块报结果 */
+async function writeBothBoards(say, btn, confirmIt, onOut) {
+  if (!state.boards.length) {
+    say('还没认出本项目的板 —— 插好 USB 线，点「刷新串口」再看一眼。', 'bad');
+    return [];
+  }
+  const list = state.boards.map((b, i) => `${i + 1}. ${b.label}`).join('\n');
+  const unknown = state.boards.filter((b) => !b.role).length;
+  const msg = '将要写这两块：\n' + list +
+    '\n\n用的是编辑器里当前的状态（在内存里打的容器，不产生文件）；' +
+    '写的是整套素材（配色 + 图片）；偏移固定 0x210000（不可改，由本地服务按分区表取）。' +
+    (unknown ? `\n\n★ 其中 ${unknown} 块的角色还没认出来（认不出就写「未知」，绝不猜）—— 照样会写，你确认一下插的就是这两块。` : '') +
+    '\n\n写的时候别拔线、别关这个窗口。开始？';
+  if (confirmIt && !confirm(msg)) { say('取消了（没有写任何东西）。', ''); return []; }
+  const built = buildAssetsInMemory();
+  if (!built.ok) { say(built.why, 'bad'); return []; }
+  const restore = btnBusy(btn, '正在写两块…');
+  let up;
+  try {
+    up = await uploadBytes(built.blob, 'assets.bin');
+  } catch (e) {
+    restore();
+    say('交给本地服务时出错：' + e, 'bad');
+    return [];
+  }
+  if (!up || !up.ok) {
+    restore();
+    say('交给本地服务失败：' + JSON.stringify(up || {}), 'bad');
+    return [];
+  }
+  const results = [];
+  for (let i = 0; i < state.boards.length; i++) {
+    const b = state.boards[i];
+    if (btn) btn.textContent = `正在写 ${b.port}（${i + 1}/${state.boards.length}）…`;
+    say(`正在写 ${b.label}（第 ${i + 1}/${state.boards.length} 块）…`, 'busy');
+    let r;
+    try {
+      r = await api('/api/flash', { port: b.port, kind: 'assets', path: up.path });
+    } catch (e) {
+      r = { ok: false, out: '写的时候出错：' + e };
+    }
+    results.push({ b: b, r: r });
+    if (onOut) onOut('—— ' + b.label + ' ——\n' + ((r && r.out) || '') + '\n');
+    say((r && r.ok ? '✓ ' : '✗ ') + b.port + '：' +
+      (r && r.ok ? '写完了（偏移 ' + (r.offset || '0x210000') + '）'
+                 : '没写成 —— ' + String((r && r.out) || '').split('\n').slice(-1)[0]), r && r.ok ? 'ok' : 'bad');
+  }
+  const bad = results.filter((x) => !x.r.ok);
+  restore();
+  if (!bad.length) {
+    say('两块都写完了 ✓（' + state.boards.map((b) => b.port).join(' + ') + '）', 'ok');
+  } else {
+    say('有 ' + bad.length + ' 块没写成：' + bad.map((x) => x.b.port).join('、') +
+      ' —— 可以单独重刷它', 'bad');
+  }
+  return results;
+}
+
+/* 两个屏共用的入口：先自检 → 再确认串口 → 再写（try/finally 保证"正在写"这个闸门一定放开）
+   portOverride = 明确指定要写哪个口（「工具」屏那颗用它选的那个；表盘屏那颗不传 ⇒ targetPort()） */
+async function doWrite(both, say, btn, log, onOut, portOverride) {
+  const put = (t, kind) => { say(t, kind); if (log) log(t, kind); };
+  if (state.flashing) { put('正在写，等这一轮写完…', 'busy'); return; }
+  if (!checkEditorApi()) return;
+  if (!(await ensurePorts())) {
+    put('还没认出串口 —— 插好 USB 线后点「刷新串口」再试。', 'bad');
+    return;
+  }
+  state.flashing = true;
+  try {
+    if (both) return await writeBothBoards(put, btn, true, onOut);
+    const port = portOverride || targetPort();
+    if (!port) { put('没有可写的串口（先去「工具」屏刷新串口选一个）。', 'bad'); return; }
+    if (!isProjectPort(port)) {
+      // 不是"本项目的板"也允许写（有人可能用别的板子），但**先说清楚**可能白写
+      put('注意：' + port + ' 看着不是本项目的板（可能是主板板载口）—— 写进去大概率没反应。', 'busy');
+    }
+    return await writeOneBoard(port, put, btn, onOut);
+  } finally {
+    state.flashing = false;      // ★ 无论成功、失败还是抛异常，这个闸门都要放开
+  }
+}
+
 function initFiles() {
   $('#f-bin').onchange = async (e) => {
     const f = e.target.files[0];
@@ -669,32 +921,13 @@ function initFiles() {
      打容器（buildAssetsInMemory ⇒ 编辑器那条唯一的打包路，download 被截下来），
      再走现成的 /api/upload + /api/flash（kind=assets、偏移服务端白名单取）。
      ☆ 车主 2026-10-15："为什么每次刷写都要保存一次 bin 呢，这样我的下载文件夹会有很多个
-       相同的 bin。" ⇒ 这条路一个文件都不落；想留快照才去编辑器点「保存安装包」。 */
-  $('#b-flash').onclick = async () => {
-    if (state.flashing) return;
-    const port = $('#f-port').value;
-    if (!port) { alert('先刷新串口并选一个'); return; }
-    const who = state.ports.find((p) => p.port === port) || {};
-    const built = buildAssetsInMemory();
-    if (!built.ok) {
-      logTo('#flash-log', built.why + '\n', false);
-      setStatus(built.why);
-      return;
-    }
-    setStatus('把这一份交给本地服务…');
-    const up = await uploadBytes(built.blob, 'assets.bin');
-    if (!up.ok) {
-      logTo('#flash-log', '上传失败：' + JSON.stringify(up) + '\n', false);
-      setStatus('上传失败（看下面的日志）');
-      return;
-    }
-    logTo('#flash-log', `用编辑器当前的状态打了容器：${human(up.bytes)}（**没有**产生文件）\n` +
-      `写进板子中：${who.label || port}\n`, false);
-    setStatus('写进板子中…');
-    const r = await api('/api/flash', { port, kind: 'assets', path: up.path });
-    logTo('#flash-log', r.out || '', true);
-    setStatus(r.ok ? '写完了 ✓（细节见下面的日志）' : '写失败（看下面的日志）');
-  };
+       相同的 bin。" ⇒ 这条路一个文件都不落；想留快照才去编辑器点「保存安装包」。
+     ☆ 2026-10-16（"点了没反应"）：与表盘屏那颗走**同一份实现**（doWrite），
+       按钮自己会变成「正在写…」，每一步都往日志与状态栏说话。 */
+  $('#b-flash').onclick = () => doWrite(false, (t, kind) => setStatus(t), $('#b-flash'),
+                                        (t) => logTo('#flash-log', t + '\n', true),
+                                        (raw) => logTo('#flash-log', raw, true),
+                                        ($('#f-port').value || ''));
   /* 老那条路（保留）：刷**手上这个文件**（比如上次存的快照）。它跟"当前状态"是两件事，
      所以拆成单独一颗按钮，藏在「想刷一份已经存下来的文件」那个折叠区里。 */
   $('#b-flash-file').onclick = async () => {
@@ -715,76 +948,12 @@ function initFiles() {
     setStatus(r.ok ? '写完了 ✓（细节见下面的日志）' : '写失败（看下面的日志）');
   };
   /* ★ 「写进两块板」：车主不想分辨哪块是哪块 ⇒ 一次点击**依次**写完。
-     · 也**不要求先保存、不产生文件**（同样是 buildAssetsInMemory ⇒ 编辑器当前状态）；
+     · 与表盘屏那颗走**同一份实现**（doWrite → writeBothBoards）：不要求先保存、不产生文件；
      · 只写**认出来的本项目的板**（state.boards）—— 主板板载串口那种不会进这个列表；
-     · 动手前先把"将要写哪几块"逐行亮出来（确认框里）；
-     · 仍然只调现成的 /api/flash（kind=assets、偏移由服务端白名单取 0x210000）——
-       **没有第二套刷写实现**；请求体里也没有偏移这个字段；
-     · **逐块报结果**：成功/失败各自一行；有失败就说清哪块没写成、可以单独重刷它。 */
-  $('#b-flash-both').onclick = async () => {
-    if (state.flashing) return;
-    if (!state.boards.length) {
-      alert('还没认出本项目的板 —— 先点「刷新串口」；两块板插好后应该能看到 COMx（主板/从板）。');
-      return;
-    }
-    const built = buildAssetsInMemory();
-    if (!built.ok) {
-      logTo('#flash-log', built.why + '\n', false);
-      setStatus(built.why);
-      return;
-    }
-    const list = state.boards.map((b, i) => `${i + 1}. ${b.label}`).join('\n');
-    const unknown = state.boards.filter((b) => !b.role).length;
-    const msg = '将要写这两块：\n' + list +
-      '\n\n用的是编辑器里**当前**的状态（在内存里打的容器，不产生文件）；' +
-      '写的是整套素材（配色 + 图片）；偏移固定 0x210000（不可改，由本地服务按分区表取）。' +
-      (unknown ? `\n\n★ 其中 ${unknown} 块的角色还没认出来（认不出就写「未知」，绝不猜）—— 照样会写，你确认一下插的就是这两块。` : '') +
-      '\n\n写的时候别拔线、别关这个窗口。开始？';
-    if (!confirm(msg)) return;
-    state.flashing = true;
-    $('#b-flash-both').disabled = true;
-    $('#b-flash').disabled = true;
-    setStatus('把这一份交给本地服务…');
-    const up = await uploadBytes(built.blob, 'assets.bin');
-    if (!up.ok) {
-      logTo('#flash-log', '上传失败：' + JSON.stringify(up) + '\n', false);
-      setStatus('上传失败（看下面的日志）');
-      state.flashing = false;
-      $('#b-flash-both').disabled = false;
-      $('#b-flash').disabled = false;
-      return;
-    }
-    logTo('#flash-log', `写两块板：${state.boards.map((b) => b.port).join(' → ')}\n` +
-      `用编辑器当前的状态打了容器：${human(up.bytes)}（**没有**产生文件）\n`, false);
-    const results = [];
-    for (let i = 0; i < state.boards.length; i++) {
-      const b = state.boards[i];
-      setStatus(`正在写 ${b.port}（第 ${i + 1}/${state.boards.length} 块）…`);
-      logTo('#flash-log', `\n—— [${i + 1}/${state.boards.length}] ${b.label} ——\n`, true);
-      let r;
-      try {
-        r = await api('/api/flash', { port: b.port, kind: 'assets', path: up.path });
-      } catch (e) {
-        r = { ok: false, out: '写的时候出错：' + e };
-      }
-      logTo('#flash-log', (r.out || '') + '\n', true);
-      results.push({ b, r });
-    }
-    const bad = results.filter((x) => !x.r.ok);
-    logTo('#flash-log', '\n=== 逐块结果 ===\n' + results.map(({ b, r }) => b.label + '：' +
-      (r.ok ? '写完了 ✓（偏移 ' + (r.offset || '0x210000') + '）' : '没写成 ✗')).join('\n') + '\n', true);
-    if (!bad.length) {
-      setStatus(`两块都写完了 ✓（${state.boards.map((b) => b.port).join(' + ')}）`);
-      logTo('#flash-log', '两块都写完了 ✓\n', true);
-    } else {
-      setStatus(`有 ${bad.length} 块没写成：${bad.map((x) => x.b.port).join('、')} —— 可以单独重刷`);
-      logTo('#flash-log', `★ 有 ${bad.length} 块没写成：${bad.map((x) => x.b.label).join('、')}\n` +
-        '它们可以单独重刷：在上面选那个串口、点「写进这块板」，再点一次就行。\n', true);
-    }
-    state.flashing = false;
-    $('#b-flash-both').disabled = false;
-    $('#b-flash').disabled = false;
-  };
+     · 动手前先把"将要写哪几块"逐行亮出来（确认框里）；逐块报结果，失败不被说成成功。 */
+  $('#b-flash-both').onclick = () => doWrite(true, (t, kind) => setStatus(t), $('#b-flash-both'),
+                                             (t) => logTo('#flash-log', t + '\n', true),
+                                             (raw) => logTo('#flash-log', raw, true));
 }
 function initBuild() {
   $('#b-build').onclick = async () => {

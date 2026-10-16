@@ -156,8 +156,12 @@ details.dis>.card{margin-top:var(--sp-3)}
 .subnav button.sel{background:var(--accent);border-color:transparent;color:var(--accent-ink)}
 .panel{display:none}
 .panel.sel{display:block}
-.frame{width:100%;height:calc(100vh - 290px);min-height:420px;border:1px solid var(--line);
+.frame{width:100%;height:calc(100vh - 400px);min-height:420px;border:1px solid var(--line);
   border-radius:var(--radius);background:#fff}
+/* ★ 2026-10-16（车主那一课）：编辑器框上面多了"写进板子"那一行 + 一行说明，
+   所以 iframe 从 calc(100vh - 290px) 收到 -400px —— 否则它会被挤出屏幕、要多滚一屏。 */
+#dash-flash{margin-bottom:var(--sp-2)}
+#dash-flash-hint{margin:0 0 var(--sp-3)}
 
 /* ---- 键值 / 日志 / 提示 -------------------------------------------------*/
 .kv{display:grid;grid-template-columns:auto 1fr;gap:2px var(--sp-3);font-size:var(--fs-sm);
