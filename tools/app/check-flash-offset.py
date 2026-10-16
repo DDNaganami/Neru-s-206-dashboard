@@ -221,20 +221,32 @@ finally:
         pass
 
 # ---------------------------------------------------------------------------
-section("⑦ 客户端外壳那两条路（单块 / 两块）也都没有偏移字段")
+section("⑦ 客户端外壳那三条路（当前状态 / 文件 / 两块）也都没有偏移字段")
 #   ★ 2026-10-15 新增「写进两块板」：它**也**只调现成的 /api/flash（kind=assets），
 #     偏移仍然由服务端白名单给 —— 这一节就是"没有在客户端另开一个偏移入口"的判据。
+#   ★ 同一天还改了一件事：刷之前**不再要求先保存**（车主："为什么每次刷写都要保存一次 bin 呢…
+#     下载文件夹会有很多个相同的 bin"）⇒ 字节由编辑器的 exportAssetsBin()（download 被截下来）
+#     在内存里产出；这里顺带钉住"外壳自己不打包、也不产生下载"。
 js = open(os.path.join(APP_DIR, "app.js"), encoding="utf-8").read()
+js_code = re.sub(r"/\*[\s\S]*?\*/", "", js)
+js_code = re.sub(r"(^|[^:])//[^\n]*", r"\1", js_code)      # 剥注释：注释里会提内核的名字
+live = re.search(r"api\('/api/flash', \{ port, kind: 'assets', path: up\.path \}\)", js)
 one = re.search(r"api\('/api/flash', \{ port, kind, path: up\.path \}\)", js)
 two = re.search(r"api\('/api/flash', \{ port: b\.port, kind: 'assets', path: up\.path \}\)", js)
-ok(bool(one), "单块那条路：/api/flash {port, kind, path}")
-ok(bool(two), "两块那条路：/api/flash {port, kind:'assets', path}（逐块 await）")
-ok(bool(one) and "offset" not in one.group(0) and bool(two) and "offset" not in two.group(0),
-   "两条路的请求体里都没有 offset / 偏移 —— 页面上没有能改偏移的地方")
+ok(bool(live), "「写进这块板」那条路（编辑器当前状态）：/api/flash {port, kind:'assets', path}")
+ok(bool(one), "「刷手上这个文件」那条路：/api/flash {port, kind, path}")
+ok(bool(two), "「写进两块板」那条路：/api/flash {port, kind:'assets', path}（逐块 await）")
+bodies = [m.group(0) for m in (live, one, two) if m]
+ok(len(bodies) == 3 and all("offset" not in b for b in bodies),
+   "三条路的请求体里都没有 offset / 偏移 —— 页面上没有能改偏移的地方")
 ok("state.boards" in js and "is_project_board" in js,
    "两块那条路只写认出来的本项目的板（is_project_board），主板板载口不会被写")
 ok(not re.search(r"COM\d+\s*[:=]\s*['\"](MASTER|SLAVE)", js),
    "外壳里没有「哪个 COM 号 = 哪个角色」的硬编码（角色只从服务端来）")
+ok("w.exportAssetsBin()" in js_code and not re.search(r"AssetPackageCore\.packBytes\s*\(", js_code),
+   "容器一律由编辑器那条唯一的打包路产出（外壳没有第二套打包）")
+ok("createObjectURL" not in js_code and "saveOwnerPackage" not in js_code,
+   "外壳不产生下载、也不要求先保存（刷之前没有「保存一次」这一步）")
 
 # ---------------------------------------------------------------------------
 print("\n" + "=" * 56)

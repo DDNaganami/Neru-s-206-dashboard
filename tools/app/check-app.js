@@ -86,6 +86,7 @@ const KEEP = {
   '编辑器框(唯一)': 'fr-theme', '编辑器面板': 'sub-editor',
   '编辑器新窗口(配色)': 'b-theme-open', '编辑器新窗口(图片)': 'b-image-open',
   '写两块板按钮': 'b-flash-both', '读角色按钮': 'b-roles', '角色那一行': 'roles-line',
+  '刷存下来的文件': 'b-flash-file', '写到哪块': 'f-kind',
   '退出应用': 'b-quit', '两块板状态条(左)': 'chip-left',
   '两块板状态条(右)': 'chip-right', '升级进度条': 'ota-bar', '升级原始日志': 'ota-log',
 };
@@ -213,6 +214,42 @@ say((srvSrc.match(/"\/api\/flash"/g) || []).length === 1,
     'server.py 里 /api/flash 只有一个入口（两块那条路没有在服务端另开一个刷写实现）');
 say(!/^\s*(?:import|from)\s+serial\b/m.test(srvSrc),
     'server.py 没有引入任何串口库（认角色走的是既有能力：pio device list + netsh + /status）');
+
+// ⑪ 「写进板子」**不产生文件**、**不再要求先保存**（2026-10-15 车主："为什么每次刷写都要
+//   保存一次 bin 呢，这样我的下载文件夹会有很多个相同的 bin。"）
+//   ★ 做法：现场用编辑器**当前状态**打容器（复用编辑器唯一的打包路 exportAssetsBin），
+//     把它的 download() 临时截下来 ⇒ <a download> 不会发生。
+//   ★ 更细的逻辑判据在 check-live-flash.js（拿假的编辑器 window 把这三个函数真跑一遍）。
+const jsCode = js.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+say(/id="b-flash"[^>]*>写进这块板（配色\+图片，不存文件）/.test(html),
+    '「写进这块板」按钮明说**不存文件**');
+say(/不会往下载文件夹里丢文件/.test(html), '卡片上明说不会往下载文件夹里丢文件');
+say(/保存 = 留一份快照/.test(html) && /写进板子 = 直接刷/.test(html),
+    '「保存 = 留快照」与「写进板子 = 直接刷」两件事分开写清了');
+say((js.match(/buildAssetsInMemory\(\)/g) || []).length >= 3,
+    '两颗按钮（这块板 / 两块板）都是现场用 buildAssetsInMemory() 打容器');
+// 两条路各查各的：主按钮**不看文件输入**（不要求先选文件/先保存）；刷文件那条仍然读文件
+const liveBody = /\$\('#b-flash'\)\.onclick[\s\S]*?\n  \};/.exec(js);
+say(!!liveBody && !/f-bin/.test(liveBody[0]) && /buildAssetsInMemory\(\)/.test(liveBody[0]),
+    '「写进这块板」这条路**不看文件输入**（不要求先选文件、也不要求先保存）');
+const fileBody = /\$\('#b-flash-file'\)\.onclick[\s\S]*?\n  \};/.exec(js);
+say(!!fileBody && /f-bin/.test(fileBody[0]),
+    '「把这个文件写进上面选的那块板」那条路仍然读文件输入（能力不丢）');
+say(/w\.download = function \(blob\) \{ captured = blob; \}/.test(js),
+    '把编辑器的 download() 临时换成"截字节" ⇒ 不会点 <a download>');
+say(/w\.download = orig;/.test(js), '截完把 download() 还原回去（导出那条路照旧）');
+say(!/createObjectURL/.test(jsCode), '外壳里没有 createObjectURL（自己不会造下载）');
+say(!/saveOwnerPackage/.test(jsCode), '外壳不调编辑器的「保存安装包」⇒ 刷之前不要求先保存');
+say(/w\.exportAssetsBin\(\)/.test(jsCode) && !/AssetPackageCore\.packBytes\s*\(/.test(jsCode),
+    '容器一律由编辑器那条唯一的打包路产出（外壳没有第二套打包）');
+say(/构建失败：/.test(js) && /编辑器没有给出文件（可能还没有图片）/.test(js),
+    '构建失败有**明确报错**（带出编辑器状态栏那一句），不静默');
+say(/api\('\/api\/flash', \{ port, kind: 'assets', path: up\.path \}\)/.test(js),
+    '「写进这块板」仍然只调现成的 /api/flash（kind=assets）');
+say(/id="b-flash-file"/.test(html) && /id="f-kind"/.test(html),
+    '原来那条"刷手上这个文件"的路**没删**（藏在折叠区里，能力不丢）');
+say(/<summary>想刷一份已经存下来的文件/.test(html),
+    '它被收进「想刷一份已经存下来的文件」那个折叠区（默认看不见，但还在）');
 
 console.log(bad === 0 ? '\n全部通过。' : `\n${bad} 项没通过。`);
 process.exit(bad === 0 ? 0 : 1);

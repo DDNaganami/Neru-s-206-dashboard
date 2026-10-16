@@ -188,41 +188,58 @@
 
     <div class="grid">
       <div class="card">
-        <h2>用 USB 线把素材写进板子</h2>
-        <p>先选一个文件看清它是什么，再插好 USB 线、选串口，点「写进板子」。</p>
-        <div class="row">
-          <input type="file" id="f-bin" accept=".bin,.json">
-          <span class="dim" id="f-info">选一个文件</span>
-        </div>
-        <pre class="log" id="f-head" style="max-height:120px"></pre>
+        <h2>把表盘写进板子</h2>
+        <!-- ★ 2026-10-15（车主："为什么每次刷写都要保存一次 bin 呢，这样我的下载文件夹会有很多个
+             相同的 bin。"）⇒ 这两颗按钮**不要求先保存**、**不产生文件**：
+             现场用「表盘」屏那个编辑器里的**当前状态**在内存里打容器（复用编辑器那条唯一的
+             打包路 exportAssetsBin → AssetPackageCore.packBytes，外壳不自己打），直接 POST
+             `/api/flash`。下载只在车主**主动想留快照**时发生（编辑器里的「保存安装包」）。 -->
+        <p>改完颜色/图片，直接点下面那颗 —— 用的是编辑器里<b>当前的状态</b>，在内存里打好就刷，
+          <b>不会往下载文件夹里丢文件</b>。</p>
         <div class="row">
           <label class="f">串口
             <select id="f-port"></select>
           </label>
-          <label class="f">写到哪块
-            <select id="f-kind">
-              <option value="assets">整套素材（配色 + 图片）</option>
-              <option value="theme">只有配色</option>
-              <option value="image">只有图片</option>
-            </select>
-          </label>
           <button class="btn ghost" id="b-ports">刷新串口</button>
-          <button class="btn primary" id="b-flash">写进板子</button>
+          <button class="btn ghost" id="b-roles">读一下角色</button>
         </div>
-        <!-- ★ 2026-10-15 新增（车主："标出角色吧…你写进板子这个只有一个按钮，也没区分主/从板"）：
-             ① 下拉里标出角色（主板/从板，认法见 server.py 的 ROLE_CACHE_PATH 那一段：
-                MAC 不变 ⇒ 用 USB 的 SER= 认板子，角色来自板子自己起的 AP 名或它自报的
-                role=；**拿不到证据就写「角色未知」，不猜**）；
-             ② 「写进两块板」：两块板通常同时插着 ⇒ 一次点击依次写完，逐块报结果。 -->
+        <!-- ★ 下拉里标出角色（主板/从板，认法见 server.py 的 ROLE_CACHE_PATH 那一段：
+             MAC 不变 ⇒ 用 USB 的 SER= 认板子，角色来自板子自己起的 AP 名或它自报的 role=；
+             拿不到证据就写「角色未知」，不猜）。 -->
         <div class="row">
           <span class="dim" id="roles-line">角色：还没读过。</span>
-          <span class="sp"></span>
-          <button class="btn ghost" id="b-roles">读一下角色</button>
-          <button class="btn primary" id="b-flash-both">写进两块板（配色+图片）</button>
         </div>
-        <p class="note">★ 写错了不会报错，只是屏上什么都没变 —— 所以先看清文件名再点。
-          「写进两块板」写的是**整套素材**（配色 + 图片，偏移固定 <code>0x210000</code>、不可改），
-          只写认出来的本项目的板（主板板载串口那种不会碰）；哪块没写成会单独报出来，可以单独重刷它。</p>
+        <div class="row">
+          <button class="btn primary" id="b-flash">写进这块板（配色+图片，不存文件）</button>
+          <button class="btn primary" id="b-flash-both">写进两块板（配色+图片，不存文件）</button>
+        </div>
+        <p class="note">★ 两件事分清楚：<b>保存 = 留一份快照</b>（去「表盘」屏，在编辑器里点
+          「保存安装包」，那才会写一个文件到下载文件夹）；<b>写进板子 = 直接刷</b>（上面这两颗，
+          不产生任何文件）。想留档就保存，不想留就直接刷 —— 谁都不要求谁。</p>
+        <p class="note">★ 写错了不会报错，只是屏上什么都没变 —— 所以先看清是哪个串口再点。
+          写的是<b>整套素材</b>（配色 + 图片，偏移固定 <code>0x210000</code>、不可改）；
+          「写进两块板」只写认出来的本项目的板（主板板载串口那种不会碰），
+          哪块没写成会单独报出来、可以单独重刷它。</p>
+        <details class="dis">
+          <summary>想刷一份已经存下来的文件 / 或者只想看看它是什么</summary>
+          <div class="row">
+            <input type="file" id="f-bin" accept=".bin,.json">
+            <span class="dim" id="f-info">选一个文件</span>
+          </div>
+          <pre class="log" id="f-head" style="max-height:120px"></pre>
+          <div class="row">
+            <label class="f">写到哪块
+              <select id="f-kind">
+                <option value="assets">整套素材（配色 + 图片）</option>
+                <option value="theme">只有配色</option>
+                <option value="image">只有图片</option>
+              </select>
+            </label>
+            <button class="btn ghost" id="b-flash-file">把这个文件写进上面选的那块板</button>
+          </div>
+          <p class="dim">这条路刷的是<b>你手上那个文件</b>（比如上次存的快照）；上面那两颗按钮刷的是
+            编辑器里<b>当前的状态</b>。两条路都走同一个 <code>/api/flash</code>。</p>
+        </details>
         <pre class="log" id="flash-log"></pre>
       </div>
 

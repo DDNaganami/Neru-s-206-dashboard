@@ -571,13 +571,66 @@ function renderRoles(r) {
     + '识别缓存（删掉就等于忘掉，下次重认）：' + ((r && r.role_cache) || '（服务端未提供）');
 }
 
-/* 把文件交给本地服务落盘（页面拿不到文件的真实路径）—— 单块/两块两条路共用这一个 */
-async function uploadBin(file) {
+/* 把字节交给本地服务落盘（页面拿不到文件的真实路径）—— 三条路（当前状态/文件/两块）共用 */
+async function uploadBytes(body, name) {
   return await fetch('/api/upload', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': file.name },
-    body: file,
+    headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': name },
+    body: body,
   }).then((r) => r.json());
+}
+
+async function uploadBin(file) {
+  return await uploadBytes(file, file.name);
+}
+
+/* 编辑器那个框的 window（同源 ⇒ 能直接问它当前的状态）；取不到就返回 null，不抛 */
+function editorWindow() {
+  const fr = $('#fr-theme');
+  try { return (fr && fr.contentWindow) || null; } catch (e) { return null; }
+}
+
+/* 编辑器状态栏那一句 —— 构建失败时把原因**原样**带出来（别只说"失败了"） */
+function editorStatusText() {
+  const w = editorWindow();
+  try {
+    const el = w && w.document && w.document.getElementById('status');
+    return el ? String(el.textContent || '').trim() : '';
+  } catch (e) { return ''; }
+}
+
+/* ★★ 用编辑器**当前的状态**在内存里打一份容器 —— **不产生任何文件**。
+   车主 2026-10-15："为什么每次刷写都要保存一次 bin 呢，这样我的下载文件夹会有很多个
+   相同的 bin。" ⇒ 刷之前不再要求"先保存一次"。
+
+   · 复用编辑器那条**唯一的**打包路：`w.exportAssetsBin()`（→ ImageBlob.build +
+     AssetPackageCore.packBytes + 它的全部校验）—— 外壳**不自己打容器**，没有第二套。
+   · 这里只把它的 `download()` 临时换成"把字节截下来"：`<a download>` 那一下根本不会发生
+     ⇒ 下载文件夹里不会多东西（下载只在车主**主动**点编辑器里的「保存安装包」时才发生）。
+   · 拿不到字节就**明说为什么**（把编辑器状态栏那一句带出来），不静默失败。
+   ★ 与编辑器页面的**约定**：它必须还叫 `exportAssetsBin()` 与 `download()`
+     —— check-live-flash.js 盯着这两个名字（那边改名了，这边当场红）。 */
+function buildAssetsInMemory() {
+  const w = editorWindow();
+  if (!w || typeof w.exportAssetsBin !== 'function' || typeof w.download !== 'function') {
+    return { ok: false, why: '构建不了：编辑器还没准备好（先去「表盘」屏看它一眼；' +
+      '如果你是另开窗口改的，请在表盘屏那个框里也打开/刷新一次）' };
+  }
+  let captured = null;
+  const orig = w.download;
+  try {
+    w.download = function (blob) { captured = blob; };   // 只截下来：不点 <a download>
+    w.exportAssetsBin();                                 // ← 编辑器那条唯一的打包路（含它的校验）
+  } catch (e) {
+    return { ok: false, why: '构建失败：' + e };
+  } finally {
+    try { w.download = orig; } catch (e) { /* 还原不回去也只影响"导出"那一件事 */ }
+  }
+  if (!captured) {
+    const st = editorStatusText();
+    return { ok: false, why: '构建失败：' + (st || '编辑器没有给出文件（可能还没有图片）') };
+  }
+  return { ok: true, blob: captured };
 }
 
 function initFiles() {
@@ -612,10 +665,42 @@ function initFiles() {
       (state.boards.length ? state.boards.map((b) => b.label).join(' · ') : '（还没认出本项目的板）') + '\n', false);
     setStatus('就绪');
   };
+  /* ★★ 「写进这块板」：**不要求先保存、不产生文件** —— 现场用编辑器当前的状态在内存里
+     打容器（buildAssetsInMemory ⇒ 编辑器那条唯一的打包路，download 被截下来），
+     再走现成的 /api/upload + /api/flash（kind=assets、偏移服务端白名单取）。
+     ☆ 车主 2026-10-15："为什么每次刷写都要保存一次 bin 呢，这样我的下载文件夹会有很多个
+       相同的 bin。" ⇒ 这条路一个文件都不落；想留快照才去编辑器点「保存安装包」。 */
   $('#b-flash').onclick = async () => {
     if (state.flashing) return;
+    const port = $('#f-port').value;
+    if (!port) { alert('先刷新串口并选一个'); return; }
+    const who = state.ports.find((p) => p.port === port) || {};
+    const built = buildAssetsInMemory();
+    if (!built.ok) {
+      logTo('#flash-log', built.why + '\n', false);
+      setStatus(built.why);
+      return;
+    }
+    setStatus('把这一份交给本地服务…');
+    const up = await uploadBytes(built.blob, 'assets.bin');
+    if (!up.ok) {
+      logTo('#flash-log', '上传失败：' + JSON.stringify(up) + '\n', false);
+      setStatus('上传失败（看下面的日志）');
+      return;
+    }
+    logTo('#flash-log', `用编辑器当前的状态打了容器：${human(up.bytes)}（**没有**产生文件）\n` +
+      `写进板子中：${who.label || port}\n`, false);
+    setStatus('写进板子中…');
+    const r = await api('/api/flash', { port, kind: 'assets', path: up.path });
+    logTo('#flash-log', r.out || '', true);
+    setStatus(r.ok ? '写完了 ✓（细节见下面的日志）' : '写失败（看下面的日志）');
+  };
+  /* 老那条路（保留）：刷**手上这个文件**（比如上次存的快照）。它跟"当前状态"是两件事，
+     所以拆成单独一颗按钮，藏在「想刷一份已经存下来的文件」那个折叠区里。 */
+  $('#b-flash-file').onclick = async () => {
+    if (state.flashing) return;
     const file = $('#f-bin').files[0];
-    if (!file) { alert('先在上面「选一个文件」里选要写的文件'); return; }
+    if (!file) { alert('先在下面「选一个文件」里选要写的文件'); return; }
     const port = $('#f-port').value;
     if (!port) { alert('先刷新串口并选一个'); return; }
     const kind = $('#f-kind').value;
@@ -630,6 +715,7 @@ function initFiles() {
     setStatus(r.ok ? '写完了 ✓（细节见下面的日志）' : '写失败（看下面的日志）');
   };
   /* ★ 「写进两块板」：车主不想分辨哪块是哪块 ⇒ 一次点击**依次**写完。
+     · 也**不要求先保存、不产生文件**（同样是 buildAssetsInMemory ⇒ 编辑器当前状态）；
      · 只写**认出来的本项目的板**（state.boards）—— 主板板载串口那种不会进这个列表；
      · 动手前先把"将要写哪几块"逐行亮出来（确认框里）；
      · 仍然只调现成的 /api/flash（kind=assets、偏移由服务端白名单取 0x210000）——
@@ -637,27 +723,29 @@ function initFiles() {
      · **逐块报结果**：成功/失败各自一行；有失败就说清哪块没写成、可以单独重刷它。 */
   $('#b-flash-both').onclick = async () => {
     if (state.flashing) return;
-    const file = $('#f-bin').files[0];
-    if (!file) {
-      alert('先在「选一个文件」里选刚保存的那个 assets.bin（编辑器里点「保存安装包」存下来的）');
-      return;
-    }
     if (!state.boards.length) {
       alert('还没认出本项目的板 —— 先点「刷新串口」；两块板插好后应该能看到 COMx（主板/从板）。');
       return;
     }
+    const built = buildAssetsInMemory();
+    if (!built.ok) {
+      logTo('#flash-log', built.why + '\n', false);
+      setStatus(built.why);
+      return;
+    }
     const list = state.boards.map((b, i) => `${i + 1}. ${b.label}`).join('\n');
     const unknown = state.boards.filter((b) => !b.role).length;
-    const msg = '将要写这两块：\n' + list + '\n\n文件：' + file.name +
-      '\n写的是整套素材（配色 + 图片）；偏移固定 0x210000（不可改，由本地服务按分区表取）。' +
+    const msg = '将要写这两块：\n' + list +
+      '\n\n用的是编辑器里**当前**的状态（在内存里打的容器，不产生文件）；' +
+      '写的是整套素材（配色 + 图片）；偏移固定 0x210000（不可改，由本地服务按分区表取）。' +
       (unknown ? `\n\n★ 其中 ${unknown} 块的角色还没认出来（认不出就写「未知」，绝不猜）—— 照样会写，你确认一下插的就是这两块。` : '') +
       '\n\n写的时候别拔线、别关这个窗口。开始？';
     if (!confirm(msg)) return;
     state.flashing = true;
     $('#b-flash-both').disabled = true;
     $('#b-flash').disabled = true;
-    setStatus('上传文件到本地服务…');
-    const up = await uploadBin(file);
+    setStatus('把这一份交给本地服务…');
+    const up = await uploadBytes(built.blob, 'assets.bin');
     if (!up.ok) {
       logTo('#flash-log', '上传失败：' + JSON.stringify(up) + '\n', false);
       setStatus('上传失败（看下面的日志）');
@@ -667,7 +755,7 @@ function initFiles() {
       return;
     }
     logTo('#flash-log', `写两块板：${state.boards.map((b) => b.port).join(' → ')}\n` +
-      `文件已落到 ${up.path}（${human(up.bytes)}）\n`, false);
+      `用编辑器当前的状态打了容器：${human(up.bytes)}（**没有**产生文件）\n`, false);
     const results = [];
     for (let i = 0; i < state.boards.length; i++) {
       const b = state.boards[i];
@@ -684,14 +772,14 @@ function initFiles() {
     }
     const bad = results.filter((x) => !x.r.ok);
     logTo('#flash-log', '\n=== 逐块结果 ===\n' + results.map(({ b, r }) => b.label + '：' +
-      (r.ok ? '写完了 ✓（偏移 ' + (r.offset || '0x210000') + '）' : '**没写成** ✗')).join('\n') + '\n', true);
+      (r.ok ? '写完了 ✓（偏移 ' + (r.offset || '0x210000') + '）' : '没写成 ✗')).join('\n') + '\n', true);
     if (!bad.length) {
       setStatus(`两块都写完了 ✓（${state.boards.map((b) => b.port).join(' + ')}）`);
       logTo('#flash-log', '两块都写完了 ✓\n', true);
     } else {
       setStatus(`有 ${bad.length} 块没写成：${bad.map((x) => x.b.port).join('、')} —— 可以单独重刷`);
       logTo('#flash-log', `★ 有 ${bad.length} 块没写成：${bad.map((x) => x.b.label).join('、')}\n` +
-        '它们可以单独重刷：在上面选那个串口、点「写进板子」，同样一个文件再刷一次就行。\n', true);
+        '它们可以单独重刷：在上面选那个串口、点「写进这块板」，再点一次就行。\n', true);
     }
     state.flashing = false;
     $('#b-flash-both').disabled = false;
