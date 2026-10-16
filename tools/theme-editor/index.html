@@ -473,6 +473,20 @@
         导出的还是同一份 theme.json，不新造格式。
       </div>
       <div id="owner-presets"></div>
+
+      <!-- ★★ 2026-10-15（车主："光有导出，没有导入 bin 啊？"）：
+           导入功能**一直都有**，只是原先只在「高级 → 主题文件」里 ⇒ 车主模式看不到，
+           于是看着像"只有导出"。这里把它搬到车主模式（**两个分区各一个**，
+           与「保存安装包」一样），但**不新增任何读取实现**：
+           两个按钮都只是替点那个既有的隐藏输入框 #file-theme，
+           走的是同一条 readAssetFile()（容器 / theme.json / image.bin 三种都认）。 -->
+      <h2 style="margin-top:14px">打开安装包</h2>
+      <button id="btn-owner-import" style="width:100%" data-ocap="import">打开安装包…（assets.bin / theme.json）</button>
+      <div class="note" style="color:var(--dim)">
+        三种都认：<b>assets.bin</b>（配色 + 图片清单一起恢复）、<b>theme.json</b>、
+        <b>image.bin</b>。★ 与「高级 → 主题文件」里那两个按钮是<b>同一个输入框、同一条读取路径</b>
+        （这里没有第二套实现）。读入之后预览、槽位清单、各色板与底板深浅都会跟着刷新。
+      </div>
     </section>
     </div>
 
@@ -524,6 +538,18 @@
         <b>端口可改，偏移不让改</b>（写死 <code>0x210000</code>），
         一个文件刷完「配色 + 图片」两块分区。两个端口输入框是同一个值。
       </div>
+
+      <!-- ★★ 2026-10-15：导入也在这里给一个（与「① 配色」那个同一个输入框、同一条路）。
+           下面的清单就是"读进来了什么"—— 车主模式里看不到高级那一份，
+           所以同一个字符串在两处都显示（见 showAssetsInfo()）。 -->
+      <h2 style="margin-top:14px">打开安装包</h2>
+      <button id="btn-owner-import-img" style="width:100%" data-ocap="import">打开安装包…（assets.bin / theme.json）</button>
+      <div class="note" style="color:var(--dim)">
+        与「① 配色」那个按钮是<b>同一个输入框 #file-theme、同一条读取路径</b>；
+        三种文件都认（assets.bin / theme.json / image.bin）。
+      </div>
+      <div class="note" id="owner-assets-info"
+           style="display:none;color:var(--dim);white-space:pre-wrap"></div>
     </section>
     </div>
 
@@ -2307,8 +2333,12 @@ function clearSlot(spec, it) {
 //     ⇒ 车主模式配色区现在是**四块颜色**（转速数字 / 速度数字 / 水温 / 进气）
 //       + **一个深浅滑杆**。`digit` 这个标签**不再出现在车主模式里**
 //       （它只剩"老主题缺新键时的回落值 + 高级里那一行"这个身份）。
+//   ★★ 2026-10-15（车主："光有导出，没有导入 bin 啊？"）：`import` 是**两个**
+//     ——「① 配色」与「② 图片」各一个「打开安装包…」按钮，与 `save` 同一个道理：
+//     两个按钮**共用**那个隐藏输入框 #file-theme 与同一条 readAssetFile()，
+//     不是两套导入实现。
 const OWNER_CAPS = ["bg", "arc", "rpm", "speed", "coolant", "intake", "plate",
-                    "redline", "overspeed", "face", "save"];
+                    "redline", "overspeed", "face", "import", "save"];
 const OWNER_EXPECT = {
   bg: 1,          // 背景色
   arc: 4,         // 四条弧的点亮色（转速外弧 / 水温内弧 / 车速外弧 / 进气内弧）
@@ -2320,6 +2350,7 @@ const OWNER_EXPECT = {
   redline: 1,     // 红区转速
   overspeed: 1,   // 超速
   face: 1,        // 图片入口（槽位清单容器：背景 1 + 表情 10）
+  import: 2,      // 「打开安装包…」（① 配色 / ② 图片 各一个，同一个输入框）
   save: 2         // 保存安装包（① 配色 / ② 图片 各一个，同一条路）
 };
 
@@ -2474,6 +2505,19 @@ function buildOwnerControls() {
     if (b && !b.dataset.wired) {
       b.dataset.wired = "1";
       b.addEventListener("click", saveOwnerPackage);
+    }
+  });
+  // ---- ③b ★★ 2026-10-15（车主："光有导出，没有导入 bin 啊？"）----
+  //   「① 配色」「② 图片」各一个「打开安装包…」按钮 —— 它们**只做一件事**：
+  //   替点那个既有的隐藏输入框 #file-theme。于是读文件那条路**一行都没有新增**
+  //   （容器 / theme.json / image.bin 三种全认的老实现，见下面的 readAssetFile）。
+  //   ★ 谁要是想在这里再写一套解析：不要 —— 第二套实现迟早与第一套分叉，
+  //     而且分叉的症状是"从高级导进来能用、从车主模式导进来少半张图"。
+  ["btn-owner-import", "btn-owner-import-img"].forEach(id => {
+    const b = document.getElementById(id);
+    if (b && !b.dataset.wired) {
+      b.dataset.wired = "1";
+      b.addEventListener("click", () => document.getElementById("file-theme").click());
     }
   });
   ["owner-port", "owner-port-img"].forEach(id => {
@@ -4761,6 +4805,17 @@ document.getElementById("btn-assets-image-save").addEventListener("click", () =>
       "拿它单独刷 image 分区、或喂给别的工具都行。");
 });
 
+// 图片清单要显示在**两处**（高级 + 车主模式）：
+//   ★ 车主模式里看不到「高级」那一段，而"到底读进来了什么"正是他要知道的 ——
+//     所以**一处生成、两处显示**（同一个字符串，不是两份描述）。
+function showAssetsInfo(text) {
+  assetsInfoEl.textContent = text;
+  assetsInfoEl.style.display = "";
+  document.getElementById("assets-image-row").style.display = "";
+  const own = document.getElementById("owner-assets-info");
+  if (own) { own.textContent = text; own.style.display = ""; }   // 车主模式那一份
+}
+
 // 这一份字节是"本工具产出的容器"吗？
 // 只做两个便宜的检查：长度落在合法区间内、theme 段尾部有 0 填充。
 // ★ 为什么必须要它：单独导出的 image.bin 也可能正好落在这个区间里，
@@ -4801,10 +4856,9 @@ function readAssetFile(f) {
     if (!loadThemeText(themeText, f.name + " 里的 theme 段")) return;   // 失败时它已经 say 过了
 
     // 图片：v1 不展开成可编辑的列表项，但**如实显示**清单（张数/用途/尺寸/字节数）
+    //   ★ 显示在两处：高级那一段 + 车主模式那一段（同一个字符串，见 showAssetsInfo）。
     rememberImagePart(res.imageBytes, f.name);
-    assetsInfoEl.textContent = describeImageInfo(res.imageInfo);
-    assetsInfoEl.style.display = "";
-    document.getElementById("assets-image-row").style.display = "";
+    showAssetsInfo(describeImageInfo(res.imageInfo));
 
     say("已读入 " + f.name + "（" + res.containerBytes + " 字节）：配色已应用（来源 " +
         themeSource + "），图片 " + res.imageInfo.count + " 张已记账。\n\n" +

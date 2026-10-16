@@ -31,8 +31,15 @@
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+// ★ 真实内核（与页面 <script src> 里那几份**同一批文件**）：
+//   导入那一条用例要**自己造一个极小的 assets.bin 夹具**（不往仓库里塞二进制）。
+const APC = require(path.join(__dirname, "asset-package-core.js"));
+const IB = require(path.join(__dirname, "image-blob-build.js"));
 
 const dir = __dirname;
+// canvas 桩上"画了几笔"的计数：用来证明"导入之后预览真的重画了"
+//   （桩不判像素 —— 像素判据在 check-*.js 那一批里，见文件头）。
+let ctxDraws = 0;
 let pass = 0, fail = 0;
 const failures = [];
 function ok(cond, what) {
@@ -144,11 +151,13 @@ function findIn(el, sel) {
 function makeCtx() {  const noop = function () {};
   return {
     canvas: { width: 300, height: 150 },
-    setTransform: noop, clearRect: noop, fillRect: noop, strokeRect: noop,
+    setTransform: noop, clearRect: function () { ctxDraws++; }, fillRect: function () { ctxDraws++; },
+    strokeRect: noop,
     beginPath: noop, closePath: noop, arc: noop, moveTo: noop, lineTo: noop,
-    stroke: noop, fill: noop, save: noop, restore: noop, translate: noop,
-    scale: noop, rotate: noop, roundRect: noop, fillText: noop, strokeText: noop,
-    drawImage: noop, putImageData: noop,
+    stroke: noop, fill: function () { ctxDraws++; }, save: noop, restore: noop, translate: noop,
+    scale: noop, rotate: noop, roundRect: noop,
+    fillText: function () { ctxDraws++; }, strokeText: function () { ctxDraws++; },
+    drawImage: function () { ctxDraws++; }, putImageData: function () { ctxDraws++; },
     measureText: function () { return { width: 10 }; },
     createImageData: function (w, h) { return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; },
     getImageData: function (x, y, w, h) { return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; },
@@ -243,6 +252,29 @@ function seedStaticIds(doc, html) {
 }
 
 // ------------------------------------------------------------
+// ★★ 2026-10-15（车主："光有导出，没有导入 bin 啊？"）：造一个**极小**的 assets.bin
+//    夹具来喂"打开安装包…"那条路 —— **内联在这里，不往仓库里塞二进制**。
+//    内容：一份只有 bg_color / readout.rpm_color 的主题 + 一张 8×8 的背景图。
+//    ★ 布局**问页面自己**（`coreForTarget()`）：目标板是页面选的，
+//      在测试里另抄一份常量会变成"页面换了默认板 ⇒ 夹具被当成不是容器"。
+// ------------------------------------------------------------
+function buildTinyContainer(sandbox) {
+  const layout = sandbox.coreForTarget();
+  const themeBytes = new TextEncoder().encode(JSON.stringify(
+    { theme: { bg_color: 0x123456, readout: { rpm_color: 0xAB12CD } } }, null, 2));
+  const px = new Uint8Array(8 * 8 * 4);
+  for (let i = 0; i < px.length; i += 4) {
+    px[i] = 10; px[i + 1] = 20; px[i + 2] = 30; px[i + 3] = 255;   // 纯色 RGBA
+  }
+  const img = IB.build([{ name: "bg", w: 8, h: 8, cf: IB.CF.RGB565,
+                          role: IB.ROLE.Background, order: 0,
+                          pixels: IB.rgbaToRgb565(px, 8, 8) }]).blob;
+  const packed = APC.packBytes({ themeBytes: themeBytes, imageBytes: img, layout: layout,
+                                 themeLabel: "fixture", imageLabel: "fixture" });
+  return { bytes: new Uint8Array(packed.bytes), layout: layout };
+}
+
+// ------------------------------------------------------------
 // 跑一个页面
 // ------------------------------------------------------------
 function runPage(pageFile, opts) {
@@ -276,7 +308,23 @@ function runPage(pageFile, opts) {
     Uint8Array: Uint8Array, Uint8ClampedArray: Uint8ClampedArray,
     DataView: DataView, ArrayBuffer: ArrayBuffer, JSON: JSON, Math: Math, Date: Date,
     ImageData: function (data, w, h) { this.data = data; this.width = w; this.height = h; },
-    FileReader: function () { this.readAsText = function () {}; this.readAsArrayBuffer = function () {}; }
+    // ★★ 2026-10-15（车主："光有导出，没有导入 bin 啊？"）：FileReader 从"什么都不做"
+    //   升级成**最小可用实现** —— 它同步把夹具文件自带的 `_buffer` 回填给 onload。
+    //   为什么要真的能跑：这一单的验收点之一是"点车主模式的「打开安装包…」⇒
+    //   配色与图片清单都被更新、预览跟着刷新"，只查源码是查不出这条的
+    //   （桩里原来那句注释也正是这么写的：DOM 桩没有可用的 FileReader）。
+    //   ★ 桩里没有真 File：夹具自己带 `_buffer`（见 readFixture 那一段）。
+    FileReader: function () {
+      const self = this;
+      self.readAsArrayBuffer = function (f) {
+        self.result = (f && f._buffer) ? f._buffer : new ArrayBuffer(0);
+        if (self.onload) self.onload();
+      };
+      self.readAsText = function (f) {
+        self.result = (f && f._text) ? f._text : "";
+        if (self.onload) self.onload();
+      };
+    }
   };
   sandbox.globalThis = sandbox;
   sandbox.self = sandbox;
@@ -618,6 +666,56 @@ const results = {};
          "写了 rpm_color 就听它的（得到 " + doc.getElementById("oc-rpm-txt").value + "）");
       ok(doc.getElementById("oc-speed-txt").value.toUpperCase() === "#BF4153",
          "只写了一个新键 ⇒ 另一个回落到 digit_color");
+    }
+
+    // ---- ★★ 交互 5c（车主："光有导出，没有导入 bin 啊？"）：车主模式里导入 assets.bin ----
+    //   ☆ 端到端：点车主模式那个按钮 → 灌一个**极小**的内联夹具（见 buildTinyContainer）
+    //     → 配色（背景色 + 转速色）与图片清单都被恢复，而且预览真的重画了。
+    //   ☆ 顺手钉住"两个入口、一条实现"：两个按钮都只是替点**同一个** #file-theme。
+    {
+      const fi = doc.getElementById("file-theme");
+      let clicks = 0;
+      const realClick = fi.click;                    // 桩：只记账，不弹真的文件框
+      fi.click = function () { clicks++; };
+      doc.getElementById("btn-owner-import").click();
+      doc.getElementById("btn-owner-import-img").click();
+      eq(clicks, 2, "两个「打开安装包…」按钮都只是替点 #file-theme（同一个输入框）");
+      // ★ 顺手确认**高级那两个入口没被弄丢**（这一单只是把同一个入口搬到车主模式）
+      doc.getElementById("btn-import").click();
+      doc.getElementById("btn-load-theme").click();
+      eq(clicks, 4,
+         "高级的「导入主题文件」「读入 theme.json / assets.bin」也照旧替点**同一个** #file-theme");
+      ok(doc.getElementById("btn-owner-import").getAttribute("data-ocap") === "import" &&
+         doc.getElementById("btn-owner-import-img").getAttribute("data-ocap") === "import",
+         "两个按钮都带 data-ocap=\"import\"（能力表数得到两个）");
+      fi.click = realClick;
+
+      const fx = buildTinyContainer(r.sandbox);
+      const drawsBefore = ctxDraws;
+      const bgBefore = doc.getElementById("oc-bg-txt").value.toUpperCase();
+      fi.files = [{ name: "fixture-assets.bin", _buffer: fx.bytes.buffer }];
+      fi.dispatch("change", { target: fi });
+
+      const bg = doc.getElementById("oc-bg-txt").value.toUpperCase();
+      ok(bg === "#123456",
+         "读入后背景色板 = 夹具里的 bg_color（得到 " + bg + "，之前 " + bgBefore + "）");
+      eq(doc.getElementById("oc-rpm-txt").value.toUpperCase(), "#AB12CD",
+         "读入后转速色板 = 夹具里的 rpm_color（配色真的恢复了）");
+      // 图片清单：**两处**显示同一个字符串（高级 + 车主模式）
+      const ownInfo = doc.getElementById("owner-assets-info");
+      const advInfo = doc.getElementById("assets-info");
+      ok(/共 1 张/.test(ownInfo.textContent),
+         "车主模式里也显示了导入的图片清单（" + ownInfo.textContent.split("\n")[0] + "）");
+      ok(ownInfo.style.display === "", "车主模式那份清单从隐藏变成可见");
+      eq(ownInfo.textContent, advInfo.textContent,
+         "两处清单是**同一个字符串**（一处生成、两处显示）");
+      ok(ctxDraws > drawsBefore,
+         "预览跟着重画了（画布笔数 " + drawsBefore + " → " + ctxDraws + "）");
+      ok(doc.getElementById("owner-slots").children.length === 11,
+         "槽位清单刷新后仍是 11 格（背景 1 + 表情 10）");
+      ok(/已读入/.test(doc.getElementById("status").textContent),
+         "状态栏说明了读进来了什么：" +
+         doc.getElementById("status").textContent.split("\n")[0]);
     }
 
     // ---- 交互 7：**每一个静态按钮都被接上了**（不是停留在 HTML 里没人管）----

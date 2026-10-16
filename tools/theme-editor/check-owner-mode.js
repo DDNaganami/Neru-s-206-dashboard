@@ -91,11 +91,16 @@ const SHELL_CODE = SHELL.replace(/<!--[\s\S]*?-->/g, "");
 //      车主模式多一个滑杆（`plate`）。⇒ `digit` 这个标签**不再出现在车主模式里**
 //      （它只剩"老主题缺新键时的回落值"和"高级里那一行"两个身份）。
 //      判据见下面 ①c 那一节（改成断言"它们**存在**"，是这一单的验收点）。
+//   ★★ 2026-10-15 晚（车主："光有导出，没有导入 bin 啊？"）：`import` 进能力表 ——
+//      「① 配色」「② 图片」**各一个**「打开安装包…」按钮（与 save 同一个道理），
+//      两个按钮都只**替点那个既有的隐藏输入框 #file-theme** ⇒ 读文件那条路
+//      一行都没新增（判据见 §⑧b：同一个输入框、没有第二套读取函数）。
 // ------------------------------------------------------------
 const OWNER_CAPS = ["bg", "arc", "rpm", "speed", "coolant", "intake", "plate",
-                    "redline", "overspeed", "face", "save"];
+                    "redline", "overspeed", "face", "import", "save"];
 const OWNER_EXPECT_COUNT = { bg: 1, arc: 4, rpm: 1, speed: 1, coolant: 1, intake: 1,
-                             plate: 1, redline: 1, overspeed: 1, face: 1, save: 2 };
+                             plate: 1, redline: 1, overspeed: 1, face: 1,
+                             import: 2, save: 2 };
 const PORT_MARK_EXPECT = 2;
 
 // ------------------------------------------------------------
@@ -634,6 +639,47 @@ section("⑧ 保存安装包：两个分区各一个按钮，走**同一条**内
   // 页面上不许自己拼容器字节
   ok(!/0x44363032|IMAGE_MAGIC\s*=/.test(src), "页面里没有自己写 image 包头魔数");
   eq(countOf(src, /function packBytes\s*\(/g), 0, "页面里没有 packBytes 的第二份实现");
+}
+
+section("⑧b 导入：车主模式两个按钮，与高级那两个**共用同一个输入框、同一条实现**");
+{
+  const src = MERGED;
+  // ① 车主模式里恰好两个「打开安装包…」按钮（① 配色 / ② 图片 各一个）
+  const ownerTheme = src.slice(src.indexOf('id="owner-theme"'), src.indexOf('id="owner-images"'));
+  const ownerImages = src.slice(src.indexOf('id="owner-images"'), src.indexOf('id="advanced"'));
+  ok(/<button id="btn-owner-import"[^>]*data-ocap="import"/.test(ownerTheme),
+     "「① 配色」分区里有「打开安装包…」按钮 #btn-owner-import");
+  ok(/<button id="btn-owner-import-img"[^>]*data-ocap="import"/.test(ownerImages),
+     "「② 图片」分区里也有一个 #btn-owner-import-img");
+  ok(/assets\.bin \/ theme\.json/.test(ownerTheme) && /assets\.bin \/ theme\.json/.test(ownerImages),
+     "两个按钮的文案都点明了认哪些文件（assets.bin / theme.json）");
+  // ② ★ 它们接的是**同一个** #file-theme（不是各自的第二个输入框）
+  ok(/\["btn-owner-import", "btn-owner-import-img"\]\.forEach/.test(src),
+     "两个按钮在同一个 forEach 里接线（一处实现）");
+  ok(/btn-owner-import[\s\S]{0,400}?document\.getElementById\("file-theme"\)\.click\(\)/.test(src),
+     "接线体是「替点 #file-theme」——没有第二套读文件的代码");
+  eq(countOf(src, /readAssetFile\s*\(/g) >= 2 ? 1 : 0, 1,
+     "readAssetFile() 只有一份（定义 + #file-theme 的 change）");
+  ok(/id="file-theme"/.test(src), "那个隐藏输入框仍然在（两个分区的按钮都指向它）");
+  ok(/getElementById\("file-theme"\)\.addEventListener\("change"/.test(src),
+     "输入框的 change 仍然接在 readAssetFile()（读文件那条路没被复制）");
+  // ③ 高级那两个入口照旧可用（同一条路），没有被搬走
+  ok(/id="btn-import"/.test(src) && /导入主题文件/.test(src),
+     "高级里「导入主题文件」#btn-import 仍在");
+  ok(/id="btn-load-theme"/.test(src) && /读入 theme\.json \/ assets\.bin/.test(src),
+     "高级里「读入 theme.json / assets.bin」#btn-load-theme 仍在");
+  //   ★ 数是 **3** 而不是 4：车主模式那两个按钮**共用一个 forEach 接线**
+  //     （两个 id 一行 forEach），高级那两个各自一行 ⇒ 3 处调用点管 4 个按钮。
+  eq(countOf(src, /getElementById\("file-theme"\)\.click\(\)/g), 3,
+     "3 处「替点 #file-theme」的接线管住 4 个按钮（车主 2 个共用一行 + 高级 2 个各一行）");
+  ok(!/unpackBytes\s*\(/.test(src.replace(/AssetPackageCore\.unpackBytes\s*\(\{[\s\S]{0,200}?\}\)/, "X")) ||
+     countOf(src, /AssetPackageCore\.unpackBytes\s*\(/g) === 1,
+     "页面里只调用一次内核的 unpackBytes（没有第二套解包）");
+  // ④ 读进来的清单要在**车主模式**也显示一份（否则车主不知道读进来了什么）
+  ok(/function showAssetsInfo\(/.test(src), "有 showAssetsInfo()（一处生成、两处显示）");
+  ok(/id="owner-assets-info"/.test(ownerImages), "车主模式里有显示清单的容器 #owner-assets-info");
+  ok(/showAssetsInfo\(describeImageInfo/.test(src),
+     "读入容器后把清单同时写到两处（高级 + 车主模式）");
 }
 
 section("⑨ 3 个预设写进**现有主题状态**（当前默认 / 夜间 / 浅底）");
