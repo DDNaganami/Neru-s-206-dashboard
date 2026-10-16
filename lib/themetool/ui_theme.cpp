@@ -128,6 +128,20 @@ void theme_clamp(Theme& t) {
   t.readout.show_units   = t.readout.show_units ? 1 : 0;
   t.readout.show_coolant = t.readout.show_coolant ? 1 : 0;
   t.readout.show_intake  = t.readout.show_intake ? 1 : 0;
+
+  // ★★ 颜色**不在这里钳制** —— 这是一条**刻意**的、与既有四个读数颜色一致的做法
+  //   （digit_color / unit_color / coolant_color / intake_color 一个都没钳），
+  //   2026-10-15 新增的 rpm_color / speed_color **同样不钳**：
+  //     · `lv_color_hex(u)` 只取低 24 位（LVGL 的 lv_color_t 就是 R/G/B 各 8 位），
+  //       越界的 uint32 画出来仍然是某个确定颜色 —— 不会崩、不会画到屏外；
+  //     · 真在这里补一条 `if (c > 0xFFFFFF) c &= 0xFFFFFF;`，就得**六个颜色一起补**
+  //       （只补新键 = 两套规矩），而收益是零（同样的位截断，只是换个地方做）。
+  //   ⇒ 判据：想给颜色加值域，请**一次性**给 readout 全部六个 + 表情/弧那几族颜色加，
+  //     并配一条用例；不要单独给这两个新键加。
+  //
+  // ★ 底片不透明度（R3 的 `plate_opa`）**同样不用在这里钳**：它是 `uint8_t`，
+  //   解析处 `(uint8_t)u` 已经把值夹进 0..255 —— 与既有 `track_opa` 逐字同一条路。
+  //   （0 = 底板透明 = 关掉底板；这是**允许**的值，不是错误值，所以不能"兜底成非零"。）
 }
 
 // theme_after_load 已并入 theme_parse_json(它直接对传进来的对象调 theme_clamp)。

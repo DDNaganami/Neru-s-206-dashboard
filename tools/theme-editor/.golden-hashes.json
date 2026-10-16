@@ -1,15 +1,15 @@
 {
   "version": 1,
   "note": "打包产物指纹：任何会进字节的改动都会让它变 —— 见 check-owner-mode.js",
-  "themeJsonBytes": 2892,
-  "themeJsonSha256": "2cf2c42432c211fb62aa05252a47ad7576278f2983e1f1bc5db67e3da439445b",
-  "imageEditorThemeJsonBytes": 1389,
-  "imageEditorThemeJsonSha256": "5fdfd1b262ec37038f74e8cb2d79b13c19dff11b17d8a8fee1c8ed4b8b5f2bdc",
+  "themeJsonBytes": 2975,
+  "themeJsonSha256": "1dcc7d40e7a77a090132c494f796d4a864557d4ce02d612310459948226efa2e",
+  "imageEditorThemeJsonBytes": 1472,
+  "imageEditorThemeJsonSha256": "2c69e55a9b0bf3d8deee7600194161256d9358831d85eb7ed61d1b575fd8f719",
   "imageBinBytes": 16524,
   "imageBinSha256": "24fc3c873d5c5641720f687f2edfd719d525db0f361ba23f357b40679dda783c",
   "assetsBinBytes": 295052,
-  "assetsBinSha256": "63fe3276be21c5cebd1031dcfcdbab8ff1806dd19f2fb1869655863663293271",
+  "assetsBinSha256": "96e02893fdbf3aa4e49711bb1b3519cf4409183a2f7d43aeaed608f1c087747f",
   "assetsBinImagePageThemeBytes": 295052,
-  "assetsBinImagePageThemeSha256": "c99766402ccf996923a7897c798929d465ca47f4130eea1a602cbe7be7e75351",
+  "assetsBinImagePageThemeSha256": "4b07b3bd394dd5938bc0fdd8983ffa87fed38e3fbf0e12e6de8fcdf0ab0a8fc1",
   "flashCommand": "python -m esptool --chip esp32s3 --port COM6 --baud 921600 write_flash 0x210000 assets.bin"
 }

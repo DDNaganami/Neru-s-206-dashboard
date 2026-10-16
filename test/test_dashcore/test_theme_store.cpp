@@ -218,6 +218,9 @@ static void test_parse_readout(void) {
   const char* json = R"({"theme":{
     "readout": {
       "digit_color": 0x00FF88,
+      "rpm_color": 0xAA0001,
+      "speed_color": 0xBB0002,
+      "plate_opa": 90,
       "unit_color": 0x112233,
       "coolant_color": 0xFF00FF,
       "digit_font": 1,
@@ -231,6 +234,9 @@ static void test_parse_readout(void) {
   Theme t;
   TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
   TEST_ASSERT_EQUAL_HEX32(0x00FF88, t.readout.digit_color);
+  TEST_ASSERT_EQUAL_HEX32(0xAA0001, t.readout.rpm_color);
+  TEST_ASSERT_EQUAL_HEX32(0xBB0002, t.readout.speed_color);
+  TEST_ASSERT_EQUAL_UINT8(90, t.readout.plate_opa);
   TEST_ASSERT_EQUAL_HEX32(0x112233, t.readout.unit_color);
   TEST_ASSERT_EQUAL_HEX32(0xFF00FF, t.readout.coolant_color);
   TEST_ASSERT_EQUAL_UINT8(1, t.readout.digit_font);
@@ -242,6 +248,162 @@ static void test_parse_readout(void) {
   TEST_ASSERT_EQUAL_UINT8(0, t.readout.show_coolant);
 }
 
+// ============================================================
+// ★★ 2026-10-15（主题格式修订 R2）：转速/速度的大数字颜色**拆开**
+//    —— `rpm_color` / `speed_color` 两个新键 + "缺键回落 digit_color"。
+//
+// 这一条同时钉住三件容易写漏的事（每一件都属于"错了不会崩、只是颜色不对"）：
+//   ① 两个新键真的被解析（写漏了 → 界面上调半天没反应）；
+//   ② **旧主题文件**（只有 digit_color）回落到**文件里那一份** digit_color ——
+//      不是编译期默认值：老主题把 digit_color 改成过 0x00FF88 的话，
+//      回落后两屏必须还是 0x00FF88，否则"拆开"就悄悄改了老主题的画面；
+//   ③ 回落与**键的书写顺序**无关（JSON 对象成员没有顺序语义，
+//      digit_color 完全可能写在新键后面）。
+// ============================================================
+static void test_readout_rpm_speed_colors(void) {
+  Theme def;
+  theme_set_defaults(def);
+  // ★ 默认值就是 digit_color 的默认值 ⇒ **不设这两个键时，画面与拆分前逐像素一致**
+  TEST_ASSERT_EQUAL_HEX32_MESSAGE(def.readout.digit_color, def.readout.rpm_color,
+                                  "rpm_color 默认必须 = digit_color 默认");
+  TEST_ASSERT_EQUAL_HEX32_MESSAGE(def.readout.digit_color, def.readout.speed_color,
+                                  "speed_color 默认必须 = digit_color 默认");
+
+  // ---- ① 两个新键都写了：各自生效，且互不相等（真的拆开了）----
+  {
+    const char* json = R"({"theme":{"readout":{
+      "digit_color": 0x111111, "rpm_color": 0xAA0001, "speed_color": 0xBB0002}}})";
+    Theme t;
+    TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+    TEST_ASSERT_EQUAL_HEX32(0xAA0001, t.readout.rpm_color);
+    TEST_ASSERT_EQUAL_HEX32(0xBB0002, t.readout.speed_color);
+    TEST_ASSERT_EQUAL_HEX32(0x111111, t.readout.digit_color);   // 回落值本身不受影响
+  }
+
+  // ---- ② **旧主题**（没有这两个键）：两屏 = 文件里那份 digit_color ----
+  //   这就是"旧主题文件照旧能用"，而且是**逐像素**照旧（不是回到编译期默认）。
+  {
+    const char* old_theme = R"({"theme":{"readout":{"digit_color": 0x00FF88,
+      "unit_color": 0x112233, "digit_cy": 50}}})";
+    Theme t;
+    TEST_ASSERT_TRUE(theme_parse_json(old_theme, (uint32_t)strlen(old_theme), t));
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00FF88, t.readout.rpm_color,
+                                    "旧主题(无 rpm_color)必须回落到**文件里那份** digit_color");
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00FF88, t.readout.speed_color,
+                                    "旧主题(无 speed_color)必须回落到**文件里那份** digit_color");
+    // 同一份文件里的其它字段照旧生效（回落不是"整段重置"）
+    TEST_ASSERT_EQUAL_HEX32(0x112233, t.readout.unit_color);
+    TEST_ASSERT_EQUAL_INT(50, t.readout.digit_cy);
+  }
+
+  // ---- ②b 顺序无关：digit_color 写在两个新键**后面**，回落仍取它 ----
+  {
+    const char* json = R"({"theme":{"readout":{
+      "rpm_color": 0xAA0001, "speed_color": 0xBB0002, "digit_color": 0x00FF88}}})";
+    Theme t;
+    TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+    TEST_ASSERT_EQUAL_HEX32(0xAA0001, t.readout.rpm_color);    // 写了的照旧生效
+    TEST_ASSERT_EQUAL_HEX32(0xBB0002, t.readout.speed_color);
+  }
+  {
+    const char* json = R"({"theme":{"readout":{
+      "rpm_color": 0xAA0001, "digit_color": 0x00FF88}}})";
+    Theme t;
+    TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+    TEST_ASSERT_EQUAL_HEX32(0xAA0001, t.readout.rpm_color);
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00FF88, t.readout.speed_color,
+                                    "只写了一个新键 ⇒ 另一个回落到**后面才出现的** digit_color");
+  }
+
+  // ---- ②c 没有 readout 段：三个颜色都继承默认 ----
+  {
+    const char* json = R"({"theme":{"bg_color": 0x101010}})";
+    Theme t;
+    TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+    TEST_ASSERT_EQUAL_HEX32(def.readout.rpm_color, t.readout.rpm_color);
+    TEST_ASSERT_EQUAL_HEX32(def.readout.speed_color, t.readout.speed_color);
+  }
+
+  // ---- ③ 值写错类型（引号括起来）：走回落，不许留个没赋值的字段 ----
+  {
+    const char* json = R"({"theme":{"readout":{
+      "digit_color": 0x00FF88, "rpm_color": "0xAA0001", "speed_color": 0xBB0002}}})";
+    Theme t;
+    TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00FF88, t.readout.rpm_color,
+                                    "类型不对 ⇒ 当没写，回落 digit_color");
+    TEST_ASSERT_EQUAL_HEX32(0xBB0002, t.readout.speed_color);   // 后面那个照常生效
+  }
+
+  // ---- ③b 不认识的键照旧被跳过（旧固件遇到**将来**再加的键也是这条路）----
+  {
+    const char* json = R"({"theme":{"readout":{
+      "digit_color": 0x00FF88, "future_color": 0x123456, "rpm_color": 0xAA0001}}})";
+    Theme t;
+    TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+    TEST_ASSERT_EQUAL_HEX32(0xAA0001, t.readout.rpm_color);
+    TEST_ASSERT_EQUAL_HEX32(0x00FF88, t.readout.speed_color);
+  }
+}
+
+// ============================================================
+// ★★ 2026-10-15（主题格式修订 R3）：读数**底板的深浅**成了主题键
+//    `readout.plate_opa`（0..255，与既有 track_opa 同一量纲）。
+//
+// 拆它的理由：它原来是 `dash_ui.cpp` 的编译期常量（38 = 15%，车主 50%→30%→15%
+// 三轮刷机定的），车主每调一档就得重编 + 刷两块板。拆成主题键之后：
+//   · 旧主题（没有这个键）→ 缺键默认 **38** ⇒ 真机上底板与今天**逐位一致**；
+//   · 新主题写了 → 按它来（0 = 关掉底板，这是合法值，不许被"兜底"成非零）。
+// ============================================================
+static void test_readout_plate_opa(void) {
+  Theme def;
+  theme_set_defaults(def);
+  // ① 默认值 = 38/255 = 15%（与 R3 之前那个编译期常量逐位相同）
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(38, def.readout.plate_opa,
+                                  "plate_opa 缺省必须 = 38（= 255*15/100，R3 前的常量）");
+  TEST_ASSERT_EQUAL_UINT8(kReadoutPlateOpaDefault, def.readout.plate_opa);
+
+  // ② 新主题写了就按它来（含 0 —— "关掉底板"是合法值，不是错误值）
+  {
+    const char* json = R"({"theme":{"readout":{"plate_opa": 128}}})";
+    Theme t;
+    TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+    TEST_ASSERT_EQUAL_UINT8(128, t.readout.plate_opa);
+  }
+  {
+    const char* json = R"({"theme":{"readout":{"plate_opa": 0}}})";
+    Theme t;
+    TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, t.readout.plate_opa,
+                                    "0 = 底板透明（关掉底板）—— 合法值，不许被兜底成非零");
+  }
+
+  // ③ 旧主题（整份文件里没有这个键）→ 保持默认 38
+  {
+    const char* old_theme = R"({"theme":{"readout":{"digit_color": 0x00FF88},
+      "bg_color": 0x101010}})";
+    Theme t;
+    TEST_ASSERT_TRUE(theme_parse_json(old_theme, (uint32_t)strlen(old_theme), t));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(38, t.readout.plate_opa,
+                                    "旧主题文件照旧：底板还是 15%（38/255）");
+  }
+
+  // ④ 越界值按 uint8_t 截断（与既有 track_opa 逐字同一条路，不是新规矩）
+  {
+    const char* json = R"({"theme":{"readout":{"plate_opa": 300}}})";
+    Theme t;
+    TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)300, t.readout.plate_opa);   // 300 & 0xFF = 44
+  }
+  {
+    const char* json = R"({"theme":{"readout":{"plate_opa": "64"}}})";
+    Theme t;
+    TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(38, t.readout.plate_opa,
+                                    "类型不对 ⇒ 当没写，保持默认 38");
+  }
+}
+
 // 缺 readout → 整体继承默认值(老主题文件必须继续能用)
 static void test_parse_readout_missing_keeps_defaults(void) {
   Theme def;
@@ -251,6 +413,10 @@ static void test_parse_readout_missing_keeps_defaults(void) {
   Theme t;
   TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
   TEST_ASSERT_EQUAL_HEX32(def.readout.digit_color, t.readout.digit_color);
+  // ★ R2 新键在"没有 readout 段"时也继承默认（默认 = digit_color 的默认）
+  TEST_ASSERT_EQUAL_HEX32(def.readout.rpm_color, t.readout.rpm_color);
+  TEST_ASSERT_EQUAL_HEX32(def.readout.speed_color, t.readout.speed_color);
+  TEST_ASSERT_EQUAL_UINT8(def.readout.plate_opa, t.readout.plate_opa);   // R3
   TEST_ASSERT_EQUAL_INT(def.readout.digit_cy, t.readout.digit_cy);
   TEST_ASSERT_EQUAL_INT(def.readout.unit_cy, t.readout.unit_cy);
   TEST_ASSERT_EQUAL_INT(def.readout.coolant_cy, t.readout.coolant_cy);
@@ -605,6 +771,8 @@ void register_theme_store_tests(void) {
   RUN_TEST(test_screen_gauge_mapping);
   RUN_TEST(test_defaults_are_valid);
   RUN_TEST(test_parse_readout);
+  RUN_TEST(test_readout_rpm_speed_colors);
+  RUN_TEST(test_readout_plate_opa);
   RUN_TEST(test_parse_readout_missing_keeps_defaults);
   RUN_TEST(test_clamp_readout);
   RUN_TEST(test_readout_defaults_fit_gap);

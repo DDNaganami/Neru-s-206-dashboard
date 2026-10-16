@@ -320,7 +320,11 @@ static void arc_set_progress(lv_obj_t* arc, const ArcStyle& a, float t) {
 //       （`THEME_REDLINE_ARC_COLOR`，见 ui_theme.h）；
 //     · 速度那条**大数字也一起变红**（速度是右屏主读数，数字红最直观）。
 //   ★ 红色是状态色，**不是主题色** ⇒ 刻意的编译期常量，不进 theme.json
-//     （理由与原来那两个灯条颜色同一条：加字段要升序列化版本号）。
+//     （理由与原来那两个灯条颜色同一条：安全/告警语义不该被主题改没。
+//      ★ 2026-10-15 更正：这里从前写的是"加字段要升序列化版本号" ——
+//      本仓库**没有**主题格式版本号字段，"需要重导"这个后果也不成立，
+//      真正的兼容机制是"按键名寻址 + 缺键继承默认 + 不认识的键跳过"。
+//      见 `lib/themetool/ui_theme.h` 里 Theme 结构体前的说明。）
 //   ★ **不新增任何 LVGL 对象**：只改既有弧对象的两个样式属性（一个 part 的
 //     颜色 + 线宽），层级、顺序、脏区一个字节都不变。
 //   ★ 判据取的是**告警层同一份阈值**（`Alerts::config()` 传进来），不在这里
@@ -594,26 +598,37 @@ static lv_obj_t* make_readout_label(lv_obj_t* parent, const lv_font_t* font,
 //      包围盒 ⇒ 逐帧设样式会让每帧重绘量 ×5、屏上出现**持续横纹/偏移**。
 //      这正是 2026-10-15 那次回归：`inv=` 从 20~26 万涨到 **85.7 万** px²/s
 //      （完整记录见 ACCEPTANCE.md 当天的单）。
-//   ② **不新增主题键**（`lib/themetool/ui_theme.h` 写着 Theme 的字段顺序**就是**
-//      序列化顺序，加字段要升版本号、别人手里已导出的 theme.json 全得重导）
-//      ⇒ 颜色取本文件的编译期常量。与 `THEME_REDLINE_ARC_COLOR` 同一条理由：
+//   ② **色 / pad / radius 不加主题键**（`lib/themetool/ui_theme.h`：加一个键 = 一次
+//      主题格式修订，要同步字段/默认值/解析/取用四处；主题文件是**给别人手改**的东西，
+//      而底片色（近黑）与它的圆角/内边距是"读数看得清"的实现细节，没有可调的意义）
+//      ⇒ 这三样取本文件的编译期常量。与 `THEME_REDLINE_ARC_COLOR` 同一条理由：
 //      "读数要看得清"属于**可读性**，不该是能被主题改没的东西。
+//      ★ 2026-10-15 更正：这里从前写的是"字段顺序就是序列化顺序，加字段要升版本号、
+//      别人手里已导出的 theme.json 全得重导" —— 本仓库**没有**版本号字段，
+//      "全得重导"也不成立（老文件缺新键只走"继承默认"，照旧能读）。
+//      ★ 反过来说：**该给车主调的**颜色就要给（2026-10-15 的 rpm_color/speed_color
+//      就是这么加进来的），"可读性"这条只挡**实现细节色**，不挡主题色。
+//      ★★ 2026-10-15 晚（R3）**深浅**也进了主题：`readout.plate_opa`（0..255，
+//      缺键 → 38 = 15%）。理由与颜色不同：底片的**颜色**是"近黑"这个实现细节
+//      （没有可调的意义），而**深浅**是车主一轮一轮试出来的观感值，每调一档
+//      重编刷两块板不可接受 ⇒ 它必须是主题键。本文件照旧只在建屏时读一次。
 //   ③ 底片**不响应任何状态**：红区/超速只改弧与数字的颜色（见 `arc_apply_red` /
 //      `readout_apply` 里的 digit_red），底片保持中性、一动不动。
 static const uint32_t kReadoutPlateColor  = 0x000000;   // 近黑（屏底色 0x141414 比它浅）
-// ★★ 不透明度：**15%**。
-//   为什么是这个数（**实测定下来的，别再凭"深一点更清楚"往上加**）：
-//   第一版按"50% 起步"刷上板，车主实屏看完的原话是**"底片偏重"** ⇒ 降到 30%；
-//   再看一遍仍嫌重 ⇒ 再降到 **15%**（2026-10-15 晚，50% → 30% → 15% 三档走完）。
-//   车主的口径始终是"数字浮出来即可，**别压住表情**" ⇒ 宁可淡。
-//   还想再淡/再浓**只改这一个数**（10% 一档一档都在：LV_OPA_10/20/30…），
-//   几何、层序、建屏时机都不用动。
-//   ★ 为什么写成算式而不是宏：LVGL 的透明度档**只有 10% 的整数倍**
+// ★★ 不透明度：**现在是主题键**（R3，2026-10-15 车主："底板深浅要能在编辑器里调"）。
+//   为什么变成主题键：车主要一档一档试深浅，而它原来是**编译期常量** ⇒
+//   每调一档都要重编 + 刷两块板。车主的口径是"数字浮出来即可，**别压住表情**"。
+//   历史（这个默认值的来历，**实测定下来的**）：第一版按"50% 起步"刷上板，
+//   车主实屏看完的原话是"底片偏重" ⇒ 降到 30%；再看一遍仍嫌重 ⇒ 再降到 **15%**
+//   （2026-10-15 晚，50% → 30% → 15% 三档走完）。
+//   ★ 15% 换算成 LVGL 的 opa 域 = `255 × 15 / 100 = 38`（与 LV_OPA_30=76 同一个
+//     口径：截断取整）；LVGL 的透明度档**只有 10% 的整数倍**
 //     （`_lv_opacity_level_t`：LV_OPA_10=25 / LV_OPA_20=51 / LV_OPA_30=76 …
-//      —— **没有 LV_OPA_15**）⇒ 15% 按它自己的换算口径写出来：
-//     255 × 15 / 100 = **38**（与 LV_OPA_30=76 同一个口径：截断取整）。
-//     38 > LV_OPA_MIN(2) ⇒ 不会被当成全透明；也远小于 LV_OPA_MAX(253) ✓。
-static const lv_opa_t kReadoutPlateOpa    = (lv_opa_t)(255 * 15 / 100);  // 15% = 38
+//      —— **没有 LV_OPA_15**），所以这个数只能按它自己的换算口径写出来。
+//   ★ 这个 38 现在**只定义在 `ui_theme.h` 的 `kReadoutPlateOpaDefault` 一处**
+//     （主题的缺省值）；本文件不再自带一份 —— 两处各写一个数迟早分叉。
+//   ★ 真值来自主题：`READOUT_PLATE_OPA`（= 主题文件里的 `readout.plate_opa`，
+//     缺键时就是 38）。渲染侧**只在建屏时读一次**（见上面铁律 ①：底片是静态对象）。
 static const int32_t  kReadoutPlatePad    = 6;          // 四周内边距(480 基准；要求 4~8px)
 static const int32_t  kReadoutPlateRadius = 10;         // 圆角(480 基准；要求 8~12px)
 
@@ -709,7 +724,9 @@ static lv_obj_t* make_readout_plate(lv_obj_t* parent, const PlateBox& b, int32_t
   lv_obj_remove_flag(p, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_set_size(p, (b.right - b.left) + 2 * pad, (b.bot - b.top) + 2 * pad);
   lv_obj_set_style_bg_color(p, lv_color_hex(kReadoutPlateColor), 0);
-  lv_obj_set_style_bg_opa(p, kReadoutPlateOpa, 0);
+  // ★ 深浅来自**主题**（readout.plate_opa，缺键 → 38 = 15%）。
+  //   本函数只在建屏时被调一次 ⇒ 样式只写一次，绝不是逐帧路径（铁律 ①）。
+  lv_obj_set_style_bg_opa(p, (lv_opa_t)READOUT_PLATE_OPA, 0);
   lv_obj_set_style_radius(p, ts(kReadoutPlateRadius), 0);
   lv_obj_align(p, LV_ALIGN_CENTER, 0, (b.top + b.bot) / 2);
   return p;
@@ -772,10 +789,12 @@ static void build_readout_plates(lv_obj_t* parent, const ScreenTheme& cfg, Scree
   //   可以拿这一行的四个数与弧带几何直接对（弧带内沿在正上方 y=59、
   //   在数字两端更低；副弧最低 y=413）。
   if (main.ok) {
+    // ★ opa 打的是**主题里那个值**（readout.plate_opa）—— 车主调了深浅之后，
+    //   这一行就是"板子到底收到多少"的凭据（日志与编辑器里的数对不上就查这里）。
     dash_logf("plate: screen=%u main x[%d..%d] y[%d..%d] opa=%u r=%d pad=%d\n",
               (unsigned)ui.screen, (int)(main.left - pad), (int)(main.right + pad),
               (int)(main.top - pad), (int)(main.bot + pad),
-              (unsigned)kReadoutPlateOpa, (int)ts(kReadoutPlateRadius), (int)pad);
+              (unsigned)READOUT_PLATE_OPA, (int)ts(kReadoutPlateRadius), (int)pad);
   }
   if (sub.ok) {
     dash_logf("plate: screen=%u sub  x[%d..%d] y[%d..%d]\n",
@@ -784,12 +803,37 @@ static void build_readout_plates(lv_obj_t* parent, const ScreenTheme& cfg, Scree
   }
 }
 
+// ============ ★★ 这一屏大数字的**基础**颜色（2026-10-15，主题格式修订 R2）============
+//
+// 车主："转速/速度现在就拆开" —— 两块屏的主数字原来共用 `readout.digit_color`，
+// 现在各自一个键，**按这一屏的角色取**（不是按屏号、也不是按"哪块板"）：
+//     转速屏（法系布局 = 左屏 = 从板）→ `readout.rpm_color`
+//     速度屏（右屏 = 主板）           → `readout.speed_color`
+// 两块板跑**同一份主题**，各自读自己的那一个 ⇒ 用同一份文件能配出两种颜色。
+//
+// ★ 判据是 `ArcKind`（这一屏的**主读数**是哪条弧），由 `primary_kind()` 给出 ——
+//   与"这一屏显示什么数"是同一个来源，不在这里另判一次屏号。
+// ★ 为什么还要留 digit_color 这一支：万一某份主题把**副表**（水温/进气）摆成该屏
+//   唯一那条弧，主读数就不是转速也不是速度 —— 那时用中立色 digit_color，
+//   不硬塞成"某一块表的颜色"。
+// ★ 它只在**值变化时**被读一次（见 readout_apply 的 digit_red 守卫）——
+//   绝不逐帧调 lv_obj_set_style_text_color：LVGL 的样式 setter 不比较新旧值，
+//   无条件把整个对象标脏 ⇒ 逐帧写样式会让重绘量翻几倍、屏上出持续横纹
+//   （2026-10-15 那次回归，见下面底片那三条铁律的第 ① 条）。
+static uint32_t digit_base_color(ArcKind pk) {
+  if (pk == ArcKind::Rpm)   return READOUT_RPM_COLOR;
+  if (pk == ArcKind::Speed) return READOUT_SPEED_COLOR;
+  return READOUT_DIGIT_COLOR;
+}
+
 static void build_readout(lv_obj_t* parent, const ScreenTheme& cfg, ScreenUi& ui) {
   const ArcKind pk = primary_kind(cfg);
   ui.digit_kind = pk;
 
+  // 初始颜色按**这一屏的角色**取（转速屏/速度屏各一个键）。
+  // ★ 建屏这一次写是安全的：它发生在 dash_ui_init()，不在逐帧路径上。
   ui.digit_lbl = make_readout_label(parent, READOUT_DIGIT_FONT,
-                                    lv_color_hex(READOUT_DIGIT_COLOR), READOUT_DIGIT_CY);
+                                    lv_color_hex(digit_base_color(pk)), READOUT_DIGIT_CY);
   if (READOUT_SHOW_UNITS) {
     // ★ 单位文本**故意留到第一次 readout_apply 才写**(见下面的 unit_set):
     //   建屏时写上,开机扫表那一段就会孤零零挂着个 "rpm" —— 数字出场前
@@ -837,10 +881,13 @@ static void readout_apply(ScreenUi& ui, const ArcDashView& v, bool over_red) {
     //   由调用方按 arc kind 算好传进来，这里不重复判断）。
     //   放在 set_text 之前：颜色与值同一次渲染里一起生效，不会闪一帧旧色。
     //   ★ 只在**变了**的时候碰样式（与 digit_val 同一条纪律）。
+    //   ★ 退出红区时回去的是**这一屏自己的**基础色（转速屏 rpm_color / 速度屏
+    //     speed_color）—— 不是那个共用的 digit_color，否则"红区闪过一次之后
+    //     两屏就变成同一个颜色了"（R2 拆开的意义当场作废）。
     if (ui.digit_red != over_red) {
       ui.digit_red = over_red;
       lv_obj_set_style_text_color(ui.digit_lbl,
-          lv_color_hex(over_red ? THEME_REDLINE_ARC_COLOR : READOUT_DIGIT_COLOR), 0);
+          lv_color_hex(over_red ? THEME_REDLINE_ARC_COLOR : digit_base_color(ui.digit_kind)), 0);
     }
     const int32_t dv = readout_value(ui.digit_kind, v);
     if (dv != ui.digit_val) {          // 只有真的变了才碰 LVGL:读数每秒都在刷,

@@ -118,11 +118,54 @@ struct ScreenTheme {
 //   test_readout_defaults_fit_gap 按这个口径钉着(允许 ≤6px 蹭边、绝不许压表情)。
 // ★ 不要为了"更靠上"把 digit_cy 往前挪 —— 再往上就是明显的"数字骑在弧上"。
 // ============================================================
+// 读数底板不透明度的**默认值**。
+//
+// ★ 这个数**只在这里定义一次**：`theme_set_defaults()` 拿它当缺省（R3 之后它是
+//   主题键 `readout.plate_opa`），`src/dash_ui.cpp` 只读主题宏 `READOUT_PLATE_OPA`，
+//   不再自带一份 —— 两处各写一个数迟早分叉（症状：主题里没写这个键时，真机底板
+//   与"默认值"对不上，而且没人看得出来）。
+// ★ 255 × 15 / 100 = **38**：LVGL 的透明度按 255 计；15% 是车主三轮刷机
+//   （50% → 30% → 15%）定下来的那一档，与 R3 之前 `dash_ui.cpp` 里的
+//   `kReadoutPlateOpa` **逐位相同**。
+static const uint8_t kReadoutPlateOpaDefault = (uint8_t)(255 * 15 / 100);   // 38
+static_assert(kReadoutPlateOpaDefault == 38,
+              "底片默认不透明度必须是 38/255：它就是车主在实屏上定的那一档(15%)，"
+              "改它等于改所有旧主题在真机上的样子");
+
 struct ReadoutTheme {
-  uint32_t digit_color;     // 大数字颜色(转速/速度共用)
+  // ---- ★★ 主题格式修订 R2（2026-10-15，车主："转速/速度现在就拆开"）----
+  //   大数字颜色从"一个共用"拆成**三个字段**（语义见下），字段顺序=序列化顺序这条
+  //   规矩照旧（本结构体的顺序与 theme_store.cpp 的解析顺序一一对应）：
+  //     · digit_color —— **回落值**：转速/速度各自没有自己的键时用它。
+  //       老主题文件里只有这一个键 ⇒ 解析器把 rpm_color / speed_color 都填成它
+  //       （见 theme_store.cpp 的 readout 段），两屏颜色与拆分前**逐像素一致**。
+  //     · rpm_color   —— 转速屏（左屏）大数字。
+  //     · speed_color —— 速度屏（右屏）大数字。
+  //   ★ 哪一屏取哪一个由**这一屏的角色**决定（不是屏号）：渲染侧见
+  //     src/dash_ui.cpp 的 digit_base_color() —— 两块板跑同一份主题，
+  //     各自按自己的表（左=转速、右=速度）取自己的颜色。
+  //   ★ 兼容性（两条都由上面这套"缺键回落 + 不认识的键跳过"保证）：
+  //       旧主题（无这两个键）→ 回落 digit_color ✓
+  //       旧固件（不认识这两个键）→ 跳过，什么都不发生 ✓
+  uint32_t digit_color;     // 大数字颜色(回落值;也是"主读数既非转速也非速度"时的中立色)
+  uint32_t rpm_color;       // 转速屏(左屏)大数字颜色(缺键 → digit_color)
+  uint32_t speed_color;     // 速度屏(右屏)大数字颜色(缺键 → digit_color)
   uint32_t unit_color;      // 单位文字颜色(km/h / rpm)
   uint32_t coolant_color;   // 水温数字颜色(左屏副表)
   uint32_t intake_color;    // 进气温度数字颜色(右屏副表)
+
+  // ---- ★★ 主题格式修订 R3（2026-10-15，车主："底板深浅要能在编辑器里调"）----
+  //   读数底片（大数字/单位/副读数下面那块半透明近黑圆角垫片 —— 见 src/dash_ui.cpp
+  //   的 build_readout_plates）的**不透明度**。
+  //   ★ 量纲 = **0..255**：与主题里**既有**的 opa 键同一个域 —— `ArcStyle::track_opa`
+  //     （解析处 `(uint8_t)u`、渲染处直接喂 LVGL 的 `lv_opa_t`、预览里 `/255`）和
+  //     本文件的 `track_opa` 默认 153 都是这一套。**别在这里再发明 0..100 或 0..1。**
+  //     （编辑器车主模式把它**显示**成百分比，那只是显示，存进文件的仍是 0..255。）
+  //   ★ 默认 **38 = 15%**：与拆出这个键之前那个编译期常量**逐位相同**
+  //     （原来是 `kReadoutPlateOpa = 255*15/100 = 38`）⇒ 主题里不写这个键时，
+  //     屏上底板与今天一模一样（旧主题照旧）。
+  //   ★ 0 = 底板完全透明（相当于关掉底板）；255 = 全不透明（会压住表情，不推荐）。
+  uint8_t  plate_opa;       // 读数底板不透明度 0..255(缺键 → 38 = 15%)
 
   // ★ 字号存的是**档位编号**(0=大数字档、1=单位/副表档),不是点数 ——
   //   点数由 THEME_DISPLAY_RES 查 kReadoutFontTier 决定(见文件末尾那张表)。
@@ -148,7 +191,18 @@ struct ReadoutTheme {
 const lv_font_t* readout_font(uint8_t which);
 
 // 存档:数字读数的转发宏(与其它主题字段同一套用法)
+//
+// ★ 大数字颜色有**三个**入口，用哪一个是"这一屏的角色"说了算（见 dash_ui.cpp
+//   的 digit_base_color()）：
+//     READOUT_RPM_COLOR   —— 转速屏（左屏）大数字
+//     READOUT_SPEED_COLOR —— 速度屏（右屏）大数字
+//     READOUT_DIGIT_COLOR —— **回落值**：上面两个键在主题文件里没有时解析器填进来的
+//                             就是它（见 theme_store.cpp）；主读数既不是转速也不是
+//                             速度时（副表当了唯一那条弧）也用它。
+//   ⇒ 渲染侧**只**按角色取前两个；直译 `READOUT_DIGIT_COLOR` 会让两屏又变成同一个颜色。
 #define READOUT_DIGIT_COLOR   (g_theme.readout.digit_color)
+#define READOUT_RPM_COLOR     (g_theme.readout.rpm_color)
+#define READOUT_SPEED_COLOR   (g_theme.readout.speed_color)
 #define READOUT_UNIT_COLOR    (g_theme.readout.unit_color)
 #define READOUT_COOLANT_COLOR (g_theme.readout.coolant_color)
 #define READOUT_INTAKE_COLOR  (g_theme.readout.intake_color)
@@ -162,9 +216,27 @@ const lv_font_t* readout_font(uint8_t which);
 #define READOUT_SHOW_UNITS    (g_theme.readout.show_units)
 #define READOUT_SHOW_COOLANT  (g_theme.readout.show_coolant)
 #define READOUT_SHOW_INTAKE   (g_theme.readout.show_intake)
+// 读数底板的不透明度（R3 起是主题键；缺键时固件默认 38 = 15%）。
+// ★ 渲染侧**只在建屏时读一次**（底片是静态对象，见 src/dash_ui.cpp 的三条铁律）。
+#define READOUT_PLATE_OPA     (g_theme.readout.plate_opa)
 
 // ---- 主题数据（全部运行时可改） ----
-// 字段顺序即序列化顺序,改动要在 theme_store.cpp 里同步（并升版本号）。
+// 字段顺序即序列化顺序,改动要在 theme_store.cpp 里同步。
+//
+// ★★ 2026-10-15 更正一句**从前写错的话**（原来这里写的是"并升版本号"）：
+//   **本仓库没有"主题格式版本号"这个字段**，也没有任何地方读它 —— 主题分区里
+//   就是一段**裸 JSON 文本**（见 theme_store.h：无包头、无魔数，上限 4KB）。
+//   全库真正存在的版本号只有三处，都不是主题格式：
+//     · `kImageBlobVersion`（image_blob.h）/ `IMAGE_VERSION`（asset-package-core.js）
+//       —— **image.bin 的二进制包头**版本；
+//     · `.golden-hashes.json` 的 `"version"` —— **指纹证据文件**自己的 schema 版本。
+//   兼容性靠的是**按键名寻址**这一套，与版本号无关：
+//     · 缺键     → 继承默认值（theme_parse_json 先 theme_set_defaults 打底）；
+//     · 不认识的键 → 跳过它的值（扫描器的 skipValue），所以旧固件遇到新文件不会炸；
+//     · 加新键   → 只要**缺键时有明确回落**，旧主题文件照旧能用。
+//   ⇒ 加字段的正确做法是：在**本文件**（字段 + 默认值 + 转发宏）、theme_store.cpp
+//     （解析 + 缺键回落）、ui_theme.cpp（钳制，如需要）、src/dash_ui.cpp（取用）
+//     四处同步，并写一条**格式修订注记**（见下面 readout 的"修订 R2"）。
 struct Theme {
   // 全局 / 表情
   uint32_t bg_color;        // 屏幕底色
@@ -252,9 +324,18 @@ inline void theme_set_defaults(Theme& t) {
   // 数字读数。位置见 ReadoutTheme 的说明:干净可用的是 59..120 那 61 像素
   // （弧带内沿 59 → 表情图名义顶边 120）。
   t.readout.digit_color   = 0xFFFFFF;   // 白
+  // ★★ 主题格式修订 R2（2026-10-15）：转速/速度**各自**一个大数字颜色。
+  //   默认值 = `digit_color` 的默认值（直接取它，不写第二遍白）⇒
+  //   主题文件里**不写**这两个键时，两屏大数字的颜色与拆分前**逐像素一致**。
+  t.readout.rpm_color     = t.readout.digit_color;   // 转速屏(左屏)
+  t.readout.speed_color   = t.readout.digit_color;   // 速度屏(右屏)
   t.readout.unit_color    = 0x9AA0A6;   // 灰(单位不该抢数字的注意力)
   t.readout.coolant_color = 0x7CFF6B;   // 与水温弧同色,一眼能对上
   t.readout.intake_color  = 0xFFB020;   // 与进气弧同色(琥珀 —— 速度表主色是蓝,不撞)
+  // ★ 主题格式修订 R3（2026-10-15）：底板深浅成了主题键 `plate_opa`（0..255）。
+  //   默认值取 kReadoutPlateOpaDefault（38 = 15%）⇒ 不写这个键时与 R3 之前
+  //   逐位一致（旧主题在真机上照旧）。
+  t.readout.plate_opa     = kReadoutPlateOpaDefault;
   t.readout.digit_font    = 0;          // 48 号
   t.readout.unit_font     = 1;          // 18 号
   t.readout.sub_font      = 2;          // 24 号(副表读数:车主 2026-09-27 说"字太小")
@@ -373,9 +454,13 @@ void theme_clamp(Theme& t);
 
 // 转速弧**进红区那一段**的颜色 + 加粗量（2026-10-15 新增）。
 // ★ 为什么用**编译期常量**而不是主题键：与原来那两个灯条颜色同一条理由 ——
-//   `Theme` 结构体的字段顺序**就是序列化顺序**（见 theme_store.cpp），
-//   加字段要升版本号、会让别人手里已导出的主题文件全部需要重导；
+//   `Theme` 结构体加一个字段就是一次**主题格式修订**：多一个键，别人手里已导出的
+//   主题文件里没有它（照旧能读，靠缺键继承默认），但"这个值该不该由主题说了算"
+//   是本条要回答的问题；
 //   而"红区要一眼看得见"属于**安全提示**，不该是可以被主题改没的东西。
+//   （★ 2026-10-15 更正：这里从前写的是"加字段要升版本号、会让已导出的主题全部需要
+//     重导" —— 本仓库**没有**版本号字段，"需要重导"这个后果也不成立，见上面
+//     Theme 结构体前的说明。结论不变：安全/可读性颜色不进主题。）
 //   ⇒ 颜色取自既有的红区语义（`FACE_BG_REDLINE` 那一族），加粗量取弧宽的 1/4。
 static const uint32_t THEME_REDLINE_ARC_COLOR = 0xFF4D4D;  // 与红区告警同色
 

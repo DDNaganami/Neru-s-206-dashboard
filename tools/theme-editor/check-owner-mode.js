@@ -83,12 +83,19 @@ const SHELL_CODE = SHELL.replace(/<!--[\s\S]*?-->/g, "");
 //      coolant / intake 两块色板进了车主模式 —— 这两个键**主题里本来就有**
 //      （readout.coolant_color / intake_color，theme_store.cpp 照旧解析），
 //      所以是"把已有的键暴露出来"，**不是新增格式**。
-//      ★ 转速与速度**没有**独立的键（它们共用 digit）⇒ 车主模式里**不许**出现
-//        任何"转速颜色 / 速度颜色"的色板（见 ①c 那一节）。
+//   ★★ 2026-10-15 晚（本单，主题格式修订 R2 + R3）：上面那句"转速与速度**没有**
+//      独立的键（它们共用 digit）"**已经作废** —— 车主下令"转速/速度现在就拆开"，
+//      固件加了两个键（readout.rpm_color / speed_color，缺键回落 digit_color），
+//      编辑器随之把「数字颜色」那一块拆成**转速数字颜色 / 速度数字颜色**两块；
+//      同一天晚上底板深浅也进了主题（readout.plate_opa，0..255，缺键 38 = 15%），
+//      车主模式多一个滑杆（`plate`）。⇒ `digit` 这个标签**不再出现在车主模式里**
+//      （它只剩"老主题缺新键时的回落值"和"高级里那一行"两个身份）。
+//      判据见下面 ①c 那一节（改成断言"它们**存在**"，是这一单的验收点）。
 // ------------------------------------------------------------
-const OWNER_CAPS = ["bg", "arc", "digit", "coolant", "intake", "redline", "overspeed", "face", "save"];
-const OWNER_EXPECT_COUNT = { bg: 1, arc: 4, digit: 1, coolant: 1, intake: 1,
-                             redline: 1, overspeed: 1, face: 1, save: 2 };
+const OWNER_CAPS = ["bg", "arc", "rpm", "speed", "coolant", "intake", "plate",
+                    "redline", "overspeed", "face", "save"];
+const OWNER_EXPECT_COUNT = { bg: 1, arc: 4, rpm: 1, speed: 1, coolant: 1, intake: 1,
+                             plate: 1, redline: 1, overspeed: 1, face: 1, save: 2 };
 const PORT_MARK_EXPECT = 2;
 
 // ------------------------------------------------------------
@@ -277,60 +284,96 @@ section("①b 槽位清单：背景 1 + 表情 10，名称用中文阶段名");
      "不再写「背景不加框选」（车主已推翻这条）");
 }
 
-section("①c 水温 / 进气两块色板：接的是**已有的键**，且转速/速度不许有独立色板");
+section("①c 读数颜色四块板 + 底板深浅：键都在固件里，色板接的就是那些键");
 {
   const src = MERGED;
-  // ① 两块色板接的键必须**主题里本来就有**（不是新键）
+  // ① 四块色板接的键必须**主题里确实有**（都在 theme_store.cpp 里解析）
   const bindC = /ownerColorBind\(\s*"oc-coolant"[\s\S]{0,200}?T\.readout\.coolant_color/.exec(src);
   const bindI = /ownerColorBind\(\s*"oc-intake"[\s\S]{0,200}?T\.readout\.intake_color/.exec(src);
+  const bindR = /ownerColorBind\(\s*"oc-rpm"[\s\S]{0,200}?T\.readout\.rpm_color/.exec(src);
+  const bindS = /ownerColorBind\(\s*"oc-speed"[\s\S]{0,200}?T\.readout\.speed_color/.exec(src);
   ok(!!bindC, "「水温颜色」接 readout.coolant_color");
   ok(!!bindI, "「进气颜色」接 readout.intake_color");
+  ok(!!bindR, "「转速数字颜色」接 readout.rpm_color（R2 新键）");
+  ok(!!bindS, "「速度数字颜色」接 readout.speed_color（R2 新键）");
   // ② 初值来源 = 主题当前值（sync 读的是同一个 getter，不是写死常量）
   ok(/coolant:\s*coolant/.test(src) && /intake:\s*intake/.test(src),
-     "两块色板进了 ownerControls（render 时会被同步成主题当前值）");
-  ok(/ownerControls\.coolant\.sync\(\)/.test(src) &&
-     /ownerControls\.intake\.sync\(\)/.test(src),
-     "renderOwner() 里会同步这两块（高级里改 / 套预设 / 读入主题都会走到）");
-  // ③ 键**确实在主题默认值里**（不是这一单新加的）：对 defaultTheme() 与 theme-default.json
+     "水温/进气两块色板进了 ownerControls（render 时会被同步成主题当前值）");
+  ok(/rpm:\s*rpm/.test(src) && /speed:\s*speed/.test(src),
+     "转速/速度两块色板也进了 ownerControls");
+  for (const k of ["coolant", "intake", "rpm", "speed", "plate"]) {
+    ok(new RegExp("ownerControls\\." + k + "\\.sync\\(\\)").test(src),
+       "renderOwner() 里会同步 " + k + "（高级里改 / 套预设 / 读入主题都会走到）");
+  }
+  // ③ 这些键在**固件解析器**里（权威：lib/themetool/theme_store.cpp）
+  const ts = fs.readFileSync(path.join(REPO, "lib", "themetool", "theme_store.cpp"), "utf8");
+  for (const k of ["coolant_color", "intake_color", "rpm_color", "speed_color", "plate_opa"]) {
+    ok(ts.indexOf('"' + k + '"') >= 0, "theme_store.cpp 解析 " + k);
+  }
+  // ④ ★★ R2 的兼容条款：缺 rpm/speed 时回落到 **digit_color**（旧主题照旧）
+  ok(/if\s*\(!has_rpm_color\)\s*t\.readout\.rpm_color\s*=\s*t\.readout\.digit_color/.test(ts),
+     "theme_store.cpp：缺 rpm_color ⇒ 回落 digit_color");
+  ok(/if\s*\(!has_speed_color\)\s*t\.readout\.speed_color\s*=\s*t\.readout\.digit_color/.test(ts),
+     "theme_store.cpp：缺 speed_color ⇒ 回落 digit_color");
+  // ⑤ 默认值（唯一事实来源 = ui_theme.h / dash_ui.cpp）
+  const h = fs.readFileSync(path.join(REPO, "lib", "themetool", "ui_theme.h"), "utf8");
+  ok(/t\.readout\.rpm_color\s*=\s*t\.readout\.digit_color/.test(h),
+     "ui_theme.h：rpm_color 默认 = digit_color 的默认（不设时与拆分前一致）");
+  ok(/t\.readout\.speed_color\s*=\s*t\.readout\.digit_color/.test(h),
+     "ui_theme.h：speed_color 默认 = digit_color 的默认");
+  ok(/kReadoutPlateOpaDefault\s*=\s*\(uint8_t\)\(255 \* 15 \/ 100\)/.test(h),
+     "ui_theme.h：底板缺省 = 255*15/100 = 38/255（与拆出来之前逐位相同）");
+  // ⑥ 键**确实在页面默认值里**（defaultTheme() 与 theme-default.json 两处都要有）
   const dFn = /function defaultTheme\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
   ok(!!dFn, "合并后的页面里有 defaultTheme()");
   const d = new Function(dFn[1].replace(/^\s*return\s*/, "return "))();
-  eq(typeof d.readout.coolant_color, "number", "defaultTheme().readout.coolant_color 本来就有");
-  eq(typeof d.readout.intake_color, "number", "defaultTheme().readout.intake_color 本来就有");
-  const tpl = JSON.parse(fs.readFileSync(path.join(dir, "theme-default.json"), "utf8")
-    .replace(/0x([0-9a-fA-F]+)/g, (m, h) => String(parseInt(h, 16))));
-  const tplTheme = tpl.theme || tpl;
-  eq(tplTheme.readout.coolant_color, d.readout.coolant_color,
-     "theme-default.json 的 coolant_color 与页面默认值一致");
-  eq(tplTheme.readout.intake_color, d.readout.intake_color,
-     "theme-default.json 的 intake_color 与页面默认值一致");
-  // ④ 固件解析器认得这两个键（权威：lib/themetool/theme_store.cpp）
-  const ts = fs.readFileSync(path.join(REPO, "lib", "themetool", "theme_store.cpp"), "utf8");
-  ok(ts.indexOf('"coolant_color"') >= 0, "theme_store.cpp 解析 coolant_color");
-  ok(ts.indexOf('"intake_color"') >= 0, "theme_store.cpp 解析 intake_color");
-  // ⑤ ★★ 转速 / 速度**不许**有独立色板（键不存在；要做得改固件 + 升版本）
-  const ownerTheme = src.slice(src.indexOf('id="owner-theme"'), src.indexOf('id="owner-images"'));
-  for (const bad of ["oc-rpm", "oc-speed", "转速颜色", "速度颜色", "rpm_color", "speed_color"]) {
-    ok(ownerTheme.indexOf(bad) < 0,
-       "车主模式配色区里**没有**「" + bad + "」（转速/速度共用 digit_color）");
+  for (const k of ["coolant_color", "intake_color", "rpm_color", "speed_color", "plate_opa"]) {
+    eq(typeof d.readout[k], "number", "defaultTheme().readout." + k + " 有默认值");
   }
-  // 固件侧**确实没有**这两个键（所以"加色板"不是漏做，是不能做）
-  ok(ts.indexOf('"rpm_color"') < 0 && ts.indexOf('"speed_color"') < 0,
-     "theme_store.cpp 里没有 rpm_color / speed_color（键不存在）");
-  // ⑥ ★ 那句说明必须在（一句话、不是控件）
-  ok(/转速与速度目前共用「数字颜色」/.test(ownerTheme),
-     "配色区里有一句话说明「转速与速度目前共用『数字颜色』」");
-  ok(/需要一次固件改动/.test(ownerTheme), "那句话点明「要拆开需要一次固件改动」");
+  const tpl = JSON.parse(fs.readFileSync(path.join(dir, "theme-default.json"), "utf8")
+    .replace(/0x([0-9a-fA-F]+)/g, (m, h2) => String(parseInt(h2, 16))));
+  const tplTheme = tpl.theme || tpl;
+  for (const k of ["coolant_color", "intake_color", "rpm_color", "speed_color", "plate_opa"]) {
+    eq(tplTheme.readout[k], d.readout[k], "theme-default.json 的 " + k + " 与页面默认值一致");
+  }
+  // ⑦ ★ 那句说明必须在（一句话、不是控件），而且**口径已更新**
+  ok(/转速与速度的数字颜色已各自独立/.test(src),
+     "配色区里有一句话说明「转速与速度的数字颜色已各自独立」");
+  ok(!/目前共用「数字颜色」/.test(src),
+     "上一单那句「目前共用『数字颜色』」已经删掉（它随本单作废）");
   // 那句话附近**不许**冒出色板/滑块（说明归说明，别顺手做成控件）
+  const ownerTheme = src.slice(src.indexOf('id="owner-theme"'), src.indexOf('id="owner-images"'));
   const legend = /<div class="note"[^>]*data-ocap="legend"[^>]*>([\s\S]*?)<\/div>/.exec(ownerTheme);
   ok(!!legend, "那行说明带 data-ocap=\"legend\" 标记（便于本脚本点名）");
   if (legend) {
     ok(!/<input|<select|<button/.test(legend[1]),
        "说明那一行里没有 input/select/button（是纯文字）");
   }
-  // ⑦ 高级里那两行也还在（一份状态两处显隐）
+  // ⑧ 底板深浅那一行：滑杆的域必须是**主题文件的 0..255**，不是百分比
+  const plateRow = /<div class="row" data-ocap="plate">([\s\S]*?)<\/div>/.exec(ownerTheme);
+  ok(!!plateRow, "车主模式里有 data-ocap=\"plate\" 那一行（数字底板深浅）");
+  if (plateRow) {
+    ok(/id="oc-plate"/.test(plateRow[1]) && /type="range"/.test(plateRow[1]),
+       "底板那一行是一个滑杆 #oc-plate");
+    ok(/min="0"[^>]*max="255"/.test(plateRow[1]) || /max="255"[^>]*min="0"/.test(plateRow[1]),
+       "滑杆的域是 0..255（与主题键 plate_opa 同一量纲，不是百分比）");
+    ok(/id="oc-plate-pct"/.test(plateRow[1]), "旁边有百分比显示 #oc-plate-pct（只是给人看）");
+  }
+  ok(/ownerOpaBind\(\s*"oc-plate"[\s\S]{0,160}?T\.readout\.plate_opa/.test(src),
+     "底板滑杆接的是 readout.plate_opa");
+  ok(/Math\.round\(v \* 100 \/ 255\)/.test(src),
+     "百分比是按 255 域换算出来的（38 ⇒ 15%），不是把文件里的数当百分比");
+  // ⑨ 高级里那几行也都在（一份状态两处显隐）
   ok(/colorRow\(wrap,\s*"水温（左屏）"/.test(src), "高级里仍有「水温（左屏）」色板");
   ok(/colorRow\(wrap,\s*"进气温度（右屏）"/.test(src), "高级里仍有「进气温度（右屏）」色板");
+  ok(/colorRow\(wrap,\s*"大数字 · 转速（左屏）"/.test(src),
+     "高级里也有「大数字 · 转速（左屏）」那一行");
+  ok(/colorRow\(wrap,\s*"大数字 · 速度（右屏）"/.test(src),
+     "高级里也有「大数字 · 速度（右屏）」那一行");
+  ok(/colorRow\(wrap,\s*"大数字 · 回落值（两屏共用）"/.test(src),
+     "高级里保留了 digit_color 的入口（它是缺键回落值，不是死键）");
+  ok(/opaRow\(wrap,\s*"读数底板深浅/.test(src),
+     "高级里也有底板深浅那一行（opaRow 与弧的「轨道透明」共用同一个控件）");
 }
 
 section("② 车主模式是**默认**（没记录时进车主模式，不是高级）");
@@ -583,6 +626,11 @@ section("⑨ 3 个预设写进**现有主题状态**（当前默认 / 夜间 / �
     ok(/T\.bg_color\s*=/.test(m[1]), "预设写 bg_color");
     ok(/value_color\s*=/.test(m[1]), "预设写弧的 value_color");
     ok(/digit_color\s*=/.test(m[1]), "预设写 readout.digit_color");
+    // ★★ 2026-10-15（R2）：预设还必须写 rpm_color / speed_color ——
+    //   只写 digit_color 的话屏上大数字**一点都不会变**（渲染侧按角色取
+    //   rpm/speed），症状很像"预设按钮坏了"。
+    ok(/rpm_color\s*=/.test(m[1]), "预设写 readout.rpm_color（拆开之后必须写）");
+    ok(/speed_color\s*=/.test(m[1]), "预设写 readout.speed_color（同上）");
     const def = /id:\s*"default"[\s\S]*?apply:[\s\S]*?\}\s*\}/.exec(m[1]);
     ok(!!def && /defaultTheme\(\)/.test(def[0]),
        "「当前默认」预设从 defaultTheme() 取（不抄一份数字）");
@@ -652,7 +700,7 @@ section("⑫ 槽位文案用**中文阶段名**（从 face-stages.js 取，不�
   ok(!/\[\s*"怠速"\s*,\s*"巡航"/.test(src), "页面里没有手抄一串阶段名");
 }
 
-section("⑬ 打包产物与改动前**逐字节相同**（.golden-hashes.json 指纹）");
+section("⑬ 打包产物指纹（.golden-hashes.json）—— R2/R3 之后**主题段该变、图片段不该变**");
 {
   const goldenPath = path.join(dir, ".golden-hashes.json");
   ok(fs.existsSync(goldenPath), "指纹文件存在（.golden-hashes.json）");
@@ -669,54 +717,73 @@ section("⑬ 打包产物与改动前**逐字节相同**（.golden-hashes.json �
                      "imageBinBytes", "imageBinSha256",
                      "assetsBinBytes", "assetsBinSha256",
                      "assetsBinImagePageThemeBytes", "assetsBinImagePageThemeSha256"]) {
-      eq(cur[k], g[k], "指纹未变：" + k);
+      eq(cur[k], g[k], "指纹自洽（文件里的值 = 重算的值）：" + k);
     }
     // 指纹里的字节数要自洽（防止有人把生成器改成"什么都算同一个哈希"）
     ok(g.assetsBinBytes > g.imageBinBytes, "容器比 image 段长（自洽性）");
     ok(g.assetsBinBytes === g.assetsBinImagePageThemeBytes, "两种主题的容器长度相同（theme 段是定长）");
     ok(g.assetsBinSha256 !== g.assetsBinImagePageThemeSha256,
        "两种主题的容器哈希**不同**（说明指纹真的在算字节，不是常量）");
-    // ★ 三个"红线 sha"也逐条点名（车主那一单只关心这三个）
+    // ★★ 三处 sha **逐条点名钉死**（值本身不许动 —— 要动就是"格式改了"，
+    //   必须在 make-golden-hashes.js 那段说明里写清原因与新值）：
+    //   2026-10-15 晚 R2（rpm_color/speed_color）+ R3（plate_opa）：
+    //     · themeJson / imageEditorThemeJson **有意变更**（多三个键）；
+    //     · imageBin **不变**（与图片无关）；
+    //     · assetsBin **必须变** —— 它是"主题段 + image 段"的整包，
+    //       主题段就在里面（取证见 make-golden-hashes.js 顶上那一段：
+    //       差异全部落在 [0, 0x4000) 主题段内，[0x4000,end) 逐字节相同）。
     eq(g.themeJsonSha256,
-       "2cf2c42432c211fb62aa05252a47ad7576278f2983e1f1bc5db67e3da439445b",
-       "theme.json 的指纹与改动前一致");
+       "1dcc7d40e7a77a090132c494f796d4a864557d4ce02d612310459948226efa2e",
+       "theme.json 的指纹（R2+R3 之后的新值）");
     eq(g.imageBinSha256,
        "24fc3c873d5c5641720f687f2edfd719d525db0f361ba23f357b40679dda783c",
-       "image.bin 的指纹与改动前一致");
+       "image.bin 的指纹**与改动前一致**（这一单与图片无关）");
     eq(g.assetsBinSha256,
-       "63fe3276be21c5cebd1031dcfcdbab8ff1806dd19f2fb1869655863663293271",
-       "assets.bin 的指纹与改动前一致");
+       "96e02893fdbf3aa4e49711bb1b3519cf4409183a2f7d43aeaed608f1c087747f",
+       "assets.bin 的指纹（整包含主题段 ⇒ 随 theme.json 一起变；image 段逐字节未动）");
     // 刷写命令的形状（端口可改、偏移 0x210000）
     ok(/^python -m esptool --chip \S+ --port COM6 --baud \d+ write_flash 0x210000 assets\.bin$/
          .test(g.flashCommand), "指纹里的刷写命令形状正确：" + g.flashCommand);
   }
 }
 
-section("⑭ 不改固件 / 不改内核产物");
+section("⑭ 图片那一半的字节布局定义者：一个字都没动");
 {
-  // 这条断言的是"**产物格式那一层**没被碰"：字节布局的定义者（theme-json /
-  // image-blob-build / asset-package-core / face-stages = 与固件同源的那张表）
-  // 以及固件源码，一律不许出现在 git 的改动列表里。
-  //   ★ asset-spec.js **不在**这个名单里 —— 它只放"上传前的规格与文案"，
-  //     不进任何字节（它对字节的唯一影响是"收不收这张图"）。2026-10-15 加 WebP
-  //     的像素级 alpha 判据时改的就是它（那是**判据**，不是格式）。
-  //   ★ 真正的字节证据是 .golden-hashes.json 那一节（⑬）——这里只是"谁被动过"。
+  // ★★ 2026-10-15 晚（R2/R3）**改了这条守卫的口径**（旧口径见下面那段注释）：
+  //   上一单的红线是"不动任何产物格式"，所以旧版把 `theme-json.js`、`lib/`、`src/`
+  //   一起列进"不许出现在 git 改动里"。本单**有意**扩了主题格式（两个颜色键 +
+  //   一个底板深浅键）⇒ 那三处**本来就该改**，再用旧口径就会把"做对了"判成红。
+  //   现在它只钉**图片那一半**（车主的红线原话：`asset-package-core.js` /
+  //   `image-blob-build.js` / `asset-spec.js` / `face-stages.js` 一行都不许动）。
+  //   ★ 主题那一半的证据在 ⑬：三个 sha 逐条点名（变没变、为什么变都写在那儿），
+  //     比"git status 里有没有这个文件名"结实。
   const { execFileSync } = require("child_process");
   let changed = null;
   try {
     changed = execFileSync("git", ["status", "--porcelain", "--",
-      "tools/theme-editor/theme-json.js",
       "tools/theme-editor/image-blob-build.js",
       "tools/theme-editor/asset-package-core.js",
       "tools/theme-editor/face-stages.js",
-      "tools/theme-editor/theme.json",
-      "lib", "src"], { cwd: REPO, encoding: "utf8" });
+      "tools/theme-editor/theme.json"], { cwd: REPO, encoding: "utf8" });
   } catch (e) { changed = null; }
   if (changed === null) {
     console.log("  - 不是 git 仓库（或 git 不可用），这条跳过");
   } else {
-    eq(changed.trim(), "", "字节布局的定义者（三个内核 + face-stages + 固件）都没改动");
+    eq(changed.trim(), "",
+       "图片的字节布局定义者（image-blob-build / asset-package-core / face-stages）没改动");
   }
+  // ★ 主题格式那一半：这一单**必须**动过（那几个键 + 解析 + 取用都在）
+  //   —— 判据用**源码内容**而不是 git 状态：提交之后 git 状态就干净了，
+  //     而"这几个键在不在"才是这条要守的东西。
+  const tsSrc2 = fs.readFileSync(path.join(REPO, "lib", "themetool", "theme_store.cpp"), "utf8");
+  const uiSrc2 = fs.readFileSync(path.join(REPO, "src", "dash_ui.cpp"), "utf8");
+  ok(tsSrc2.indexOf('"rpm_color"') >= 0 && tsSrc2.indexOf('"speed_color"') >= 0,
+     "主题格式扩了：theme_store.cpp 解析 rpm_color / speed_color");
+  ok(uiSrc2.indexOf("digit_base_color(") >= 0,
+     "渲染侧按屏的角色取色（dash_ui.cpp 的 digit_base_color）");
+  //   ★ asset-spec.js **不在**上面那个名单里 —— 它只放"上传前的规格与文案"，
+  //     不进任何字节（它对字节的唯一影响是"收不收这张图"）。2026-10-15 加 WebP
+  //     的像素级 alpha 判据时改的就是它（那是**判据**，不是格式）。
   // asset-spec.js 可以改，但**不许改"哪些格式能用"以外的东西**：
   //   它必须仍然把 WebP 当"可以带 alpha"的格式（不是把它们错标成没有）
   const AS = require(path.join(dir, "asset-spec.js"));

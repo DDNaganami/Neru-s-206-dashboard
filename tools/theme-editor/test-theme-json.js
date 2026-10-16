@@ -383,46 +383,122 @@ section("读数颜色:合并后的页面 vs ui_theme.h / dash_ui.cpp");
   const imgSrc = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
 
   // ---- 1) 固件默认值(唯一事实来源) ----
+  //   ★ 两种写法都要认（2026-10-15 R2/R3 起）：
+  //     `t.readout.digit_color = 0xFFFFFF;`            —— 直接给数
+  //     `t.readout.rpm_color   = t.readout.digit_color;` —— **默认值 = 另一个键**
+  //     `t.readout.plate_opa   = kReadoutPlateOpaDefault;` —— **默认值 = 头文件里的常量**
+  //       （"默认值只定义一处"就是这么写的；测试要么解引用、要么把这里写成数字，
+  //        后者等于把固件的那一处定义抄成两份 —— 所以这里解引用。）
+  //     漏解的症状：FW_KEYS 少一个键，而**少掉的键没人报错**。
   const fw = {};
-  const fwRe = /t\.readout\.(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)/g;
+  const fwRef = {};
+  const fwSym = {};
+  const fwRe = /t\.readout\.(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+|t\.readout\.\w+|[A-Za-z_]\w*)/g;
   let r;
-  while ((r = fwRe.exec(hSrc)) !== null) fw[r[1]] = Number(r[2]);
-  const FW_KEYS = ["digit_color", "unit_color", "coolant_color", "intake_color",
+  while ((r = fwRe.exec(hSrc)) !== null) {
+    if (/^t\.readout\./.test(r[2])) fwRef[r[1]] = r[2].replace("t.readout.", "");
+    else if (/^[A-Za-z_]/.test(r[2])) fwSym[r[1]] = r[2];
+    else fw[r[1]] = Number(r[2]);
+  }
+  for (let round = 0; round < 4; round++) {          // 引用链最多解四层，够用
+    for (const k of Object.keys(fwRef)) {
+      if (typeof fw[fwRef[k]] === "number") { fw[k] = fw[fwRef[k]]; delete fwRef[k]; }
+    }
+  }
+  // 符号常量（`kReadoutPlateOpaDefault = (uint8_t)(255 * 15 / 100);`）：去头文件里
+  // 找它的定义，**照着固件那句算式算**（只允许数字/括号/四则运算）。
+  const evalFwExpr = (expr) => {
+    if (!/^[-+*/()0-9.\s]+$/.test(expr)) return null;
+    try { return Math.trunc(new Function("return (" + expr + ");")()); }
+    catch (e) { return null; }
+  };
+  for (const k of Object.keys(fwSym)) {
+    const sym = fwSym[k];
+    const cast = new RegExp("\\b" + sym + "\\s*=\\s*\\([A-Za-z_0-9]*\\)\\s*\\(([^;]*?)\\)\\s*;")
+      .exec(hSrc);
+    const plain = cast ? null : new RegExp("\\b" + sym + "\\s*=\\s*([-+*/()0-9.\\s]+?)\\s*;")
+      .exec(hSrc);
+    const v = evalFwExpr(cast ? cast[1] : (plain ? plain[1] : ""));
+    if (v === null) continue;
+    fw[k] = v;
+    delete fwSym[k];
+  }
+  ok(Object.keys(fwRef).length === 0 && Object.keys(fwSym).length === 0,
+     "ui_theme.h 里每个 readout 默认值都能解到具体数字（没解开的：" +
+     Object.keys(fwRef).concat(Object.keys(fwSym)).join(",") + "）");
+  const FW_KEYS = ["digit_color", "rpm_color", "speed_color", "plate_opa",
+                   "unit_color", "coolant_color", "intake_color",
                    "digit_font", "unit_font", "sub_font", "digit_cy", "unit_cy",
                    "coolant_cy", "intake_cy", "show_units", "show_coolant", "show_intake"];
   eq(Object.keys(fw).length, FW_KEYS.length,
      "ui_theme.h 里解析出 " + FW_KEYS.length + " 个读数默认值(得到 " +
      Object.keys(fw).length + ")");
 
-  const COLOR_KEYS = ["digit_color", "unit_color", "coolant_color", "intake_color"];
+  const COLOR_KEYS = ["digit_color", "rpm_color", "speed_color",
+                      "unit_color", "coolant_color", "intake_color"];
+  const OPA_KEYS = ["plate_opa"];
   eq(fw.digit_color, 0xFFFFFF, "固件默认:大数字白");
   eq(fw.unit_color, 0x9AA0A6, "固件默认:单位灰");
   eq(fw.coolant_color, 0x7CFF6B, "固件默认:水温数字 = 水温弧色");
   eq(fw.intake_color, 0xFFB020, "固件默认:进气温度数字 = 进气弧色");
-  // ★ 这四个数就是"向后兼容"的**定义**:老主题没有 readout 时,固件与编辑器
+  // ★★ R2：转速/速度**各自**一个键，默认值 = digit_color 的默认值
+  //   ⇒ "主题里不写这两个键"与"拆开之前"是同一个画面。
+  eq(fw.rpm_color, fw.digit_color, "固件默认:转速数字 = digit_color(两者都不设时一致)");
+  eq(fw.speed_color, fw.digit_color, "固件默认:速度数字 = digit_color");
+  // ★★ R3：底板不透明度 0..255（与既有 track_opa 同量纲），默认 38 = 15%
+  eq(fw.plate_opa, 38, "固件默认:底板 38/255 = 15%（R3 之前那个编译期常量）");
+  // ★ 这几个数就是"向后兼容"的**定义**:老主题没有 readout 时,固件与编辑器
   //   都用它们 —— 所以它们一改,"老主题看起来和今天一样"这句话就不成立了。
   //   改这里必须是有意的(并且要重新想一遍老主题的观感)。
 
-  // ---- 2) 固件真的把颜色用在读数标签上(dash_ui.cpp) ----
-  for (const k of COLOR_KEYS) {
+  // ---- 2) 固件真的把颜色/深浅用在读数上(dash_ui.cpp) ----
+  //   ★★ R2 起大数字的颜色**按屏的角色取**，不再是"两屏一个 digit_color"：
+  //     判据落在 digit_base_color() 那一个函数里（Rpm → rpm_color、
+  //     Speed → speed_color、其它 → digit_color）。所以这里验的是**那个函数**，
+  //     而不是"某个宏被 lv_color_hex 包了一次"。
+  const dbc = /static uint32_t digit_base_color\(ArcKind pk\)\s*\{([\s\S]*?)\n\}/
+    .exec(cSrc);
+  ok(!!dbc, "dash_ui.cpp 里有 digit_base_color()（决定「这一屏用哪个大数字颜色」）");
+  if (dbc) {
+    ok(/ArcKind::Rpm[\s\S]{0,40}READOUT_RPM_COLOR/.test(dbc[1]),
+       "转速屏取 readout.rpm_color");
+    ok(/ArcKind::Speed[\s\S]{0,40}READOUT_SPEED_COLOR/.test(dbc[1]),
+       "速度屏取 readout.speed_color");
+    ok(/return READOUT_DIGIT_COLOR/.test(dbc[1]),
+       "既非转速也非速度时回落 digit_color（那个键仍然有用，不是死键）");
+  }
+  ok(/lv_color_hex\(digit_base_color\(/.test(cSrc),
+     "建读数标签时用的是 digit_base_color()（不是写死的 READOUT_DIGIT_COLOR）");
+  ok(/digit_base_color\(ui\.digit_kind\)/.test(cSrc),
+     "退出红区时回到的也是**这一屏自己的**基础色（否则红区闪一次两屏就同色了）");
+  for (const k of ["unit_color", "coolant_color", "intake_color"]) {
     ok(cSrc.indexOf("lv_color_hex(READOUT_" + k.toUpperCase() + ")") >= 0,
        "dash_ui.cpp 用 " + k + " 建读数标签");
   }
+  //   ★ R3：底板的深浅也来自主题（不再是自己文件里的常量）
+  ok(/lv_obj_set_style_bg_opa\(p,\s*\(lv_opa_t\)READOUT_PLATE_OPA/.test(cSrc),
+     "dash_ui.cpp 用主题的 READOUT_PLATE_OPA 设底板透明度");
+  ok(!/lv_obj_set_style_bg_opa\(p,\s*kReadoutPlateOpa\b/.test(cSrc),
+     "dash_ui.cpp 不再用自己那个常量设底板透明度（真值只有主题一处）");
 
   // ---- 3) theme-default.json(给人当模板的那份) ----
   const tpl = TJ.themeObject(TJ.parseThemeJson(
     fs.readFileSync(path.join(__dirname, "theme-default.json"), "utf8")));
   ok(!!tpl.readout, "theme-default.json 里有 readout 段");
-  for (const k of COLOR_KEYS) eq(tpl.readout[k], fw[k], "theme-default.json 的 " + k);
+  for (const k of COLOR_KEYS.concat(OPA_KEYS)) {
+    eq(tpl.readout[k], fw[k], "theme-default.json 的 " + k);
+  }
 
   // ---- 4) index.html 的 ARC_FALLBACK.readout ----
   const fb = /const ARC_FALLBACK\s*=\s*\{([\s\S]*?)\n\};/.exec(imgSrc);
   ok(!!fb, "在 index.html 里找到 ARC_FALLBACK");
   const fbObj = new Function("return {" + fb[1].replace(/\/\/[^\n]*/g, "") + "};")();
   ok(!!fbObj.readout, "ARC_FALLBACK 里有 readout 段");
-  for (const k of COLOR_KEYS) eq(fbObj.readout[k], fw[k], "ARC_FALLBACK 的 " + k);
-  eq(Object.keys(fbObj.readout).length, COLOR_KEYS.length,
-     "ARC_FALLBACK.readout 只放四个颜色(位置/开关走 READOUT_LAYOUT,不混进导出的文件)");
+  for (const k of COLOR_KEYS.concat(OPA_KEYS)) {
+    eq(fbObj.readout[k], fw[k], "ARC_FALLBACK 的 " + k);
+  }
+  eq(Object.keys(fbObj.readout).length, COLOR_KEYS.length + OPA_KEYS.length,
+     "ARC_FALLBACK.readout = 六个颜色 + 底板深浅（位置/开关走 READOUT_LAYOUT，不混进导出的文件）");
 
   // ---- 5) 把页面里的读数逻辑抠出来真跑一遍 ----
   //   抠的必须是**页面自己那段源码**(不是在这里抄一份),否则这一节就只是
@@ -448,6 +524,19 @@ section("读数颜色:合并后的页面 vs ui_theme.h / dash_ui.cpp");
     grab(/function drawReadoutLabel\(ctx, W, cy480, text, fontPx, colorHex\)\s*\{[\s\S]*?\n\}/,
          "drawReadoutLabel()"),
     grab(/function drawReadout\(ctx, W, which, sc, st\)\s*\{[\s\S]*?\n\}/, "drawReadout()"),
+    // ★★ 2026-10-15：读数**底板**那几个函数（预览里补的那一层，固件的镜像）。
+    //   抠真源码来跑 —— 与上面那些同一个道理：抄一份就测不出"页面改了"。
+    grab(/const PLATE_COLOR\s*=\s*0x[0-9A-Fa-f]+;/, "PLATE_COLOR"),
+    grab(/const PLATE_PAD\s*=\s*\d+;/, "PLATE_PAD"),
+    grab(/const PLATE_RADIUS\s*=\s*\d+;/, "PLATE_RADIUS"),
+    grab(/const PLATE_OPA\s*=\s*\d+;/, "PLATE_OPA"),
+    grab(/function readoutPlateOpa\(r\)\s*\{[\s\S]*?\n\}/, "readoutPlateOpa()"),
+    grab(/function plateTextInk\(ctx, W, text, fontPx\)\s*\{[\s\S]*?\n\}/, "plateTextInk()"),
+    grab(/function plateGrow\(box, ink, cy480, sPos\)\s*\{[\s\S]*?\n\}/, "plateGrow()"),
+    grab(/function readoutPlateBoxes\(ctx, W, which, sc, st\)\s*\{[\s\S]*?\n\}/,
+         "readoutPlateBoxes()"),
+    grab(/function drawReadoutPlates\(ctx, W, which, sc, st\)\s*\{[\s\S]*?\n\}/,
+         "drawReadoutPlates()"),
     "const ARC_FALLBACK = {" + fb[1] + "};"
   ].join("\n");
   // previewSide()(240 那块板还是 480 档)与 gTheme(当前主题)在页面里是全局量,
@@ -458,7 +547,12 @@ section("读数颜色:合并后的页面 vs ui_theme.h / dash_ui.cpp");
     " readoutFontPx: readoutFontPx, readoutText: readoutText, unitText: unitText," +
     " auxText: auxText, primaryKind: primaryKind, screenHasKind: screenHasKind," +
     " drawReadout: drawReadout, READOUT_LAYOUT: READOUT_LAYOUT," +
-    " READOUT_FONT_PX: READOUT_FONT_PX, ARC_FALLBACK: ARC_FALLBACK };");
+    " READOUT_FONT_PX: READOUT_FONT_PX, ARC_FALLBACK: ARC_FALLBACK," +
+    " PLATE_COLOR: PLATE_COLOR, PLATE_PAD: PLATE_PAD," +
+    " PLATE_RADIUS: PLATE_RADIUS, PLATE_OPA: PLATE_OPA," +
+    " readoutPlateOpa: readoutPlateOpa, plateTextInk: plateTextInk," +
+    " plateGrow: plateGrow, readoutPlateBoxes: readoutPlateBoxes," +
+    " drawReadoutPlates: drawReadoutPlates };");
   const makeApi = (boardPx, theme) => apiFrom(() => boardPx, theme);
   const P480 = makeApi(480, fbObj);
   const P240 = makeApi(240, fbObj);
@@ -515,9 +609,25 @@ section("读数颜色:合并后的页面 vs ui_theme.h / dash_ui.cpp");
     delete oldTheme.readout;
     const a = makeApi(480, oldTheme);
     const filled = a.ensureReadout(oldTheme);        // 页面读主题文件时就是这么补的
-    for (const k of COLOR_KEYS) eq(filled[k], fw[k], "老主题补上的 " + k + " = 固件默认色");
-    eq(Object.keys(filled).length, COLOR_KEYS.length,
-       "只补四个颜色,不往用户文件里塞位置/字号");
+    for (const k of COLOR_KEYS.concat(OPA_KEYS)) {
+      eq(filled[k], fw[k], "老主题补上的 " + k + " = 固件默认值");
+    }
+    eq(Object.keys(filled).length, COLOR_KEYS.length + OPA_KEYS.length,
+       "只补「六个颜色 + 底板深浅」,不往用户文件里塞位置/字号");
+
+    // ★★ R2 的核心兼容条款：老主题里**有 digit_color、没有 rpm/speed**时，
+    //   两个新键必须回落到**文件里那份** digit_color（不是编译期默认白）。
+    //   固件端同一条规则（theme_store.cpp 的 readout 段），这里验编辑器这一侧。
+    const oldColor = { readout: { digit_color: 0x00FF88 } };
+    const filled2 = a.ensureReadout(oldColor);
+    eq(filled2.rpm_color, 0x00FF88, "老主题(只有 digit_color)⇒ rpm_color 回落成它");
+    eq(filled2.speed_color, 0x00FF88, "老主题(只有 digit_color)⇒ speed_color 回落成它");
+    eq(filled2.unit_color, fw.unit_color, "其余颜色照旧走固件默认值");
+    // 顺序反过来的那种（文件里先写新键、digit_color 在别处）不受影响
+    const both = { readout: { rpm_color: 0xAA0001, digit_color: 0x00FF88 } };
+    a.ensureReadout(both);
+    eq(both.readout.rpm_color, 0xAA0001, "写了 rpm_color 就听它的（不被回落覆盖）");
+    eq(both.readout.speed_color, 0x00FF88, "只写了一个新键 ⇒ 另一个回落到 digit_color");
 
     // readout 里只有位置(拿主题编辑器改过位置)时,颜色照样补齐、位置不动
     const partial = { readout: { digit_cy: 90 } };
@@ -560,7 +670,7 @@ section("读数颜色:合并后的页面 vs ui_theme.h / dash_ui.cpp");
     const left = render(def, 0, 480, 480);
     eq(left.length, 3, "左屏默认画三行:大数字 + 单位 + 水温");
     eq(left[0].text, "2730", "左屏大数字 = 转速");
-    eq(left[0].color, "#FFFFFF", "大数字用 digit_color");
+    eq(left[0].color, "#FFFFFF", "左屏大数字用 rpm_color(默认与 digit_color 同值)");
     eq(left[1].text, "rpm", "左屏单位");
     eq(left[1].color, "#9AA0A6", "单位用 unit_color");
     eq(left[2].text, "88°C", "左屏底部 = 水温");
@@ -569,18 +679,37 @@ section("读数颜色:合并后的页面 vs ui_theme.h / dash_ui.cpp");
     const right = render(def, 1, 480, 480);
     eq(right.length, 3, "右屏默认画三行:大数字 + 单位 + 进气温度");
     eq(right[0].text, "62", "右屏大数字 = 车速");
+    eq(right[0].color, "#FFFFFF", "右屏大数字用 speed_color(默认与 digit_color 同值)");
     eq(right[1].text, "km/h", "右屏单位");
     eq(right[2].text, "31°C", "右屏底部 = 进气温度");
     eq(right[2].color, "#FFB020", "进气温度数字用 intake_color");
 
-    // ★ 白底图那一幕:把四个颜色改成深色 → 预览里画出来的就必须是深色
+    // ★★ R2 的核心：两屏的大数字**各自一个颜色** —— 改成两个不同的值，
+    //   预览里就必须画出两个不同的颜色（这是"拆开了"在预览侧的机器证明）。
+    const split = JSON.parse(JSON.stringify(def));
+    split.readout.rpm_color = 0xAA0001;
+    split.readout.speed_color = 0xBB0002;
+    split.readout.digit_color = 0x00FF88;      // 回落值故意取第三个颜色
+    eq(render(split, 0, 480, 480)[0].color, "#AA0001", "转速屏大数字 = rpm_color");
+    eq(render(split, 1, 480, 480)[0].color, "#BB0002", "速度屏大数字 = speed_color");
+    //   主读数既不是转速也不是速度（副表当了唯一那条弧）时用中立的 digit_color
+    const auxOnly = JSON.parse(JSON.stringify(def));
+    auxOnly.readout.digit_color = 0x00FF88;
+    auxOnly.screens = [ { arcs: [ { kind: 2 } ] }, { arcs: [ { kind: 0 } ] } ];
+    eq(render(auxOnly, 0, 480, 480)[0].color, "#00FF88",
+       "副表当了唯一那条弧 ⇒ 大数字用 digit_color(中立回落)");
+
+    // ★ 白底图那一幕:把颜色改成深色 → 预览里画出来的就必须是深色
     const dark = JSON.parse(JSON.stringify(def));
     dark.readout.digit_color = 0x101010;
+    dark.readout.rpm_color = 0x515151;
+    dark.readout.speed_color = 0x616161;
     dark.readout.unit_color = 0x202020;
     dark.readout.coolant_color = 0x303030;
     dark.readout.intake_color = 0x404040;
     const dl = render(dark, 0, 480, 480), dr = render(dark, 1, 480, 480);
-    eq(dl[0].color, "#101010", "改成深色的大数字 → 预览里就是深色");
+    eq(dl[0].color, "#515151", "改成深色的转速数字 → 预览里就是深色");
+    eq(dr[0].color, "#616161", "改成深色的速度数字 → 预览里就是深色");
     eq(dl[1].color, "#202020", "改成深色的单位 → 预览里就是深色");
     eq(dl[2].color, "#303030", "改成深色的水温 → 预览里就是深色");
     eq(dr[2].color, "#404040", "改成深色的进气温度 → 预览里就是深色");
@@ -620,6 +749,101 @@ section("读数颜色:合并后的页面 vs ui_theme.h / dash_ui.cpp");
     const onlyRpm = { screens: [ { arcs: [ { kind: 1 } ] }, { arcs: [ { kind: 0 } ] } ] };
     const one = render(onlyRpm, 0, 480, 480);
     eq(one.length, 2, "左屏只有转速弧 → 只画大数字 + 单位,没有水温行");
+  }
+
+  // ---- 8) ★★ 读数底板（2026-10-15 车主："真机有底板、预览里没有"）----
+  //   两件事一起验：
+  //     ① 常量/量纲与**固件同一套**（真去读固件源码来对，不在这里抄数字）；
+  //     ② 深浅跟着主题 `readout.plate_opa` 走 —— 这就是"能在编辑器里调"的机器证明。
+  {
+    const STAGE8 = { speed: 62.4, rpm: 2734, coolant: 87.6, intake: 31.4 };
+
+    // ① 与固件逐项对齐（颜色/内边距/圆角/缺省深浅）
+    const colorC = /static const uint32_t kReadoutPlateColor\s*=\s*0x([0-9A-Fa-f]+)/
+      .exec(cSrc);
+    const padC = /static const int32_t\s+kReadoutPlatePad\s*=\s*(\d+)/.exec(cSrc);
+    const radC = /static const int32_t\s+kReadoutPlateRadius\s*=\s*(\d+)/.exec(cSrc);
+    ok(!!(colorC && padC && radC), "在 dash_ui.cpp 里找到底板那三个常量");
+    if (colorC && padC && radC) {
+      eq(api.PLATE_COLOR, parseInt(colorC[1], 16), "底板颜色 = 固件的 kReadoutPlateColor");
+      eq(api.PLATE_PAD, Number(padC[1]), "内边距 = 固件的 kReadoutPlatePad");
+      eq(api.PLATE_RADIUS, Number(radC[1]), "圆角 = 固件的 kReadoutPlateRadius");
+    }
+    // 缺省深浅：把固件那句算式**照抄着算**（不是写死 38）
+    const defC = /kReadoutPlateOpaDefault\s*=\s*\(uint8_t\)\(255 \* (\d+) \/ (\d+)\)/
+      .exec(hSrc);
+    ok(!!defC, "在 ui_theme.h 里找到 kReadoutPlateOpaDefault 的算式");
+    if (defC) {
+      const expect = Math.trunc(255 * Number(defC[1]) / Number(defC[2]));
+      eq(api.PLATE_OPA, expect,
+         "缺省深浅 = " + defC[1] + "% 按 LVGL 口径换算 = " + expect);
+      eq(expect, fw.plate_opa, "缺省深浅与 theme_set_defaults 里写的那个数一致");
+    }
+
+    // ② 画出来的东西：颜色 / 透明度 / 块数
+    const plateRender = (theme, which, canvasW, boardPx, baseAlpha) => {
+      const calls = [];
+      const stack = [];
+      const ctx = {
+        fillStyle: "", font: "", textAlign: "", textBaseline: "",
+        globalAlpha: (baseAlpha === undefined) ? 1 : baseAlpha,
+        save() { stack.push(this.globalAlpha); },
+        restore() { if (stack.length) this.globalAlpha = stack.pop(); },
+        beginPath() {}, roundRect() {},
+        fill() { calls.push({ color: this.fillStyle, alpha: this.globalAlpha }); },
+        measureText(t) {
+          return { width: t.length * 20, actualBoundingBoxAscent: 17,
+                   actualBoundingBoxDescent: 3 };
+        }
+      };
+      apiFrom(() => boardPx, theme)
+        .drawReadoutPlates(ctx, canvasW, which, theme.screens[which], STAGE8);
+      return calls;
+    };
+    const theme8 = JSON.parse(JSON.stringify(P480.ARC_FALLBACK));
+    const c1 = plateRender(theme8, 0, 480, 480);
+    eq(c1.length, 2, "左屏画**两块**底板（主读数一块 + 副读数一块）");
+    eq(c1[0].color, "#000000", "底板颜色 = 近黑 0x000000（与固件一致）");
+    eq(Math.round(c1[0].alpha * 255), 38, "缺省深浅 = 38/255 = 15%（与真机同档）");
+
+    theme8.readout.plate_opa = 128;
+    eq(Math.round(plateRender(theme8, 0, 480, 480)[0].alpha * 255), 128,
+       "plate_opa=128 ⇒ 预览里 alpha 就是 128/255（预览跟着主题值变）");
+    theme8.readout.plate_opa = 0;
+    eq(plateRender(theme8, 0, 480, 480)[0].alpha, 0,
+       "plate_opa=0 ⇒ 全透明（= 关掉底板，合法值）");
+    const noKey8 = JSON.parse(JSON.stringify(P480.ARC_FALLBACK));
+    delete noKey8.readout.plate_opa;
+    eq(Math.round(plateRender(noKey8, 0, 480, 480)[0].alpha * 255), 38,
+       "主题里没写 plate_opa ⇒ 用缺省 38（旧主题预览照旧）");
+    eq(Math.round(plateRender(P480.ARC_FALLBACK, 0, 480, 480, 0.5)[0].alpha * 255), 19,
+       "开机动画的整屏 fade=0.5 ⇒ 底板 alpha 也乘 0.5（不是覆盖掉）");
+    //   副表底板跟着"哪屏有那条副弧"走（与 drawReadout 同一处判据）
+    eq(plateRender(noKey8, 1, 480, 480).length, 2, "右屏也是两块（进气温度那块）");
+    const onlyRpm8 = { screens: [ { arcs: [ { kind: 1 } ] }, { arcs: [ { kind: 0 } ] } ],
+                       readout: {} };
+    eq(plateRender(onlyRpm8, 0, 480, 480).length, 1,
+       "左屏只有转速弧 ⇒ 只画主读数那一块（没有水温底板）");
+
+    // ③ 几何：盒子盖住"大数字 + 单位"两条墨迹（坐标 = 相对屏中心，与固件同口径）
+    const fakeCtx = {
+      fillStyle: "", font: "", textAlign: "", textBaseline: "",
+      save() {}, restore() {},
+      measureText(t) {
+        return { width: t.length * 20, actualBoundingBoxAscent: 17,
+                 actualBoundingBoxDescent: 3 };
+      }
+    };
+    const boxes = apiFrom(() => 480, P480.ARC_FALLBACK)
+      .readoutPlateBoxes(fakeCtx, 480, 0, P480.ARC_FALLBACK.screens[0], STAGE8);
+    ok(!!boxes.main && !!boxes.sub, "主/副两块底板的盒子都算出来了");
+    if (boxes.main) {
+      // 大数字中心 = digit_cy - 240 = -152；墨迹上沿 = 中心 - 17
+      eq(boxes.main.top, (fw.digit_cy - 240) - 17, "主底板上沿 = 数字墨迹上沿");
+      eq(boxes.main.bot, (fw.unit_cy - 240) + 3, "主底板下沿 = 单位墨迹下沿");
+      eq(boxes.main.left, -40, "宽度按**最宽形态**量（转速屏 8888 ⇒ 半宽 40）");
+      eq(boxes.main.right, 40, "宽度按最宽形态量（右侧对称）");
+    }
   }
 }
 

@@ -30,6 +30,9 @@
 
     "readout": {
       "digit_color": 0xFFFFFF,
+      "rpm_color": 0xFFFFFF,
+      "speed_color": 0xFFFFFF,
+      "plate_opa": 38,
       "unit_color": 0x9AA0A6,
       "coolant_color": 0x7CFF6B,
       "intake_color": 0xFFB020,

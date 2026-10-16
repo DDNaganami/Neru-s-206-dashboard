@@ -118,6 +118,8 @@
   /* 车主模式某个色板下面那行小字（例如"左屏底部 · 转速屏的副表"）：
      它只是**说清这块色板管哪一格**，不是控件 —— 标签本身仍然是一个 <label>。 */
   .oc-sub{display:block;color:var(--dim);font-size:11px;line-height:1.25;margin-top:1px}
+  /* 底板深浅那一行的百分比读数（只读显示；滑杆的值是主题文件里的 0..255） */
+  .oc-pct{color:var(--dim);font-size:12px;min-width:38px;text-align:right;font-variant-numeric:tabular-nums}
   details.advanced{margin:0;border-bottom:1px solid var(--line)}
   details.advanced > summary{padding:12px 16px;color:var(--accent);font-size:13px;
                              font-weight:600;letter-spacing:.04em;list-style:none}
@@ -378,18 +380,33 @@
         <label id="oc-arc3-lb">静止·超速 弧（内圈）</label>
         <input type="color" id="oc-arc3"><input type="text" id="oc-arc3-txt">
       </div>
-      <div class="row" data-ocap="digit">
-        <label>数字颜色</label>
-        <input type="color" id="oc-digit"><input type="text" id="oc-digit-txt">
+      <!-- ★★ 2026-10-15（车主："转速/速度现在就拆开"）：这里原来是**一个**
+           「数字颜色」，两屏共用（主题键 readout.digit_color）。
+           现在拆成**两块色板**，各接各的主题键：
+             转速数字颜色 → readout.rpm_color   （左屏 = 转速屏 = 从板）
+             速度数字颜色 → readout.speed_color （右屏 = 速度屏 = 主板）
+           ★ 两块板跑**同一份主题**，各自按自己的**角色**取自己的颜色
+             （渲染侧见 src/dash_ui.cpp 的 digit_base_color()）。
+           ★ 老主题里没有这两个键时：显示/使用 **digit_color 的值** ——
+             解析端与编辑器端共用同一条规则（theme_store.cpp 的 readout 段 /
+             theme-json.js 的 applyReadoutFallbacks），所以"拆开"不会改变老主题的画面。
+           ★ 上一单里那句"转速与速度目前共用『数字颜色』、要拆开需要一次固件改动"
+             已经过时 —— 那一次固件改动就是本单，所以那句换成了下面这行说明。 -->
+      <div class="row" data-ocap="rpm">
+        <label>转速数字颜色<span class="oc-sub">左屏 · 转速屏（从板）</span></label>
+        <input type="color" id="oc-rpm"><input type="text" id="oc-rpm-txt">
+      </div>
+      <div class="row" data-ocap="speed">
+        <label>速度数字颜色<span class="oc-sub">右屏 · 速度屏（主板）</span></label>
+        <input type="color" id="oc-speed"><input type="text" id="oc-speed-txt">
       </div>
       <!-- ★★ 2026-10-15（车主问："进气、水温、转速、速度的字体颜色要不要独立出来进行选择"）：
            能**独立**的只有水温与进气这两个 —— 主题里**本来就有**这两个键
            （readout.coolant_color / readout.intake_color，解析器见 theme_store.cpp:
             "coolant_color" / "intake_color" 两行），原来只是没在车主模式暴露出来。
            ⇒ 加两个色板，**不新增任何键、不动任何格式**。
-           ★ 转速与速度**没有**独立的键：它们共用「数字颜色」。要拆开必须改固件
-             （新增 readout 字段 + 升序列化版本），所以这里只放**一句话**说明，
-             不放控件 —— 见下面那行 .note。 -->
+           ★ 转速与速度那时**没有**独立的键（它们共用「数字颜色」）—— 见上面那条注释：
+             本单把它们也拆开了（rpm_color / speed_color），所以这里现在是**四块**色板。 -->
       <div class="row" data-ocap="coolant">
         <label>水温颜色<span class="oc-sub">左屏底部 · 转速屏的副表</span></label>
         <input type="color" id="oc-coolant"><input type="text" id="oc-coolant-txt">
@@ -398,9 +415,24 @@
         <label>进气颜色<span class="oc-sub">右屏底部 · 速度屏的副表</span></label>
         <input type="color" id="oc-intake"><input type="text" id="oc-intake-txt">
       </div>
+      <!-- ★★ 2026-10-15 晚（R3，车主："底板深浅要能在编辑器里调"）：
+           读数底片（数字后面那层半透明近黑圆角垫片）的深浅原来是**固件编译期常量**
+           （38/255 = 15%，车主 50%→30%→15% 三轮刷机定的）⇒ 每调一档都要重编刷两块板。
+           现在它是一个主题键（readout.plate_opa，0..255）。
+           ★ 滑杆的值域就是**文件里的量纲 0..255**（与既有的 track_opa 同一套）；
+             右边那个百分比只是**给人看的**显示（15% = 38/255）。
+           ★ 0% = 底板全透明（= 不要底板）；100% = 全不透明（会压住表情）。 -->
+      <div class="row" data-ocap="plate">
+        <label>数字底板深浅<span class="oc-sub">数字后面那层垫片的浓淡</span></label>
+        <input type="range" id="oc-plate" min="0" max="255" step="1">
+        <span class="oc-pct" id="oc-plate-pct">15%</span>
+      </div>
+      <!-- ★★ 2026-10-15（本单）：这行说明原来说的是"转速与速度目前共用『数字颜色』；
+           要把它们拆开需要一次固件改动" —— 那次固件改动**已经做完**（就是本单），
+           所以换成了现在的说法：四块色板各自独立，老主题按 digit_color 回落。 -->
       <div class="note" style="color:var(--dim);margin:6px 0 0" data-ocap="legend">
-        <b>转速与速度目前共用「数字颜色」</b>；水温、进气各自独立（就是上面两块）。
-        要把转速与速度也拆开，需要一次固件改动（新增读数颜色字段）。
+        <b>转速与速度的数字颜色已各自独立</b>；水温、进气也各自一块（共四块色板）。
+        老主题里没有这两个键时按「数字颜色」显示 —— 与拆开之前**完全一样**。
       </div>
     </section>
 
@@ -925,6 +957,18 @@ function defaultTheme() {
     //   水温在表盘底部。干净可用的竖直区间是 47..120(上边是弧带、下边是表情)。
     readout: {
       digit_color: 0xFFFFFF,
+      // ★★ 2026-10-15（主题格式修订 R2）：转速屏 / 速度屏的**大数字颜色各自独立**。
+      //   字段名必须与 lib/themetool/theme_store.cpp 的 readout 分支逐字一致
+      //   （"rpm_color" / "speed_color"）。
+      //   ★ 默认值 = digit_color 的默认值：主题里**不写**这两个键时，两屏颜色与
+      //     拆分前逐像素一致（固件那边同样按 digit_color 回落）。
+      //   ★ 老主题文件里没有它们 ⇒ 固件与编辑器都回落到文件里那份 digit_color。
+      rpm_color: 0xFFFFFF,     // 转速屏(左屏 = 从板)大数字
+      speed_color: 0xFFFFFF,   // 速度屏(右屏 = 主板)大数字
+      // ★★ 2026-10-15 晚（主题格式修订 R3）：读数**底板的深浅**。
+      //   0..255（与既有的 track_opa 同一量纲；LVGL 的 opa 域）—— 38 = 15%，
+      //   就是 R3 之前 dash_ui.cpp 里那个编译期常量（车主 50%→30%→15% 定的那一档）。
+      plate_opa: 38,           // 缺键 → 38（旧主题在真机上照旧）
       unit_color: 0x9AA0A6,
       coolant_color: 0x7CFF6B,
       intake_color: 0xFFB020,
@@ -1429,6 +1473,14 @@ function unhexOf(s) { return parseInt(String(s).replace("#", ""), 16) & 0xFFFFFF
 // ------------------------------------------------------------
 function ensureReadout(t) {
   if (!t.readout || typeof t.readout !== "object") t.readout = {};
+  // ① **先**按固件那条规则补"缺键回落 digit_color"（theme-json.js 的
+  //    applyReadoutFallbacks，与 theme_store.cpp 的 readout 段同一条语义）。
+  //    ★ 顺序是**反直觉但必须的**：这一步要跑在"按 ARC_FALLBACK 补默认"**之前** ——
+  //      补过之后 `rpm_color` 就已经有数了（编译期默认白），再想回落就无从判断
+  //      "文件里到底写没写"，而老主题里车主设过的 digit_color（例如 0xBF4153）
+  //      会被悄悄换成白色 —— 那正是"拆开会改掉老主题画面"的 bug。
+  ThemeJson.applyReadoutFallbacks(t.readout);
+  // ② 其余缺的字段再按 ARC_FALLBACK 补（单位/水温/进气颜色、底板深浅）。
   const fb = ARC_FALLBACK.readout;
   for (const k of Object.keys(fb)) {
     if (typeof t.readout[k] !== "number") t.readout[k] = fb[k];
@@ -1464,7 +1516,15 @@ function mergeImportedTheme(t) {
   const d = defaultTheme();
   T = Object.assign(d, t);
   T.face = Object.assign(defaultTheme().face, t.face || {});
-  T.readout = Object.assign(defaultTheme().readout, t.readout || {});
+  // ★★ 2026-10-15（R2）：**先按固件那条规则解出"缺键回落值"，再与默认值合并** ——
+  //   顺序反过来（直接 Object.assign(defaultTheme().readout, t.readout)）会让
+  //   defaultTheme() 里那两个新键**先把位置占掉**：老主题文件里只有 digit_color，
+  //   合并之后 rpm_color/speed_color 已经是默认白了，`ensureReadout()` 里的回落
+  //   再也无从判断"文件里到底写没写" ⇒ **车主设过的数字颜色被悄悄换成白色**。
+  //   （这条与固件同语义：theme_store.cpp 的 readout 段也是"文件里那份 digit_color"。）
+  const srcReadout = ThemeJson.applyReadoutFallbacks(
+    (t.readout && typeof t.readout === "object") ? Object.assign({}, t.readout) : {});
+  T.readout = Object.assign(defaultTheme().readout, srcReadout);
   if (!Array.isArray(T.screens) || !T.screens.length) T.screens = defaultTheme().screens;
   for (let i = 0; i < 2; i++) {
     const base = defaultTheme().screens[i];
@@ -1520,8 +1580,19 @@ function loadThemeFromLocal() {
     const rec = ThemeJson.parseThemeJson(text);
     if (rec && rec.v === 2 && rec.theme) {
       // ★ 三方合并:用户没碰过的字段跟着**当前**默认值走
-      if (rec.base) T = ThemeJson.mergeDefaults(rec.base, rec.theme, defaultTheme());
-      else mergeImportedTheme(rec.theme);
+      if (rec.base) {
+        // ★★ 2026-10-15（R2）：**本机记录**可能是"还没有 rpm_color/speed_color 那会儿"
+        //   存的（记录里只有 digit_color）。直接三方合并会让**新默认值先把这两个键
+        //   占掉**，回落再也无从判断 ⇒ 用户当时设的数字颜色看起来被换成了默认白。
+        //   所以先在记录那一份上按固件规则解出回落值，再合并（与导入文件那条同一条路）。
+        const recTheme = Object.assign({}, rec.theme);
+        if (recTheme.readout && typeof recTheme.readout === "object") {
+          recTheme.readout = ThemeJson.applyReadoutFallbacks(Object.assign({}, recTheme.readout));
+        }
+        T = ThemeJson.mergeDefaults(rec.base, recTheme, defaultTheme());
+      } else {
+        mergeImportedTheme(rec.theme);
+      }
       // 合并出来的对象是"纯数据"，但缺字段时仍按默认值兜一层（老记录可能没有 alerts 段）
       if (!T.alerts || typeof T.alerts !== "object") T.alerts = defaultTheme().alerts;
       ensureReadout(T);
@@ -1555,7 +1626,15 @@ const ARC_FALLBACK = {
   //   本页不管它们、也不写进导出的文件,缺失时由**固件**用默认值
   //   (预览画在哪见下面的 READOUT_LAYOUT)。
   readout: {
-    digit_color:   0xFFFFFF,   // 大数字(转速/速度)
+    digit_color:   0xFFFFFF,   // 大数字(回落值:转速/速度各自没设时用它)
+    // ★★ 2026-10-15（R2）：转速屏 / 速度屏的大数字**各自**一个键。
+    //   这两行必须与 defaultTheme().readout 的默认值一致（两边各写一份是既有结构，
+    //   test-theme-json.js 会拿固件默认值对账，抄错只会画成"和真车不一样"）。
+    rpm_color:     0xFFFFFF,   // 转速屏(左)大数字
+    speed_color:   0xFFFFFF,   // 速度屏(右)大数字
+    // ★★ 2026-10-15 晚（R3）：读数底板深浅（0..255；38 = 15%）。这一页也要有 ——
+    //   它是"对着底图看效果"的那一页，底板浓淡直接决定数字看不看得清。
+    plate_opa:     38,
     unit_color:    0x9AA0A6,   // 单位(km/h / rpm)
     coolant_color: 0x7CFF6B,   // 水温数字(左屏底部) —— 与水温弧同色
     intake_color:  0xFFB020    // 进气温度数字(右屏底部) —— 与进气弧同色
@@ -1801,11 +1880,16 @@ function colorRow(parent, label, get, set) {
 // 一行颜色控件现在**弧和读数共用** —— 两边要的就是同一种交互。
 function arcColorRow(parent, label, get, set) { colorRow(parent, label, get, set); }
 
-function arcOpaRow(parent, get, set) {
+// 一行"透明度滑杆 + 数值"（0..255）。
+// ★ 量纲一律 0..255 —— 与主题文件里的 `*_opa`（track_opa / plate_opa）一致。
+//   **不做百分比换算**：文件里存的就是这个数（车主模式那边显示百分比只是给人看，
+//   见 ownerOpaBind 的说明）。
+// ★ 弧的轨道透明与读数底板深浅（2026-10-15 R3）共用它。
+function opaRow(parent, label, get, set) {
   const row = document.createElement("div");
   row.className = "row";
   const lb = document.createElement("label");
-  lb.textContent = "轨道透明";
+  lb.textContent = label;
   const r = document.createElement("input");
   r.type = "range"; r.min = 0; r.max = 255; r.step = 1; r.value = get();
   const v = document.createElement("span");
@@ -1821,6 +1905,10 @@ function arcOpaRow(parent, get, set) {
   row.append(lb, r, v);
   parent.appendChild(row);
 }
+
+// 弧那一块沿用旧名字(调用点都在这页里,改名字没有收益):
+// 「轨道透明」原来就是上面那一行，现在只是把标签留在这里。
+function arcOpaRow(parent, get, set) { opaRow(parent, "轨道透明", get, set); }
 
 // 每条弧一块:点亮色 / 轨道色 / 轨道透明度
 function buildArcEditors() {
@@ -2190,8 +2278,9 @@ function clearSlot(spec, it) {
 // ★★ 车主模式（2026-10-15）—— 两页合并后仍然**默认**进入
 //
 // 车主原话拆出来的口径（逐条对应下面的代码）：
-//   ① 只显示这几件东西：左右圆预览、背景色、四条弧的点亮色、数字颜色、
-//      红区转速、超速、「保存安装包」。
+//   ① 只显示这几件东西：左右圆预览、背景色、四条弧的点亮色、
+//      **四块数字/读数颜色**（转速数字 / 速度数字 / 水温 / 进气）、
+//      **数字底板深浅**（滑杆）、红区转速、超速、「保存安装包」。
 //   ② 「② 图片」分区里给出**槽位清单**（背景 1 + 表情 10），每格能换图/清除；
 //      表情格弹框选、背景格不弹（见 sendFilesToSlot / ownerFaceFiles）。
 //   ③ 「保存安装包」调**现有** asset-package 内核 ⇒ 与手工导出的 assets.bin
@@ -2212,13 +2301,22 @@ function clearSlot(spec, it) {
 //     拼出来的标签检查脚本数不到，而"数不到"会让这条守卫静默失效。
 //   ★ `save` 是 2：合并后**两个分区各有一个「保存安装包」**（车主口径：
 //     两边都要能存）—— 两个按钮都调 saveOwnerPackage()，不是两套打包。
-const OWNER_CAPS = ["bg", "arc", "digit", "coolant", "intake", "redline", "overspeed", "face", "save"];
+//   ★★ 2026-10-15 晚（本单）：`digit` 拆成 `rpm` + `speed` 两块色板
+//     （车主："转速/速度现在就拆开"；主题键 readout.rpm_color / speed_color），
+//     并且多了 `plate`（数字底板深浅，主题键 readout.plate_opa，0..255）。
+//     ⇒ 车主模式配色区现在是**四块颜色**（转速数字 / 速度数字 / 水温 / 进气）
+//       + **一个深浅滑杆**。`digit` 这个标签**不再出现在车主模式里**
+//       （它只剩"老主题缺新键时的回落值 + 高级里那一行"这个身份）。
+const OWNER_CAPS = ["bg", "arc", "rpm", "speed", "coolant", "intake", "plate",
+                    "redline", "overspeed", "face", "save"];
 const OWNER_EXPECT = {
   bg: 1,          // 背景色
   arc: 4,         // 四条弧的点亮色（转速外弧 / 水温内弧 / 车速外弧 / 进气内弧）
-  digit: 1,       // 数字读数颜色（转速与速度**共用**这一个）
+  rpm: 1,         // 转速数字颜色（readout.rpm_color，左屏 = 转速屏 = 从板）
+  speed: 1,       // 速度数字颜色（readout.speed_color，右屏 = 速度屏 = 主板）
   coolant: 1,     // 水温颜色（readout.coolant_color —— 主题里本来就有这个键）
   intake: 1,      // 进气颜色（readout.intake_color  —— 同上）
+  plate: 1,       // 数字底板深浅（readout.plate_opa，0..255；显示成百分比）
   redline: 1,     // 红区转速
   overspeed: 1,   // 超速
   face: 1,        // 图片入口（槽位清单容器：背景 1 + 表情 10）
@@ -2297,6 +2395,31 @@ function ownerSliderBind(id, get, set, min, max, step) {
   return { r: r, n: n, sync: () => { r.value = get(); n.value = get(); } };
 }
 
+// 一行"滑杆 + **百分比读数**"的接线（读数底板的深浅专用；2026-10-15 R3）
+//
+// ★ 滑杆的值域是**主题文件里的量纲 0..255**（与既有的 track_opa 同一套，
+//   见 ui_theme.h 的 plate_opa 注释）—— 右边那个百分比只是**显示**。
+// ★ 为什么不把滑杆做成 0..100：那样每次拖动都要来回换算，两次取整会让
+//   有些值**存不住**（例如把 37 显示成 15%、再拖回来变成 38）。
+//   现在这条路是"文件里的数 = 滑杆的数"，百分比只读不改。
+// ★ 0 = 底板全透明（相当于关掉底板）—— 这是**合法**值，不做兜底。
+function ownerOpaBind(id, get, set) {
+  const r = document.getElementById(id);
+  const p = document.getElementById(id + "-pct");
+  if (!r || !p) return null;
+  const pct = (v) => Math.round(v * 100 / 255) + "%";
+  const commit = (v) => {
+    v = Math.max(0, Math.min(255, Math.round(v)));
+    set(v); r.value = v; p.textContent = pct(v);
+    themeSource = "本页改过（记得导出 theme.json）";
+    forgetThemeSrcBytes();
+    saveThemeToLocal();
+    render(false);
+  };
+  r.addEventListener("input", () => commit(+r.value));
+  return { r: r, p: p, sync: () => { r.value = get(); p.textContent = pct(get()); } };
+}
+
 function buildOwnerControls() {
   if (!document.getElementById("oc-bg")) return;
 
@@ -2312,8 +2435,17 @@ function buildOwnerControls() {
                              () => a.value_color, v => { a.value_color = v; });
     if (r) arcs.push(r);
   });
-  const digit = ownerColorBind("oc-digit", null, null,
-                               () => T.readout.digit_color, v => { T.readout.digit_color = v; });
+  // ★★ 2026-10-15（车主："转速/速度现在就拆开"）：原来这里只有一个 `oc-digit`
+  //   （两屏共用 readout.digit_color），现在拆成**两块**，各接各的键。
+  //   ★ 两块板跑同一份主题、各自按角色取自己的那一个：
+  //     转速屏（左 = 从板）→ rpm_color；速度屏（右 = 主板）→ speed_color。
+  //   ★ 初值就是 `T.readout.*`（车主自己存的那一份）。**老主题里没有这两个键**时，
+  //     `ensureReadout()` 已经按固件同一条规则把它们填成了 digit_color 的值
+  //     （见 theme-json.js 的 applyReadoutFallbacks）⇒ 色板显示的就是"现在真正在用的颜色"。
+  const rpm = ownerColorBind("oc-rpm", null, null,
+                             () => T.readout.rpm_color, v => { T.readout.rpm_color = v; });
+  const speed = ownerColorBind("oc-speed", null, null,
+                               () => T.readout.speed_color, v => { T.readout.speed_color = v; });
   // ★ 水温 / 进气：主题里**本来就有**这两个键（readout.coolant_color / intake_color），
   //   只是原先没在车主模式暴露 ⇒ 车主只能在「高级」里找到它们。
   //   这里只是把它们接到同一个 ownerColorBind —— **不加键、不改格式**。
@@ -2323,6 +2455,11 @@ function buildOwnerControls() {
                                  () => T.readout.coolant_color, v => { T.readout.coolant_color = v; });
   const intake = ownerColorBind("oc-intake", null, null,
                                 () => T.readout.intake_color, v => { T.readout.intake_color = v; });
+  // ★★ 2026-10-15 晚（R3）：数字底板的深浅（readout.plate_opa，0..255）。
+  //   ★ 它接的是**主题键**，不是编译期常量 —— 车主拖一下就能在预览里看到浓淡变化，
+  //     再保存安装包刷进去，不用重编固件（这就是把常量拆成键的理由）。
+  const plate = ownerOpaBind("oc-plate", () => T.readout.plate_opa,
+                             v => { T.readout.plate_opa = v; });
 
   // ---- ② 红区 / 超速（蜂鸣器已删，这两个阈值**仍然生效**）----
   const redline = ownerSliderBind("oc-redline", () => T.alerts.redline_rpm,
@@ -2374,7 +2511,8 @@ function buildOwnerControls() {
     });
   }
 
-  ownerControls = { bg: bg, arcs: arcs, digit: digit, coolant: coolant, intake: intake,
+  ownerControls = { bg: bg, arcs: arcs, rpm: rpm, speed: speed,
+                    coolant: coolant, intake: intake, plate: plate,
                     redline: redline, overspeed: overspeed };
   // ---- ⑥ 客户端里的「写进板子」：接上按钮 + 问一句"本地客户端在不在" ----
   //   接事件**无条件做**（没有客户端时那些按钮点不到，但接线必须在）；
@@ -2394,10 +2532,15 @@ function renderOwner(rebuildSlots) {
   if (!ownerControls) return;
   if (ownerControls.bg) ownerControls.bg.sync();
   (ownerControls.arcs || []).forEach(r => r.sync && r.sync());
-  if (ownerControls.digit) ownerControls.digit.sync();
+  // ★★ 2026-10-15（本单）：转速 / 速度两个色板**各自一块**（原来是 digit 一块管两屏）
+  if (ownerControls.rpm) ownerControls.rpm.sync();
+  if (ownerControls.speed) ownerControls.speed.sync();
   // ★ 水温 / 进气两个色板也要跟着同步（高级里改、套预设、读入主题之后都会走这里）
   if (ownerControls.coolant) ownerControls.coolant.sync();
   if (ownerControls.intake) ownerControls.intake.sync();
+  // ★ 底板深浅（滑杆 + 百分比）：它跟着主题里的 plate_opa 走 —— 拖完滑杆这里
+  //   会把它重新读一遍（值一样，所以不会打架），换主题/套预设之后也会跟上。
+  if (ownerControls.plate) ownerControls.plate.sync();
   if (ownerControls.redline) ownerControls.redline.sync();
   if (ownerControls.overspeed) ownerControls.overspeed.sync();
   if (rebuildSlots) buildOwnerSlots();
@@ -2430,9 +2573,13 @@ function updateOwnerFlash() {
 // ------------------------------------------------------------
 // 3 个预设（当前默认 / 夜间 / 浅底）
 //   ★ 写进**现有主题状态** T（同一批字段：bg_color / 每条弧的 value_color /
-//     readout.digit_color），不新造任何文件格式。
+//     readout.digit_color / rpm_color / speed_color），不新造任何文件格式。
 //   ★ "当前默认" 取 defaultTheme()，不是抄一份数字 —— 固件默认值改了它跟着走。
 //   ★ 预设**只动颜色**，不动角度/半径/量程/告警阈值（那些在高级里）。
+//   ★★ 2026-10-15（R2 拆开转速/速度）：三个预设都必须同时写 rpm_color 与
+//     speed_color —— 只写 digit_color 的话，屏上的大数字**一点都不会变**
+//     （渲染侧按角色取 rpm/speed；digit_color 只剩"缺键回落值"这个身份）。
+//     症状会很像"预设按钮坏了"，所以这三个赋值是一组，别只改一个。
 // ------------------------------------------------------------
 const PRESETS = [
   { id: "default", label: "当前默认",
@@ -2443,6 +2590,8 @@ const PRESETS = [
         if (d.screens[s] && d.screens[s].arcs[i]) a.value_color = d.screens[s].arcs[i].value_color;
       }));
       T.readout.digit_color = d.readout.digit_color;
+      T.readout.rpm_color   = d.readout.rpm_color;
+      T.readout.speed_color = d.readout.speed_color;
     } },
   { id: "night", label: "夜间",
     // 深色底 + 低亮度弧：夜里不晃眼，但仍要能看清刻度
@@ -2453,6 +2602,8 @@ const PRESETS = [
       T.screens[1].arcs[0].value_color = 0x2F7FA8;   // 车速：压暗的青蓝
       T.screens[1].arcs[1].value_color = 0xA9781F;   // 进气：压暗的橙
       T.readout.digit_color = 0xC9D4E4;              // 数字：不用纯白（夜里刺眼）
+      T.readout.rpm_color   = 0xC9D4E4;              // 转速屏
+      T.readout.speed_color = 0xC9D4E4;              // 速度屏
     } },
   { id: "light", label: "浅底",
     // 浅底图/白底图：数字与弧都要够深，否则看不见（这是车主换底图后最常踩的）
@@ -2463,6 +2614,8 @@ const PRESETS = [
       T.screens[1].arcs[0].value_color = 0x12558C;
       T.screens[1].arcs[1].value_color = 0x9A5B00;
       T.readout.digit_color = 0x101418;
+      T.readout.rpm_color   = 0x101418;              // 转速屏
+      T.readout.speed_color = 0x101418;              // 速度屏
     } }
 ];
 
@@ -3034,8 +3187,18 @@ function buildReadoutEditors() {
 
   // 数字与单位**共用一个字号档**却各有各的颜色 —— 单位默认比数字暗
   // (灰 0x9AA0A6),所以底图一换,先看不见的往往是单位那行。
-  colorRow(wrap, "大数字", () => r.digit_color, v => r.digit_color = v);
+  // ★★ 2026-10-15（R2）：大数字原来**一个键管两屏**（digit_color），现在拆成两个
+  //   （rpm_color / speed_color）⇒ 这里两行都要在（高级这一面"一个都不许少"）。
+  //   `digit_color` 那一行**保留**：它仍然是"老主题缺这两个键时的取值"，
+  //   也是"主读数既非转速也非速度（副表当了唯一那条弧）"时的中立色。
+  colorRow(wrap, "大数字 · 转速（左屏）", () => r.rpm_color, v => r.rpm_color = v);
+  colorRow(wrap, "大数字 · 速度（右屏）", () => r.speed_color, v => r.speed_color = v);
+  colorRow(wrap, "大数字 · 回落值（两屏共用）", () => r.digit_color, v => r.digit_color = v);
   colorRow(wrap, "单位 km/h · rpm", () => r.unit_color, v => r.unit_color = v);
+
+  // ★★ 2026-10-15 晚（R3）：读数**底板的深浅**（readout.plate_opa，0..255）。
+  //   它就是读数后面那块半透明近黑垫片的浓淡（真机那一份见 src/dash_ui.cpp 的
+  //   build_readout_plates）—— 0 = 关掉底板，38 = 缺省（15%）。
 
   const head2 = document.createElement("div");
   head2.className = "ro-head";
@@ -3046,6 +3209,11 @@ function buildReadoutEditors() {
   //   虽然它们都用"子表档"的字号 —— 别把这两个合并成一个控件。
   colorRow(wrap, "水温（左屏）", () => r.coolant_color, v => r.coolant_color = v);
   colorRow(wrap, "进气温度（右屏）", () => r.intake_color, v => r.intake_color = v);
+
+  // ★ 底板深浅：一行滑杆（0..255）+ 数值。预览里那块垫片会跟着它立刻变浓变淡 ——
+  //   这就是"把常量拆成主题键"要的效果（车主不用再为了试一档重编固件）。
+  opaRow(wrap, "读数底板深浅（0..255）", () => r.plate_opa, v => r.plate_opa = v);
+
   const sub = document.createElement("div");
   sub.className = "ro-sub";
   sub.textContent = "显示开关 / 字号 / 位置 → 主题编辑器";
@@ -3167,7 +3335,14 @@ function drawReadout(ctx, W, which, sc, st) {
   //   拿到的是设备屏上的点数;按画布缩那一步在 drawReadoutLabel 里。
   const digitPx = readoutFontPx(0), unitPx = readoutFontPx(1), subPx = readoutFontPx(2);
 
-  drawReadoutLabel(ctx, W, L.digit_cy, readoutText(pk, st), digitPx, hexOf(r.digit_color));
+  // ★★ 2026-10-15（R2）：大数字的颜色**按这一屏的角色取**（与固件
+  //   src/dash_ui.cpp 的 digit_base_color() 同一套）：
+  //     转速屏（左，pk=1）→ readout.rpm_color
+  //     速度屏（右，pk=0）→ readout.speed_color
+  //     主读数既不是转速也不是速度（副表当了唯一那条弧）→ digit_color（中立回落）
+  //   ★ 缺键时 ensureReadout 已按 digit_color 补过 ⇒ 老主题预览与以前一模一样。
+  const digitColor = (pk === 1) ? r.rpm_color : ((pk === 0) ? r.speed_color : r.digit_color);
+  drawReadoutLabel(ctx, W, L.digit_cy, readoutText(pk, st), digitPx, hexOf(digitColor));
   const u = unitText(pk);
   if (L.show_units && u) {
     drawReadoutLabel(ctx, W, L.unit_cy, u, unitPx, hexOf(r.unit_color));
@@ -3184,10 +3359,148 @@ function drawReadout(ctx, W, which, sc, st) {
 }
 
 // ============================================================
+// ★★ 读数底板（**预览里的**那一层）—— 固件的**镜像**（2026-10-15）
+//
+// 由来：车主实屏看过之后说"**真机有底板、预览里没有**" —— 预览是浏览器侧
+// 自绘的镜像，底板少画一层，"底板深浅调多少合适"在页面上就完全看不出来。
+//
+// ★★ 这一份必须与固件逐项对齐（改固件请同步改这里，反之亦然）：
+//     固件（src/dash_ui.cpp）                    预览（这里）
+//     kReadoutPlateColor  = 0x000000             PLATE_COLOR
+//     kReadoutPlatePad    = 6 （480 基准）        PLATE_PAD
+//     kReadoutPlateRadius = 10（480 基准）        PLATE_RADIUS
+//     READOUT_PLATE_OPA（主题 readout.plate_opa） readoutPlateOpa()
+//       0..255，缺键 38 = 15%（ui_theme.h 的 kReadoutPlateOpaDefault）
+//     层序：背景图 → 表情 → **底板** → 弧 → 读数（见 drawScreen 的 2.5 步）
+//     范围：**文字墨迹盒**（不是行高盒）+ 内边距；主读数（大数字 + 单位）**合成一块**
+//           （两块半透明叠起来会有一条更深的接缝）；副读数（水温/进气）另算一块。
+//     宽度取**最宽形态**（"8888"/"888"）—— 底板是静态的，不能跟着数值宽窄变化。
+//
+// ★ 两处**测不出来**的差别（写在明处，别以为是 bug）：
+//   · 字形不同：浏览器字体 vs LVGL montserrat ⇒ 墨迹盒只是"像"，不会逐像素相同
+//     （固件那边是 lv_font_get_glyph_dsc 量的真字形，这里是 canvas measureText）；
+//   · 固件的底板是**建屏时创建一次的静态对象**，开机扫表期间它也在（数字是空的）；
+//     预览同样照画（hideReadout 只藏文字，不藏底板）—— 两边行为一致。
+// ============================================================
+// ★★ 镜像常量：名字与固件那三行一一对应（tools/theme-editor/check-preview-plate.js
+//    会**只读**地对账这几个名字 + 值，改固件请同步改这里 —— 名字别随手改）：
+//      PLATE_COLOR  ←→ src/dash_ui.cpp 的 kReadoutPlateColor
+//      PLATE_PAD    ←→ src/dash_ui.cpp 的 kReadoutPlatePad    （480 基准，乘 W/480）
+//      PLATE_RADIUS ←→ src/dash_ui.cpp 的 kReadoutPlateRadius （480 基准）
+//      PLATE_OPA    ←→ lib/themetool/ui_theme.h 的 kReadoutPlateOpaDefault
+//                      （主题键 readout.plate_opa 的**缺省值**，0..255 域）
+const PLATE_COLOR = 0x000000;
+const PLATE_PAD = 6;
+const PLATE_RADIUS = 10;
+const PLATE_OPA = 38;      // = 255*15/100，也就是 R3 之前 dash_ui.cpp 里那个常量
+
+function readoutPlateOpa(r) {
+  return (typeof r.plate_opa === "number") ? r.plate_opa : PLATE_OPA;
+}
+
+// 一段文字在画布上的**墨迹盒**（相对"文字中心"：top 为负、bot 为正、halfW 为正）。
+// 口径与固件的 measure_text() 一致（按字形量，不按行高盒）—— 与 drawReadoutLabel
+// 用同一套 font / textBaseline，所以盒子与画出来的字对齐。
+function plateTextInk(ctx, W, text, fontPx) {
+  const sFont = W / previewSide();
+  const px = Math.max(7, Math.round(fontPx * sFont));
+  ctx.save();
+  ctx.font = px + "px Montserrat, 'Segoe UI', 'Microsoft YaHei', sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const m = ctx.measureText(text);
+  let up, down;
+  if (typeof m.actualBoundingBoxAscent === "number" &&
+      typeof m.actualBoundingBoxDescent === "number") {
+    up = m.actualBoundingBoxAscent;
+    down = m.actualBoundingBoxDescent;
+  } else {
+    // 老浏览器没有 actualBoundingBox*：按比例估（数字的字形高 ≈ 0.72em，
+    // 与固件实测的"48 号墨迹 34 行"同一个量级）—— 宁可略大，也别让底板切到字。
+    up = px * 0.36; down = px * 0.36;
+  }
+  ctx.restore();
+  return { halfW: m.width / 2, top: -up, bot: down };
+}
+
+// 把一段文字的墨迹盒并进底板盒（坐标 = **相对屏中心**的画布像素，与固件同口径）
+function plateGrow(box, ink, cy480, sPos) {
+  const cy = (cy480 - 240) * sPos;      // 固件: ts(cy480 - 240)
+  const l = -ink.halfW, r = ink.halfW, t = cy + ink.top, b = cy + ink.bot;
+  if (!box) return { left: l, right: r, top: t, bot: b };
+  if (l < box.left)  box.left  = l;
+  if (r > box.right) box.right = r;
+  if (t < box.top)   box.top   = t;
+  if (b > box.bot)   box.bot   = b;
+  return box;
+}
+
+// 这一屏的两块底板盒（主读数 / 副读数；没有就是 null）。
+// ★ 判据与 drawReadout 完全一样（同一处：AUX_OF_SCREEN + show_* 开关 +
+//   "副表不能又是这屏的大数字"）—— 两边各写一份的症状是"字有底板、或底板没字"。
+function readoutPlateBoxes(ctx, W, which, sc, st) {
+  const r = ensureReadout(T);
+  const L = readoutLayout(r);
+  const pk = primaryKind(sc);
+  const sPos = W / 480;
+  const digitPx = readoutFontPx(0), unitPx = readoutFontPx(1), subPx = readoutFontPx(2);
+
+  // ---- 主读数：大数字 + 单位**合成一块** ----
+  let main = null;
+  main = plateGrow(main, plateTextInk(ctx, W, pk === 1 ? "8888" : "888", digitPx),
+                   L.digit_cy, sPos);
+  const u = unitText(pk);
+  if (L.show_units && u) {
+    main = plateGrow(main, plateTextInk(ctx, W, u, unitPx), L.unit_cy, sPos);
+  }
+
+  // ---- 副读数：水温（左）/ 进气（右）----
+  let sub = null;
+  const aux = AUX_OF_SCREEN[which];
+  if (aux && pk !== aux.kind && screenHasKind(sc, aux.kind) &&
+      (aux.kind === 2 ? L.show_coolant : L.show_intake)) {
+    const cy = aux.kind === 2 ? L.coolant_cy : L.intake_cy;
+    sub = plateGrow(null, plateTextInk(ctx, W, "888°C", subPx), cy, sPos);
+  }
+  return { main: main, sub: sub };
+}
+
+// 画这一屏的底板。★ 层序：在**表情之后、弧之前**（见 drawScreen 的 2.5 步）——
+//   固件的建对象顺序就是"表情 → 底板 → 弧 → 读数"，底板的上沿会蹭到外弧带内沿，
+//   所以弧必须画在它之上（车主 2026-09-24 报过"外弧被挡住"）。
+function drawReadoutPlates(ctx, W, which, sc, st) {
+  const r = ensureReadout(T);
+  const opa = Math.max(0, Math.min(255, readoutPlateOpa(r)));
+  const boxes = readoutPlateBoxes(ctx, W, which, sc, st);
+  if (!boxes.main && !boxes.sub) return;
+  const sPos = W / 480;
+  const pad = PLATE_PAD * sPos, rad = PLATE_RADIUS * sPos;
+  const H = W;                       // 预览画布是正方形
+  const base = ctx.globalAlpha;      // 开机动画会给整屏一个 fade ⇒ 乘上去，别覆盖掉
+  ctx.save();
+  ctx.fillStyle = hexOf(PLATE_COLOR);
+  ctx.globalAlpha = base * opa / 255;
+  [boxes.main, boxes.sub].forEach(b => {
+    if (!b) return;
+    const x = W / 2 + b.left - pad, y = H / 2 + b.top - pad;
+    const w = (b.right - b.left) + 2 * pad, h = (b.bot - b.top) + 2 * pad;
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, rad);
+    ctx.fill();
+  });
+  ctx.restore();
+}
+
+// ============================================================
 // ★★ 预览渲染 —— 合并后**只有这一份** drawScreen
 //
 //   层序与固件逐层一致（src/dash_ui.cpp 的「图层顺序」那一段）：
-//       背景图 → 表情（图片 或 程序化占位）→ 弧 → 读数
+//       背景图 → 表情（图片 或 程序化占位）→ **读数底板** → 弧 → 读数
+//   ★ 读数底板是 2026-10-15 补的那一层（车主："真机有底板、预览里没有"）——
+//     见上面「读数底板（预览里的那一层）」那一整段注释（它与固件逐项对齐）。
+//     ★ 这一段里**故意不写成 `函数名()` 的样子**：check-preview-plate.js 是拿正则
+//       在脚本正文里找**调用点**的（它认"名字 + 左括号"），注释里写一对括号会被
+//       当成一次调用，于是"底片画在表情之前"那条断言会假红（实测踩过）。
 //   ★ 弧**永远压在表情之上**（2026-09-24 车主定稿）—— 表情图很大时会伸进弧带，
 //     那一圈被弧裁掉是**设计如此**，不是 bug；尺寸上限（480 档 320）不放宽。
 //   ★ 左右屏各取各的表情状态（左屏只看转速、右屏只看车速），缺图按
@@ -3247,6 +3560,14 @@ function drawScreen(cv, which, stage, opts) {
       }
     }
   }
+
+  // 2.5 读数底板（★ 2026-10-15：固件有、预览原来没有 ⇒ 补上）
+  //    层序：表情**之上**、弧**之下**（固件建对象也是这个顺序）。
+  //    ★ 它**不跟着 hideReadout 藏**：固件那块底片是建屏时创建的静态对象，
+  //      开机扫表期间它就在屏上（只是数字还是空的）—— 预览照做才叫镜像。
+  //    ★ 深浅取主题 readout.plate_opa（0..255，缺键 38 = 15%）⇒ 在车主模式拖
+  //      「数字底板深浅」那一行，这里会立刻跟着变浓变淡。
+  drawReadoutPlates(ctx, W, which, sc, step);
 
   // 3. 弧线（进度按当前阶段算:转速看转速、左屏内弧看水温、右屏看车速）
   //    ★ 画在表情**之后** ⇒ 弧压住表情（与固件同一层序）。

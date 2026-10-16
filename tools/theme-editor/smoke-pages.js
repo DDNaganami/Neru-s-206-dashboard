@@ -337,22 +337,44 @@ const results = {};
       ok(!!c && String(c.value) !== "", label + "色板的色块被灌了当前值：" + (c && c.value));
       ok(!!t && String(t.value) !== "", label + "色板的色号被灌了当前值：" + (t && t.value));
     }
-    // ★ 转速 / 速度**没有**独立色板（键不存在；要做得改固件 + 升版本）
-    for (const bad of ["oc-rpm", "oc-speed", "oc-rpm_color", "oc-speed_color"]) {
-      ok(!doc.getElementById(bad), "车主模式里没有 #" + bad + "（转速/速度共用数字颜色）");
+    // ---- ★★ 2026-10-15（R2）：转速 / 速度**各有一块**色板 ----
+    //   （原来那一句"转速/速度共用数字颜色"已经随本单作废 —— 主题里现在有
+    //    readout.rpm_color / speed_color 两个键，固件按屏的角色取。）
+    for (const [id, label] of [["oc-rpm", "转速数字颜色"], ["oc-speed", "速度数字颜色"]]) {
+      const c = doc.getElementById(id), t = doc.getElementById(id + "-txt");
+      ok(!!c && !!t, "有「" + label + "」色板 #" + id);
+      ok(!!c && String(c.value) !== "", label + "色板的色块被灌了当前值：" + (c && c.value));
+      ok(!!t && String(t.value) !== "", label + "色板的色号被灌了当前值：" + (t && t.value));
     }
-    // ★ 那句说明在（一句话、不是控件）
+    // ---- ★★ 2026-10-15 晚（R3）：数字底板深浅（滑杆 + 百分比显示）----
+    {
+      const rng = doc.getElementById("oc-plate"), pct = doc.getElementById("oc-plate-pct");
+      ok(!!rng && !!pct, "有「数字底板深浅」滑杆 #oc-plate 与百分比显示 #oc-plate-pct");
+      ok(!!rng && String(rng.value) !== "", "底板深浅滑杆被灌了当前值：" + (rng && rng.value));
+      if (rng) {
+        eq(String(rng.min), "0", "底板滑杆的下限是 0（= 关掉底板）");
+        eq(String(rng.max), "255", "底板滑杆的上限是 255（与主题键 plate_opa 同一个域）");
+        ok(Number(rng.value) === 38,
+           "底板滑杆的初值 = 主题里的 38/255（得到 " + rng.value + "）");
+      }
+      ok(!!pct && /^15%$/.test(pct.textContent),
+         "百分比显示是 15%（38/255 —— 显示成人话，存进文件的仍是 0..255）：" +
+         (pct && pct.textContent));
+    }
+    // ★ 那句说明现在说的是"已各自独立"（原来那句"共用…要改固件"已经作废）
     //   ★ DOM 桩没有 HTML 解析器 ⇒ 静态元素只"建"出一个空壳，textContent 是空的。
     //     所以这里按**静态源码**判它的内容（"它写着什么"），控件层那条（"它不是
     //     控件"）由 check-owner-mode.js 的 ①c 判 —— 两边各管一头，不重复也不留空。
     {
       const legend = doc.querySelector('[data-ocap="legend"]');
-      ok(!!legend, "配色区里有那句「转速与速度目前共用『数字颜色』」的说明（元素在）");
+      ok(!!legend, "配色区里有那行说明（元素在）");
       const m = /<div class="note"[^>]*data-ocap="legend"[^>]*>([\s\S]*?)<\/div>/.exec(SOURCE);
       ok(!!m, "说明那一行的静态 HTML 找得到");
       if (m) {
-        ok(/转速与速度目前共用/.test(m[1]), "说明文字点明了共用关系");
-        ok(/需要一次固件改动/.test(m[1]), "说明文字点明了出路（要改固件）");
+        ok(/转速与速度的数字颜色已各自独立/.test(m[1]),
+           "说明文字点明「已经拆开」（不再是『共用』那套说法）");
+        ok(!/目前共用/.test(m[1]), "说明文字里不再有「目前共用」这句过时的话");
+        ok(!/需要一次固件改动/.test(m[1]), "说明文字里不再有「要拆开需要一次固件改动」");
         ok(!/<input|<select|<button/.test(m[1]), "那一行里没有控件（是纯文字说明）");
       }
     }
@@ -471,6 +493,46 @@ const results = {};
          "主题 JSON 文本框里的 intake_color 也是新的");
     }
 
+    // ---- ★★ 交互 1c（2026-10-15 R2）：转速/速度两块色板 ⇒ 各写各的键 ----
+    //   这是"拆开了"在**交互层**的机器证明：两个色板改出来的是两个不同的键。
+    {
+      const rp = doc.getElementById("oc-rpm");
+      rp.value = "#aa0001"; rp.dispatch("input");
+      const s4 = JSON.parse(r.store["206dash.theme"]);
+      ok(s4.theme.readout.rpm_color === 0xAA0001,
+         "改「转速数字颜色」写进 readout.rpm_color = 0x" +
+         s4.theme.readout.rpm_color.toString(16));
+      const sp = doc.getElementById("oc-speed");
+      sp.value = "#bb0002"; sp.dispatch("input");
+      const s5 = JSON.parse(r.store["206dash.theme"]);
+      ok(s5.theme.readout.speed_color === 0xBB0002,
+         "改「速度数字颜色」写进 readout.speed_color = 0x" +
+         s5.theme.readout.speed_color.toString(16));
+      ok(s5.theme.readout.rpm_color === 0xAA0001,
+         "两块色板各归各的键（改速度没把转速覆盖掉）");
+      ok(s5.theme.readout.digit_color === 0xFFFFFF,
+         "两个新键与 digit_color 是**三个**字段（回落值本身没被当成写入口）");
+      ok(JSON.parse(doc.getElementById("json").value).theme.readout.speed_color === 0xBB0002,
+         "主题 JSON 文本框里的 speed_color 也是新的");
+    }
+
+    // ---- ★★ 交互 1d（2026-10-15 R3）：底板深浅滑杆 ⇒ readout.plate_opa ----
+    {
+      const rng = doc.getElementById("oc-plate");
+      eq(String(rng.value), "38", "滑杆初值 = 主题里的 38/255（15%）");
+      rng.value = "128"; rng.dispatch("input");
+      const s6 = JSON.parse(r.store["206dash.theme"]);
+      ok(s6.theme.readout.plate_opa === 128,
+         "拖底板滑杆写进 readout.plate_opa = " + s6.theme.readout.plate_opa + "（0..255 域）");
+      ok(/^50%$/.test(doc.getElementById("oc-plate-pct").textContent),
+         "百分比显示跟着变：128/255 ≈ 50%（得到 " +
+         doc.getElementById("oc-plate-pct").textContent + "）");
+      rng.value = "0"; rng.dispatch("input");
+      ok(JSON.parse(r.store["206dash.theme"]).theme.readout.plate_opa === 0,
+         "拖到底 = 0（关掉底板）也是一个能存进主题的合法值");
+      rng.value = "38"; rng.dispatch("input");   // 还原，别影响后面的交互
+    }
+
     // ---- 交互 2：套一个预设 ⇒ 写进同一份状态 ----
     const presetRow = doc.getElementById("owner-presets").children[0];
     const btns = presetRow.children[1].children;
@@ -525,6 +587,38 @@ const results = {};
        "只写了一个字段的主题也会补齐（缺字段继承默认值：2 屏 × 2 弧）");
     ok(doc.getElementById("oc-bg-txt").value.toUpperCase() === "#ABCDEF",
        "应用之后车主模式那一行是新值：" + doc.getElementById("oc-bg-txt").value);
+
+    // ---- ★★ 交互 5b（2026-10-15 R2）：**读入一份老主题** ⇒ 两个新色板显示 digit_color ----
+    //   这是兼容条款的**端到端**证明（固件那边由 test_theme_store.cpp 的
+    //   test_readout_rpm_speed_colors 钉着同一条语义）：
+    //   老主题文件里只有 digit_color（车主把它设成 0xBF4153）⇒ 转速/速度两块色板
+    //   必须显示 **0xBF4153**，而不是"默认白"。
+    //   ★ 这一条抓过一个真 bug：合并默认值那一步会**先把新键占掉**（填成默认白），
+    //     于是回落永远不触发 —— 车主设过的数字颜色看起来被换掉了。修法见
+    //     index.html 的 mergeImportedTheme / loadThemeFromLocal（先解回落，再合并）。
+    {
+      doc.getElementById("json").value = JSON.stringify(
+        { theme: { readout: { digit_color: 0xBF4153 } } });
+      doc.getElementById("btn-apply").click();
+      const rv = doc.getElementById("oc-rpm-txt").value.toUpperCase();
+      const sv = doc.getElementById("oc-speed-txt").value.toUpperCase();
+      ok(rv === "#BF4153", "老主题（只有 digit_color）⇒ 转速色板显示它的值（得到 " + rv + "）");
+      ok(sv === "#BF4153", "同上：速度色板也是它的值（得到 " + sv + "）");
+      const rec3 = JSON.parse(r.store["206dash.theme"]);
+      ok(rec3.theme.readout.rpm_color === 0xBF4153 &&
+         rec3.theme.readout.speed_color === 0xBF4153,
+         "导出/存下来的主题里两个新键 = 老主题那份 digit_color（不是默认白）");
+      ok(JSON.parse(doc.getElementById("json").value).theme.readout.rpm_color === 0xBF4153,
+         "主题 JSON 文本框里也是回落后的值（与固件解析出来的一致）");
+      // 文件里**写了**新键时当然听文件的（回落不能盖掉它）
+      doc.getElementById("json").value = JSON.stringify(
+        { theme: { readout: { digit_color: 0xBF4153, rpm_color: 0xAA0001 } } });
+      doc.getElementById("btn-apply").click();
+      ok(doc.getElementById("oc-rpm-txt").value.toUpperCase() === "#AA0001",
+         "写了 rpm_color 就听它的（得到 " + doc.getElementById("oc-rpm-txt").value + "）");
+      ok(doc.getElementById("oc-speed-txt").value.toUpperCase() === "#BF4153",
+         "只写了一个新键 ⇒ 另一个回落到 digit_color");
+    }
 
     // ---- 交互 7：**每一个静态按钮都被接上了**（不是停留在 HTML 里没人管）----
     //   ★ 合并两页时最容易犯的错：按钮复制过来了，但接线落在被删掉的那一段里

@@ -308,11 +308,28 @@ bool theme_parse_json(const char* json, uint32_t len, Theme& t) {
       return true;
     }
     if (keyIs(k, klen, "readout")) {
+      // ★★ 2026-10-15（主题格式修订 R2）：`rpm_color` / `speed_color` 是**新增键**
+      //   （车主："转速/速度现在就拆开"）。两条纪律：
+      //     ① **缺键回落 digit_color** —— 旧主题文件（只有 digit_color）必须照旧；
+      //     ② 回落取的是**文件里那一份** digit_color，不是编译期默认 ——
+      //        老主题把 digit_color 改成过别的颜色（例如 0x00FF88），
+      //        回落后两屏必须还是那个颜色，否则拆分就悄悄改了老主题的画面。
+      //   ⇒ 用两个旗子记住"这个键到底出现过没有"，等**整个 readout 对象读完**再回落：
+      //     JSON 对象成员的顺序没有语义，digit_color 完全可能写在新键**后面**，
+      //     在读到 rpm_color 的那一刻取 digit_color 会取到还没被覆盖的默认值。
+      bool has_rpm_color = false, has_speed_color = false;
       s.object([&](const char* rk, size_t rkl) -> bool {
         if (keyIs(rk, rkl, "digit_color"))   { if (s.uintVal(&u)) t.readout.digit_color = u; return true; }
+        if (keyIs(rk, rkl, "rpm_color"))     { if (s.uintVal(&u)) { t.readout.rpm_color = u; has_rpm_color = true; } return true; }
+        if (keyIs(rk, rkl, "speed_color"))   { if (s.uintVal(&u)) { t.readout.speed_color = u; has_speed_color = true; } return true; }
         if (keyIs(rk, rkl, "unit_color"))    { if (s.uintVal(&u)) t.readout.unit_color = u; return true; }
         if (keyIs(rk, rkl, "coolant_color")) { if (s.uintVal(&u)) t.readout.coolant_color = u; return true; }
         if (keyIs(rk, rkl, "intake_color"))  { if (s.uintVal(&u)) t.readout.intake_color = u; return true; }
+        // ★ 2026-10-15（主题格式修订 R3）：底板深浅。量纲 0..255 —— 与上面
+        //   `track_opa`（readArc 里 `(uint8_t)u`）**同一套**，别写成 0..100 的百分比：
+        //   文件里存的是 LVGL 的 opa 域，编辑器只把它**显示**成百分比。
+        //   缺键 → 保持默认 38（theme_set_defaults），所以旧主题照旧。
+        if (keyIs(rk, rkl, "plate_opa"))     { if (s.uintVal(&u)) t.readout.plate_opa = (uint8_t)u; return true; }
         if (keyIs(rk, rkl, "digit_font"))    { if (s.number(&d)) t.readout.digit_font = (uint8_t)d; return true; }
         if (keyIs(rk, rkl, "unit_font"))     { if (s.number(&d)) t.readout.unit_font = (uint8_t)d; return true; }
         if (keyIs(rk, rkl, "sub_font"))      { if (s.number(&d)) t.readout.sub_font = (uint8_t)d; return true; }
@@ -325,6 +342,11 @@ bool theme_parse_json(const char* json, uint32_t len, Theme& t) {
         if (keyIs(rk, rkl, "show_intake"))   { if (s.uintVal(&u)) t.readout.show_intake = (uint8_t)(u ? 1 : 0); return true; }
         return false;
       });
+      // ★ 回落（读完之后，见上面 ②）：没出现的键 ⇒ 等于**文件里那份** digit_color。
+      //   ★ 值写错类型（例如 "rpm_color": "red"）时 uintVal 失败、旗子不置位 ⇒
+      //     同样走回落 —— 宁可回到"和拆分前一样"，也不要留一个没被赋值的新字段。
+      if (!has_rpm_color)   t.readout.rpm_color   = t.readout.digit_color;
+      if (!has_speed_color) t.readout.speed_color = t.readout.digit_color;
       return true;
     }
     if (keyIs(k, klen, "screens")) {

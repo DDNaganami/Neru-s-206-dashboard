@@ -166,6 +166,39 @@
     return mergeDefaults(base, base, patch);
   }
 
+  // ------------------------------------------------------------
+  // ★★ 读数颜色的"缺键回落"（2026-10-15，主题格式修订 R2）
+  //
+  // 固件端（lib/themetool/theme_store.cpp 的 readout 段）有一条**确定的**规则：
+  //   `rpm_color` / `speed_color` 这两个键**没写**时，值 = **文件里那份** `digit_color`
+  //   （不是编译期默认白：老主题可能把 digit_color 设成别的颜色）。
+  //
+  // 编辑器必须照抄这一条 —— 否则"把一份旧主题读进来、原样导出"会给两个新键写上
+  // 编译期默认值 0xFFFFFF，而车主的老主题里大数字可能是别的颜色 ⇒
+  // **拆开这件事会悄悄改掉老主题的画面**（两条屏同时变色，而且不报错）。
+  //
+  // 为什么这条规则放在这里：它有**两个入口**，而"补全一份主题"的地方以后只会更多
+  //   · 编辑器读入老主题 → index.html 的 mergeImportedTheme/ensureReadout；
+  //   · 导入容器（assets.bin 里的 theme 段）、应用 JSON 文本框走的是同一条路。
+  // 两处各写一份迟早分叉，而分叉的症状正是"导入老主题之后颜色变了"这种查半天的事。
+  //   ★ 判据在 tools/theme-editor/test-theme-json.js 里，native 那边也有一条
+  //     （test_theme_store.cpp 的 test_readout_rpm_speed_colors）—— 两边同一个语义。
+  //   ★ `plate_opa`（R3 的底板深浅）**不在**这条规则里：它的缺省是一个**常数**
+  //     38/255，不依赖别的键（见 ui_theme.h 的 kReadoutPlateOpaDefault）。
+  // ------------------------------------------------------------
+  const READOUT_FALLBACK_TO_DIGIT = ["rpm_color", "speed_color"];
+
+  // 就地把缺的键补成 digit_color 的值（digit_color 自己也缺时用 0xFFFFFF —— 与固件
+  // 默认值一致）。返回**同一个对象**，方便链式调用；别的键一律不碰、不删、不改类型。
+  function applyReadoutFallbacks(readout) {
+    if (!readout || typeof readout !== "object") return readout;
+    const dig = (typeof readout.digit_color === "number") ? readout.digit_color : 0xFFFFFF;
+    READOUT_FALLBACK_TO_DIGIT.forEach(function (k) {
+      if (typeof readout[k] !== "number") readout[k] = dig;
+    });
+    return readout;
+  }
+
   return {
     stripHex: stripHex,
     parseThemeJson: parseThemeJson,
@@ -174,6 +207,8 @@
     deepEqual: deepEqual,
     mergeDefaults: mergeDefaults,
     diffDeep: diffDeep,
-    applyPatch: applyPatch
+    applyPatch: applyPatch,
+    READOUT_FALLBACK_TO_DIGIT: READOUT_FALLBACK_TO_DIGIT,
+    applyReadoutFallbacks: applyReadoutFallbacks
   };
 });
