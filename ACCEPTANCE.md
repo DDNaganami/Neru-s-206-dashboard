@@ -8709,3 +8709,43 @@ native 383 用例（381 通过/2 跳过）；`pcpreview`、`esp32s3-rgb-slave-no
 - ④ `check-preview-frame.js`（既有的那套帧判据）在**默认主题/车主主题下都红 8/17**，
   修前修后**一样红** ⇒ 与本次改动无关（它按 `tools/theme-editor` 的测试主题写死了期望色，
   例如期望底图 `#000062`）。这条既不是本次引入、也不是本次修好的，如实记在这里。
+
+## 2026-10-17（晚·续）—— 两块板**都刷了新固件**（车主把两块板插上 USB 后）
+
+### 1. 为什么这单必须做
+两块板停在 **2026-10-16 15:51/15:52** 那次构建上（`fw: build Oct 16 2026 15:51:58` / `15:52:39`，
+开机横幅读出来的）。此后固件侧落了两单、一次都没上板（板子当时是拔掉的）：
+- `fd57469`：`arc_count` 三道闸门 + 主题静态缓冲 8KB→4KB + `kScreenCount`（当前可见行为不变）；
+- `98ea684`：**红弧居中**（车主报的那条，视觉可见）。
+⇒ 车主"爆转和超速的红色表盘弧没有居中"要看到效果，**必须重刷两块板**。
+
+### 2. 角色是按**证据**认的，不是按 COM 号猜的
+`pyserial` 读到的 USB 串行号就是固件报出去的 MAC（`VID_303A` 原生 USB）：
+
+| 口 | MAC（= 板子自报） | 角色 | 判据 |
+|---|---|---|---|
+| **COM8** | `90:70:69:EA:F6:B4` | **SLAVE**（左 · 转速+水温） | 开机行 `role=SLAVE`、`layout: role=SLAVE last=LEFT/rpm+coolant` |
+| **COM9** | `80:45:6B:35:A3:C4` | **MASTER**（右 · 速度+进气） | 开机行 `role=MASTER`、`last=RIGHT/speed+intake` |
+
+与 `C:\206dash-scratch\app-board-roles.json` 里 2026-10-15 的那份证据一致（这次是重新读了一遍硬件，
+不是照抄缓存）。**刷的是对应的那一份镜像**（`-slave-now` → COM8、`-master-now` → COM9）。
+
+### 3. 判据（机器可查，不靠"看起来好了"）
+- 烧写：两次 `[SUCCESS]`，`Hash of data verified` ×4（bootloader / partitions / boot_app0 / firmware）。
+- ★ **回读校验（最强的那个）**：`esptool verify-flash 0x10000 <本地 firmware.bin>`
+  ⇒ 两块板都 **`Verification successful (digest matched)`**，即片上 app 区**逐字节等于**本地这份
+  从当前 HEAD 编出来的镜像（slave 1,492,592 B / master 1,496,256 B）。
+- **主题分区没被动过**：`read-flash 0x210000 0x1000` 两块板读回来**逐字节相同**、都是
+  `{"theme": { "bg_color": 1315860, …` ⇒ 刷固件不碰 `theme`/`image` 分区（分区表偏移决定，非巧合）。
+- **运行时健康**（刷完各读 6 秒）：`rgb: vsync=…(+43/s)` ✓（即 PCLK 12 MHz 生效）、
+  `timeout=0`、`fullrb=0/s`、`bounce=18MB/s`、`psram=7282KB`、`link:` 两边都在走
+  （`rx_ok` 递增、`crc=0`）、`role=` 各自正确、没有 panic/`WARN`。
+
+### 4. ★ 诚实保留
+- ① 判据能证明"**板上跑的是这份镜像**"，不能证明"**屏幕上那条红弧看着顺眼**" —— 那只能由车主看。
+  落帧那一套（`check-arc-centring.js`，36 项）是宿主机 LVGL 真渲染，几何结论可迁移，但玻璃上
+  还有面板自己的 gamma。
+- ② 本次只刷 **app 区**（+ bootloader/分区表，esptool 按需）；`theme` 与 `image` 分区**一个字没动**，
+  所以车主现有的配色与图仍然是刷之前那份（已回读确认）。
+- ③ 之前那次"板子一直在跑 Sim 假数据"的现象照旧：这次读到的 `spd=100% rpm=100%` 就是假数据扫到顶，
+  不是车上的真值。
