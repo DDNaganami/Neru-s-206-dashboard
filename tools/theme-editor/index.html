@@ -1208,7 +1208,24 @@ function renderToTarget(item, tw, th, transparent) {
   //        而这会反过来影响占用条与预算是**同一份**数字。
   //   不勾"裁透明边"时仍然走原来那条 canvas 路径（一个字节都没改）。
   if (item.trim) {
-    const full = ctx.getImageData(0, 0, sw, sh).data;   // 先拿原图像素
+    // ★★ 2026-10-16 修 bug（「勾了裁透明边，产物变成一块纯色/导出说读不出像素」）：
+    //   这里原来直接写 `ctx.getImageData(0, 0, sw, sh)` —— **可那时还一次都没
+    //   drawImage 过**（真正的 drawImage 在下面"不裁"的分支里），而 `ctx` 是
+    //   tw×th 的**最终产物**画布 ⇒ 读到的是底色/空白：
+    //     · 背景（不透明角色，画布先铺了底色）⇒ 整幅被当成"内容"⇒ 裁出来
+    //       就是一块纯色；
+    //     · 表情（透明角色，画布全透明）⇒ 一个不透明像素都没有 ⇒
+    //       prepareAsset 报"整张图都是透明的" ⇒ 导出处说"读不出像素"。
+    //   所以先把源图**原样**画进一块 sw×sh 的临时画布，再从**那块**取像素。
+    //   ★ 不在本 ctx 上画：本 ctx 是最终产物，多画一次源图会留在四周留白处
+    //     （下面居中贴裁剪结果时不会被盖掉）。
+    //   ★ 不勾"裁透明边"的那条路径一行没动 —— 它与本次修复无关，逐字节回归见
+    //     check-trim-alpha.js 的第 ② 节。
+    const srcCv = document.createElement("canvas");
+    srcCv.width = sw; srcCv.height = sh;
+    const sctx = srcCv.getContext("2d", { willReadFrequently: true });
+    sctx.drawImage(src, 0, 0, sw, sh);
+    const full = sctx.getImageData(0, 0, sw, sh).data;   // 先拿**源图**像素（真拿）
     const r = AssetSpec.prepareAsset(full, sw, sh, {
       roleId: roleIdForNumber(item.role),
       targetId: curTarget,
@@ -4468,7 +4485,11 @@ function color(parent, label, get, set) {
   c.addEventListener("input", () => { set(unhexOf(c.value)); t.value = c.value; render(false); });
   t.addEventListener("change", () => {
     if (/^#?[0-9a-fA-F]{6}$/.test(t.value)) {
-      const v = unhex(t.value[0] === "#" ? t.value : "#" + t.value);
+      // ★ 历史拼写坑：这个转换函数**只叫 `unhexOf`**（见上面 hexOf/unhexOf 那一对）。
+      //   这里原来写成 `unhex(...)` —— 那个名字**从来没有定义过**，于是高级模式
+      //   每一行手打色号都抛 ReferenceError：`set()` 没执行、色块不动、页面
+      //   也不报错，看起来就是"输了没反应"。以后别再写成 unhex。
+      const v = unhexOf(t.value[0] === "#" ? t.value : "#" + t.value);
       set(v); c.value = hexOf(v); t.value = hexOf(v); render(false);
     } else { t.value = hexOf(get()); }
   });
