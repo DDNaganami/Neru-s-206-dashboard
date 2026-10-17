@@ -89,8 +89,12 @@ python -m platformio run -e esp32s3-rgb
 winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT
 ```
 
-装的是 **GCC 16.1.0 + GNU Make 4.4.1**。实测：
-`python -m platformio test -e native` → **385 例 / 383 通过 / 2 跳过 / 0 失败**。
+装的是 **GCC 16.1.0 + GNU Make 4.4.1**。实测（**2026-10-17 复跑**）：
+`pio.ps1 -Cmd 'test -e native'` → **387 例 / 385 通过 / 2 跳过 / 0 失败**。
+★ 这一行是"**当前**用例数"的唯一落点：用例只增不减，所以别的文档里出现更小的数
+（如 `BLE-OBD.md` 的 385/383、`RGB-PANEL-2.8C.md` 的 285/301）都是**当日快照**，不是冲突。
+★ 跳过的那 2 条是 pcpreview 专用（宿主机没有那块屏），pio 会因此把退出码置 1 ——
+`native` 的成败看 `[PASSED]` 与这行统计，不看退出码。
 ★ 顺带结掉一笔旧账：`test_stage_table` 那个**既有崩溃（进程 exit 3）也没了**
 （`ACCEPTANCE` 里挂了好几轮的那条），16.1.0 下正常通过。
 

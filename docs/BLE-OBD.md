@@ -217,7 +217,7 @@ $res = Await $op ([Windows.Devices.Bluetooth.GenericAttributeProfile.GattWriteRe
 | 主板固件 `esp32s3-rgb-master-now` | ✅ **编译 SUCCESS**；对象文件 388,988 字节 |
 | NimBLE 与 IDF5.5 + LVGL + ESP-NOW 共存 | ✅ **能共存**（这是当初最大的未知） |
 | 固件容量 | **1,704,144 字节 = 2MB app 槽的 81.3%**（加 NimBLE 前 71.3%）⇒ 余量约 380KB |
-| native 单测 | ✅ 385 例 / 383 通过 / 2 跳过 / **0 失败** |
+| native 单测 | ✅ 385 例 / 383 通过 / 2 跳过 / **0 失败**（**2026-09-27 当日快照**；用例随后续改动增长，当前数见 `docs/laptop-setup.md`） |
 
 ★ **`lib_deps` 是覆盖不是合并**：只写 NimBLE 会把继承来的 `lvgl/lvgl@^9.3.0` 顶掉、
 整个 UI 编不过 ⇒ 两个都要写（已在 env 注释里写明）。

@@ -8539,3 +8539,113 @@ native 383 用例（381 通过/2 跳过）；`pcpreview`、`esp32s3-rgb-slave-no
   服务端日志里也没有 `POST /api/flash` ✓；"写进板子"的实机效果由车主自己点 ✓。
 - ⑤ 车主那句"**感觉好多了**"是**车主自述** ✓（本文件不把它包装成机器判据 ✗）；
   台面"轻微横纹"的归属**仍未定** ✗ ⇒ 车测（12V → 稳压）才是真判据（见 `docs/SESSION-STATE.md` §1）。
+
+## 2026-10-17（傍晚）—— 五线只读审计 → 9 单修复（**一块板都没插**，全程宿主机）
+
+### 0. 这单从哪来
+车主："今天你的 api 好像更新到全新版本了，读一遍库看看所有代码方面有没有需要优化的地方。"⇒
+先做**五条只读审计线**（固件 UI 层 / 核心库 / 编辑器前端 / Python 客户端 / 仓库卫生与测试），
+每条结论都必须落到 `文件:行`、能复现的当场复现（不写"感觉可以更好"那种）。审计清单里车主批了
+9 条"马上做"，四条线**文件互不重叠**地并行改，各自路径限定提交。
+
+### 1. 客户端 `13685ce` + `9f6f20e`（`tools/app/server.py`）
+① 三个真口子（都能被浏览器里任何一个网页触发，因为服务只听回环 ≠ 只被本页面调用）：
+ - **没有来源校验** ⇒ 任何站点都能让浏览器往 `127.0.0.1:8787` 发请求。现在
+   `_deny/_guard/_post_ctype_ok`（`:942-975`，接在 `do_GET:1039` / `do_POST:1119`）：
+   Host 必须 `127.0.0.1[:port]|localhost[:port]`；**带** Origin 时必须等于自身来源
+   （**不带则放行** —— 命令行/脚本照旧能用）；POST 的 Content-Type 不合格 ⇒ 400。
+ - **刷写白名单是 `startswith`** ⇒ 兄弟目录、`..`、junction 都绕得过去，而且"仓库里任何文件"
+   （含 `.git/config`、`src/*.h`）都能被写进板子的分区。现在 `under_dir()`（`:199`，
+   realpath + commonpath）与 `flash_file_ok()`（`:221`）：只认 `SCRATCH\app-upload` 下、
+   ≤ 32 MB 的 `*.bin` / `*.json`；`/api/upload` 与 `/api/flash` **同一个元组、同一个目录**。
+ - **静态目录会把仓库列出来**（`super().do_GET()` 的副作用）⇒ 删掉，改白名单
+   `repo_static_path()`（`:870`），其余一律 404。
+ - `/api/board-status?host=` / `ota-verify` 原先能让服务端去连**任意**地址（SSRF 面）⇒
+   只收私有 IPv4（`is_private_v4`，`:721`）。
+② `--repo` 原先**不生效**（模块级 `PYLIBS`/`REPO` 常量在别处算死）⇒ `def run(cmd, timeout=900,
+   cwd=None)`（`:587`，体里 `cwd = cwd or REPO`）+ `pylibs()`（`:106`）。
+③ 追单（**老能力不许被新防护砍掉**）：`/api/upload` 白名单补回 `*.json` —— 「刷存下来的
+   theme.json」那个输入框本来就 `accept=".bin,.json"`，第一版只留 `.bin` 会把它废掉；
+   `/api/flash` 的失败**一律 HTTP 400**（JSON 体形状不变 `{ok:false, out}`，但**判据改成看状态码**
+   —— 别再按 `200 + ok:false` 解析）。
+④ **新增 `tools/app/check-http-guard.py`（94 项）**：伪造 Origin ⇒ 403、无 Origin ⇒ 200、
+   非回环 Host ⇒ 403、`.git/config` 与目录列出 ⇒ 404、`host=8.8.8.8` ⇒ 400、兄弟目录 / 仓库文件 /
+   `..` / 非 bin / 超大 ⇒ 400，并且这几下 **esptool 一次都没被拼**。
+⑤ `check-click-flash.py`：本机**两块 ESP32 都拔了**（只剩 `COM1`）⇒ 该判据改成
+   **跳过 + exit 0**（`skip()`，`:58` / 判据处 `:339`，汇总 `:419` 报"跳过 N 项"）；
+   有板时照旧全跑。
+
+### 2. 固件 `fd57469`
+- **`arc_count` 越界（审计里的 P0）**：`ui.arc_count = cfg.arc_count` 是不钳的，而
+  `arcs[]`/`arc_cur[]` 只有 `kMaxArcs`(3) 个 ⇒ 主题写 `arc_count: 4` 时 `ui.arcs[3]` 还是
+  nullptr、`arc_cur[3]` 越界写，而两处循环（`boot_apply()` / `dash_ui_render()`）都没有
+  `i < kMaxArcs` 守卫 ⇒ **把空指针当弧对象交给 LVGL**（崩在 lvgl 里，最难查的那种）。
+  现在**三道闸门 + 两道兜底**：解析处（`theme_store.cpp:206`，顺手修掉 `(uint8_t)u`
+  **只截位不封顶**的陷阱 —— `300 & 0xFF = 44` 会变成"看着合法"的数）、`theme_clamp()`
+  （`ui_theme.cpp:98`，原来就有，补上理由）、用点（`dash_ui.cpp:417`）；两条循环各加
+  `&& i < kMaxArcs`。
+- **主题静态缓冲 8 KB → 4 KB**：`theme_load()` / `theme_load_alerts()` 原本各一个
+  函数内 `static char buf[4096]`。现在文件级 `s_buf` 共用一块（`src/theme_load.cpp:34`）；
+  安全性只有一条前提：两入口都只在 `setup()` 里**串行**调用（`main.cpp:2729`，2979/2994 相邻），
+  注释已写明"仅限 setup 串行调用"。**实测**（`xtensa-esp32s3-elf-gcc-nm -S firmware.elf`）：
+  `_ZL5s_buf 0x1000`，全镜像**只有这一个** 4096 字节 `.bss` 符号（改前两块）。
+- **屏数魔法数**："两屏"原先在主题层与解析器里各写死字面量 `2`（`Theme::screens[2]`、
+  `si < 2`），UI 里另有 11 处循环 + 9 个"每屏一份"数组。现在 `ui_theme.h:50` 一个
+  `kScreenCount` 全用上，并加 `static_assert(kScreenCount == dashlayout::kScreenCount)`
+  —— 以后只改一边，**编译当场失败**，而不是等刷上板才发现"屏串了"。
+- **新增 2 条 native 用例**：`test_arc_count_over_max_is_clamped`（写 4 ⇒ 钳到 3、两屏都钳、
+  前 3 条弧照常解析、300/255/9999 封顶、合法 0..3 一个不动）；`test_screens_over_count_is_ignored`
+  （写 3 屏 ⇒ 第 3 屏整段跳过、不覆盖已有两屏）。
+
+### 3. 编辑器 `988da07`（`tools/theme-editor/index.html`）
+- **「裁透明边」读的是空画布**：非等比缩放那条分支把原图画进**主画布**再 `getImageData`，
+  而主画布在那一步还是空的 ⇒ 取到的全透明 ⇒ 一点裁边就把图裁没了。现在先画进 `sw×sh`
+  临时画布再读（`:1210-1228`）。
+- **高级模式手打色号静默失效**：调的是 `unhex(`，而函数名是 `unhexOf(` ⇒ `ReferenceError`，
+  颜色根本不生效（车主看到的是"输了没反应"）。已改名（`:4488-4492`）。
+- **新增 `tools/theme-editor/check-trim-alpha.js`（61 项）**：并**证明非空判**（对着修复前的
+  HEAD `35d0e1c` 跑出 24 条红）；`trim=false` 那条路径 sha256 `b8d60615…` **逐字节不变**。
+
+### 4. 构建与文档 `290079c` + `f0b70db`
+- `pio.ps1` 两处**真错**：① 没设 `PYTHONUTF8=1` ⇒ `checkprogsize` 会以
+  `UnicodeDecodeError: 'gbk' codec can't decode byte 0x85` 报**假失败**（镜像其实已经产出来了）；
+  ② 宿主工具链钉在 `C:\mingw64\bin`，而**这台机器上它不存在** ⇒ 每个 `.o` 都报
+  `'gcc' is not recognized`，最后给一个看着像代码错的 `[FAILED]`。改成实存的
+  `C:\206dash-scratch\zigbin` + `Test-Path` 守卫（缺了就 `exit 2` 并说清缺什么）。
+- 注释订正两处（**纯注释，不进字节**）：`dash_role_layout.h` 的屏数说明指向 `kScreenCount`；
+  `panel_guard.h:75` 原文写 `read_ok == false ⇒ 返回 false`，而 `:81` 实际是 `return true`
+  —— 代码一直是对的（读失败**不算**"不一致"，紧接着几行就是这么解释的），只有注释把返回值写反。
+- 文档订正：`docs/SESSION-STATE.md` 那条"`C:\206dash-repo`、`C:\206dash-build` **已不存在**"
+  是**错的**（本轮两处都在用：前者是 `-now` 两档必须的 ASCII 镜像，后者是
+  `PLATFORMIO_BUILD_DIR` 的默认值）⇒ 改成实测事实；native 用例数的**唯一当前落点**统一到
+  `docs/laptop-setup.md`（历史文档里的旧数是**当日快照**，不是冲突）。
+- **exe 按源码重新打包**（编辑器与 `server.py` 都在里面，不重打就等于车主还在跑旧代码）：
+  `tools/app/dist/206Dash-Workbench.exe` **17,908,113 → 17,915,287 字节**。
+
+### 5. 判据（★ 本轮**我自己在 HEAD 上重跑**的，不是照抄回单）
+- `native`：**387 例 / 385 通过 / 2 跳过**（exit 0）。
+- 构建：`pcpreview` [SUCCESS] 6.3s；`esp32s3-rgb-master-now` [SUCCESS] 101s、
+  `esp32s3-rgb-slave-now` [SUCCESS] 98s（`C:\206dash-repo` 镜像里建的，**都没有 upload**、没碰串口）。
+- 判据脚本：`check-http-guard.py` **94/94**、`check-flash-offset.py` **37**、
+  `check-port-roles.py` **33**、`check-click-flash.py` **16 ok + 1 跳过 / exit 0**、
+  `check-app.js` 全过、`check-trim-alpha.js` **61/61**。
+- **三份指纹逐字节不变**：`make-golden-hashes.js --print` 与
+  `tools/theme-editor/.golden-hashes.json` 每一项都相同（themeJson `1dcc7d40…6efa2e` / 2975 B、
+  imageBin `24fc3c87…da783c`、assetsBin `96e02893…87747f`）。
+- exe 冒烟（真进程、真 HTTP）：`--no-window --port 8899` 起来后，
+  `/tools/theme-editor/index.html` 的 sha256 与源码**逐字节相同**（`00DEAA6F…CED3`）、
+  恶意 Host 头**被新的来源校验挡下（403）**、杀进程后端口释放 ✓。
+
+### 6. ★ 诚实保留
+- ① `arc_count` 那条**今天其实踩不到**：`theme_clamp()` 自 `096c91f` 起本来就在钳，走
+  `theme_load()` 的 flash 路径触发不了 `arc_count: 4`。这单是**纵深防御**（补入口 + 用点 +
+  循环兜底），**不是**"线上必崩"；它真正挡住的是"以后加运行时热重载"那条路。审计当时把它
+  判成 P0 偏保守，这一点按实说。
+- ② 本批**一张图都没上板**：两块 ESP32 已拔（只剩 `COM1`），`check-click-flash.py` 那 1 项是
+  **跳过**不是通过；「写进板子」的实机效果仍由车主自己点。
+- ③ `check-http-guard.py` 验的是**构造请求**（同一个 Handler、真 socket、真 HTTP），不是真浏览器
+  里的伪造页面 —— 强在服务端侧，前端侧仍只有静态契约。
+- ④ 非等比缩放那条分支的修复**只在 JS 层验过**（`check-trim-alpha.js` 用真 canvas 实现跑），
+  没有在真浏览器里用鼠标拖框验一遍。
+- ⑤ 换过 exe **必须完全退出旧客户端再开新的**（否则连着的还是旧进程）—— 这条踩过两次，
+  每次换 exe 都写一遍。
