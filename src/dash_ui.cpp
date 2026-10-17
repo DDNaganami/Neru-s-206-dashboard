@@ -118,8 +118,19 @@ struct ScreenUi {
   bool      role_visible = false;       // 当前该不该显示（只在**变了**的时候碰 LVGL）
 };
 
-static ScreenUi g_ui[2];
-static lv_obj_t* g_screens[2];
+// ★★ 屏数只有一个真相：`kScreenCount`（`ui_theme.h`，= `Theme::screens[]` 的长度）。
+//   下面所有"每屏一份"的数组与十几处逐屏循环都写这个名字，不再写字面量 2 ——
+//   字面量当数组上界是**静默越界**的经典写法（写这一屏、读那一屏，不报错）。
+//   ★ 但屏数在**两层**各有一个人说：主题层（kScreenCount，本文件用它定数组长度）
+//     与角色映射层（`dashlayout::kScreenCount`，见 dash_role_layout.h 第 98 行）。
+//     本文件同时 include 两边，所以就在这里把它钉死 —— 一旦有人只改一边，
+//     编译当场失败，而不是等到刷上板才发现"屏串了"。
+static_assert(kScreenCount == dashlayout::kScreenCount,
+              "屏数两处不一致:ui_theme.h 的 kScreenCount 与 dash_role_layout.h 的 "
+              "kScreenCount 必须是同一个数(屏幕数只有一个真相)");
+
+static ScreenUi g_ui[kScreenCount];
+static lv_obj_t* g_screens[kScreenCount];
 static BootAnim g_boot;
 static bool g_boot_done_printed = false;
 static uint32_t last_ok_ms = 0;
@@ -220,14 +231,14 @@ static const char* diagFontTag(const lv_font_t* f) {
 //   取值一律走 `faceGroupFor(s)`（= `dashlayout::faceGaugeIndexForScreen(s)`）。
 //   从板上屏号与表号正好对调，混用就是车主报的"表情跟转速无关、随机变"。
 //   第二维 = (uint8_t)Face(见 expression.h:枚举顺序就是槽位顺序)。
-static lv_image_dsc_t g_bg_dsc[2];
-static lv_image_dsc_t g_face_dsc[2][kFaceSlotCount];
-static bool g_bg_ok[2] = {false, false};
-static bool g_face_ok[2][kFaceSlotCount] = {};
-static lv_obj_t* g_bg_img[2] = {nullptr, nullptr};
+static lv_image_dsc_t g_bg_dsc[kScreenCount];
+static lv_image_dsc_t g_face_dsc[kScreenCount][kFaceSlotCount];
+static bool g_bg_ok[kScreenCount] = {false, false};
+static bool g_face_ok[kScreenCount][kFaceSlotCount] = {};
+static lv_obj_t* g_bg_img[kScreenCount] = {nullptr, nullptr};
 // 表情图片对象是**按屏**建的（每屏一个 LVGL 对象），所以这个数组的第一维是屏号。
-static lv_obj_t* g_face_img[2] = {nullptr, nullptr};
-static int8_t g_face_slot[2] = {-1, -1};    // 当前正显示哪一张(-1 = 还没显示过图片)
+static lv_obj_t* g_face_img[kScreenCount] = {nullptr, nullptr};
+static int8_t g_face_slot[kScreenCount] = {-1, -1};    // 当前正显示哪一张(-1 = 还没显示过图片)
 
 // 槽位 → 角色。角色编号表在 face_stages.h(kFaceRoleId),
 // 那里复述了 image_blob.h 的 ImageRole —— 由宿主机测试逐条比对,
@@ -394,7 +405,16 @@ static void build_arcs(lv_obj_t* parent, const ScreenTheme& cfg, ScreenUi& ui) {
     lv_obj_set_style_arc_rounded(arc, true, LV_PART_INDICATOR);
     ui.arcs[i] = arc;
   }
-  ui.arc_count = cfg.arc_count;
+  // ★★ 越界闸门（P0，2026-10-16）：这个字段是 `arcs[]`／`arc_cur[]`（都只有 kMaxArcs 个）
+  //   的**唯一上界**，而它的两个读者 —— `boot_apply()` 的开机扫表循环与
+  //   `dash_ui_render()` 的逐帧循环 —— 早先**没有** `i < kMaxArcs` 守卫：
+  //       for (uint8_t i = 0; i < ui.arc_count; ++i) { ui.arc_cur[i] = …; arc_set_progress(ui.arcs[i], …); }
+  //   上面这个建弧循环只建到 `i < kMaxArcs` ⇒ 主题里写 `arc_count: 4` 时
+  //   `ui.arcs[3]` 仍是 nullptr、`ui.arc_cur[3]` 越界写 ⇒ 把空指针当弧对象交给 LVGL。
+  //   ★ 因此这里**必须钳**：解析处（theme_store.cpp readScreen）与 theme_clamp()
+  //     各有一道，但那些是"数据进来的地方"，这里是"用的地方" —— 只认数组真实长度。
+  //     （那两处都在，这一道也在：代价一次比较，换掉一类崩法。）
+  ui.arc_count = (cfg.arc_count > kMaxArcs) ? kMaxArcs : cfg.arc_count;
 }
 
 // 占位表情:圆脸 + 双眼 + 嘴的形状组合。
@@ -1241,7 +1261,7 @@ uint8_t dash_ui_diag_page() { return (uint8_t)g_diag_page; }
 
 // ============ 开机动画应用(20ms 档推进,见 dash_ui_tick 的节流) ============
 static void boot_apply(uint32_t now) {
-  for (uint8_t s = 0; s < 2; ++s) {
+  for (uint8_t s = 0; s < kScreenCount; ++s) {
     // 注意:不给屏幕对象设 opa<255 的淡入 —— LVGL 会因此给整屏渲染开离屏层,
     // 而层缓冲从显示缓冲里切(ARGB8888),装不下整屏 → 下半屏内容回绕到顶部。
     // 想要淡入效果时用一个不透明黑底覆盖件反向淡出,别动屏幕本身的透明度。
@@ -1250,7 +1270,10 @@ static void boot_apply(uint32_t now) {
     //   否则从板的扫表会拿速度弧的几何去扫转速表的弧（槽位对不上 = 无动作/画错）。
     const uint8_t ti = dashlayout::themeIndexForScreen(s);
     const float p = g_boot.arcProgress(now, s);
-    for (uint8_t i = 0; i < ui.arc_count; ++i) {
+    // ★ `i < kMaxArcs` 是**兜底**：`ui.arc_count` 在 build_arcs() 末尾已经被钳到
+    //   kMaxArcs，这里再挡一次 —— `arc_cur[]` 与 `arcs[]` 都只有 kMaxArcs 个，
+    //   而 kScreens[ti].arcs[] 同样只有那么多（越界 = 读越界 + 空指针进 LVGL）。
+    for (uint8_t i = 0; i < ui.arc_count && i < kMaxArcs; ++i) {
       ui.arc_cur[i] = p;   // 扫表直接跟随,结束后的数据缓动从这里起步
       arc_set_progress(ui.arcs[i], kScreens[ti].arcs[i], p);
     }
@@ -1260,7 +1283,7 @@ static void boot_apply(uint32_t now) {
       // 避免每 tick 重复 set opa 触发无谓重绘(曾导致层合成异常)。
       // (眨眼状态已删除,所以这里不再有"闭眼/睁眼"来回切,只剩一次显形。)
       const uint8_t st = g_boot.faceStage(now);
-      static uint8_t last_st[2] = {0xFF, 0xFF};
+      static uint8_t last_st[kScreenCount] = {0xFF, 0xFF};
       if (st != last_st[s]) {
         last_st[s] = st;
         const lv_opa_t opa = (st == 0) ? LV_OPA_TRANSP : LV_OPA_COVER;
@@ -1342,7 +1365,7 @@ void dash_ui_init() {
   //   `g_face_ok[group][…]` / 渲染层的取值都按**表号**读，
   //   于是那一屏的脸会按**另一块表的数据**挑图（车主原话："表情变化
   //   怎么感觉是随机变动的"，2026-09-26 实测报的就是这个）。
-  for (uint8_t s = 0; s < 2; ++s) {
+  for (uint8_t s = 0; s < kScreenCount; ++s) {
     const uint8_t g = faceGroupFor(s);
     g_ui[s].screen = s;
     g_ui[s].face_group = g;
@@ -1356,7 +1379,7 @@ void dash_ui_init() {
     }
   }
 
-  for (uint8_t s = 0; s < 2; ++s) {
+  for (uint8_t s = 0; s < kScreenCount; ++s) {
     // ★★ 分组（本单 B 的唯一出口）：表盘 / 表情槽位 / 表情图片三条路共用这一个数。
     //   `dash_role_layout.h` 的 `faceGaugeIndexForScreen()` 就是
     //   `themeIndexForScreen()`（同一个式子，`test_role_layout` 钉住恒等）。
@@ -1419,7 +1442,7 @@ void dash_ui_init() {
   // 数字读数最后建:创建顺序就是图层顺序,读数要压在**弧、表情、底片**之上
   //   （车主 2026-09-24 定稿："读数应该是最高层的" ⇒ 弧被挪到表情之前之后，
   //     读数仍然是最后一个建的 —— 这一段的**位置**是层序约定的一部分，别动）。
-  for (uint8_t s = 0; s < 2; ++s) {
+  for (uint8_t s = 0; s < kScreenCount; ++s) {
     build_readout(g_screens[s], kScreens[dashlayout::themeIndexForScreen(s)], g_ui[s]);
   }
 
@@ -1429,7 +1452,7 @@ void dash_ui_init() {
   //   顺序的理由：诊断页要能盖住表盘上的一切（包括读数），而角标要压在
   //   背景图之上。两条都靠"后建的在上面"这条 LVGL 规则，
   //   不额外调 move_foreground（那一句只在渲染时作保险，见 dash_ui_render）。
-  for (uint8_t s = 0; s < 2; ++s) {
+  for (uint8_t s = 0; s < kScreenCount; ++s) {
     build_trust_badge(g_screens[s], g_ui[s]);
     build_diag(g_screens[s], g_ui[s]);
     // ★★ 角色标签**最后建**（= 压在上面）：它只在开机动画那一秒多里出现，
@@ -1460,7 +1483,7 @@ void dash_ui_init() {
   //   ★ 纯 ASCII；`idle_role=` 是**实际拿去 image_dsc_for_role() 的那个角色号**
   //     （不是表里的理论值）：有图就是它，没图就是 0 —— 一眼能看出"这一屏取的是
   //     左那 5 张还是右那 5 张"（左=3/12/13/21/4、右=6/22/17/18/8，见 image_blob.h）。
-  for (uint8_t s = 0; s < 2; ++s) {
+  for (uint8_t s = 0; s < kScreenCount; ++s) {
     const uint8_t g = g_ui[s].face_group;
     dash_logf("faceimg: screen=%u group=%u panel=%s gauge=%s idle_role=%u\n",
               (unsigned)s, (unsigned)g,
@@ -1488,7 +1511,7 @@ void dash_ui_tick(uint32_t now_ms) {
 #if defined(DASH_DISPLAY_PREVIEW)
   boot_window = boot_window || dash_display_preview_boot_hold();
 #endif
-  for (uint8_t s = 0; s < 2; ++s) role_apply(g_ui[s], boot_window);
+  for (uint8_t s = 0; s < kScreenCount; ++s) role_apply(g_ui[s], boot_window);
 
   if (g_boot.active(now_ms)) {
     // 开机动画按 20ms(50Hz)档推进:扫表角度每档才 invalidate 一次。
@@ -1559,14 +1582,14 @@ void dash_ui_render(const ArcDashView& v, const AlertsConfig& alerts_cfg,
   // ---- ② 诊断页：开着的时候它**盖住一切**，所以先落它、再决定要不要画表盘 ----
   //   （诊断页的容器是不透明的整屏对象，落到最上层 ⇒ 表盘那些对象被它盖住，
   //     不必把表盘逐个隐藏 —— 那是"少改一处"的选择，也让退出是**整块消失**）
-  for (uint8_t s = 0; s < 2; ++s) diag_apply(g_ui[s], diag, g_diag_open);
+  for (uint8_t s = 0; s < kScreenCount; ++s) diag_apply(g_ui[s], diag, g_diag_open);
 
   if (g_boot.active(now)) return;   // 开机期间由 boot_apply 接管
 
   // ---- ③ 数据不可信角标（**只在不可信期间出现**，数据恢复自动消失）----
   // ★ 放在开机动画**之后**：开机那 1.1 秒里没有"数据"可言，挂个角标像故障。
   // ★ 诊断页开着时不画角标（诊断页第 1 页自己就有"数据可不可信"那一行）。
-  for (uint8_t s = 0; s < 2; ++s) {
+  for (uint8_t s = 0; s < kScreenCount; ++s) {
     trust_apply(g_ui[s], g_diag_open ? DataTrustReason::kNone : trust);
   }
 
@@ -1582,12 +1605,15 @@ void dash_ui_render(const ArcDashView& v, const AlertsConfig& alerts_cfg,
   }
   last_render_ms = now;
 
-  for (uint8_t s = 0; s < 2; ++s) {
+  for (uint8_t s = 0; s < kScreenCount; ++s) {
     ScreenUi& ui = g_ui[s];
     // ★★ 本单 B 的第二处：这一屏的弧几何、表情来源都按**角色映射**取。
     //   `ti` = 这一屏该用的主题下标（从板末屏 = 0 = 转速表 + 水温）。
     const uint8_t ti = dashlayout::themeIndexForScreen(s);
-    for (uint8_t i = 0; i < ui.arc_count; ++i) {
+    // ★ 逐帧这条循环同理：`i < kMaxArcs` 是兜底（`ui.arc_count` 建屏时已钳）。
+    //   没有它时，主题里写 `arc_count: 4` ⇒ 这里读 `kScreens[ti].arcs[3]`（越界）、
+    //   写 `ui.arc_cur[3]`（越界）、把 `ui.arcs[3]`（nullptr）交给 arc_set_progress。
+    for (uint8_t i = 0; i < ui.arc_count && i < kMaxArcs; ++i) {
       const ArcStyle& a = kScreens[ti].arcs[i];
       const float target = arc_progress(a, v);
       ui.arc_cur[i] += (target - ui.arc_cur[i]) * k;
@@ -1626,7 +1652,7 @@ void dash_ui_render(const ArcDashView& v, const AlertsConfig& alerts_cfg,
   //   需要它的地方（将来谁在读数之后再建对象，这里就兜住了）。
   //   `lv_obj_move_foreground` 是纯指针操作（不触发重绘），代价可以忽略。
   if (g_diag_open) {
-    for (uint8_t s = 0; s < 2; ++s) {
+    for (uint8_t s = 0; s < kScreenCount; ++s) {
       if (g_ui[s].diag_box) lv_obj_move_foreground(g_ui[s].diag_box);
     }
   }

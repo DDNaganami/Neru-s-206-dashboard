@@ -4,6 +4,7 @@
 // 第一件事。坏数据最坏的后果不是"主题不好看",而是 boot_anim 里拿 0 当除数
 // 直接崩、或者 LVGL 拿到负半径画出鬼东西 —— 所以钳制逻辑必须有测试兜住。
 #include <unity.h>
+#include <stdio.h>      // snprintf（★ P0 那条用例里要按数值拼 JSON）
 #include <string.h>
 #include "ui_theme.h"
 #include "theme_store.h"
@@ -770,12 +771,106 @@ static void test_parse_wrong_type_does_not_eat_the_rest(void) {
   TEST_ASSERT_EQUAL_UINT32(444u, t2.boot_stagger_ms);
 }
 
+// ============================================================
+// ★★ 2026-10-16（P0 · 固件侧）：主题里写 `arc_count: 4` ⇒ 必须钳到 kMaxArcs，并且**不崩**。
+//
+// 为什么这是 P0（不是"越界值的礼貌修正"）：
+//   `ScreenTheme::arc_count` 是 `arcs[]` / `arc_cur[]`（两者都只有 kMaxArcs 个）的
+//   **唯一上界**，而 `src/dash_ui.cpp` 的两处循环直接拿它当循环上界：
+//       for (uint8_t i = 0; i < ui.arc_count; ++i) { ui.arc_cur[i] = …; arc_set_progress(ui.arcs[i], …); }
+//   建弧那个循环只建到 `i < kMaxArcs` ⇒ 主题写 4 时 `ui.arcs[3]` 还是 nullptr、
+//   `ui.arc_cur[3]` 越界写 ⇒ **把空指针当弧对象交给 LVGL**（崩在 lvgl 里，很难查）。
+//
+// 这条用例钉三件事：
+//   ① 解析完 `arc_count` 一定 ≤ kMaxArcs（解析处 + theme_clamp 两道闸门都在 lib/ 里）；
+//   ② 钳到的是**上限本身**（3），不是"随便一个小数"；
+//   ③ 越界那条弧**不会**污染前 3 条 —— 前 3 条照常解析（钳制不能变成"整段丢弃"）。
+// ★ 第三道闸门（`dash_ui.cpp` 的 `ui.arc_count` 赋值处）在 `src/` 里，native 不编 src，
+//   所以这里测不到 —— 由那一行旁边的注释 + `i < kMaxArcs` 兜底循环一起保证。
+static void test_arc_count_over_max_is_clamped(void) {
+  // 前提：上限就是 3（主题格式里"每屏最多几条"），这条不成立时下面几条断言没有意义
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(3, kMaxArcs, "kMaxArcs 变了就要重看本用例");
+
+  // ---- ① 主题真的写了 4 条弧（编辑器导出/手改都可能）----
+  const char* json4 = R"({"theme":{"screens":[
+    {"arc_count": 4, "arcs":[
+      {"kind": 0, "radius": 200, "width": 20},
+      {"kind": 1, "radius": 160, "width": 10},
+      {"kind": 2, "radius": 140, "width": 8},
+      {"kind": 3, "radius": 120, "width": 6}]},
+    {"arc_count": 4, "arcs":[
+      {"kind": 0}, {"kind": 1}, {"kind": 2}, {"kind": 3}]}]}})";
+  Theme t;
+  TEST_ASSERT_TRUE(theme_parse_json(json4, (uint32_t)strlen(json4), t));
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(kMaxArcs, t.screens[0].arc_count,
+                                  "arc_count: 4 必须被钳到 kMaxArcs(3)，不许原样留下来");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(kMaxArcs, t.screens[1].arc_count,
+                                  "两屏都要钳（钳制写在循环里，别只钳 0 号屏）");
+  // ③ 前 3 条弧照常解析（钳制不是"整段丢弃"）
+  TEST_ASSERT_EQUAL_INT32(200, t.screens[0].arcs[0].radius);
+  TEST_ASSERT_EQUAL_INT32(10, t.screens[0].arcs[1].width);
+  TEST_ASSERT_EQUAL_INT32(8, t.screens[0].arcs[2].width);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)ArcKind::Coolant, (uint8_t)t.screens[0].arcs[2].kind);
+
+  // ---- ② `(uint8_t)u` 的截位陷阱：300 不是"太大"，是 44（300 & 0xFF）----
+  //   只截位不封顶的写法会把它变成一个**看着合法**的 44 ⇒ 越界照旧。
+  const char* json300 = R"({"theme":{"screens":[{"arc_count": 300}]}})";
+  TEST_ASSERT_TRUE(theme_parse_json(json300, (uint32_t)strlen(json300), t));
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(kMaxArcs, t.screens[0].arc_count,
+                                  "300 必须封顶到 kMaxArcs，而不是被截成 44 这种"
+                                  "'看着合法'的数");
+
+  // ---- ②b 其它荒唐值（255 = uint8 的满值、9999、只写 1 条弧却写 9）----
+  const char* jsonMisc = R"({"theme":{"screens":[
+    {"arc_count": 255}, {"arc_count": 9999, "arcs":[{"kind": 1}]}]}})";
+  TEST_ASSERT_TRUE(theme_parse_json(jsonMisc, (uint32_t)strlen(jsonMisc), t));
+  TEST_ASSERT_EQUAL_UINT8(kMaxArcs, t.screens[0].arc_count);
+  TEST_ASSERT_EQUAL_UINT8(kMaxArcs, t.screens[1].arc_count);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)ArcKind::Rpm, (uint8_t)t.screens[1].arcs[0].kind);
+
+  // ---- ②c 合法的 0/1/2/3 一个都不许被改动（钳制只封上界）----
+  for (uint8_t n = 0; n <= kMaxArcs; ++n) {
+    char buf[96];
+    snprintf(buf, sizeof(buf), R"({"theme":{"screens":[{"arc_count": %u}]}})", (unsigned)n);
+    Theme c;
+    TEST_ASSERT_TRUE(theme_parse_json(buf, (uint32_t)strlen(buf), c));
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(n, c.screens[0].arc_count,
+                                    "合法值不许被钳（只有超过 kMaxArcs 才钳）");
+  }
+}
+
+// ★ 同一类"魔法数当数组上界"的另一半：`screens` 数组。
+//   主题里写 3 屏 ⇒ 第 3 屏整段跳过（不崩、不越界写 `Theme::screens[]`）。
+//   这条与上面那条同型，所以放在一起：两处都只认**数组真实长度**（kScreenCount）。
+static void test_screens_over_count_is_ignored(void) {
+  TEST_ASSERT_EQUAL_UINT8(2, kScreenCount);   // 前提：今天就是两屏
+  Theme def;
+  theme_set_defaults(def);
+
+  // 3 屏：前两屏生效，第 3 屏（bg 颜色/弧全不一样）必须一点都不生效
+  const char* json = R"({"theme":{"bg_color": 0x101010, "screens":[
+    {"arc_count": 1, "arcs":[{"kind": 1}]},
+    {"arc_count": 2, "arcs":[{"kind": 0}, {"kind": 3}]},
+    {"arc_count": 3, "arcs":[{"kind": 2}, {"kind": 2}, {"kind": 2}]}]}})";
+  Theme t;
+  TEST_ASSERT_TRUE(theme_parse_json(json, (uint32_t)strlen(json), t));
+  TEST_ASSERT_EQUAL_HEX32(0x101010u, t.bg_color);
+  TEST_ASSERT_EQUAL_UINT8(1, t.screens[0].arc_count);
+  TEST_ASSERT_EQUAL_UINT8(2, t.screens[1].arc_count);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)ArcKind::Intake, (uint8_t)t.screens[1].arcs[1].kind);
+  // 第 3 屏没有落点 ⇒ 现有两屏不许被它覆盖（两屏都还是文件里写的那两份）
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)ArcKind::Rpm, (uint8_t)t.screens[0].arcs[0].kind);
+  TEST_ASSERT_EQUAL_UINT8(2, t.screens[1].arc_count);
+}
+
 void register_theme_store_tests(void) {
   RUN_TEST(test_parse_full_theme);
   RUN_TEST(test_parse_partial_keeps_defaults);
   RUN_TEST(test_parse_bare_root);
   RUN_TEST(test_parse_ignores_unknown);
   RUN_TEST(test_clamp_bad_values);
+  RUN_TEST(test_arc_count_over_max_is_clamped);   // ★★ P0：arc_count: 4 ⇒ 钳到 3
+  RUN_TEST(test_screens_over_count_is_ignored);   // ★ 同型：screens 的魔法数
   RUN_TEST(test_parse_garbage_is_safe);
   RUN_TEST(test_screen_gauge_mapping);
   RUN_TEST(test_defaults_are_valid);

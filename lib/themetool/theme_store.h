@@ -34,6 +34,8 @@ bool theme_load();
 // ★ 同上，但读的是**同一份文件里的 `alerts` 段**（见下面 theme_parse_alerts_json）。
 //   返回 false = 没有分区 / 没刷过 / 文件坏了 / 文件里没有这一段 ⇒ cfg 一个字都没动。
 //   ★ 与 `theme_load()` 各读一次分区（各 ≤4 KB，只在 setup 里跑一次）。
+//   ★★ 两个入口**共用同一块**静态缓冲（`src/theme_load.cpp` 的 `s_buf`，4 KB 而不是
+//     8 KB）—— 见那个文件顶上的说明：只允许 setup 期串行调用。
 bool theme_load_alerts(AlertsConfig& cfg);
 
 // 从内存里的 JSON 文本解析主题（不含 IO）——便于宿主机单测。

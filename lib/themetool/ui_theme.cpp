@@ -93,8 +93,12 @@ void theme_clamp(Theme& t) {
   //   4 拍纯属白等 —— 开机期间 dash_ui_render 会早退,那段时间根本不显示真实数据。
   t.boot_total_ms = t.boot_face_start_ms + t.boot_face_blink_ms;
 
-  for (uint8_t s = 0; s < 2; ++s) {
+  for (uint8_t s = 0; s < kScreenCount; ++s) {
     ScreenTheme& sc = t.screens[s];
+    // ★★ 泛用的上界闸门（不区分"从哪来"）：`Theme` 是**外部输入**落地的那个对象，
+    //   解析处（theme_store.cpp 的 readScreen）已经钳过一次，这里对**任何**来源
+    //   （包括以后某条不经解析器的路径）再钳一次。`arc_count` 是 `arcs[]` 的唯一上界，
+    //   越界 = 读越界 + 把空指针当弧对象交给 LVGL（见 dash_ui.cpp `ui.arc_count` 那一行）。
     if (sc.arc_count > kMaxArcs) sc.arc_count = kMaxArcs;
     sc.show_face = sc.show_face ? 1 : 0;
     for (uint8_t i = 0; i < sc.arc_count; ++i) {

@@ -194,7 +194,18 @@ void readArc(Scan& s, ArcStyle& a) {
 void readScreen(Scan& s, ScreenTheme& sc) {
   s.object([&](const char* k, size_t klen) -> bool {
     uint32_t u = 0;
-    if (keyIs(k, klen, "arc_count")) { if (s.uintVal(&u)) sc.arc_count = (uint8_t)u; return true; }
+    // ★★ `arc_count` 在**解析处**就钳到 kMaxArcs。
+    //   `(uint8_t)u` 只截位、不封顶：写 4 就是 4、写 300 会变成 44（300 & 0xFF）
+    //   ⇒ 只截位的写法会把"荒唐输入"变成"看着合法的数字"。
+    //   而这个数**是 `ScreenTheme::arcs[]` 的唯一上界**，下游 `dash_ui.cpp`
+    //   拿它当循环上界（建弧 / 开机扫表 / 逐帧刷新三处）⇒ 放过去就是越界读
+    //   `arcs[i]`（i ≥ kMaxArcs 那份根本没建/没解析）+ 把 nullptr 当弧对象交给 LVGL。
+    //   ★ 两条独立防线，都要：这里是**入口**（外部文件），dash_ui 里还有一道
+    //     （`ui.arc_count` 赋值处），theme_clamp() 也钳 —— 三条都在，代价是一次比较。
+    if (keyIs(k, klen, "arc_count")) {
+      if (s.uintVal(&u)) sc.arc_count = (uint8_t)(u > (uint32_t)kMaxArcs ? (uint32_t)kMaxArcs : u);
+      return true;
+    }
     if (keyIs(k, klen, "show_face")) { if (s.uintVal(&u)) sc.show_face = (uint8_t)(u ? 1 : 0); return true; }
     if (keyIs(k, klen, "arcs")) {
       if (!s.eat('[')) return true;
@@ -354,7 +365,10 @@ bool theme_parse_json(const char* json, uint32_t len, Theme& t) {
       uint8_t si = 0;
       if (s.peek() == ']') { s.eat(']'); return true; }
       for (;;) {
-        if (si < 2) readScreen(s, t.screens[si]);
+        // ★ 与 arc_count 同一类闸门：**数组上界 = 数组真实长度**，不写字面量。
+        //   （原来这里是硬编码的 `si < 2`；`Theme::screens` 改成 kScreenCount 之后，
+        //     两处同一个名字 ⇒ 以后加/减屏不会一边改一边漏。多出来的屏整段跳过。）
+        if (si < kScreenCount) readScreen(s, t.screens[si]);
         else s.skipValue();
         ++si;
         if (s.eat(',')) continue;

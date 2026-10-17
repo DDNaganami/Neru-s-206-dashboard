@@ -40,6 +40,14 @@ static inline float theme_scale() {
 //   0/1/2 是历史值,3 = 进气温度(2026-09 新增)。
 enum class ArcKind : uint8_t { Speed, Rpm, Coolant, Intake };
 static const uint8_t kMaxArcs = 3;   // 每屏最多几条(不是总共)
+// 屏数 = `Theme::screens[]` 的长度 = UI 里"每屏一份"那些数组的长度。
+// ★★ 为什么要有这个名字（2026-10-16）：解析器（`theme_store.cpp` 的 screens 数组）
+//   与 UI（`src/dash_ui.cpp` 的 `g_ui[]`/`g_screens[]`/… 以及十几处逐屏循环）原先
+//   各自写死字面量 **2**。两边一旦不同步就是**静默越界**（写这一屏、读那一屏，
+//   不报错、只是画面串了）—— 与 `arc_count` 那类"魔法数当数组上界"的 bug 同型。
+//   ⇒ 现在两处用同一个名字；`dash_ui.cpp` 里另有一条 static_assert 把它与
+//     `dashlayout::kScreenCount`（角色映射那一层，本文件不能依赖它）钉在一起。
+static const uint8_t kScreenCount = 2u;
 
 // 一条弧的样式。
 //
@@ -315,7 +323,7 @@ struct Theme {
   uint32_t boot_total_ms;      // 由上面几个推导,加载时重算
 
   // 两屏的弧
-  ScreenTheme screens[2];
+  ScreenTheme screens[kScreenCount];
 };
 
 // 正常渲染弧值缓动:指数趋近速率(1/s),与渲染频率解耦。
