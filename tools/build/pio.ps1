@@ -19,7 +19,12 @@
        ld.exe: cannot find .../crt2.o / -lstdc++ / -lmingw32 ...
      Fix: give the compiler an ASCII-only TMP (GCC reads TMP before TEMP):
        TMP=C:\temp   and do NOT set TEMP (see trap 3).
-     The toolchain itself also lives at C:\mingw64.
+     The host toolchain lives at C:\206dash-scratch\zigbin -- NOT C:\mingw64:
+     C:\mingw64\bin does NOT exist on this machine (measured; Test-Path = False),
+     so the old note claiming it did was simply wrong and left host builds with
+     no compiler at all ('gcc' is not recognized ...).
+     zigbin holds gcc.cmd / g++.cmd / cc.cmd / c++.cmd, each forwarding to
+     C:\ziglang\zig.exe cc  (existence is checked in section 2 below).
 
   3. NEVER change the user-level TEMP.  Pointing it at C:\temp for ASCII broke
      `import intelhex` (user site-packages resolution follows TEMP).
@@ -86,7 +91,10 @@
   is ambiguous", matching -ErrorAction), and `--` does not help under -File.
   One string sidesteps all of it.
 
-  Exit code: pio's exit code is passed through (0 = success).
+  Exit code: pio's exit code is passed through (0 = success) -- BUT judge a build
+  by the [SUCCESS] line, not by the exit code: on a fully successful build pio
+  still returns 1 sometimes (measured).  A bare `python` on this machine is the
+  Microsoft Store stub and returns 9009 with zero output, so never trust it.
 #>
 param(
   [Parameter(Mandatory = $true, Position = 0)][string]$Cmd,
@@ -104,11 +112,25 @@ if (-not (Test-Path $py)) {
   exit 2
 }
 
-# ---- 2. PATH: penv Scripts (for esptool.py's shebang) + mingw64 (host compiler) ----
+# ---- 2. PATH: penv Scripts (for esptool.py's shebang) + zigbin (host compiler, NOT C:\mingw64) ----
 $penvScripts = Split-Path $py -Parent
 $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
 $user = [Environment]::GetEnvironmentVariable('Path', 'User')
-$env:Path = "$penvScripts;C:\mingw64\bin;$machine;$user"
+# The host toolchain MUST be found before we run anything: native/host builds
+# shell out to `gcc`, and a missing toolchain otherwise surfaces only as a
+# wall of "'gcc' is not recognized as an internal or external command" per
+# object file, with a [FAILED] that looks like a code error.  Say what is missing.
+$toolchain = 'C:\206dash-scratch\zigbin'
+if (-not (Test-Path $toolchain)) {
+  Write-Host "ERROR: host toolchain dir not found: $toolchain" -ForegroundColor Red
+  Write-Host "       expected gcc.cmd / g++.cmd / cc.cmd / c++.cmd in it," -ForegroundColor Yellow
+  Write-Host "       each forwarding to C:\ziglang\zig.exe cc" -ForegroundColor Yellow
+  Write-Host "       (C:\mingw64 is NOT the toolchain dir on this machine -- it does not exist)" -ForegroundColor Yellow
+  Write-Host "       without it every compile dies with: 'gcc' is not recognized ..." -ForegroundColor Yellow
+  Write-Host "       rebuild the dir or see docs/BUILD-ENV.md; this is an env problem, not a code bug." -ForegroundColor Yellow
+  exit 2
+}
+$env:Path = "$penvScripts;$toolchain;$machine;$user"
 
 # ---- 3. temp dir: set TMP only (GCC honours it), leave TEMP alone (python needs it) ----
 if (-not (Test-Path 'C:\temp')) { New-Item -ItemType Directory -Force -Path 'C:\temp' | Out-Null }
@@ -124,6 +146,16 @@ if (-not $env:PLATFORMIO_BUILD_DIR) { $env:PLATFORMIO_BUILD_DIR = 'C:\206dash-bu
 # dark with a silent serial port.  Must be PYTHONIOENCODING -- the
 # [Console]::OutputEncoding line above only affects the .NET side.
 $env:PYTHONIOENCODING = 'utf-8'
+# PYTHONUTF8=1 is the OTHER half, and it is not optional either.  PYTHONIOENCODING
+# only covers the stdout/stderr text layer; PYTHONUTF8 forces utf-8 for the rest
+# (file + filesystem default encoding) no matter what the ANSI code page says.
+# Without it a build dies within seconds in one of two disguises (both measured):
+#   [checkprogsize] UnicodeDecodeError: 'gbk' codec can't decode byte 0x85 ...
+#     -> the image WAS produced; only the size check choked on UTF-8 in the log
+#   TypeError: argument should be a str or an os.PathLike object where
+#     __fspath__ returns a str, not 'NoneType'
+#     -> same disease, hits at configure time (7 seconds in).
+$env:PYTHONUTF8 = '1'
 
 Write-Host ("pio.py   : " + $py) -ForegroundColor DarkGray
 Write-Host ("TMP      : " + $env:TMP + "   (TEMP deliberately unset)") -ForegroundColor DarkGray

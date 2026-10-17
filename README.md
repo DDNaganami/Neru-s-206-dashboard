@@ -36,7 +36,7 @@ VAN 协议已经解完并在真实抓包上验过：帧布局（SOF 10 槽 / IDE
 
 ## 编译 / 测试 / 刷机
 
-仓库路径里有中文，ESP32 工具链会在中文路径下报 `g++ Invalid argument`，所以**构建在纯 ASCII 副本上做**，两边用 robocopy 同步；本机的 PlatformIO Core 和工作区依赖都不在系统 python 里，`PYTHONPATH` 与 `PLATFORMIO_CORE_DIR` 两个环境变量不能省（宿主机编译器是 `.tools\zigbin` 里的 zig 转发桩）。下面每一行都在 `$copy` 目录里执行。
+仓库路径里有中文，ESP32 工具链会在中文路径下报 `g++ Invalid argument`，所以**构建在纯 ASCII 副本上做**，两边用 robocopy 同步；本机的 PlatformIO Core 和工作区依赖都不在系统 python 里，`PYTHONPATH` 与 `PLATFORMIO_CORE_DIR` 两个环境变量不能省（宿主机编译器是 **`C:\206dash-scratch\zigbin`** 里的 zig 转发桩：`gcc.cmd` / `g++.cmd` → `C:\ziglang\zig.exe cc`；**仓库里的 `.tools\zigbin` 不存在**，`C:\mingw64` 也不存在）。不走 `tools\build\pio.ps1` 手搓 pio 时，下面每一行都在 `$copy` 目录里执行。
 
 ```powershell
 $repo='C:\Users\张九思\206Dash\Neru-s-206-dashboard'
@@ -53,11 +53,14 @@ $env:PYTHONUTF8='1'          # ★ 不能省 —— 不设它，构建会以两�
                              #      __fspath__ returns a str, not 'NoneType' —— 同一个病在配置阶段发作：7 秒就失败
                              #   ⇒ 判据看 [SUCCESS] 那一行，别只看退出码（成功时 pio 也可能返回 1）
 
-python -m platformio test -e native                 # 宿主机单元测试，不烧板
-python -m platformio run -e pcpreview -t exec       # 本机渲双屏 BMP，Ctrl+C 后打开 preview/preview.html
-python -m platformio run -e esp32s3-rgb-master-now -t upload --upload-port COM9   # 主板
-python -m platformio run -e esp32s3-rgb-slave-now  -t upload --upload-port COM8   # 从板
+# ★ 一律走 pio.ps1。本机裸 python 是"应用执行别名"占位：`python --version` 退出码 9009、零输出
+.\tools\build\pio.ps1 -Cmd 'test -e native'                                              # 宿主机单元测试，不烧板
+.\tools\build\pio.ps1 -Cmd 'run -e pcpreview -t exec'                                    # 本机渲双屏 BMP，Ctrl+C 后打开 preview/preview.html
+.\tools\build\pio.ps1 -Cmd 'run -e esp32s3-rgb-master-now -t upload --upload-port COM9'   # 主板
+.\tools\build\pio.ps1 -Cmd 'run -e esp32s3-rgb-slave-now  -t upload --upload-port COM8'   # 从板
 ```
+
+★ **判据看 `[SUCCESS]` 那一行，别看退出码** —— 这台机器上 pio 编成功时也可能返回 1（与"裸 `python` 占位返回 0 却零产出"是同一个病的两面）。要判定产物是不是新生成的，再对一眼 mtime/哈希（帧看 `preview/frames/l_0030.bmp`，镜像看 `[SUCCESS]`）。
 
 编译目标（**两块板当前用哪两份，看 `-now` 那两行**）：
 

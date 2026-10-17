@@ -37,7 +37,11 @@ ld.exe: cannot find .../crt2.o / -lstdc++ / -lmingw32 ...   （一连串）
 **修法**：只给编译器一个 ASCII 的 `TMP`（GCC 优先读 `TMP`，其次 `TEMP`）：
 `$env:TMP='C:\temp'`，并且**不要再设 `$env:TEMP`**（见坑 3）。
 
-工具链本身也搬到了 `C:\mingw64`（winget 装的那份在带中文的 WinGet 路径下）。
+工具链本身在 **`C:\206dash-scratch\zigbin`**（里面是 `gcc.cmd` / `g++.cmd` / `cc.cmd` / `c++.cmd`，每个都转发到 `C:\ziglang\zig.exe cc`）。
+
+★ 旧写法说"工具链也搬到了 `C:\mingw64`"，**那是错的**：`C:\mingw64` 在本机**根本不存在**（`Test-Path` = False，实测）。照它把编译器路径钉进 `PATH`，等于整台机器**没有宿主机编译器** —— 每个 `.o` 都报一遍
+`'gcc' is not recognized as an internal or external command`，最后收在 `[FAILED]`，
+看起来像代码错，其实只是路径错（`tools/build/pio.ps1` 现在**先查目录存在再设 `PATH`**，缺了就直接 `exit 2` 并说明缺什么）。
 
 ## 坑 3 — 别改用户级的 `TEMP`
 
@@ -96,7 +100,19 @@ UnicodeEncodeError: 'gbk' codec can't encode character '\u2591' in position 23
 
 ```powershell
 $env:PYTHONIOENCODING = 'utf-8'
+$env:PYTHONUTF8       = '1'      # ★ 也是"不能省"，两个一起设才算完整
 ```
+
+★★ **只设 `PYTHONIOENCODING` 还不够，`PYTHONUTF8=1` 必须一起设**（2026-10-10 实测，各烧掉一次构建）。
+`PYTHONIOENCODING` 只管 stdout/stderr 这一层；`PYTHONUTF8` 管其余（**文件 / 文件系统的默认编码**），
+不管 ANSI 代码页是多少都强制 utf-8。不设它，构建会在**几秒内**以两种面目之一失败，而两种都**长得不像编码问题**：
+
+1. `[checkprogsize] UnicodeDecodeError: 'gbk' codec can't decode byte 0x85 ...`
+   —— 镜像**其实已经生成好了**，只是末尾的尺寸检查拿 GBK 去解码产物里的 UTF-8 中文；
+2. `TypeError: argument should be a str or an os.PathLike object where
+   __fspath__ returns a str, not 'NoneType'` —— 同一个病在**配置阶段**发作，7 秒就失败。
+
+⇒ 补一条判据：**看 `[SUCCESS]` 那一行，别只看退出码**（成功时 pio 也可能返回 1）。
 
 **中招之后怎么救**：不用短接、不用手动进 download 模式 —— **重刷一次就好**。
 芯片没坏，重刷会写到 `0x00000000` 把启动区补全（实测：59 秒，四个镜像全部
@@ -191,7 +207,8 @@ $py = 'C:\.platformio\penv\Scripts\python.exe'
 
 1. **只用** `tools/build/pio.ps1 -Cmd '…'`（写死了 venv python 全路径），或
    `& C:\206dash-scratch\pio-core-mix\penv\Scripts\python.exe -m platformio …`。
-   **别用**裸 `python` —— 连 `README.md` §构建 里那几行 `python -m platformio` 在这台机器上也**跑不通** ✗。
+   **别用**裸 `python` —— 它是"应用执行别名"占位（`python --version` 退出码 **9009**、**零输出**）。
+   `README.md` §构建 里那几行 `python -m platformio` 已按此**改成** `.\tools\build\pio.ps1 -Cmd '…'`。
 2. **判据看产物，不看退出码**：跑完先确认落下来/编出来的文件**时间戳或哈希变了**
    （帧看 `preview/frames/l_0030.bmp` 的 mtime；镜像看 `[SUCCESS]` 行）。
    ★ 这与"pio 成功时也可能返回 1"是同一个病的两面。
@@ -204,8 +221,10 @@ $py = 'C:\.platformio\penv\Scripts\python.exe'
 | `C:\206dash-scratch\pio-core-mix\penv\Scripts\python.exe` | ✓ | `docs/LINK-TWO-BOARD.md` §构建 用的那套 |
 | `C:\206dash-scratch\now-vanraw` | ✓ | **在用的 ASCII 镜像**（`-now` 两档；`ota-cycle.ps1` 里写死了它的固件路径） |
 | `C:\206dash-scratch\now` | ✓ | 另一份镜像（`README.md` §构建 里的 `$copy` 例子） |
-| `C:\206dash-repo` | ✗ **已不存在** | 坑 5 里那个镜像名是旧的 |
-| `C:\206dash-build` | ✗ **已不存在** | 坑 4 里的 `PLATFORMIO_BUILD_DIR` 现在是按需创建 |
+| `C:\206dash-repo` | ？ **可能不存在，取决于哪一轮建的** | 坑 5 里那个镜像名 —— 2026-10-14 记的是"已不存在"，之后**打包代理又重建过**（现在 `Test-Path` = True）⇒ **判据：用前先 `Test-Path`**，别把某一轮的结论写死 |
+| `C:\206dash-build` | ？ **可能不存在，取决于哪一轮建的** | 坑 4 里的 `PLATFORMIO_BUILD_DIR`，现在是**按需创建**（现在 `Test-Path` = True）⇒ **判据：用前先 `Test-Path`** |
+| `C:\206dash-scratch\zigbin` | ✓ | ★ **宿主机工具链**（`gcc.cmd`/`g++.cmd`/`cc.cmd`/`c++.cmd` → `C:\ziglang\zig.exe cc`）；`tools/build/pio.ps1` 设进 `PATH` 的就是它 |
+| `C:\mingw64\bin` | ✗ **不存在** | 旧注释/旧文档里的工具链位置，**是错的** —— 钉在这里等于这台机器没有宿主机编译器（症状：每个 `.o` 都报 `'gcc' is not recognized`） |
 
 ★ 同步命令（本轮实测可用）：`robocopy $repo $copy /E /XD .git .pio /NJH /NJS /NP`
 —— 退出码 **1/3 = 成功**、**≥8 = 失败**；`/E` 不删目标里多余的文件（要镜像式删才用 `/MIR`）。
