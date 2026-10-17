@@ -95,7 +95,10 @@
 
 namespace dashlayout {
 
-// 屏幕数：两屏（左/右）。★ 与 `ui_theme.h` 的 `Theme::screens[2]` 是同一个数。
+// 屏幕数：两屏（左/右）。★ 与 `ui_theme.h` 的 `kScreenCount`（= `Theme::screens[]` 的长度）
+//   是同一个数 —— 两边同名的那个 `kScreenCount` 由 `src/dash_ui.cpp` 顶上一条
+//   `static_assert` 钉死：只改一边，编译当场失败，而不是等刷上板才发现"屏串了"。
+//   （2026-10-16 之前这里是两处各写死字面量 `2`；字面量当数组上界是静默越界的经典写法。）
 static const uint8_t kScreenCount = 2u;
 
 // 设备上的两块屏：末屏（今天唯一可见的那一屏）。

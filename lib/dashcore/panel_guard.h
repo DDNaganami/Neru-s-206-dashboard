@@ -72,7 +72,7 @@ static const uint8_t  kPanelGuardAnomalyStreak    = 3u;
 static const uint32_t kPanelGuardAutoReinitCooldownMs = 60000u;
 
 // EXIO 输出寄存器的**纯判据**（注入回读的返回值与影子）。
-// ★ `read_ok == false` ⇒ 返回 false：读失败**不算**"不一致"
+// ★ `read_ok == false` ⇒ 返回 **true**：读失败**不算**"不一致"
 //   —— 总线一时无应答与"寄存器真的被改了"是两件事，前者重写一遍没有意义
 //   （而且会在总线坏了的时候每 2 秒写一次）。读失败单独计数（`rd_err`），
 //   但它**同样会让守护转入快速复检**（见 `kPanelGuardFastMs`）：读不到也是"状态不明"，
