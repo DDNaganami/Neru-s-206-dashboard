@@ -507,6 +507,15 @@ QSPI（TDO 3.95"）→ 对角线 ≈135 mm，圆孔把四角切掉；2.8" 圆 MI
   check-preview-frame.js 除了背景/弧/表情图层与透明通道，还核对**读数**：
   数字/单位/水温三处墨迹的**外接框**（能区分"画的是数字"和"忘了清空的
   LVGL 默认文本 Text"）、右屏不该有水温数字、开机期间数字栏必须为空。
+- **弧的几何判据**（2026-10-17 新增，改弧的宽度/半径/样式必跑）：
+    node tools/theme-editor/check-arc-centring.js            # 默认读 preview/frames
+    node tools/theme-editor/check-arc-centring.js --frames <另一批落帧>
+  它判"红区(爆转)/超速那条**红弧**与**灰轨道**是不是同一条中线"：LVGL 的弧
+  `radius` 是**外沿**、线宽只往**里**长（`lv_draw_arc.c`：`rin = radius - w`）⇒
+  两个 part 必须**同宽**才同心；只加粗 INDICATOR 会让红带中线比轨道靠里 3 px
+  （车主原话"红色表盘弧没有居中"）。第 ① 节是自检（解析几何合成的修复前/后两张图
+  必须被同一套度量分开），所以它不是空转的判据；拿修复前的落帧跑会红 4 项。
+  ★ 落帧要带主题：`$env:THEME_FILE='<任一份 theme.json>'`（不设 ⇒ 用内置默认主题）。
 - 本机没有宿主机 gcc：装了便携 zig（pip ziglang，见 .tools\pyzig），
   并用 .tools\zigbin 里的 gcc/g++/cc/c++ 转发桩调用 zig cc/c++
   （源码 .tools\zigwrap.c）。跑测试前把 zigbin 加进 PATH。

@@ -358,8 +358,28 @@ static bool arc_is_red(ArcKind k, const ArcDashView& v, const AlertsConfig& conf
 //     本函数自己**不比较**，每次调用都会真的写样式。
 //   ★ 回退用的"正常色"从 `ArcStyle` 现取 —— 这样主题换了配色，
 //     "退出红区"之后回去的仍然是主题色，不会被我这里写死一个数覆盖掉。
+//
+// ★★ 2026-10-17（车主报"**爆转和超速的红色表盘弧没有居中**"）：
+//   原来这里**只把 INDICATOR 加粗**到 1.25 倍，结果红弧整条往**圆心方向**偏了
+//   `(1.25-1)·w/2` 个像素 —— 默认主题 w=24 ⇒ **偏 3 px**，落帧实测：
+//     轨道（MAIN，宽 24）：r ∈ [181,205)  中线 192.5
+//     红弧（INDICATOR，宽 30）：r ∈ [175,205)  中线 189.5   ← 比轨道靠里 3 px
+//   原因在 LVGL 的几何口径（`lvgl/src/draw/lv_draw_arc.c` 的 `rin = radius - w`）：
+//   **弧的 `radius` 是外沿**、线宽只往**里**长。两个 part 共用外沿，所以谁加粗，
+//   谁的带就往里变厚 —— 视觉上红弧和灰轨道不在同一条中线上，"看着歪"。
+//   ⇒ 修法：**两个 part 一起加粗**（MAIN 是轨道、INDICATOR 是点亮段）。外沿不动、
+//     两者的内沿也一起往里移同样的量 ⇒ 红线/灰线**逐像素对齐**（实测中线差 0 px），
+//     而且几何上不可能越出对象边界（外沿仍是 `radius`，不会像"负 padding 往外推"
+//     那样被 LVGL 裁掉一圈）。
+//   ★ 为什么不是"干脆不加粗、只换颜色"：默认主题的转速弧本身就是红系 `0xFF5C5C`，
+//     只换色几乎看不出来（"红区要一眼看得见"是 2026-10-15 车主拍板的要求）。
+//     整圈加粗 + 变红，两条要求同时满足，且不产生任何径向偏移。
+//   ★ 加粗量进的是**两个 part**，所以退出红区必须**一起**退回去 —— 别只退 INDICATOR。
+static const float kRedlineArcWidthScale = 1.25f;   // 红区线宽 = 正常线宽 × 这个数
+
 static void arc_apply_red(lv_obj_t* arc, const ArcStyle& a, bool red) {
-  const int32_t w = red ? ts((float)a.width * 1.25f) : ts((float)a.width);
+  const int32_t w = red ? ts((float)a.width * kRedlineArcWidthScale) : ts((float)a.width);
+  lv_obj_set_style_arc_width(arc, w, LV_PART_MAIN);
   lv_obj_set_style_arc_width(arc, w, LV_PART_INDICATOR);
   lv_obj_set_style_arc_color(arc,
       red ? lv_color_hex(THEME_REDLINE_ARC_COLOR) : a.value_color,
