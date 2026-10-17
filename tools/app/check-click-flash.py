@@ -52,7 +52,20 @@ CHROME_CANDIDATES = [
     r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
 ]
 
-PASS, FAIL = 0, 0
+PASS, FAIL, SKIP = 0, 0, 0
+
+
+def skip(what):
+    """这一条**现在判不了**（前提不成立）⇒ 明说跳过，不记红、也不算过。
+
+    ★ 2026-10-17：车主已进入"等支架建模/上车"阶段，两块 ESP32 都拔了、这台机器上只有
+      COM1（主板板载口）⇒ 依赖"插着本项目的板"的判据在那里既不是过也不是错。
+      判不了就写"跳过：…"，别让红变成噪音（也别假装过了）。
+    """
+    global SKIP
+    SKIP += 1
+    print("  跳过：%s" % what)
+    return False
 
 
 def ok(cond, what):
@@ -313,6 +326,8 @@ def main():
         ok(("写完了" in str(state.get("pill"))) or ("没写成" in str(state.get("pill"))),
            "牌子给出了结果：" + str(state.get("pill"))[:60])
         # ★ 打的是不是**本项目的板**（默认绝不能落到 COM1 那种主板板载口上）
+        #   ★ 前提是"插着本项目的板"：一块都没认出来（`is_project_board` 全 False）⇒
+        #     **跳过并说明**（这台机器现在就只接着 COM1），不记红；有板时照旧全跑。
         boards = json.loads(urllib.request.urlopen(
             "http://127.0.0.1:%d/api/ports" % port, timeout=120).read().decode("utf-8"))
         board_ports = [b["port"] for b in boards.get("boards", [])]
@@ -320,8 +335,12 @@ def main():
               re.search(r"正在写 ([A-Za-z0-9]+)", str(pill0))
         target = hit.group(1) if hit else "?"
         print("   目标串口：%s（认出来的板：%r）" % (target, board_ports))
-        ok(target in board_ports,
-           "★ 表盘屏那颗默认打的是**认出来的板**（%s），不是 COM1 那种板载口" % target)
+        if not board_ports:
+            skip("无项目板 —— 这一条要插上本项目的板（/api/ports 的 is_project_board）"
+                 "才判得了；当前只有 %r" % ([p.get("port") for p in boards.get("ports", [])],))
+        else:
+            ok(target in board_ports,
+               "★ 表盘屏那颗默认打的是**认出来的板**（%s），不是 COM1 那种板载口" % target)
 
         section("② 下载目录里没有产生任何文件（写进板子不落地）")
         files = os.listdir(dl)
@@ -397,8 +416,9 @@ def main():
         shutil.rmtree(tmp, ignore_errors=True)
 
     print("\n" + "=" * 56)
-    print(("全部通过:%d 项（真浏览器真点击；/api/flash 被测试拦掉，没碰板子）" % PASS)
-          if FAIL == 0 else ("失败 %d / 共 %d" % (FAIL, PASS + FAIL)))
+    tail = ("；跳过 %d 项（前提不成立，见上面「跳过：…」）" % SKIP) if SKIP else ""
+    print((("全部通过:%d 项（真浏览器真点击；/api/flash 被测试拦掉，没碰板子）" % PASS) + tail)
+          if FAIL == 0 else ("失败 %d / 共 %d%s" % (FAIL, PASS + FAIL, tail)))
     print("=" * 56)
     return 0 if FAIL == 0 else 1
 

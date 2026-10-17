@@ -137,7 +137,10 @@ PREVIEW_SECONDS = 40
 # ★ 两处必须**同一个**目录：Handler._upload 往这里写，do_flash 只认这里（见 flash_file_ok）。
 UPLOAD_SUBDIR = "app-upload"
 FLASH_MAX_BYTES = 32 * 1024 * 1024      # 32 MB：分区最大 8 MB，留足余量（超过 ⇒ 拒绝）
-ALLOWED_FLASH_EXT = (".bin",)           # 只有 *.bin 能被写进分区
+# 只有这两种能被写进分区：`*.bin`（素材容器 / 固件）+ `*.json`（存下来的 theme.json ——
+# 「刷存下来的文件」那个输入框本来就 accept=".bin,.json"，这条能力要留着）。
+# 目录仍然**只有** upload_dir() 这一个 ⇒ 别的目录里的 .json 一样不刷。
+ALLOWED_FLASH_EXT = (".bin", ".json")
 
 # ---------------------------------------------------------------------------
 # 编辑器页面（配色 + 图片）实际会请求的静态文件
@@ -189,7 +192,7 @@ def repo_missing_out(what):
 #     · junction / 符号链接更随便指（路径字符串根本看不出它指向哪）；
 #     · 而且"仓库里任何文件"都能被写进分区（src/*.h、docs、甚至 .git 里的东西）✗。
 #   ⇒ 现在：先 realpath 解开真身，再用 commonpath 比目录关系；能刷的文件**只有**
-#     `SCRATCH\app-upload` 下、≤ 32 MB 的 `*.bin`（页面选的文件也只能落到那儿）。
+#     `SCRATCH\app-upload` 下、≤ 32 MB 的 `*.bin` / `*.json`（页面选的文件也只能落到那儿）。
 # ---------------------------------------------------------------------------
 def upload_dir():
     """页面上传落地目录。★ 用函数取（SCRATCH 在别处可能被测试替换，别 import 时算死）。"""
@@ -219,11 +222,13 @@ def under_dir(base, path):
 
 
 def flash_file_ok(path):
-    """能刷的文件**只有** `SCRATCH\\app-upload` 下的 `*.bin`（≤ FLASH_MAX_BYTES）。
+    """能刷的文件**只有** `SCRATCH\\app-upload` 下的 `*.bin` / `*.json`（≤ FLASH_MAX_BYTES）。
 
     合格 ⇒ 返回那个文件的 realpath；不合格 ⇒ None。
     ★ 页面传过来的只是一个**字符串**，所以这一层必须自己判死：文件在不在白名单目录里、
-      是不是 .bin、多大 —— 三条都过才交给 esptool。
+      扩展名在不在 ALLOWED_FLASH_EXT、多大 —— 三条都过才交给 esptool。
+    ★ `*.json` 是给「刷存下来的 theme.json」（kind=theme，偏移 0x210000）留的：
+      它同样只能待在 upload_dir() 里，别的目录里的 .json 一样不刷。
     """
     real = under_dir(upload_dir(), path)
     if not real or not os.path.isfile(real):
@@ -668,11 +673,13 @@ def do_build(env):
 def do_flash(port, kind, path):
     """USB 烧写素材分区（theme / image / assets）。★ 偏移只从白名单取，页面传什么都不信。
 
-    ★ 能刷的文件**只有** `SCRATCH\\app-upload` 下的 `*.bin`（≤ 32 MB），判据在
+    ★ 能刷的文件**只有** `SCRATCH\\app-upload` 下的 `*.bin` / `*.json`（≤ 32 MB），判据在
       flash_file_ok()：realpath + commonpath 比目录关系，兄弟目录/junction 绕不过去。
       以前是"仓库或 scratch 里的任何文件"（startswith 判目录）⇒ 仓库里任何东西
       都可能被写进板子的分区 ✗ —— 2026-10-16 收掉了。
-    ★ 拒绝时带 `code`（= 400），路由那一层照它回 HTTP 状态码（页面照样能读到 ok/说明）。
+    ★ **这个端点的失败一律回 HTTP 400**（`/api/flash` 那一处照 `code` 回状态码），
+      JSON 体的形状没变、仍是 `{ok:false, out:"…"}` —— 但**别再按 `200 + ok:false`
+      来解析/判成功**：状态码本身就是判据（页面两处前端都只读体、不认状态码）。
     """
     if kind not in ALLOWED_FLASH:
         return {"ok": False, "code": 400, "out": "不允许的分区: %s" % kind}
@@ -681,9 +688,10 @@ def do_flash(port, kind, path):
     real = flash_file_ok(path)
     if not real:
         return {"ok": False, "code": 400,
-                "out": ("只允许刷 %s 下、不超过 %d MB 的 *.bin —— 收到的是 %r\n"
+                "out": ("只允许刷 %s 下、不超过 %d MB 的 %s —— 收到的是 %r\n"
                         "（页面选的文件会先传到那个目录再刷；别的路径一律不刷）"
-                        % (upload_dir(), FLASH_MAX_BYTES // (1024 * 1024), path or ""))}
+                        % (upload_dir(), FLASH_MAX_BYTES // (1024 * 1024),
+                           " / ".join("*" + e for e in ALLOWED_FLASH_EXT), path or ""))}
     off = ALLOWED_FLASH[kind]
     cmd = [pio_python(), "-m", "esptool", "--chip", "esp32s3", "--port", port,
            "--baud", "921600", "write_flash", hex(off), real]
@@ -1131,6 +1139,8 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path == "/api/build":
             return self._json(do_build(str(b.get("env", ""))))
         if u.path == "/api/flash":
+            # ★ 失败一律回 400（状态码照 do_flash 的 code）：别再按 `200 + ok:false`
+            #   解析这个端点 —— JSON 体形状没变（{ok:false, out}），判断用状态码或 ok。
             r = do_flash(str(b.get("port", "")), str(b.get("kind", "")),
                          str(b.get("path", "")))
             return self._json(r, 200 if r.get("ok") else int(r.get("code") or 200))
@@ -1154,9 +1164,10 @@ class Handler(SimpleHTTPRequestHandler):
     def _upload(self):
         """页面选的文件没有真实路径 ⇒ 先传到 scratch 里落盘，再交给 esptool。
 
-        只接单文件、**只收 `.bin`**、大小上限 FLASH_MAX_BYTES（32 MB）。
+        只接单文件、只收 ALLOWED_FLASH_EXT（`.bin` / `.json`）、大小上限 FLASH_MAX_BYTES。
         ★ 落盘目录只走 upload_dir()：那是 do_flash 唯一认的目录（flash_file_ok）——
           两处同一个口子，所以"能传上来的"与"能刷进去的"是同一批文件。
+        ★ `*.json` 是给「刷存下来的 theme.json」留的（输入框本来就 accept=".bin,.json"）。
         """
         n = int(self.headers.get("Content-Length") or 0)
         if n <= 0 or n > FLASH_MAX_BYTES:
@@ -1166,8 +1177,9 @@ class Handler(SimpleHTTPRequestHandler):
         name = re.sub(r"[^A-Za-z0-9._-]", "_", name)[:80] or "upload.bin"
         if not name.lower().endswith(ALLOWED_FLASH_EXT):
             return self._json({"ok": False, "error": (
-                "只收 %s（收到 %r）—— 能刷进板子的文件只有 %s 下的 *.bin"
-                % (" / ".join(ALLOWED_FLASH_EXT), name, upload_dir()))}, 400)
+                "只收 %s（收到 %r）—— 能刷进板子的文件只有 %s 下的 %s"
+                % (" / ".join(ALLOWED_FLASH_EXT), name, upload_dir(),
+                   " / ".join("*" + e for e in ALLOWED_FLASH_EXT)))}, 400)
         d = upload_dir()
         os.makedirs(d, exist_ok=True)
         dst = os.path.join(d, name)

@@ -19,7 +19,8 @@ check-http-guard.py -- 「这个本地服务不会被**别的网页**当跳板�
   ② **目录判断可绕过**：`startswith(REPO/SCRATCH)` 不是目录关系 ⇒ 兄弟目录
      `…-dashboard2\\`、junction 都能绕；而且**仓库里任何文件**都能被刷进分区 ✗。
      判据：`realpath` + `commonpath`，并且只有 `SCRATCH\\app-upload` 下 ≤ 32 MB 的
-     `*.bin` 能刷（别的路径 ⇒ 400）。
+     `*.bin` / `*.json` 能刷（别的路径、别的后缀 ⇒ 400；`*.json` 是给「刷存下来的
+     theme.json」留的，它同样只能待在 app-upload 里）。
   ③ **未匹配的 GET 直通** `SimpleHTTPRequestHandler` ⇒ 整个仓库（含 `.git`、docs）
      连同**目录列表**都发出去 ✗；`/api/board-status?host=` 还能把服务端当跳板 ✗。
      判据：目录 ⇒ 404/403；白名单静态资源照发；`host=8.8.8.8` ⇒ 400。
@@ -200,6 +201,17 @@ try:
                           "X-Filename": "no.bin"}, b"")
     ok(code == 403, "Origin 换了端口（http://127.0.0.1:1）⇒ %d（要 403）" % code)
 
+    # ★ 后缀白名单是 `.bin` / `.json` 两种（`.json` = 「刷存下来的 theme.json」，要留着）
+    code, _, body = request("POST", "/api/upload",
+                            {"Content-Type": "application/octet-stream",
+                             "X-Filename": "theme.json"}, b'{"v":1}')
+    ok(code == 200 and jbody(body).get("ok") is True,
+       "★ /api/upload 收 theme.json ⇒ %d（要 200：刷存下来的 theme.json 这条路要留着）" % code)
+    code, _, body = request("POST", "/api/upload",
+                            {"Content-Type": "application/octet-stream",
+                             "X-Filename": "notes.txt"}, b"hi")
+    ok(code == 400, "/api/upload 收 notes.txt ⇒ %d（要 400：后缀不在白名单）" % code)
+
     # -----------------------------------------------------------------------
     section("③ POST 的 Content-Type 不合理 ⇒ 400（浏览器「不用预检」的那几种进不来）")
     for ct in ("text/plain", "application/x-www-form-urlencoded", "multipart/form-data"):
@@ -283,11 +295,11 @@ try:
     ok(code == 400, "POST /api/ota-verify {host: 8.8.8.8} ⇒ %d（要 400：同一个跳板口子）" % code)
 
     # -----------------------------------------------------------------------
-    section("⑦ 能刷的只有 `SCRATCH\\app-upload` 下的 *.bin（兄弟目录也绕不过去）")
+    section("⑦ 能刷的只有 `SCRATCH\\app-upload` 下的 *.bin / *.json（兄弟目录也绕不过去）")
 
-    def flash_post(path):
+    def flash_post(path, kind="assets"):
         code, _, body = request("POST", "/api/flash", {"Content-Type": "application/json"},
-                                json.dumps({"port": "COM8", "kind": "assets",
+                                json.dumps({"port": "COM8", "kind": kind,
                                             "path": path}).encode("utf-8"))
         return code, jbody(body)
 
@@ -316,11 +328,39 @@ try:
     code, j = flash_post(outside)
     ok(code == 400, "scratch 根下（不在 app-upload 里）的 .bin ⇒ %d（要 400）" % code)
 
-    json_in_up = os.path.join(UP, "x.json")
-    with open(json_in_up, "wb") as fh:
+    # ★ 别的目录里的 .json / .txt：**目录**那一道先拦（白名单是"目录 + 后缀"两条一起）
+    outside_json = os.path.join(TMP, "theme.json")
+    with open(outside_json, "wb") as fh:
         fh.write(b"{}")
-    code, j = flash_post(json_in_up)
-    ok(code == 400, "app-upload 下的 .json ⇒ %d（要 400：只收 *.bin）" % code)
+    del CALLS[:]
+    code, j = flash_post(outside_json, kind="theme")
+    ok(code == 400, "别的目录（scratch 根下）的 theme.json ⇒ %d（要 400：.json 也要在 app-upload 里）"
+       % code)
+    outside_txt = os.path.join(TMP, "notes.txt")
+    with open(outside_txt, "wb") as fh:
+        fh.write(b"hi")
+    code, j = flash_post(outside_txt)
+    ok(code == 400, "别的目录里的 .txt ⇒ %d（要 400）" % code)
+
+    txt_in_up = os.path.join(UP, "notes.txt")
+    with open(txt_in_up, "wb") as fh:
+        fh.write(b"hi")
+    code, j = flash_post(txt_in_up)
+    ok(code == 400, "app-upload 里的 .txt ⇒ %d（要 400：后缀也不在白名单）" % code)
+    ok(len(CALLS) == 0, "上面这几下也一次都没拼出 esptool 命令（没碰板子）")
+
+    # ★ app-upload 里的 .json 是**允许**的（「刷存下来的 theme.json」，kind=theme）
+    json_in_up = os.path.join(UP, "theme.json")
+    with open(json_in_up, "wb") as fh:
+        fh.write(b'{"v":1}')
+    del CALLS[:]
+    code, j = flash_post(json_in_up, kind="theme")
+    ok(code == 200 and j.get("ok") is True,
+       "★ app-upload 下的 theme.json ⇒ %d，ok=%r（要 200/True：这条能力要留着）"
+       % (code, j.get("ok")))
+    ok(j.get("offset") == "0x210000", "theme.json 刷的还是 0x210000：%r" % (j.get("offset"),))
+    ok(len(CALLS) == 1 and CALLS[0][CALLS[0].index("write_flash") + 1] == "0x210000",
+       "命令里是 write_flash 0x210000（theme 分区）")
 
     dotdot = os.path.join(UP, "..", "outside.bin")      # 长得像"在 app-upload 下"的写法
     code, j = flash_post(dotdot)
