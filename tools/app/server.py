@@ -18,13 +18,19 @@ server.py -- 206Dash 开发台的本地服务（**只用标准库**，不装任�
     python tools/app/server.py --port 8787 --no-open
     python tools/app/server.py --app-window     # 用 Chrome/Edge 的 --app 无地址栏窗口打开
 
-★ 安全边界（写清楚，别越）：它**只监听 127.0.0.1**，只服务**本仓库目录**（外加内嵌在
-  这个程序里的编辑器那 7 个静态文件，见 ALLOWED_EDITOR_FILES），只肯执行下面白名单里的
-  命令；不提供任意 shell、不允许路径跳出仓库。
+★ 安全边界（写清楚，别越）：它**只监听 127.0.0.1**，只发**白名单里那几个静态文件**
+  （外壳 4 个 + 编辑器 7 个 + 导航页 + 看帧页与帧，见 ALLOWED_EDITOR_FILES 与
+  repo_static_path()；目录列表、`.git`、docs、源码一律 404），只肯执行下面白名单里的
+  命令；不提供任意 shell、不允许路径跳出白名单目录。
+
+★ 来源边界（2026-10-16 补，见 Handler._guard）：`Host` 必须是 127.0.0.1/localhost，
+  带了 `Origin` 就必须等于自己这个来源（不带 Origin 的 curl/python 照常放行），
+  POST 还要求一个合理的 `Content-Type` —— 否则**任意网页**都能 no-cors 把东西写进板子 ✗。
 """
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -95,7 +101,17 @@ PIO_CORE = (os.environ.get("PLATFORMIO_CORE_DIR")
                 if os.path.isdir(os.path.join(SCRATCH, "pio-core-mix"))
                 else os.path.join(os.path.expanduser("~"), ".platformio")))
 PIO_PY = os.path.join(PIO_CORE, "penv", "Scripts", "python.exe")
-PYLIBS = os.path.join(REPO, ".pio-pylibs")
+
+
+def pylibs():
+    """仓库里给子进程补充的 PYTHONPATH 目录。
+
+    ★ 用**函数**取，别在 import 时算成常量：`REPO` 要等 main() 里 `--repo` 才被改写，
+      常量会在 import 那一刻就绑死成旧的值（同一个病见 run() 的注释）。
+    """
+    return os.path.join(REPO, ".pio-pylibs")
+
+
 ZIGBIN = os.path.join(SCRATCH, "zigbin")
 # ★ 这台机器直连 github.com 的 TLS 校验会失败（缺中间证书链），拉包必须走本机代理。
 PROXY = os.environ.get("HTTPS_PROXY") or "http://127.0.0.1:7890"
@@ -117,6 +133,11 @@ ALLOWED_FLASH = {
     "image": 0x254000,
 }
 PREVIEW_SECONDS = 40
+# 上传落地目录（页面选的文件先传到那里）与"能刷进板子的文件"的唯一口子。
+# ★ 两处必须**同一个**目录：Handler._upload 往这里写，do_flash 只认这里（见 flash_file_ok）。
+UPLOAD_SUBDIR = "app-upload"
+FLASH_MAX_BYTES = 32 * 1024 * 1024      # 32 MB：分区最大 8 MB，留足余量（超过 ⇒ 拒绝）
+ALLOWED_FLASH_EXT = (".bin",)           # 只有 *.bin 能被写进分区
 
 # ---------------------------------------------------------------------------
 # 编辑器页面（配色 + 图片）实际会请求的静态文件
@@ -156,6 +177,65 @@ def repo_missing_out(what):
             "  %s要用整个仓库（PlatformIO 工程：platformio.ini + lib/ + src/）。\n"
             "  把仓库放到它旁边，或者用 --repo <仓库路径> 启动这个程序，再试。\n"
             % (repo_need(), what))
+
+
+# ---------------------------------------------------------------------------
+# 路径白名单：什么文件能刷、什么文件能发
+#
+# ★ 2026-10-16（补漏）：以前判"文件在不在仓库里"用的是字符串前缀
+#     `real.startswith(REPO) or real.startswith(SCRATCH)`
+#   —— 字符串前缀**不是目录关系**：
+#     · 兄弟目录 `…\Neru-s-206-dashboard2\x.bin` 以 `…\Neru-s-206-dashboard` 开头 ⇒ 过；
+#     · junction / 符号链接更随便指（路径字符串根本看不出它指向哪）；
+#     · 而且"仓库里任何文件"都能被写进分区（src/*.h、docs、甚至 .git 里的东西）✗。
+#   ⇒ 现在：先 realpath 解开真身，再用 commonpath 比目录关系；能刷的文件**只有**
+#     `SCRATCH\app-upload` 下、≤ 32 MB 的 `*.bin`（页面选的文件也只能落到那儿）。
+# ---------------------------------------------------------------------------
+def upload_dir():
+    """页面上传落地目录。★ 用函数取（SCRATCH 在别处可能被测试替换，别 import 时算死）。"""
+    return os.path.join(SCRATCH, UPLOAD_SUBDIR)
+
+
+def under_dir(base, path):
+    """`path` 真的在 `base` 这棵子树里 ⇒ 返回它的 realpath；否则 None。
+
+    ★ 为什么必须 realpath + commonpath：
+        · `os.path.commonpath` 比的是**目录关系**，不是字符串前缀（前缀判法能被
+          兄弟目录绕过）；而且它跨盘符会抛 ValueError ⇒ 也得当场判成"不在里面"；
+        · `realpath` 把 junction / 符号链接解成真身 ⇒ 链接到别处的路径过不了这一关。
+    ★ Windows 的路径大小写不敏感 ⇒ 比较前 normcase。
+    """
+    try:
+        rb = os.path.realpath(base)
+        rp = os.path.realpath(path)
+    except (OSError, ValueError):
+        return None
+    try:
+        if os.path.commonpath([os.path.normcase(rb), os.path.normcase(rp)]) != os.path.normcase(rb):
+            return None
+    except ValueError:                      # 不同盘符 ⇒ 压根不是同一棵树
+        return None
+    return rp
+
+
+def flash_file_ok(path):
+    """能刷的文件**只有** `SCRATCH\\app-upload` 下的 `*.bin`（≤ FLASH_MAX_BYTES）。
+
+    合格 ⇒ 返回那个文件的 realpath；不合格 ⇒ None。
+    ★ 页面传过来的只是一个**字符串**，所以这一层必须自己判死：文件在不在白名单目录里、
+      是不是 .bin、多大 —— 三条都过才交给 esptool。
+    """
+    real = under_dir(upload_dir(), path)
+    if not real or not os.path.isfile(real):
+        return None
+    if not real.lower().endswith(ALLOWED_FLASH_EXT):
+        return None
+    try:
+        if os.path.getsize(real) > FLASH_MAX_BYTES:
+            return None
+    except OSError:
+        return None
+    return real
 
 
 # ---------------------------------------------------------------------------
@@ -488,7 +568,7 @@ def child_env():
     """子进程环境：把仓库那套配方补齐（否则 platformio / esptool 会找不到东西）。"""
     env = dict(os.environ)
     env["PLATFORMIO_CORE_DIR"] = PIO_CORE
-    env["PYTHONPATH"] = os.pathsep.join([PYLIBS, PYTHONPATH_EXTRA()]).strip(os.pathsep)
+    env["PYTHONPATH"] = os.pathsep.join([pylibs(), PYTHONPATH_EXTRA()]).strip(os.pathsep)
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env["HTTPS_PROXY"] = PROXY
@@ -504,8 +584,16 @@ def PYTHONPATH_EXTRA():
     return p if os.path.isdir(p) else ""
 
 
-def run(cmd, timeout=900, cwd=REPO):
-    """跑一条命令，返回 (ok, output)。输出一律当**文本**返回，前端只负责显示。"""
+def run(cmd, timeout=900, cwd=None):
+    """跑一条命令，返回 (ok, output)。输出一律当**文本**返回，前端只负责显示。
+
+    ★ `cwd` 的默认值**在函数体里**取（`cwd = cwd or REPO`），**不**写成
+      `def run(cmd, timeout=900, cwd=REPO)`：默认参数在 import 那一刻就绑定了，
+      而 `REPO` 要等 main() 里 `--repo` 才被改写 ⇒ 打包之后 `--repo` 对
+      「构建 / 烧写 / 预览」**全部失效**，还可能在**错的目录**里构建 ✗。
+      （同一类病：凡是依赖 REPO 的路径都该**用的时候再算**，别做模块级常量。）
+    """
+    cwd = cwd or REPO
     try:
         p = subprocess.run(cmd, cwd=cwd, env=child_env(), timeout=timeout,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -578,17 +666,24 @@ def do_build(env):
 
 
 def do_flash(port, kind, path):
-    """USB 烧写素材分区（theme / image / assets）。★ 偏移只从白名单取，页面传什么都不信。"""
+    """USB 烧写素材分区（theme / image / assets）。★ 偏移只从白名单取，页面传什么都不信。
+
+    ★ 能刷的文件**只有** `SCRATCH\\app-upload` 下的 `*.bin`（≤ 32 MB），判据在
+      flash_file_ok()：realpath + commonpath 比目录关系，兄弟目录/junction 绕不过去。
+      以前是"仓库或 scratch 里的任何文件"（startswith 判目录）⇒ 仓库里任何东西
+      都可能被写进板子的分区 ✗ —— 2026-10-16 收掉了。
+    ★ 拒绝时带 `code`（= 400），路由那一层照它回 HTTP 状态码（页面照样能读到 ok/说明）。
+    """
     if kind not in ALLOWED_FLASH:
-        return {"ok": False, "out": "不允许的分区: %s" % kind}
+        return {"ok": False, "code": 400, "out": "不允许的分区: %s" % kind}
     if not re.fullmatch(r"COM\d+", port or ""):
-        return {"ok": False, "out": "端口不合法: %s" % port}
-    if not path or not os.path.exists(path):
-        return {"ok": False, "out": "文件不存在: %s" % path}
-    # 只允许仓库内或 scratch 内的文件
-    real = os.path.abspath(path)
-    if not (real.startswith(REPO) or real.startswith(SCRATCH)):
-        return {"ok": False, "out": "拒绝仓库/scratch 之外的文件: %s" % real}
+        return {"ok": False, "code": 400, "out": "端口不合法: %s" % port}
+    real = flash_file_ok(path)
+    if not real:
+        return {"ok": False, "code": 400,
+                "out": ("只允许刷 %s 下、不超过 %d MB 的 *.bin —— 收到的是 %r\n"
+                        "（页面选的文件会先传到那个目录再刷；别的路径一律不刷）"
+                        % (upload_dir(), FLASH_MAX_BYTES // (1024 * 1024), path or ""))}
     off = ALLOWED_FLASH[kind]
     cmd = [pio_python(), "-m", "esptool", "--chip", "esp32s3", "--port", port,
            "--baud", "921600", "write_flash", hex(off), real]
@@ -610,9 +705,43 @@ def http_json(url, timeout=6):
         return {"_error": str(e)}
 
 
+# ---------------------------------------------------------------------------
+# 板子地址只许是**本机/局域网私有 IPv4**（2026-10-16 补）
+#
+# `/api/board-status?host=`、`POST /api/ota-verify {host}` 都是"服务端去 GET 一个地址"，
+# 而 host 是页面给的 ⇒ 不设限就是**把服务端当跳板**（SSRF：读内网/外网的任意 URL）✗。
+# 只认这四段（板子的 AP 是 192.168.4.1，别的私有网段也照板子的部署习惯收）：
+#   127.0.0.1/8（本机）· 10/8 · 172.16/12 · 192.168/16 —— 域名、别的 IP 一律 400。
+# ---------------------------------------------------------------------------
+DEFAULT_BOARD_HOST = "192.168.4.1"
+PRIVATE_V4_NETS = tuple(ipaddress.IPv4Network(n) for n in (
+    "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+
+
+def is_private_v4(host):
+    """`host` 是不是本机/局域网的私有 IPv4。
+
+    ★ 只认**点分十进制 IPv4**（`ipaddress.IPv4Address` 会拒掉域名、IPv6、`1.2.3`、
+      `0x7f.1` 这类花样）—— 解析不出来的就**不是**白名单里的地址，别猜。
+    """
+    try:
+        ip = ipaddress.IPv4Address(str(host or "").strip())
+    except ValueError:
+        return False
+    return any(ip in net for net in PRIVATE_V4_NETS)
+
+
 def board_status(host):
-    """Read the board's own bookkeeping: fw / role / running slot / target slot."""
-    h = (host or "192.168.4.1").strip().replace("http://", "").strip("/")
+    """Read the board's own bookkeeping: fw / role / running slot / target slot.
+
+    ★ 只读**本机/局域网的私有 IPv4**（见 is_private_v4）：这个函数发出去的是一句
+      `http://<host>/status`，页面能传 host ⇒ 不设限就成了**服务端当跳板**（SSRF）✗。
+      路由那一层已经先回 400 了，这里再判一次是第二道闸（谁直接调它也不会打外网）。
+    """
+    h = (host or DEFAULT_BOARD_HOST).strip().replace("http://", "").strip("/")
+    if not is_private_v4(h):
+        return {"_error": "只读本机/局域网的私有 IPv4：%r 不行（这个服务不当跳板）" % h,
+                "_host": h}
     st = http_json("http://%s/status" % h, timeout=5)
     st["_host"] = h
     return st
@@ -709,6 +838,74 @@ def do_preview():
 
 
 # ---------------------------------------------------------------------------
+# GET 只发**白名单里的静态文件**（2026-10-16 补）
+#
+# ★ 以前未匹配的 GET 直接 `super().do_GET()` ⇒ 整个仓库（含 `.git/`、docs、源码、
+#   构建产物）都能被读，**目录还能列出内容列表** ✗。
+# 现在只认下面这几处（都是界面自己用的东西），其余一律 404：
+#     /tools/web/index.html                 导航页（编辑器/看帧页的「返回导航页」）
+#     /preview/preview.html                 看帧页
+#     /preview/preview-28c.html             2.8C 参照页
+#     /preview/frames/<name>.bmp|png|jpg    看帧页的帧（pcpreview 的产物）
+#   ★ 判据两道：① 每条都是 **re.fullmatch 级**的路径形状（不可能塞进 ../ 之类）；
+#                ② 命中后还要过 under_dir()（realpath + commonpath）⇒ junction /
+#                   符号链接 / 兄弟目录都绕不过去（与 flash_file_ok 同一把尺子）。
+#   ★ 目录（以 / 结尾的、以及 index 文件之外的）**没有**列表：本函数只回文件。
+# ---------------------------------------------------------------------------
+PREVIEW_PAGES = ("preview.html", "preview-28c.html")
+FRAME_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,40}\.(?:bmp|png|jpg)")
+CTYPES = {".html": "text/html; charset=utf-8",
+          ".js": "application/javascript; charset=utf-8",
+          ".css": "text/css; charset=utf-8",
+          ".md": "text/markdown; charset=utf-8",
+          ".bmp": "image/bmp", ".png": "image/png", ".jpg": "image/jpeg"}
+
+
+def ctype_for(name):
+    """按扩展名给 Content-Type（不认识的当二进制发）。"""
+    return CTYPES.get(os.path.splitext(str(name or ""))[1].lower(),
+                      "application/octet-stream")
+
+
+def repo_static_path(url_path):
+    """GET 的路径 ⇒ 允许发的那个**真实文件**（已解成 realpath）；不在白名单就 None。"""
+    p = str(url_path or "")
+    if not p.startswith("/") or "\x00" in p or "\\" in p:
+        return None
+    parts = [x for x in p.split("/") if x not in ("", ".")]
+    if not parts or any(x == ".." for x in parts):
+        return None
+    if parts == ["tools", "web", "index.html"]:
+        base = os.path.join(REPO, "tools", "web")
+    elif len(parts) == 2 and parts[0] == "preview" and parts[1] in PREVIEW_PAGES:
+        base = os.path.join(REPO, "preview")
+    elif (len(parts) == 3 and parts[0] == "preview" and parts[1] == "frames"
+          and FRAME_NAME_RE.fullmatch(parts[2])):
+        base = os.path.join(REPO, "preview", "frames")
+    else:
+        return None
+    real = under_dir(base, os.path.join(REPO, *parts))
+    return real if real and os.path.isfile(real) else None
+
+
+# ---------------------------------------------------------------------------
+# 来源校验：**任意网页**都能 no-cors POST 到 localhost ⇒ 能把东西写进板子 ✗
+#
+# 三条判据（Handler._guard / _post_ctype_ok）：
+#   ① `Host` 必须是 `127.0.0.1[:port]` 或 `localhost[:port]`：
+#      防 DNS rebinding —— 攻击者域名解析到 127.0.0.1 时，浏览器发的 Host 是**那个域名**；
+#   ② 带了 `Origin` 就必须**等于自己这个来源**（跨源页面 ⇒ 403）；
+#      ★ **不带 Origin 的请求要放行**：现有 curl / python 检查脚本、命令行用法都不带
+#        Origin，一刀切会把它们全打回去 ✗；
+#   ③ POST 还要求 `Content-Type` 说得通（json / octet-stream，别的 400）：
+#      浏览器**不需要预检**就能发出去的那几种（text/plain、urlencoded、multipart）
+#      因此一个也进不来 —— 这条是给①②兜底的（万一 Origin 被剥掉）。
+# ---------------------------------------------------------------------------
+LOOPBACK_HOST_RE = re.compile(r"(?:127\.0\.0\.1|localhost)(?::\d{1,5})?", re.I)
+POST_CTYPE_OK = ("application/json", "application/octet-stream")
+
+
+# ---------------------------------------------------------------------------
 # HTTP
 # ---------------------------------------------------------------------------
 class Handler(SimpleHTTPRequestHandler):
@@ -741,6 +938,40 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _deny(self, code, why):
+        """拒绝，并**说清为什么**（一行 JSON）；顺手关掉这条连接（请求体不读了）。"""
+        self.close_connection = True
+        return self._json({"ok": False, "error": why}, code)
+
+    def _guard(self):
+        """来源校验（判据见文件里 LOOPBACK_HOST_RE / POST_CTYPE_OK 那一段注释）。
+
+        通过 ⇒ True。不通过 ⇒ 已经回了 403，调用方直接 return。
+        ★ 为什么 GET 也过这一道：`/api/ports`、`/api/bin`、静态文件都是"读本机"，
+          DNS rebinding 打进来时 Host 是攻击者的域名 ⇒ 必须挡住；
+          ★ 不带 Origin 的请求**放行**（curl / python 脚本 / 命令行用法都不带）。
+        """
+        host = (self.headers.get("Host") or "").strip()
+        if not LOOPBACK_HOST_RE.fullmatch(host):
+            self._deny(403, "只认 127.0.0.1 / localhost 这个来源的请求（Host: %r）；"
+                            "跨源页面与 DNS rebinding 都不放行。" % host)
+            return False
+        origin = (self.headers.get("Origin") or "").strip().rstrip("/")
+        if origin and origin.lower() != ("http://" + host).lower():
+            self._deny(403, "跨源请求不放行：Origin (%s) 与本机这个来源 (%s) 不一致。"
+                            % (origin, "http://" + host))
+            return False
+        return True
+
+    def _post_ctype_ok(self):
+        """POST 的 Content-Type 得说得通（否则 400，见 POST_CTYPE_OK 那一段）。"""
+        ct = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ct in POST_CTYPE_OK:
+            return True
+        self._deny(400, "POST 的 Content-Type 不合理: %r（只收 %s）"
+                        % (ct or "（没带）", " / ".join(POST_CTYPE_OK)))
+        return False
 
     def _send_file(self, path, ctype):
         data = open(path, "rb").read()
@@ -806,6 +1037,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     # -- GET ---------------------------------------------------------------
     def do_GET(self):
+        if not self._guard():
+            return
         u = urlparse(self.path)
         q = parse_qs(u.query)
         # 应用自己的文件先走内嵌/仓库那份（exe 在没有仓库时也能开界面）
@@ -833,7 +1066,14 @@ class Handler(SimpleHTTPRequestHandler):
             info.update(pages_info())
             return self._json(info)
         if u.path == "/api/board-status":
-            st = board_status((q.get("host") or [""])[0])
+            # ★ 只读本机/局域网的私有 IPv4（见 is_private_v4）：这个接口是"服务端去
+            #   GET 一个页面给的地址" ⇒ 不设限就把服务端当**跳板**（SSRF）✗。
+            host = ((q.get("host") or [""])[0] or "").strip() or DEFAULT_BOARD_HOST
+            if not is_private_v4(host):
+                return self._json({"ok": False, "error": (
+                    "只读本机/局域网的私有 IPv4（127.0.0.1 / 10.* / 172.16-31.* / 192.168.*）；"
+                    "%r 不是 ⇒ 不读（这个服务不当跳板）。" % host)}, 400)
+            st = board_status(host)
             # ★ 顺手把"角色 ↔ MAC"学下来（既有能力，不新开一条路、不碰串口）：
             #   板子自报 `role=`（固件 /status）+ 电脑此刻连着的 AP 的 BSSID(= 板子的 MAC)
             #   ⇒ 两个证据凑齐就缓存；缺一个就只留一句说明（**不猜**）。
@@ -867,10 +1107,23 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Location", "/tools/app/index.html")
             self.end_headers()
             return
-        return super().do_GET()
+        # ★ 未匹配的 GET **不再直通** `super().do_GET()`：那等于把整个仓库（连着
+        #   `.git/`、docs、源码）连同**目录列表**一起发出去 ✗。
+        #   现在只发白名单里的静态资源（见 repo_static_path），其余 —— 包括目录 —— 404。
+        p = repo_static_path(u.path)
+        if p:
+            return self._send_file(p, ctype_for(p))
+        return self._json({"ok": False, "error": "not found: %s" % u.path}, 404)
 
     # -- POST --------------------------------------------------------------
     def do_POST(self):
+        # ★ 先过来源校验（Host 必须 loopback；带了 Origin 就必须是自己）⇒ 跨源页面
+        #   再也发不出 `/api/upload`、`/api/flash`、`/api/quit` 这些会动板子的请求。
+        #   POST 还要 Content-Type 合理（浏览器"不用预检"的那几种一个也进不来）。
+        if not self._guard():
+            return
+        if not self._post_ctype_ok():
+            return
         u = urlparse(self.path)
         if u.path == "/api/upload":
             return self._upload()
@@ -878,10 +1131,16 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path == "/api/build":
             return self._json(do_build(str(b.get("env", ""))))
         if u.path == "/api/flash":
-            return self._json(do_flash(str(b.get("port", "")), str(b.get("kind", "")),
-                                       str(b.get("path", ""))))
+            r = do_flash(str(b.get("port", "")), str(b.get("kind", "")),
+                         str(b.get("path", "")))
+            return self._json(r, 200 if r.get("ok") else int(r.get("code") or 200))
         if u.path == "/api/ota-verify":
-            return self._json(ota_verify(str(b.get("host", "")), str(b.get("port", "")),
+            host = str(b.get("host", "") or "").strip() or DEFAULT_BOARD_HOST
+            if not is_private_v4(host):
+                return self._json({"ok": False, "error": (
+                    "只读本机/局域网的私有 IPv4（127.0.0.1 / 10.* / 172.16-31.* / 192.168.*）；"
+                    "%r 不是 ⇒ 不读（这个服务不当跳板）。" % host)}, 400)
+            return self._json(ota_verify(host, str(b.get("port", "")),
                                        str(b.get("before", "")), int(b.get("timeout_s", 70) or 70)))
         if u.path == "/api/preview":
             return self._json(do_preview())
@@ -894,13 +1153,22 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _upload(self):
         """页面选的文件没有真实路径 ⇒ 先传到 scratch 里落盘，再交给 esptool。
-        只接单文件、大小上限 16MB（分区最大就是 8MB + 余量）。"""
+
+        只接单文件、**只收 `.bin`**、大小上限 FLASH_MAX_BYTES（32 MB）。
+        ★ 落盘目录只走 upload_dir()：那是 do_flash 唯一认的目录（flash_file_ok）——
+          两处同一个口子，所以"能传上来的"与"能刷进去的"是同一批文件。
+        """
         n = int(self.headers.get("Content-Length") or 0)
-        if n <= 0 or n > 16 * 1024 * 1024:
-            return self._json({"ok": False, "error": "坏的长度: %d" % n}, 400)
+        if n <= 0 or n > FLASH_MAX_BYTES:
+            return self._json({"ok": False, "error": "坏的长度: %d（上限 %d 字节）"
+                               % (n, FLASH_MAX_BYTES)}, 400)
         name = os.path.basename(self.headers.get("X-Filename") or "upload.bin")
         name = re.sub(r"[^A-Za-z0-9._-]", "_", name)[:80] or "upload.bin"
-        d = os.path.join(SCRATCH, "app-upload")
+        if not name.lower().endswith(ALLOWED_FLASH_EXT):
+            return self._json({"ok": False, "error": (
+                "只收 %s（收到 %r）—— 能刷进板子的文件只有 %s 下的 *.bin"
+                % (" / ".join(ALLOWED_FLASH_EXT), name, upload_dir()))}, 400)
+        d = upload_dir()
         os.makedirs(d, exist_ok=True)
         dst = os.path.join(d, name)
         with open(dst, "wb") as fh:
