@@ -96,9 +96,10 @@ const SHELL_CODE = SHELL.replace(/<!--[\s\S]*?-->/g, "");
 //      两个按钮都只**替点那个既有的隐藏输入框 #file-theme** ⇒ 读文件那条路
 //      一行都没新增（判据见 §⑧b：同一个输入框、没有第二套读取函数）。
 // ------------------------------------------------------------
-const OWNER_CAPS = ["bg", "arc", "rpm", "speed", "coolant", "intake", "plate",
+const OWNER_CAPS = ["daynight", "bg", "arc", "rpm", "speed", "coolant", "intake", "plate",
                     "redline", "overspeed", "face", "import", "save"];
-const OWNER_EXPECT_COUNT = { bg: 1, arc: 4, rpm: 1, speed: 1, coolant: 1, intake: 1,
+const OWNER_EXPECT_COUNT = { daynight: 1,
+                             bg: 1, arc: 4, rpm: 1, speed: 1, coolant: 1, intake: 1,
                              plate: 1, redline: 1, overspeed: 1, face: 1,
                              import: 2, save: 2 };
 const PORT_MARK_EXPECT = 2;
@@ -197,7 +198,12 @@ function countOwnerCaps(src) {
   while ((m = reJs.exec(code)) !== null) add(m[1]);
   return counts;
 }
-const KNOWN_MARKS = OWNER_CAPS.concat(["preset", "port", "bgimage", "slots", "legend"]);
+//   ★★ 2026-10-17（夜间模式 R5，docs/NIGHT-MODE.md §9.1/§9.2）：能力表多两项 ——
+//      · `daynight`：「① 配色」最上面那一行「白天 / 夜间」切换（车主模式默认可见）。
+//        同一套控件、**两份主题对象**（切到夜间时 T 指向夜间那一份）；判据见 §①d。
+//      · `nightbg`：槽位清单里**夜间底图**那一格（role 23）。它与背景格同规格，
+//        但**不要求**有图（没传就是白天那张，不是错误）⇒ 单独立一个标记，不与 bgimage 混。
+const KNOWN_MARKS = OWNER_CAPS.concat(["preset", "port", "bgimage", "nightbg", "slots", "legend"]);
 {
   const counts = countOwnerCaps(MERGED);
   for (const k of Object.keys(counts)) {
@@ -210,6 +216,7 @@ const KNOWN_MARKS = OWNER_CAPS.concat(["preset", "port", "bgimage", "slots", "le
   eq(counts.port || 0, PORT_MARK_EXPECT, "车主模式恰好 " + PORT_MARK_EXPECT + " 处端口标记（两个分区各一个）");
   eq(counts.preset || 0, 1, "预设那一行恰好一处");
   eq(counts.bgimage || 0, 1, "槽位清单里背景那一格恰好一处 bgimage 标记");
+  eq(counts.nightbg || 0, 1, "槽位清单里**夜间底图**那一格恰好一处 nightbg 标记（R5）");
   // "四条弧"的**类别数**：数那个数组里的四条
   const arcsDecl = /const OWNER_ARCS\s*=\s*\[([\s\S]*?)\n\];/.exec(MERGED);
   ok(!!arcsDecl, "合并后的页面里有 OWNER_ARCS 声明");
@@ -402,6 +409,127 @@ section("①c 读数颜色四块板 + 底板深浅：键都在固件里，色板
        "高级里「单位颜色」控件保留，并注明 R4 起已不生效");
     ok(/单位 km\/h · rpm（R4 起跟随该屏数字色，本行已不生效）/.test(src),
        "「高级 → 读数颜色」里那一行也注明了");
+  }
+}
+
+section("①d 白天 / 夜间切换（R5）：同一套控件、两份对象、导出带 night 段");
+{
+  const src = MERGED;
+  const ownerTheme = src.slice(src.indexOf('id="owner-theme"'), src.indexOf('id="owner-images"'));
+  // ① 切换那一行必须**静态写在「① 配色」里**（车主模式默认可见 = 默认就是车主模式）
+  const row = /<div class="row" data-ocap="daynight">([\s\S]*?)<\/div>/.exec(ownerTheme);
+  ok(!!row, "「① 配色」里有 data-ocap=\"daynight\" 那一行（白天 / 夜间切换）");
+  if (row) {
+    ok(/id="oc-slot-day"/.test(row[1]) && /id="oc-slot-night"/.test(row[1]),
+       "那一行里两个按钮：#oc-slot-day / #oc-slot-night");
+    ok(/白天/.test(row[1]) && /夜间/.test(row[1]), "按钮文案是中文「白天 / 夜间」");
+  }
+  // ② 三份状态 + 换挡函数（页面里只有一份实现）
+  ok(/let T = defaultTheme\(\);/.test(src), "T 仍在（= 现在正在编辑的那一份）");
+  ok(/let TD = T;/.test(src), "TD = 白天那一份");
+  ok(/let TNight = null;/.test(src), "TNight = 夜间那一份（懒复制：第一次切过去才建）");
+  ok(/let themeSlot = "day";/.test(src), "themeSlot 记着现在编辑哪一份（默认白天）");
+  eq(countOf(src, /function setThemeSlot\(/g), 1, "setThemeSlot() 只有一份");
+  ok(/\["oc-slot-day", "oc-slot-night"\]\.forEach/.test(src),
+     "两个按钮接的是**同一个** setThemeSlot()（不是两套切换）");
+  ok(/T = \(want === "night"\) \? nightTheme\(\) : TD/.test(src),
+     "切挡 = 换 T 指向的对象（渲染器一个字节都没改）");
+  // ③ 夜间被改过的**唯一收口**：forgetThemeSrcBytes（改色、套预设、读主题都走它）
+  const forget = /function forgetThemeSrcBytes\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
+  ok(!!forget, "有 forgetThemeSrcBytes()");
+  if (forget) {
+    ok(/themeSlot === "night"/.test(forget[1]) && /nightTouched = true/.test(forget[1]),
+       "forgetThemeSrcBytes() 在夜间挡下把 nightTouched 置真（改过才写 night）");
+  }
+  // ④ 导出的形状 {theme, night}，而且三处（导出 / 文本框 / 容器段）走**同一句**
+  ok(/function themeFileObject\(\)/.test(src) && /theme: TD, night: themeNightBlock\(\)/.test(src),
+     "themeFileObject() = { theme: TD, night: themeNightBlock() }（§8.1 的形状）");
+  ok(/ThemeJson\.nightPatch\(TD, TNight\)/.test(src),
+     "night 段 = ThemeJson.nightPatch(白天, 夜间)（只写差异，缺键继承）");
+  ok(/function themeFileText\(\)/.test(src) &&
+     /JSON\.stringify\(themeFileObject\(\), null, 2\)/.test(src),
+     "themeFileText() 是 theme.json 的唯一份文本");
+  eq(countOf(src, /themeFileText\(\)/g) >= 3 ? 1 : 0, 1,
+     "导出 theme.json / JSON 文本框 / assets.bin 的主题段都走 themeFileText()（三处、一份）");
+  ok(!/JSON\.stringify\(\{ theme: T \}, null, 2\)/.test(src),
+     "页面里没有第二句 `JSON.stringify({theme:T}, null, 2)`（会漏掉 night 段）");
+  // ⑤ 导入：缺 night 的老文件照样能用；有 night 时**缺键继承白天**
+  ok(/function applyImportedNight\(nightBlock\)/.test(src), "有 applyImportedNight()");
+  ok(/ThemeJson\.applyPatch\(cloneTheme\(TD\), nightBlock\)/.test(src),
+     "导入 night 段用 applyPatch（缺键继承白天），而且**先克隆**（否则夜间与白天共享弧对象）");
+  ok(/const hasNight = applyImportedNight\(parsed && parsed\.night\)/.test(src),
+     "loadThemeText() 两份一起读（读不到 night 就只读白天）");
+  ok(/只有白天 ⇒ 夜间 = 白天副本/.test(src), "来源说明里点明「老文件 ⇒ 夜间 = 白天副本」");
+  // ⑥ 夜间底图那一格（role 23）
+  const sp = /function ownerSlotSpecs\(\)\s*\{([\s\S]*?)\n\}/.exec(src);
+  ok(!!sp && /ImageBlob\.ROLE\.BackgroundNight/.test(sp[1]),
+     "ownerSlotSpecs() 里有夜间底图（ImageBlob.ROLE.BackgroundNight）");
+  ok(!!sp && /night: true/.test(sp[1]), "夜间底图那一格带 night:true（标签/空态文案分流）");
+  ok(/bgRoleForSlot\(\)/.test(src) && /pick\(ImageBlob\.ROLE\.BackgroundNight\)/.test(src),
+     "预览在夜间挡用 role 23、没传就退回 role 1（与设备同一条降级）");
+  // ⑦ 真跑一遍 nightPatch：**数组必须仍是数组**（固件只认数组，数字键对象会静默不生效）
+  {
+    const TJ = require(path.join(dir, "theme-json.js"));
+    const day = { bg_color: 1,
+                  screens: [{ arcs: [{ value_color: 1 }, { value_color: 2 }] },
+                            { arcs: [{ value_color: 3 }] }] };
+    const night = JSON.parse(JSON.stringify(day));
+    night.screens[0].arcs[1].value_color = 99;
+    const p = TJ.nightPatch(day, night);
+    ok(Array.isArray(p.screens), "nightPatch 的 screens 仍是**数组**（不是数字键对象）");
+    ok(Array.isArray(p.screens[0].arcs), "arcs 仍是**数组**");
+    eq(p.screens[0].arcs[1].value_color, 99, "只留改过的那个叶子");
+    eq(Object.keys(p.screens[0].arcs[0] || {}).length, 0, "没改的元素是 {}（= 继承）");
+    ok(TJ.isPlainObject(p.screens[1]) && Object.keys(p.screens[1]).length === 0,
+       "整屏没改 ⇒ 该下标是空对象（数组**长度与形态不变**：JSON 里不会变成 null）");
+    eq(p.screens.length, 2, "夜间数组的长度 = 白天的长度（元素一个不少）");
+    eq(p.bg_color, undefined, "没改的顶层键不写进 night");
+    eq(TJ.deepEqual(TJ.applyPatch(day, p), night), true,
+       "applyPatch(白天, nightPatch) 能回到夜间那一份（继承规则闭合）");
+    eq(JSON.stringify(TJ.nightPatch(day, day)), "{}", "没有差异时是 {}（= 全继承 = 永远白天）");
+  }
+}
+
+section("①e 角色 23 = BackgroundNight（三处编号表对账 + 「没传就是白天那张」）");
+{
+  const IB = require(path.join(dir, "image-blob-build.js"));
+  const AS = require(path.join(dir, "asset-spec.js"));
+  const hBlob = fs.readFileSync(path.join(REPO, "lib", "themetool", "image_blob.h"), "utf8");
+  eq(IB.ROLE.BackgroundNight, 23, "image-blob-build.js 的 ROLE.BackgroundNight = 23");
+  ok(/BackgroundNight\s*=\s*23\b/.test(hBlob), "image_blob.h 的 ImageRole::BackgroundNight = 23");
+  const r23 = AS.roleByNumber(23);
+  ok(!!r23, "asset-spec.js 的 ROLES 里有编号 23");
+  eq(r23 && r23.key, "BackgroundNight", "asset-spec 里 23 的 key 与固件同名（BackgroundNight）");
+  eq(r23 && r23.label, "夜间底图（两屏共用）", "asset-spec 里 label = 「夜间底图（两屏共用）」");
+  eq(r23 && r23.alpha, "either", "与背景同规格：不要求 alpha");
+  eq(r23 && r23.sizeByTier, "background", "与背景同一档尺寸口径（480×480）");
+  ok(AS.RESERVED_ROLES.indexOf(23) < 0, "23 **不是**保留号（保留号一律不复用）");
+  eq(AS.NEXT_FREE_ROLE, 24, "下一个空号是 24");
+  eq(IB.ROLE_NAMES[23], "夜间底图", "打包器的显示名是「夜间底图」");
+  // theme-json.js 里新增的 nightPatch 必须是**新增**（老 API 一个都不许动）
+  const TJ = require(path.join(dir, "theme-json.js"));
+  for (const k of ["stripHex", "parseThemeJson", "themeObject", "mergeDefaults",
+                   "diffDeep", "applyPatch", "applyReadoutFallbacks"]) {
+    eq(typeof TJ[k], "function", "theme-json.js 的老 API 还在：" + k);
+  }
+  // ★ 上传端口径：夜间底图与背景**同规格**（PNG / JPEG / WebP 都收、不要求 alpha），
+  //   而表情槽照旧拒 JPEG —— R5 只加了底图，没有顺手放宽表情那条。
+  ok(AS.checkUpload("x.png", "image/png", 23, "s3").ok, "夜间底图收 PNG");
+  ok(AS.checkUpload("x.jpg", "image/jpeg", 23, "s3").ok,
+     "夜间底图收 JPEG（与背景同规格：不要求 alpha）");
+  eq(AS.checkUpload("x.jpg", "image/jpeg", IB.ROLE.FaceIdle, "s3").ok, false,
+     "表情槽照旧拒 JPEG（R5 没有放宽表情的口径）");
+  // ★ 打包器 → 解析器：role 23 真的能写进 image 段、再被读回来
+  {
+    const APC = require(path.join(dir, "asset-package-core.js"));
+    const blob = IB.build([{ name: "bg_night", w: 8, h: 8, cf: IB.CF.RGB565,
+                             role: IB.ROLE.BackgroundNight, order: 0,
+                             pixels: new Uint8Array(8 * 8 * 2) }]).blob;
+    const info = APC.parseImageBlob(new Uint8Array(blob), { label: "role23 夹具" });
+    eq(info.count, 1,
+       "一份**只有**夜间底图的 image.bin 能打出来（不算『缺背景』，那是合法配方）");
+    eq(info.entries[0].role, 23, "解析回来的角色号是 23（image 段里那一项）");
+    eq(info.entries[0].cf, IB.CF.RGB565, "夜间底图的颜色格式是 RGB565（与背景一致）");
   }
 }
 
@@ -788,6 +916,9 @@ section("⑧d 「写进板子」不再要求先保存（车主：『点了写进
      "暴露 window.__OWNER_MODE_VERSION");
   ok(/window\.__OWNER_MODE_CAPS = OWNER_MODE_CAPS/.test(src) && /flashNoSave: true/.test(src),
      "暴露 window.__OWNER_MODE_CAPS（含 flashNoSave）");
+  // ★★ R5：新能力也要进能力表 —— 外壳靠它判断"这页能不能存两套主题 / 有没有夜间底图槽"。
+  ok(/nightTheme: true/.test(src), "能力表里报了 nightTheme（R5：两套主题）");
+  ok(/nightBackground: true/.test(src), "能力表里报了 nightBackground（R5：夜间底图槽）");
   ok(/data-owner-mode-version/.test(src), "<html> 上也有同一份版本号（DOM 侧副本）");
   // ⑥ 文案：不要"先保存"那套说法
   ok(/不需要先保存/.test(src), "面板文案点明『不需要先保存』");
@@ -881,7 +1012,7 @@ section("⑫ 槽位文案用**中文阶段名**（从 face-stages.js 取，不�
   ok(!/\[\s*"怠速"\s*,\s*"巡航"/.test(src), "页面里没有手抄一串阶段名");
 }
 
-section("⑬ 打包产物指纹（.golden-hashes.json）—— R2/R3 之后**主题段该变、图片段不该变**");
+section("⑬ 打包产物指纹（.golden-hashes.json）—— R5 之后**三份都该变**（主题多 night、图片多 role 23）");
 {
   const goldenPath = path.join(dir, ".golden-hashes.json");
   ok(fs.existsSync(goldenPath), "指纹文件存在（.golden-hashes.json）");
@@ -913,15 +1044,24 @@ section("⑬ 打包产物指纹（.golden-hashes.json）—— R2/R3 之后**主
     //     · assetsBin **必须变** —— 它是"主题段 + image 段"的整包，
     //       主题段就在里面（取证见 make-golden-hashes.js 顶上那一段：
     //       差异全部落在 [0, 0x4000) 主题段内，[0x4000,end) 逐字节相同）。
+    //   ★★ 2026-10-17（夜间模式 R5，docs/NIGHT-MODE.md §8）—— **这一单三份都变**，
+    //      与上一单"imageBin 不变"是相反的，理由也相反：
+    //        · themeJson 2975 → **2990** 字节：形状从 {theme} 变成 {theme, night}；
+    //          默认页面"没动过夜间" ⇒ night 是 {}，多出来的正好是
+    //          `,\n  "night": {}` 这 15 个字节（不是把整份白天抄一遍）。；
+    //        · imageBin 16524 → **24716** 字节：多了**新角色 23**（夜间底图，
+    //          夹具里是一张 64×64 RGB565 = 8192 字节）；
+    //        · assetsBin 295052 → **303244** 字节：主题段 +15、image 段 +8192。
+    //      ⇒ 上一单那句"imageBin 与图片无关"在这一单**不成立**：这一单加的正是图片角色。
     eq(g.themeJsonSha256,
-       "1dcc7d40e7a77a090132c494f796d4a864557d4ce02d612310459948226efa2e",
-       "theme.json 的指纹（R2+R3 之后的新值）");
+       "21db68663972cbd0df5dd99f9cc5559674a5bf07b7d601c044cbcdd86fe960a0",
+       "theme.json 的指纹（R5 之后：形状 {theme, night}，2990 字节）");
     eq(g.imageBinSha256,
-       "24fc3c873d5c5641720f687f2edfd719d525db0f361ba23f357b40679dda783c",
-       "image.bin 的指纹**与改动前一致**（这一单与图片无关）");
+       "b3fcde838e36ad8175388f50f7bbc01fe627c9c2f06f173cb007175ed3845a2d",
+       "image.bin 的指纹（R5 之后：多了 role 23 夜间底图）");
     eq(g.assetsBinSha256,
-       "96e02893fdbf3aa4e49711bb1b3519cf4409183a2f7d43aeaed608f1c087747f",
-       "assets.bin 的指纹（整包含主题段 ⇒ 随 theme.json 一起变；image 段逐字节未动）");
+       "1060979c0d4997f6464d9a2a1a15dfeeef55cf2e3402b2d89d96452e8901e9d6",
+       "assets.bin 的指纹（主题段 +15 字节、image 段 +8192 字节）");
     // 刷写命令的形状（端口可改、偏移 0x210000）
     ok(/^python -m esptool --chip \S+ --port COM6 --baud \d+ write_flash 0x210000 assets\.bin$/
          .test(g.flashCommand), "指纹里的刷写命令形状正确：" + g.flashCommand);

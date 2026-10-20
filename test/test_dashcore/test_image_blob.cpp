@@ -128,6 +128,11 @@ static void test_entry_field_offsets(void) {
 // 改编号会让"右屏显示成左屏的表情",而且不报错 —— 所以钉死。
 static void test_role_ids(void) {
   TEST_ASSERT_EQUAL_UINT16(1, (uint16_t)ImageRole::Background);
+  // ★★ 23 = 夜间底图（2026-10-17 夜间模式 R5，docs/NIGHT-MODE.md §8.2）。
+  //   与 Background 同规格、两屏共用一张；它**不是**表情（imageRoleIsFace 必须为假），
+  //   所以下面那条"23 还得能当表情用吗"的断言仍然成立 —— 它守的是
+  //   "别把下一个空号提前用掉"，现在 23 已经名花有主，空号变成 24。
+  TEST_ASSERT_EQUAL_UINT16(23, (uint16_t)ImageRole::BackgroundNight);
   // 左屏(转速表):怠速 / 红区 / 巡航 / 运动 / 高转
   TEST_ASSERT_EQUAL_UINT16(3, (uint16_t)ImageRole::FaceIdle);
   TEST_ASSERT_EQUAL_UINT16(4, (uint16_t)ImageRole::FaceRedline);
@@ -162,9 +167,14 @@ static void test_role_ids(void) {
                               "保留编号被当成了表情角色");
   }
   TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)0));    // 0 = 这屏用不到
-  // 21/22 现在**已经分配**给高转(左)/市区(右)了,所以下一个没用到的号是 23 ——
-  // 这条同时防止有人把 21/22 又当成"保留号"或者把 23 提前占掉。
-  TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)23));   // 还没分配
+  // 21/22 已经分配给高转(左)/市区(右)、23 给了夜间底图,所以下一个没用到的号是 24 ——
+  // 这条同时防止有人把 21/22 又当成"保留号"、或者把 23/24 提前占掉。
+  // ★ 23 虽然已经分配,但它**不是表情角色**（两张底图都不是），
+  //   所以"23 不是脸"这条断言照旧成立、而且现在更有意义：
+  //   谁把 23 接进 imageRoleIsFace 的 switch，两张底图就会被当成表情去走降级链。
+  TEST_ASSERT_FALSE(imageRoleIsFace(ImageRole::BackgroundNight));
+  TEST_ASSERT_FALSE(imageRoleIsFace(ImageRole::Background));
+  TEST_ASSERT_FALSE(imageRoleIsFace((ImageRole)24));   // 还没分配
   TEST_ASSERT_TRUE(imageRoleIsFace(ImageRole::FaceHigh));
   TEST_ASSERT_TRUE(imageRoleIsFace(ImageRole::FaceCityR));
   TEST_ASSERT_TRUE(imageRoleIsFace(ImageRole::FaceIdle));
@@ -456,6 +466,9 @@ static void test_face_role_side_mapping(void) {
   TEST_ASSERT_EQUAL_UINT16(6, (uint16_t)ImageRole::FaceIdleR);   // 右 = 速度表
   TEST_ASSERT_TRUE(ImageRole::FaceIdle != ImageRole::FaceIdleR);
   TEST_ASSERT_EQUAL_UINT16(1, (uint16_t)ImageRole::Background);  // 背景两屏共用
+  // 夜间底图也是**两屏共用**一张（不是左右各一张）—— 它不与任何一屏的脸同号
+  TEST_ASSERT_EQUAL_UINT16(23, (uint16_t)ImageRole::BackgroundNight);
+  TEST_ASSERT_TRUE(ImageRole::BackgroundNight != ImageRole::Background);
 }
 
 // face_stages.h 的 kFaceRoleId 与 image_blob.h 的 ImageRole **逐条比对**。

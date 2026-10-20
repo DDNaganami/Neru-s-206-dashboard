@@ -199,6 +199,65 @@
     return readout;
   }
 
+  // ------------------------------------------------------------
+  // ★★ 夜间那一套相对白天那一套的**差异**（2026-10-17，主题格式修订 R5）
+  //
+  // 契约（docs/NIGHT-MODE.md §8.1）：
+  //     { "theme": { …白天… }, "night": { …夜间…；**缺的键 ⇒ 继承 theme** } }
+  // 所以 `night` **不需要**抄一份完整的白天：只写"与白天不同的叶子"就是合法形态，
+  // 一个键都不差时写成 `{}`（= 全继承 = 永远白天，与老文件同一套语义）。
+  //
+  // 为什么不能直接用 diffDeep()（它就摆在上面）：
+  //   ① diffDeep 把**数组**的差异写成"数字键的普通对象"（{0:{…}}）。主题里的
+  //      screens / arcs 是**真数组**，固件与 theme_store.cpp 的解析都按数组迭代；
+  //      写成对象是换了形态（固件的 JSON 解析器只认数组），到板上就是"两套夜配色不生效"
+  //      而且不报错。⇒ 这里**保留数组形态**，只把数组元素写成稀疏对象。
+  //   ② 差异为空时要返回 `{}`（不是 undefined）：`night` 这个键必须**总是在**，
+  //      那是 §8.1 的形状；缺键继承的语义由 "{}" 承担。
+  //
+  // 结果可以被 applyPatch(base, patch) / mergeDefaults 原样吃回去（同一套继承规则）。
+  //   ★ 判据在 tools/theme-editor/smoke-pages.js（页面真跑一遍：切到夜间、改一个色、
+  //     导出的 night 里只有那个键，再导入回来值一样）与 test-theme-json.js。
+  // ------------------------------------------------------------
+  function isEmptyPatch(v) {
+    if (Array.isArray(v)) return v.length === 0;
+    if (isPlainObject(v)) return Object.keys(v).length === 0;
+    return false;
+  }
+
+  function nightPatchOf(base, obj) {
+    if (Array.isArray(obj)) {
+      const b = Array.isArray(base) ? base : [];
+      const out = [];
+      let any = false;
+      for (let i = 0; i < obj.length; i++) {
+        const d = nightPatchOf(b[i], obj[i]);
+        if (d === undefined) { out[i] = {}; }        // 没差 ⇒ 空对象（继承，不是 null）
+        else { out[i] = d; any = true; }
+      }
+      if (!any && b.length === obj.length) return undefined;
+      return out;
+    }
+    if (isPlainObject(obj)) {
+      const out = {};
+      const keys = Object.keys(obj);
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        const d = nightPatchOf(isPlainObject(base) ? base[k] : undefined, obj[k]);
+        if (d !== undefined) out[k] = d;
+      }
+      return Object.keys(out).length ? out : undefined;
+    }
+    return deepEqual(base, obj) ? undefined : obj;
+  }
+
+  // 对外入口：永远返回一个对象（可能为空对象 = 全继承）
+  function nightPatch(day, night) {
+    if (!isPlainObject(night)) return {};
+    const p = nightPatchOf(day, night);
+    return isPlainObject(p) ? p : {};
+  }
+
   return {
     stripHex: stripHex,
     parseThemeJson: parseThemeJson,
@@ -208,6 +267,7 @@
     mergeDefaults: mergeDefaults,
     diffDeep: diffDeep,
     applyPatch: applyPatch,
+    nightPatch: nightPatch,
     READOUT_FALLBACK_TO_DIGIT: READOUT_FALLBACK_TO_DIGIT,
     applyReadoutFallbacks: applyReadoutFallbacks
   };

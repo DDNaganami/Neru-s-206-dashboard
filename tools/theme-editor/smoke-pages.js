@@ -482,23 +482,35 @@ const results = {};
     ok(doc.getElementById("owner-presets").children.length === 1,
        "3 个预设那一行被挂上界面");
 
-    // ---- 分区 ② 图片：槽位清单（背景 1 + 表情 10），每格三件事 ----
+    // ---- 分区 ② 图片：槽位清单（背景 1 + 夜间底图 1 + 表情 10），每格三件事 ----
     const grid = doc.getElementById("owner-slots");
     ok(!!grid, "有槽位清单容器 #owner-slots");
     if (grid) {
-      eq(grid.children.length, 11, "槽位清单正好 11 格（背景 1 + 表情 10）");
+      eq(grid.children.length, 12, "槽位清单正好 12 格（背景 1 + 夜间底图 1 + 表情 10）");
       const cells = grid.children;
       eq(cells.filter(c => c.getAttribute("data-ocap") === "bgimage").length, 1,
-         "11 格里恰好 1 格是背景（data-ocap=bgimage）");
+         "12 格里恰好 1 格是背景（data-ocap=bgimage）");
+      // ★★ 2026-10-17（R5）：夜间底图（role 23）是**独立的一格**，规格与背景相同
+      const nightCells = cells.filter(c => c.getAttribute("data-ocap") === "nightbg");
+      eq(nightCells.length, 1, "12 格里恰好 1 格是夜间底图（data-ocap=nightbg）");
+      eq(nightCells.length ? nightCells[0].getAttribute("data-role") : "", "23",
+         "夜间底图那一格的 data-role = 23（编号来自 ImageBlob.ROLE.BackgroundNight）");
       const first = cells[0];
       ok(first.children.length === 3, "每格三件事：名称 / 缩略图 / 按钮列");
       ok(/^背景/.test(first.children[0].textContent), "第一格是背景（名称：" +
          first.children[0].textContent.split("\n")[0] + "）");
+      ok(/^夜间底图/.test(nightCells[0].children[0].textContent),
+         "第二格是夜间底图（名称：" + nightCells[0].children[0].textContent.split("\n")[0] + "）");
+      //   ★ DOM 桩的 textContent 只回"自己那一层"的字（appendChild 进去的 span 不并进来）
+      //     ⇒ 那句"空（夜间用白天那张）"在名称下面那个 <span> 里，按 children[0] 取。
+      ok(/空（夜间用白天那张，不是错误）/.test(nightCells[0].children[0].children[0].textContent),
+         "夜间底图空格子明说「没传就用白天那张、不是错误」");
       const bgs = first.children[2];
       eq(bgs.children.length, 2, "每格两个按钮（换图/清除）");
       eq(bgs.children[0].textContent, "选文件", "空的格子第一个按钮写「选文件」");
       ok(bgs.children[1].disabled === true, "空格的「清除」是禁用的");
-      const faceCells = cells.filter(c => c.getAttribute("data-ocap") !== "bgimage");
+      const faceCells = cells.filter(c => c.getAttribute("data-ocap") !== "bgimage" &&
+                                          c.getAttribute("data-ocap") !== "nightbg");
       eq(faceCells.length, 10, "表情格 10 个");
       const names = faceCells.map(c => c.children[0].textContent.split("\n")[0]);
       ok(names.filter(n => n.indexOf("转速表") >= 0).length === 5, "5 格点明「转速表」");
@@ -764,24 +776,42 @@ const results = {};
          "两处清单是**同一个字符串**（一处生成、两处显示）");
       ok(ctxDraws > drawsBefore,
          "预览跟着重画了（画布笔数 " + drawsBefore + " → " + ctxDraws + "）");
-      ok(doc.getElementById("owner-slots").children.length === 11,
-         "槽位清单刷新后仍是 11 格（背景 1 + 表情 10）");
+      ok(doc.getElementById("owner-slots").children.length === 12,
+         "槽位清单刷新后仍是 12 格（背景 1 + 夜间底图 1 + 表情 10）");
       // ★★ 槽位**真的被填上**了（车主报的正是"没有图片载入"）：
-      //   夹具那两条项一条是背景（第 1 格）、一条是左屏·怠速（第 2 格），
+      //   夹具那两条项一条是背景（第 1 格）、一条是左屏·怠速（第 3 格），
       //   两格的「清除」都从"禁用"变成"可用" —— 这是"格子里真有图"的界面证据
       //   （桩里没有真 canvas，缩略图像素判不了；像素判据在 check-*.js 那一批）。
+      //   ★ 2026-10-17（R5）格数从 11 变 12（多了"夜间底图"一格，在第 2 位），
+      //     所以这里的下标整体后移一位 —— 夹具里**没有**夜间底图，它仍是空的。
       const cells = doc.getElementById("owner-slots").children;
       ok(cells[0].children[2].children[1].disabled === false,
          "背景格被填上了（「清除」可用）");
-      ok(cells[1].children[2].children[1].disabled === false,
+      eq(cells[1].getAttribute("data-ocap"), "nightbg",
+         "第 2 格是夜间底图（R5 新增的那一格）");
+      ok(cells[1].children[2].children[1].disabled === true,
+         "夹具里没有夜间底图 ⇒ 那一格仍是空的（缺图不是错误）");
+      ok(cells[2].children[2].children[1].disabled === false,
          "左屏·怠速那一格也被填上了（「清除」可用）");
-      ok(cells[2].children[2].children[1].disabled === true,
-         "没在包里的格子照旧是空的（第 3 格「清除」仍禁用）");
+      ok(cells[3].children[2].children[1].disabled === true,
+         "没在包里的格子照旧是空的（第 4 格「清除」仍禁用）");
       ok(/已读入/.test(doc.getElementById("status").textContent),
          "状态栏说明了读进来了什么：" +
          doc.getElementById("status").textContent.split("\n")[0]);
       ok(/背景 1 \+ 表情 1/.test(doc.getElementById("status").textContent),
          "状态栏给了可读摘要（背景 1 + 表情 1）");
+
+      // ★ 前提：夹具是**老文件**（只有 theme、没有 night、没有 role 23）——
+      //   兼容钉子必须建在这个前提上，否则它证明不了任何东西。
+      //   （车主手上那些 assets.bin 就是这一种：R5 之前导出的。）
+      {
+        const fxThemeText = Buffer.from(fx.bytes.subarray(0, fx.layout.imageOffset))
+          .toString("utf8").replace(/\0+$/, "");
+        ok(fxThemeText.indexOf('"night"') < 0,
+           "夹具的 theme 段里**没有** night 键（= 老文件，R5 之前导出的那种）");
+        ok(fx.info.entries.every(e => e.role !== 23),
+           "夹具的 image 段里**没有** role 23（= 老文件：没有夜间底图）");
+      }
 
       // ★★★ 往返判据（本仓库的核心口径）：**导出 → 导入 → 再导出逐字节相同**。
       //   走页面自己的打包入口 buildPayload()（不是在这里另拼一份 payload），
@@ -858,8 +888,11 @@ const results = {};
            "★ 真文件（" + realPkg.split(/[\\/]/).pop() + "）：导入后图片列表项数 = 包里的项数 " +
            rInfo.count);
         const cellsR = doc.getElementById("owner-slots").children;
-        eq(cellsR.filter(c => c.children[2].children[1].disabled === false).length, 11,
-           "★ 真文件导入后**11 格全部被填上**（车主看到的『没有图片载入』就是这里原本是空的）");
+        eq(cellsR.length, 12, "★ 真文件导入后槽位仍是 12 格（R5 多了「夜间底图」那一格）");
+        eq(cellsR.filter(c => c.children[2].children[1].disabled === false).length,
+           rInfo.count,
+           "★ 真文件导入后有 " + rInfo.count + " 格被填上（老包里没有夜间底图 ⇒ 那一格空着，" +
+           "缺图不是错误）");
         const rebuiltR = IB.build(r.sandbox.buildPayload()).blob;
         ok(Buffer.from(rebuiltR).equals(Buffer.from(rImage)),
            "★★ 真文件往返：导入后再打包出的 image 段与原件**逐字节相同**（" +
@@ -875,6 +908,77 @@ const results = {};
                     (savedR && savedR.bytes.equals(Buffer.from(rb)) ? "（整包也相同 ✓）" : "（整包不同 ✗）"));
       } else {
         console.log("  · （未设 REAL_PKG ⇒ 真文件那一条跳过；夹具那条已经跑了）");
+      }
+
+      // ★★★ 2026-10-17（夜间模式 R5，docs/NIGHT-MODE.md §9.1/§9.3）：**两套主题**
+      //   这一节是这一单的验收点，全部走车主真会走的按钮（不是直接改内部变量）：
+      //     ① 切换按钮在「① 配色」里，点一下只换"在读哪一份" —— 控件是同一套；
+      //     ② 两套各自独立：改夜间不动白天，切回来两边都不丢；
+      //     ③ 导出的 theme.json 是 §8.1 的形状（{"theme":…,"night":…}），
+      //        而且 night 里**只有改过的键**（没改过的继承 theme ⇒ 不写字）；
+      //     ④ 从没动过夜间 ⇒ night 是 {}（= 永远白天，与老文件同一套语义）。
+      {
+        // ⓪ 先确认"没动过夜间"时文件里是 "night": {}
+        const fresh = JSON.parse(doc.getElementById("json").value);
+        ok(fresh.theme && fresh.night && typeof fresh.night === "object" &&
+           !Array.isArray(fresh.night),
+           "导出的文件里两套都在（{\"theme\":…, \"night\":…}，§8.1 的形状）");
+        eq(Object.keys(fresh.night || {}).length, 0,
+           "从没动过夜间 ⇒ night 是 {}（= 全继承白天，文件最小、老文件同一套语义）");
+
+        const dayBg = JSON.parse(r.store["206dash.theme"]).theme.bg_color;
+        const hexDay = "#" + (dayBg & 0xFFFFFF).toString(16).padStart(6, "0").toUpperCase();
+        // ① 切到夜间：控件值 = 白天副本（第一次切过去时从白天复制一份）
+        doc.getElementById("oc-slot-night").click();
+        ok(doc.getElementById("oc-slot-night").className === "on" &&
+           doc.getElementById("oc-slot-day").className === "",
+           "点「夜间」⇒ 那一挡亮起、白天那一挡灭（同一排按钮）");
+        eq(doc.getElementById("oc-bg-txt").value.toUpperCase(), hexDay,
+           "刚切到夜间时 = 白天副本（换的是对象，不是把值抹掉）");
+        // ② 改夜间的背景色 ⇒ 白天那份一个字节都不动
+        const nbg = doc.getElementById("oc-bg");
+        nbg.value = "#05070c";
+        nbg.dispatch("input");
+        const rec4 = JSON.parse(r.store["206dash.theme"]);
+        eq(rec4.theme.bg_color, dayBg,
+           "在夜间改色**没有**写到白天那一份（theme 段仍是 " + hexDay + "）");
+        eq(rec4.night && rec4.night.bg_color, 0x05070C,
+           "夜间只记**差异**：night.bg_color = 0x05070C");
+        eq(Object.keys(rec4.night || {}).join(","), "bg_color",
+           "night 里只有改过的那个键（screens / readout 都没写 ⇒ 缺键继承白天）");
+        // ③ 切回白天：白天那份原样；再切回夜间：改过的值还在（"切回来不丢值"）
+        doc.getElementById("oc-slot-day").click();
+        eq(doc.getElementById("oc-bg-txt").value.toUpperCase(), hexDay,
+           "切回白天 ⇒ 白天那份原样（改夜间不会污染它）");
+        doc.getElementById("oc-slot-night").click();
+        eq(doc.getElementById("oc-bg-txt").value.toUpperCase(), "#05070C",
+           "再切回夜间 ⇒ 刚改的值还在（切挡不丢值）");
+        // ④ 导出的文件：night 段就是那一份差异
+        const obj4 = JSON.parse(doc.getElementById("json").value);
+        ok(obj4.theme && obj4.night, "改过夜间之后文件里仍是两套");
+        eq(obj4.night.bg_color, 0x05070C, "导出的 night 段写着改过的那个键");
+        ok(obj4.night.screens === undefined && obj4.night.readout === undefined,
+           "没改过的段不写进 night（缺键继承 —— 不是「抄一份完整的白天」）");
+        eq(obj4.theme.bg_color, dayBg, "theme 段没有被夜间改动带歪");
+        // ⑤ 改过之后「保存安装包」仍然打得出来，而且容器里的主题段就是上面那一份
+        //   （★ 这条同时是容量判据：两份主题如果各写完整副本，2975×2 = 5948 B 会被
+        //     asset-package-core 的 4095 B 固件闸门当场拒收 —— 差异写法只有 +几十字节）
+        const savedN = exportViaButton(r, doc);
+        ok(!!savedN, "改过夜间之后「保存安装包」仍然能导出（没被 4095 字节闸门拦下）");
+        if (savedN) {
+          const un4 = APC.unpackBytes({ bytes: new Uint8Array(savedN.bytes),
+                                        layout: r.sandbox.coreForTarget(),
+                                        containerLabel: "夜间夹具" });
+          ok(un4.themeInfo.bytes < APC.THEME_FIRMWARE_BYTES,
+             "主题段 " + un4.themeInfo.bytes + " 字节 < 固件能读进来的 " +
+             APC.THEME_FIRMWARE_BYTES + " 字节（两份完整副本会是约 6KB ⇒ 所以写差异）");
+          const p4 = un4.themeInfo.parsed;
+          eq(p4.night && p4.night.bg_color, 0x05070C,
+             "容器里主题段的 night 段 = 那个差异（与 theme.json 同一份内容）");
+        }
+        // ⑥ 切回白天，并把夜间那点改动留着（后面几条不依赖主题值）——
+        doc.getElementById("oc-slot-day").click();
+        ok(doc.getElementById("oc-slot-day").className === "on", "最后切回白天（默认挡）");
       }
 
       // ★ 复原成"没有图片"：后面几条交互（点导出 ⇒ 应当说"还没有图片"）的前提就是

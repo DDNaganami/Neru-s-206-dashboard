@@ -177,7 +177,11 @@ function main(argv) {
   const roleId = parseFaceRoleId();
   const declared = parseDeclaredRoles();
   const expLeft = roleId.left, expRight = roleId.right;
-  const expAll = [IB.ROLE.Background].concat(expLeft, expRight);
+  // ★★ 2026-10-17（夜间模式 R5，docs/NIGHT-MODE.md §8.2）：预期集合里多了**夜间底图**
+  //   （role 23 = ImageBlob.ROLE.BackgroundNight）。它不是表情、不属于任何一屏，
+  //   与角色 1 一样"两屏共用一张"，而且**可以没有**（没传就是白天那张，不是错误）。
+  //   ★ 不加进这里的话，一份**正常的**新包会被判"角色号不在预期集合里"（假红）。
+  const expAll = [IB.ROLE.Background, IB.ROLE.BackgroundNight].concat(expLeft, expRight);
 
   console.log("=".repeat(72));
   console.log("image.bin 逐字段核对（只读）");
@@ -290,6 +294,11 @@ function main(argv) {
      reservedHit.map(e => `第 ${e.i} 张=角色 ${e.role}`).join("，"));
   const bgCount = items.filter(e => e.role === IB.ROLE.Background).length;
   eq(bgCount, 1, "背景图（角色 1）恰好 1 张");
+  // ★★ R5：夜间底图（角色 23）**最多一张，也可以是 0 张** —— 没传就是白天那张，
+  //   那是缺图降级，不是错误。所以这里只能断言"不超过 1 张"，不能要求"必须有"。
+  const nightCount = items.filter(e => e.role === IB.ROLE.BackgroundNight).length;
+  ok(nightCount <= 1,
+     "夜间底图（角色 23）最多 1 张（0 张也合法：没传就用白天那张）", "实际 " + nightCount + " 张");
   const leftIn = items.filter(e => expLeft.includes(e.role)).map(e => e.role);
   const rightIn = items.filter(e => expRight.includes(e.role)).map(e => e.role);
   const leftMissing = expLeft.filter(r => !leftIn.includes(r));
@@ -370,7 +379,21 @@ function main(argv) {
   } else {
     ok(false, "有背景图可判尺寸");
   }
-  const faces = items.filter(e => IB.ROLE_NAMES[e.role] && e.role !== IB.ROLE.Background);
+  // ★★ R5：这两张是**底图**（角色 1 / 23），不是表情 —— 它们不要求正方形、
+  //   不要求 RGB565A8、也不受"表情画布上限"约束（底图本来就要铺满整屏）。
+  //   只按 `e.role !== Background` 排除是不够的：23 现在也有显示名（ROLE_NAMES），
+  //   漏排会把夜间底图当成"第 1 张表情"，报出"表情必须带透明"这种假红。
+  const BG_ROLES = [IB.ROLE.Background, IB.ROLE.BackgroundNight];
+  const faces = items.filter(e => IB.ROLE_NAMES[e.role] && BG_ROLES.indexOf(e.role) < 0);
+  // 夜间底图与背景**同规格**：480×480 / RGB565（可缺，缺了就是白天那张）
+  const nightBg = items.filter(e => e.role === IB.ROLE.BackgroundNight)[0];
+  if (nightBg) {
+    eq(nightBg.w, bgSide, "夜间底图宽 == " + bgSide + "（与背景同一档）");
+    eq(nightBg.h, bgSide, "夜间底图高 == " + bgSide);
+    eq(nightBg.cf, IB.CF.RGB565, "夜间底图也用 RGB565（与背景同规格）");
+  } else {
+    console.log("        （没有夜间底图：设备会用白天那张，这是**合法**的，不是缺件）");
+  }
   const cap = IB.faceCanvasMaxFor(tgtId), rec = IB.faceSizeRecommendedFor(tgtId);
   const overCap = faces.filter(e => e.w > cap || e.h > cap);
   ok(overCap.length === 0, "每张表情都不超过画布上限 " + cap +

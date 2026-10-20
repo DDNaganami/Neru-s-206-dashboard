@@ -100,6 +100,116 @@ python -m esptool --chip esp32s3 --port COM6 --baud 921600 write_flash 0x210000 
 
 ---
 
+## ★★ 2026-10-17：夜间模式（主题格式修订 **R5**）—— 配色两套 + 夜间底图（role 23）
+
+需求书：`docs/NIGHT-MODE.md` 的 **§8（存放契约）** 与 **§9（编辑器改动清单）**。
+这一节记的是**编辑器这一半**落地之后的形状与判据数字；固件那一半（`theme_store` / `dash_ui` /
+背光）不在这里。
+
+**① 配色页多了「白天 / 夜间」切换**（「① 配色」最上面那一行，车主模式默认可见）：
+
+- 同一套控件、**两份主题对象**：切到「夜间」时页面里的 `T` 指向夜间那一份，
+  切回「白天」指回白天那一份。⇒ "两边各自独立、切回来不丢值"是**对象级**的独立，
+  不是同一个对象的两份视图；渲染器与高级那一整面墙**一行都没改**（切挡时走
+  `applyThemeToUi()` 重建，与"读入一份新主题"同一条路）。
+- 落盘记录（`localStorage` 的 `206dash.theme`）仍是 **v:2**，只在里面多一个可选的
+  `night`：老记录没有它 ⇒ 夜间 = 白天副本（与老 `theme.json` 同一套兼容口径）。
+
+**② `theme.json` 的形状（§8.1）**：`{"theme": {…白天…}, "night": {…夜间…}}`。
+
+- ★ `night` 写的是**与白天的差异**（`theme-json.js` 的 `nightPatch()`），
+  **缺键继承 `theme`** —— 所以"从没动过夜间"时文件里是 `"night": {}`（= 全继承 = 永远白天），
+  与老文件同一套语义。
+- ★ **数组仍是数组**（`screens` / `arcs` 的元素是稀疏对象，长度一个不少）：
+  `diffDeep()` 会把数组写成"数字键对象"，而固件与 `theme_store.cpp` 都按**数组**迭代 ——
+  写错形态的后果是"夜间那套不生效"而且**不报错**，所以 R5 另写了 `nightPatch()`。
+- ★ 为什么写差异而不是抄两份完整主题（**实测字节**，默认主题）：
+
+  | 形态 | 字节数 | 能不能进 4095 B 固件闸门 |
+  |---|---|---|
+  | 只有白天（R5 之前） | 2,975 | ✓ |
+  | **默认（`"night": {}`）** | **2,990** | ✓（+15 字节） |
+  | 夜间只改底色 | 3,016（night 段 19 B） | ✓ |
+  | 夜间整套配色（底色 + 4 弧 + 4 读数 + 底板） | 3,539（night 段 270 B） | ✓ |
+  | 两份**完整**副本（反例） | 5,948 | ✗ 被 `asset-package-core.js` 的 4095 B 拒收 |
+
+  最后一行就是理由：抄两份完整主题会让"保存安装包"在车主改了夜色之后**必然失败**。
+
+**③ 图片页多了「夜间底图」槽位（§8.2 / §9.2）**：
+
+- 角色 **23 = `BackgroundNight`**，规格与「背景」**完全一致**（480×480 / RGB565 / alpha 任意，
+  两屏共用一张）。槽位清单 **11 格 → 12 格**（背景 1 + 夜间底图 1 + 表情 10）。
+- ★ **没传就是白天那张**：这不是错误、不弹警告、也**不会**让导出失败；
+  预览在夜间挡用 role 23、没有就退回 role 1（与设备同一条降级口径）。
+- 三处编号表已同步（native 的 `test_role_ids` 与 `check-owner-mode.js` 的 ①e 各自对账）：
+  `lib/themetool/image_blob.h` 的 `ImageRole` ⇄ `image-blob-build.js` 的 `ROLE`
+  ⇄ `asset-spec.js` 的 `ROLES`（label = **「夜间底图（两屏共用）」**）。
+  另外命令行的 `build-image-bin.js` 的 `ROLE_ID` 也加了 `background_night`
+  （`test-image-blob-build.js` 有一条"命令行角色表不许落后于 IB.ROLE"盯着它）。
+
+**④ 打包产物指纹（R5 之后）** —— 三份**都变了**，与 §8.1/§8.2 的"指纹必变"一致：
+
+| 字段 | R5 之前 | R5 之后 | 为什么变 |
+|---|---|---|---|
+| `themeJsonBytes` / `themeJsonSha256` | 2,975 / `1dcc7d40…` | **2,990 / `21db6866…`** | 形状多了 `"night": {}`（+15 字节） |
+| `imageEditorThemeJsonBytes` / `…Sha256` | 1,472 / `2c69e55a…` | **1,487 / `b72d5cc4…`** | 同上（`ARC_FALLBACK` 那份也一样） |
+| `imageBinBytes` / `imageBinSha256` | 16,524 / `24fc3c87…` | **24,716 / `b3fcde83…`** | 夹具多了**新角色 23**（64×64 RGB565 = 8192 字节） |
+| `assetsBinBytes` / `assetsBinSha256` | 295,052 / `96e02893…` | **303,244 / `1060979c…`** | 主题段 +15、image 段 +8192 |
+
+**⑤ 老文件兼容（这一单的钉子，必须自己验）**：
+
+- 读入路径**没有加任何要求**：老文件（只有 `theme`、没有 `night`、没有 role 23）照旧读得进来；
+  导出时如果**没有改过任何东西**，走的是 `themeSrcBytes`（读进来那一份的**原始字节**）
+  ⇒ **导入 → 再导出逐字节相同**。
+- 可复跑的两种取证（都在 `smoke-pages.js` 里）：
+  ```powershell
+  # a) 夹具（老形状：只有 theme、没有 role 23）导入 → 再导出，逐字节相同
+  node tools/theme-editor/smoke-pages.js
+
+  # b) 用**改动前（HEAD）**那份打包器打出来的真容器，再跑一遍同样的断言
+  REAL_PKG=<HEAD 打出来的 assets.bin> node tools/theme-editor/smoke-pages.js
+  ```
+  实测 b)：HEAD 那份 `295,052` 字节的容器（sha256 `04f94912…`）导入之后，
+  点「保存安装包」导出的字节与它**逐字节相同**（`smoke-pages.js` 那一节打印
+  `真文件往返已跑：2 张，16524 字节，逐字节相同 ✓（整包也相同 ✓）`）。
+
+**⑥ 判据（R5 之后跑这几条）**：
+
+```powershell
+node tools/theme-editor/check-owner-mode.js        # 587 项
+node tools/theme-editor/smoke-pages.js             # 193 项（REAL_PKG 时 199 项）
+node tools/theme-editor/syntax-check-pages.js      # 34 项
+node tools/theme-editor/test-asset-package-core.js # 96 项
+node tools/theme-editor/check-trim-alpha.js        # 61 项（画布产物基线**不变**，见下）
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/build/pio.ps1 -Cmd 'test -e native'
+                                                   # 387 例 / 2 跳过 / 385 通过
+```
+
+> ★ `check-trim-alpha.js` 里那个 `TRIM_OFF_SHA256` 是**画布产物**（`renderToTarget` 的 RGBA），
+> R5 动的是主题**文件形状**与**图片角色表**，不碰那条像素路径 ⇒ 基线**必须不变**
+> （实测不变：`b8d60615…`）。这与 `theme.json` 那三个指纹是两件事，别混。
+
+**⑦ 重打 exe 并冒烟（编辑器页面在 exe 里，不打等于车主还在用旧页面）**：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\app\build-exe.ps1 -OneFile
+# 17,922,213 字节（约 17.1 MB；上一版 17,915,287 字节）
+```
+
+冒烟（本轮实测）：
+
+- 起 `--no-window --port 8899`，`GET /tools/theme-editor/index.html` ⇒ **200 / 336,036 字节**，
+  sha256 `7371ad79a715757763da526a64fa67a53b5320bd76dfc22b610c769752d68f3f`
+  与源码 `tools/theme-editor/index.html` **逐字节相同**；
+- 另外从 exe 的 CArchive 里**抽出内嵌的那一份**页面（`PyInstaller.archive.readers.CArchiveReader`）
+  与源码比：也**逐字节相同** —— 只比 HTTP 那一份是不够的（仓库在的时候服务端发的是
+  **仓库**里的那一份，见 `server.py` 的 `pages_source()`）；
+- 杀进程后 `Get-NetTCPConnection -LocalPort 8899 -State Listen` **为空**。
+  ⚠️ onefile 的 bootloader 会再起一个子进程，杀 `Start-Process` 拿到的那个 PID 不够 ——
+  要按**进程名**收（`Get-Process *Workbench* | Stop-Process -Force`），否则 8899 一直被占着。
+
+---
+
 # 一、主题编辑器 `index.html`
 
 > ## ★★ 2026-10-15：两页现在**默认进入「车主模式」**
@@ -1643,6 +1753,7 @@ node tools/theme-editor/smoke-pages.js        # 79 项：用最小 DOM 桩把合
 | 角色号 | 用途 | 建议文件名 | alpha | 4 的倍数对齐 |
 |---|---|---|---|---|
 | **1** | 表盘背景（两屏共用） | `bg` | 不要 | — |
+| **23** | **夜间底图**（两屏共用，2026-10-17 R5 新增；与角色 1 同规格，**可不传**） | `bg_night` | 不要 | — |
 | **3** | 左屏（转速表）· 怠速/常态 | `L_idle` | **必须** | — |
 | **12** | 左屏 · 巡航 | `L_cruise` | **必须** | — |
 | **13** | 左屏 · 运动 | `L_sport` | **必须** | — |
@@ -1655,7 +1766,7 @@ node tools/theme-editor/smoke-pages.js        # 79 项：用最小 DOM 桩把合
 | **8** | 右屏 · 超速（当年叫"惊喜"） | `R_overspeed` | **必须** | — |
 
 保留编号 **2 / 5 / 7 / 9 / 10 / 11 / 14 / 15 / 16 / 19 / 20** 一律不复用；
-**新角色从 23 接**（21/22 已被"高转/市区"用掉）。出处：`lib/themetool/image_blob.h`
+**新角色从 24 接**（21/22 = 高转/市区，23 = 夜间底图）。出处：`lib/themetool/image_blob.h`
 的 `ImageRole`、`lib/dashcore/face_stages.h` 的 `kFaceRoleId`、`asset-spec.js` 的 `ROLES`。
 
 ### 7. 自动转换：做了哪四件事

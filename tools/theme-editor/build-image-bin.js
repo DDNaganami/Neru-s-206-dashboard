@@ -92,6 +92,11 @@ function cfByName(v) {
 //   (那会生成一个能通过字节校验、但角色是垃圾的 blob)。
 const ROLE_ID = {
   background: IB.ROLE.Background,
+  // ★★ 2026-10-17（夜间模式 R5，docs/NIGHT-MODE.md §8.2）：夜间底图 = 角色 23。
+  //   与 background **同规格**（480×480 / RGB565 / alpha 任意），两屏共用一张。
+  //   ★ 它是**可选**的：spec 里不写这一项就是"夜间用白天那张"，不是错误 ——
+  //     所以本文件的 manifest / 缺件检查都不许把它算成"缺一张"。
+  background_night: IB.ROLE.BackgroundNight,
   // 左屏(转速表)
   face_idle: IB.ROLE.FaceIdle,
   face_cruise: IB.ROLE.FaceCruise,

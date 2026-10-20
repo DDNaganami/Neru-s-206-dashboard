@@ -257,6 +257,26 @@ assetsBinImagePageThemeSha256     c99766402ccf996923a7897c798929d465ca47f4130eea
 ★ **输入是算出来的**：主题字节从页面源码里把 `defaultTheme()` / `ARC_FALLBACK` 抠出来求值，
 图案是纯函数 —— 不读 `theme.json` / `local/*.bin` 那些本机文件，所以换台机器哈希也一样。
 
+> ★★ **2026-10-17（夜间模式 R5）之后这组数变了**（上面那段是 2026-10-15 合并那一单的
+> 原始记录，留着当对照）。R5 改了 `theme.json` 的**形状**（`{theme, night}`）与**图片角色表**
+> （多了 role 23 夜间底图）⇒ 三份都变，这是 §8 的正常结果，不是回归：
+>
+> ```
+> themeJsonBytes                    2990   （+15：`,\n  "night": {}`）
+> themeJsonSha256                   21db68663972cbd0df5dd99f9cc5559674a5bf07b7d601c044cbcdd86fe960a0
+> imageEditorThemeJsonBytes         1487   （+15，同上）
+> imageEditorThemeJsonSha256        b72d5cc426ced3b1c14c68e6dfad0cc5d5fa86fe15585f183541a2da537c95c2
+> imageBinBytes                     24716  （+8192：夹具多一张 role 23）
+> imageBinSha256                    b3fcde838e36ad8175388f50f7bbc01fe627c9c2f06f173cb007175ed3845a2d
+> assetsBinBytes                    303244
+> assetsBinSha256                   1060979c0d4997f6464d9a2a1a15dfeeef55cf2e3402b2d89d96452e8901e9d6
+> assetsBinImagePageThemeSha256     5344de9b33406f47d9404e9f3528236ee50f6d31597de5cde70e7c2baaf00716
+> ```
+>
+> 同一单里**没变**的是 `check-trim-alpha.js` 的 `TRIM_OFF_SHA256`（`b8d60615…`）——
+> 那是**画布产物**（`renderToTarget` 的 RGBA），R5 不碰那条像素路径。两者别混。
+> 细节见 `README.md` 的「2026-10-17：夜间模式（主题修订 R5）」一节。
+
 ★ 指纹**只能说明"这一段代码的产物没变"**：它证明不了"框选器写的像素对"。
 像素那一层的判据是 `smoke-pages.js`（页面能跑起来）+ `check-owner-mode.js` 第 ⑦ 节
 （框选结果确实作为普通 item 交给既有那条路）。

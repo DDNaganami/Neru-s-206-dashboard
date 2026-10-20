@@ -108,8 +108,12 @@ function arcFallbackFromMergedPage(pageFile) {
 }
 
 function themeBytesOf(t) {
-  // ★ 与页面 exportTheme() 里那一句**逐字一致**（这就是"产物"的定义）
-  return new TextEncoder().encode(JSON.stringify({ theme: t }, null, 2));
+  // ★ 与页面 themeFileText() 里那一句**逐字一致**（这就是"产物"的定义）。
+  // ★★ 2026-10-17（主题格式修订 R5）：形状从 `{theme}` 变成
+  //   `{"theme": …, "night": …}` —— 页面上"没动过夜间"时 night 是 `{}`
+  //   （= 全继承白天，docs/NIGHT-MODE.md §8.1）。这里就按那个**默认状态**算：
+  //   默认页面导出什么，指纹就记录什么。
+  return new TextEncoder().encode(JSON.stringify({ theme: t, night: {} }, null, 2));
 }
 
 // ------------------------------------------------------------
@@ -134,6 +138,11 @@ function patternRGBA(w, h, withAlpha) {
 function imageBytes() {
   const items = [
     { name: "bg", w: 64, h: 64, cf: IB.CF.RGB565, role: IB.ROLE.Background, order: 0,
+      pixels: IB.rgbaToRgb565(patternRGBA(64, 64, false), 64, 64) },
+    // ★★ 2026-10-17（R5）：夜间底图（role 23）也要进指纹 —— 它是**新角色**，
+    //    而 §8.2 明说"指纹必变：imageBinSha256 / assetsBinSha256"。
+    //    不进夹具的话 imageBin 的字节与改动前**一模一样**，那条要求就没被任何东西钉住。
+    { name: "bg_night", w: 64, h: 64, cf: IB.CF.RGB565, role: IB.ROLE.BackgroundNight, order: 0,
       pixels: IB.rgbaToRgb565(patternRGBA(64, 64, false), 64, 64) },
     { name: "face", w: 48, h: 48, cf: IB.CF.RGB565A8, role: IB.ROLE.FaceIdle, order: 0,
       pixels: IB.rgbaToRgb565A8(patternRGBA(48, 48, true), 48, 48) }

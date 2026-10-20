@@ -111,6 +111,14 @@
   // ------------------------------------------------------------
   var ROLES = [
     { id: "background", role: 1,  key: "Background",   label: "表盘背景（两屏共用）", alpha: "either", sizeByTier: "background" },
+    // ★★ 23 = 夜间底图（2026-10-17，夜间模式 R5 —— docs/NIGHT-MODE.md §8.2）。
+    //   规格与"表盘背景"**完全一致**（480×480、RGB565、alpha 任意、两屏共用一张），
+    //   所以 sizeByTier 也是 "background"、alpha 也是 "either"（不要求透明度）。
+    //   ★ 编号来自 lib/themetool/image_blob.h 的 ImageRole::BackgroundNight，
+    //     与 ImageBlob.ROLE.BackgroundNight 是同一个号（三处对账见 test_role_ids）。
+    //   ★ 没上传这一张 ⇒ 设备用白天那张（缺图降级）⇒ **不是错误**，
+    //     所以它不在"必须补"的清单里（那张清单只数表情）。
+    { id: "background_night", role: 23, key: "BackgroundNight", label: "夜间底图（两屏共用）", alpha: "either", sizeByTier: "background" },
     { id: "face_idle",       role: 3,  key: "FaceIdle",       label: "左屏·怠速/常态", alpha: "required", sizeByTier: "face" },
     { id: "face_cruise",     role: 12, key: "FaceCruise",     label: "左屏·巡航",      alpha: "required", sizeByTier: "face" },
     { id: "face_sport",      role: 13, key: "FaceSport",      label: "左屏·运动",      alpha: "required", sizeByTier: "face" },
@@ -124,11 +132,12 @@
   ];
   // 保留编号：**一律不复用**（复用会让别人已导出的 image.bin 静默换脸）
   var RESERVED_ROLES = [2, 5, 7, 9, 10, 11, 14, 15, 16, 19, 20];
-  var NEXT_FREE_ROLE = 23;   // 新角色从这里接（21/22 已被"高转/市区"用掉）
+  var NEXT_FREE_ROLE = 24;   // 新角色从这里接（21/22 = 高转/市区，23 = 夜间底图）
 
   // 建议文件名（只是**建议**：名字只进索引表的 name 字段，固件按 role 取图）
   var SUGGESTED_NAME = {
-    background: "bg", face_idle: "L_idle", face_cruise: "L_cruise",
+    background: "bg", background_night: "bg_night",
+    face_idle: "L_idle", face_cruise: "L_cruise",
     face_sport: "L_sport", face_high: "L_high", face_redline: "L_redline",
     face_idle_r: "R_idle", face_city_r: "R_city", face_cruise_r: "R_cruise",
     face_sport_r: "R_sport", face_overspeed_r: "R_overspeed"

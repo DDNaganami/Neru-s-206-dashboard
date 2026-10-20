@@ -149,8 +149,11 @@ for (var reserved of [2, 5, 7, 9, 10, 11, 14, 15, 16, 19, 20]) {
      reserved + " 是保留编号,不能被复用");
   eq(IB.ROLE_NAMES[reserved], undefined, reserved + " 不该有显示名");
 }
-// 一共 8 张表情 + 1 张背景
-eq(Object.keys(IB.ROLE).length, 11, "角色表里正好 11 项(1 背景 + 10 表情 = 每屏 5 档)");
+// 一共 10 张表情 + 1 张背景 + 1 张夜间底图
+// ★★ 2026-10-17（夜间模式 R5）：11 → 12 —— 新角色 **23 夜间底图**
+//   （docs/NIGHT-MODE.md §8.2；与背景同规格、两屏共用一张、**可以不传**）。
+eq(Object.keys(IB.ROLE).length, 12,
+   "角色表里正好 12 项(1 背景 + 1 夜间底图 + 10 表情 = 每屏 5 档)");
 // 每个角色都要有中文名(界面下拉框要用),漏了会显示成 undefined
 for (var rk in IB.ROLE) {
   ok(IB.ROLE_NAMES[IB.ROLE[rk]] !== undefined, "角色 " + rk + " 要有显示名");
@@ -841,9 +844,15 @@ section("spec-240.json:微雪 240 那块板的一整套素材必须打得出来"
   }
   // ★ 角色号必须**每个都在、且只出现一次**:少一个 = 那一档永远显示不出来
   //   (不报错,只会走降级链);多/重复 = 有人复制粘贴时忘了改用途。
+  //   ★★ 2026-10-17（R5）：**夜间底图（23）不在"必须齐"的集合里** —— 它可以没传
+  //      （没传就是白天那张），所以 spec-240.json 这份"一整套表情"的配方里没有它是对的。
   const roles = res.entries.map(e => e.role).sort((a, b) => a - b);
-  const want = Object.values(IB.ROLE).sort((a, b) => a - b);
+  const want = Object.values(IB.ROLE).filter(r => r !== IB.ROLE.BackgroundNight)
+                                    .sort((a, b) => a - b);
   eq(roles.join(","), want.join(","), "11 个角色号一个不少、一个不重");
+  ok(Object.values(IB.ROLE).indexOf(IB.ROLE.BackgroundNight) >= 0 &&
+     roles.indexOf(IB.ROLE.BackgroundNight) < 0,
+     "夜间底图(23)在角色表里，但这份配方**不需要**它（缺图不是错误）");
   ok(res.totalBytes <= IB.partitionBytesFor("s3_240"),
      "占得进 8MB 分区(" + (100 * res.totalBytes / IB.partitionBytesFor("s3_240")).toFixed(1) + "%)");
   // 上限那一档也要算一遍:用满 160 时仍然装得下(宿主机那道 1MB 闸门也过)

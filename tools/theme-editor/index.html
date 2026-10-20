@@ -120,6 +120,12 @@
   .oc-sub{display:block;color:var(--dim);font-size:11px;line-height:1.25;margin-top:1px}
   /* 底板深浅那一行的百分比读数（只读显示；滑杆的值是主题文件里的 0..255） */
   .oc-pct{color:var(--dim);font-size:12px;min-width:38px;text-align:right;font-variant-numeric:tabular-nums}
+  /* ★★ 2026-10-17（夜间模式 R5）：「白天 / 夜间」切换那一行。
+     与 .partbar .partsw 同一套外观，但它在 .row 里（车主模式「① 配色」顶上），
+     所以选择器不敢复用 .partbar 那一份 —— 那一份是分区标签的，两者不是同一个东西。 */
+  .row .slotsw{display:flex;gap:6px}
+  .row .slotsw button{padding:3px 12px;font-size:12.5px;line-height:1.5}
+  .row .slotsw button.on{background:#1d4f6b;border-color:#2a6f96;font-weight:600}
   details.advanced{margin:0;border-bottom:1px solid var(--line)}
   details.advanced > summary{padding:12px 16px;color:var(--accent);font-size:13px;
                              font-weight:600;letter-spacing:.04em;list-style:none}
@@ -360,6 +366,25 @@
         和「② 图片」分区看到的预览是同一份数据）。要调角度 / 半径 / 线宽 / 字号那些几何，
         请展开顶栏的「高级」。
       </div>
+      <!-- ============================================================
+           ★★ 2026-10-17（夜间模式 R5，docs/NIGHT-MODE.md §9.1）：「白天 / 夜间」切换
+           同一套控件、**两份**主题对象：切到「夜间」时下面每一行读写的是夜间那一份，
+           切回「白天」读写白天那一份。两边各自独立 —— 切回来不丢值（各自是独立对象，
+           不是同一个对象的两份视图）。
+           ★ 它静态写在 HTML 里、并带 data-ocap="daynight"：车主模式**默认可见**这一条
+             由 check-owner-mode.js 数出来（能力表见 OWNER_CAPS），不是靠注释保证。
+           ★ 落盘形状是 {"theme": {…白天…}, "night": {…夜间…}}（§8.1）：
+             **夜间只写"与白天不同"的键**，没改过的键继承白天 ⇒ 从没动过夜间时
+             文件里是 "night": {}（= 全继承 = 永远白天，与老文件同一套语义）。
+           ============================================================ -->
+      <div class="row" data-ocap="daynight">
+        <label>配色套别<span class="oc-sub">白天 / 夜间各一套，各自独立</span></label>
+        <span class="slotsw">
+          <button id="oc-slot-day" class="on">白天</button>
+          <button id="oc-slot-night">夜间</button>
+        </span>
+        <span class="oc-pct" id="oc-slot-note" style="min-width:96px">现在改的是白天</span>
+      </div>
       <div class="row" data-ocap="bg">
         <label>背景色</label>
         <input type="color" id="oc-bg"><input type="text" id="oc-bg-txt">
@@ -478,8 +503,9 @@
         （字节直接从内存交给客户端；那块面板在下面，没开客户端时看不到）。
       </div>
       <div class="note" style="color:var(--dim)">
-        3 个预设（当前默认 / 夜间 / 浅底）：点一下就把配色写进当前主题状态 ——
-        导出的还是同一份 theme.json，不新造格式。
+        3 个预设（当前默认 / 夜间 / 浅底）：点一下就把配色写进**当前选的那一套**
+        （白天挡写 theme 段、夜间挡写 night 段）—— 导出的还是同一份 theme.json，
+        不新造格式。
       </div>
       <div id="owner-presets"></div>
 
@@ -516,12 +542,14 @@
          ============================================================ -->
     <div id="owner-images" style="display:none">
     <section data-part="images">
-      <h2>槽位清单（背景 + 表情）</h2>
+      <h2>槽位清单（背景 + 夜间底图 + 表情）</h2>
       <div class="note" style="color:var(--dim);margin:0 0 10px">
         <b>背景</b>要铺满 480×480（可用 JPEG）；<b>表情</b>必须带透明背景（<b>PNG</b>）——
         JPEG 当表情会被拒绝。表情图拖进来/选文件会弹<b>框选</b>：方框内是要保留的部分，
         拖动平移、滚轮（或双指）缩放，<b>框外丢掉</b>；确认后得到一张主体居中、
-        四周透明的方图。每格都能单独换图或清除。
+        四周透明的方图。每格都能单独换图或清除。<br>
+        <b>夜间底图</b>与「背景」<b>同规格</b>（480×480、两屏共用一张），只在夜间显示；
+        <b>不传就用白天那张</b> —— 那不是错误，也不会让导出失败。
       </div>
       <div class="slotgrid" id="owner-slots" data-ocap="face"></div>
       <div class="note" style="color:var(--dim)">
@@ -1487,7 +1515,25 @@ const MODE_KEY = "206dash.themeEditorMode";
 const PART_KEY = "206dash.themeEditorPart";
 
 // ★★ 唯一那一份主题状态（两个分区共用；改的都是它）
-let T = defaultTheme();
+//
+//   ★★ 2026-10-17（夜间模式 R5，docs/NIGHT-MODE.md §9.1）：「一份」变成「两份对象、
+//      一个当前指针」：
+//        · `T`      = **现在正在编辑的那一份**（页面里所有渲染/控件都读它 ⇒
+//                     切白天/夜间不需要给渲染器加第二个参数，也不需要写第二套控件）；
+//        · `TD`     = 白天那一份；`T` 在白天挡时**就是它本人**（同一个对象）；
+//        · `TNight` = 夜间那一份；第一次切到夜间时从 `TD` 复制一份（null = 还没建）。
+//      ⇒ "两边各自独立、切回来不丢值"是**对象级**的独立，不是同一个对象的两份视图。
+//        改夜间时 `TD` 一个字节都不动，反之亦然。
+//      ★ 为什么不让渲染器都改成读 `curT()`：高级那一整面墙的控件闭包抓的是 T 里的
+//        **具体对象**（某条弧 / readout 那一小段），换对象就必须重建 —— 现在切挡时
+//        走 applyThemeToUi() 重建，与"读入一份新主题"是同一条路（见 mergeImportedTheme）。
+let T = defaultTheme();      // 现在正在编辑的那一份（初始 = 白天）
+let TD = T;                  // 白天那一份（= 默认状态下的 T 本身）
+let TNight = null;           // 夜间那一份（懒复制；null = 还没切过去过，也没有导入过）
+let themeSlot = "day";       // "day" | "night"（现在编辑的是哪一份）
+// 夜间**被改过**吗？没改过 ⇒ 导出的 night 是 {}（= 全继承白天，文件最小、语义最省事）。
+//   ★ 置真只有一处：forgetThemeSrcBytes()（"改过了"的唯一收口），见那里。
+let nightTouched = false;
 
 // 主题的"来源说明"（显示在高级的 #arc-source 那一行）
 let themeSource = "固件默认主题（没改过）";
@@ -1505,7 +1551,79 @@ let themeSource = "固件默认主题（没改过）";
 let themeSrcBytes = null;
 
 // 把"留着的原始字节"作废:任何一次改动配色之后都必须调它
-function forgetThemeSrcBytes() { themeSrcBytes = null; }
+//
+// ★★ 2026-10-17（R5）：它同时是"**夜间被改过**"的唯一收口 —— 页面里每一处"真的改了
+//   主题"的地方都会调它（色板 / 滑杆 / 弧 / 底板 / 预设 / 恢复默认 / JSON 应用），
+//   所以就不必在十几处各加一句 `nightTouched = true`（漏一处 ⇒ 夜间改动被当成
+//   "没改过"、导出时悄悄丢掉）。反过来，纯渲染路径（render → saveThemeToLocal）
+//   **不**调它 ⇒ 只是切到夜间看一眼不会被记成"改过"。
+function forgetThemeSrcBytes() {
+  themeSrcBytes = null;
+  if (themeSlot === "night") nightTouched = true;
+}
+
+// ------------------------------------------------------------
+// ★★ 夜间那一份（R5）的几件小事
+//
+//   cloneTheme   深拷贝一份主题（主题是纯 JSON 数据，JSON 往返就是最稳的深拷贝）
+//   nightTheme   取夜间对象；还没建就**从白天复制一份**（第一次切过去时看到的=白天）
+//   themeNightBlock  导出/落盘时写的 `night`：没改过 ⇒ {}；改过 ⇒ 与白天的差异
+//   themeFileText    theme.json 的**唯一**份文本（导出/文本框/assets.bin 段都走它）
+//
+// ★ `night` 写成"差异"而不是完整副本，是 §8.1 的"缺键继承 theme"决定的，而且
+//   有两个硬理由：
+//     ① 容量：一份默认主题 2975 B，两份完整副本 5948 B —— 超过固件读得进来的
+//        4095 B（asset-package-core.js 的 THEME_FIRMWARE_BYTES 会当场拒收），
+//        于是"保存安装包"在夜间改了色之后**必然失败**；
+//     ② 兼容：没动过夜间 ⇒ `"night": {}` ⇒ 与老文件同一套语义（永远白天）。
+//   实测：只改几个夜色的差异约 60~450 B，整份 theme 段仍在 3.4 KB 以内。
+// ------------------------------------------------------------
+function cloneTheme(t) {
+  try { return JSON.parse(JSON.stringify(t)); } catch (e) { return defaultTheme(); }
+}
+
+function nightTheme() {
+  if (!TNight) TNight = cloneTheme(TD);
+  return TNight;
+}
+
+function themeNightBlock() {
+  if (!nightTouched || !TNight) return {};
+  return ThemeJson.nightPatch(TD, TNight);
+}
+
+// theme.json 的**那一份对象/文本** —— 导出的、文本框里的、assets.bin 里的都一样
+function themeFileObject() {
+  return { theme: TD, night: themeNightBlock() };
+}
+
+function themeFileText() {
+  return JSON.stringify(themeFileObject(), null, 2);
+}
+
+// 切"白天 / 夜间"：只换**当前指针**（+ 重建高级那面墙），不改任何值
+function setThemeSlot(slot) {
+  const want = (slot === "night") ? "night" : "day";
+  if (want === themeSlot) { syncThemeSlotUi(); return; }
+  themeSlot = want;
+  T = (want === "night") ? nightTheme() : TD;
+  syncThemeSlotUi();
+  applyThemeToUi();          // 高级控件的闭包抓着 T 里的具体对象 ⇒ 换挡必须重建
+  say(want === "night"
+    ? "已切到「夜间」：现在改的是**夜间那一套**（写进 night 段，只记与白天的差异）。" +
+      "切回白天，白天那一套原样不动。"
+    : "已切到「白天」：现在改的是**白天那一套**（写进 theme 段）。" +
+      "夜间那一套原样留着。", "ok");
+}
+
+function syncThemeSlotUi() {
+  const d = document.getElementById("oc-slot-day");
+  const n = document.getElementById("oc-slot-night");
+  const tip = document.getElementById("oc-slot-note");
+  if (d) d.className = (themeSlot === "day") ? "on" : "";
+  if (n) n.className = (themeSlot === "night") ? "on" : "";
+  if (tip) tip.textContent = (themeSlot === "night") ? "现在改的是夜间" : "现在改的是白天";
+}
 
 // 底色跟着主题走:预览按它合成透明度
 function themeBgHex() {
@@ -1557,11 +1675,17 @@ function ensureReadout(t) {
 //   只存 theme 会踩一个坑(用户实测撞到):固件默认值改了(水温弧 145→330 改成
 //   0→180),记录里的旧值把它盖住 —— 刷新后"什么都没变",还以为是固件的问题。
 //   有了基线就能三方比对:用户没碰过的字段跟着新默认值走,碰过的保留。
+// ★★ 2026-10-17（R5）：记录里多一个 `night`（夜间相对白天的差异，可能是 {}）。
+//   · `theme` 那一份**必须是白天**（`TD`）—— 不能直接写 `T`：切到夜间挡时 T 是
+//     夜间对象，写进去就成了"白天=夜间"，刷新后第二天再看全乱（而且不报错）。
+//   · 老记录没有 `night` ⇒ 夜间 = 白天的副本（与老 theme.json 同一套兼容口径）。
+//   · 版本号**仍是 v:2**：多一个键对读端是安全的加法（缺了就是"没有夜间"），
+//     改版本号反而会让老记录走"legacy 备份后忽略"那条路、把车主存的配色扔掉。
 // ------------------------------------------------------------
 function saveThemeToLocal() {
   try {
     localStorage.setItem(THEME_KEY, JSON.stringify({
-      v: 2, base: defaultTheme(), theme: T
+      v: 2, base: defaultTheme(), theme: TD, night: themeNightBlock()
     }));
   } catch (e) { /* 隐私模式忽略 */ }
 }
@@ -1608,6 +1732,36 @@ function mergeImportedTheme(t) {
   if (typeof T.bg_color !== "number") T.bg_color = ARC_FALLBACK.bg_color;
   if (!T.alerts || typeof T.alerts !== "object") T.alerts = defaultTheme().alerts;
   ensureReadout(T);
+  // ★★ 2026-10-17（R5）：导入 = **换了一整份主题** ⇒ 夜间那一份跟着这次导入重来：
+  //   先把"白天"钉在刚合并出来的对象上，再把夜间清空（调用方若读到了 `night` 段，
+  //   紧接着用 applyImportedNight() 补；没有 `night` 段的老文件 ⇒ 夜间 = 白天副本）。
+  TD = T;
+  TNight = null;
+  themeSlot = "day";
+  nightTouched = false;
+  syncThemeSlotUi();
+  return true;
+}
+
+// ------------------------------------------------------------
+// ★★ 2026-10-17（R5）：把 theme.json 里的 `night` 段接过来
+//
+//   §8.1 的契约是"**night 缺的键继承 theme**"，所以这里的实现就是一条：
+//     TNight = applyPatch(刚合并出来的白天, night 段)
+//   —— 与 theme-json.js 的 applyReadoutFallbacks / mergeDefaults 同一套继承规则，
+//   不另写一套"缺键取默认"的逻辑（两套迟早分叉，分叉的症状是"夜间某个颜色不对"）。
+//   ★ 传进来的 patch 先 clone 再 patch：mergeDefaults 在"没被 patch 到的子树"上会
+//     把**入参的引用**原样返回，直接 applyPatch(TD,…) 会让夜间的弧对象与白天**共享**
+//     同一个对象 ⇒ 改夜间等于改白天（不报错的那种错）。所以必须克隆一份 base。
+//   ★ 没有 `night` 段（或它是空对象）⇒ 什么都不做：夜间 = 白天副本（永远白天）。
+//     这正是"老文件照旧能用"的实现，也是 §8.1 那条兼容条款。
+function applyImportedNight(nightBlock) {
+  const has = ThemeJson.isPlainObject(nightBlock) && Object.keys(nightBlock).length > 0;
+  if (!has) return false;
+  TNight = ThemeJson.applyPatch(cloneTheme(TD), nightBlock);
+  themeSlot = "day";
+  nightTouched = true;
+  syncThemeSlotUi();
   return true;
 }
 
@@ -1615,12 +1769,16 @@ function mergeImportedTheme(t) {
 // 从**一段文本**读一份主题（theme.json 的内容，或容器里 theme 段的内容）
 //   ★ 留着原始字节：这样 theme.json → assets.bin → theme.json 原样往返。
 //   ★ 用 TextEncoder 而不是别的编码:设备端读的就是 UTF-8。
+//   ★★ 2026-10-17（R5）：`{"theme": …, "night": …}` 两份一起读（缺 night 就只读白天）。
 // ------------------------------------------------------------
 function loadThemeText(text, sourceName) {
   try {
-    const t = ThemeJson.themeObject(ThemeJson.parseThemeJson(text));
-    mergeImportedTheme(t);
-    themeSource = "theme.json：" + (sourceName || "已读入");
+    const parsed = ThemeJson.parseThemeJson(text);
+    const t = ThemeJson.themeObject(parsed);
+    mergeImportedTheme(t);                                  // 先把白天接过来（内部会清夜间）
+    const hasNight = applyImportedNight(parsed && parsed.night);
+    themeSource = "theme.json：" + (sourceName || "已读入") +
+                  (hasNight ? "（白天 + 夜间两套）" : "（只有白天 ⇒ 夜间 = 白天副本）");
     try { themeSrcBytes = new TextEncoder().encode(String(text)); } catch (e) { themeSrcBytes = null; }
     saveThemeToLocal();
     applyThemeToUi();
@@ -1658,6 +1816,14 @@ function loadThemeFromLocal() {
       // 合并出来的对象是"纯数据"，但缺字段时仍按默认值兜一层（老记录可能没有 alerts 段）
       if (!T.alerts || typeof T.alerts !== "object") T.alerts = defaultTheme().alerts;
       ensureReadout(T);
+      // ★★ 2026-10-17（R5）：记录里的 `theme` 是**白天**那一份；`night` 是夜间相对
+      //   白天的差异（老记录没有它 ⇒ 夜间 = 白天副本，与老 theme.json 同一条兼容口径）。
+      TD = T;
+      TNight = null;
+      themeSlot = "day";
+      nightTouched = false;
+      if (rec.night) applyImportedNight(rec.night);
+      syncThemeSlotUi();
       themeSource = "本机记住的配色（本页改的）";
       return true;
     }
@@ -1818,8 +1984,12 @@ function packCurrentAssets() {
   // 配色那一段：
   //   · 这一份主题是**从文件/容器读进来**的 ⇒ 用留着的**原始字节**，
   //     于是 theme.json → assets.bin → theme.json 原样往返(逐字节相同)；
-  //   · 在本页改过色 ⇒ 用当前状态重新 stringify(那才是你要导出的东西)。
-  const themeBytes = themeSrcBytes || new TextEncoder().encode(JSON.stringify({ theme: T }, null, 2));
+  //   · 在本页改过色 ⇒ 用当前状态重新字符串化(那才是你要导出的东西)。
+  //   ★★ R5：重新字符串化走 themeFileText()（= 白天 + 夜间段），与「导出 theme.json」、
+  //     高级那个 JSON 文本框**同一句** —— 三处各写一句的话，"导出的 theme.json 与
+  //     assets.bin 里的主题段不是同一份"这种错就没人看得出来。
+  //   ★ 原始字节那条路**天然**满足兼容钉子：老文件里没有 night ⇒ 再导出**逐字节相同**。
+  const themeBytes = themeSrcBytes || new TextEncoder().encode(themeFileText());
   const themeFrom = themeSrcBytes ? "原始字节(读进来那一份)" : "当前状态(重新序列化)";
 
   let packed;
@@ -2153,19 +2323,28 @@ function faceSlots() {
 }
 
 // ------------------------------------------------------------
-// 车主模式的**槽位清单**（背景 1 + 表情 10）—— 2026-10-15 按车主实测反馈加
+// 车主模式的**槽位清单**（背景 1 + 夜间底图 1 + 表情 10）—— 2026-10-15 按车主实测反馈加；
+// 2026-10-17 加了「夜间底图」（夜间模式 R5，docs/NIGHT-MODE.md §9.2）
 //
 // 车主原话：「图片列表应该放到车主模式那边，不然没办法对全部表情和背景进行编辑。」
 //
 // ★ 为什么"背景 + 表情"是一张表：固件那边它们是**两类 role**
-//   （ImageBlob.ROLE.Background / 每屏 5 个表情 role），但车主看到的是"11 个格子"，
-//   所以在界面上合成一张表；`face: true/false` 决定这一格**要不要弹框选**。
+//   （ImageBlob.ROLE.Background / BackgroundNight / 每屏 5 个表情 role），
+//   但车主看到的是"12 个格子"，所以在界面上合成一张表；`face: true/false` 决定这一格
+//   **要不要弹框选**（两张底图都是 false，但语义是 cover 取景，不是"不处理"）。
 // ★ 名称一律来自 face-stages.js（与固件 face_stages.h 同源）—— 不写 role 编号，
 //   也不在这里重抄一串中文（抄一套就会在"固件加了档位"时静默分叉）。
+// ★★ 夜间底图（role 23）与"背景"（role 1）**同规格**（480×480、RGB565、alpha 任意、
+//   两屏共用一张）；**没传就是白天那张** —— 这是缺图降级，**不是错误**，
+//   所以格子空着也照样能导出（见 buildOwnerSlots 那句"空（夜间用白天那张）"）。
 function ownerSlotSpecs() {
-  return [{ role: ImageBlob.ROLE.Background, face: false, side: -1,
-            label: "背景（两屏共用，铺满 " + bgSideFor(curTarget) + "×" +
-                   bgSideFor(curTarget) + "）" }].concat(faceSlots());
+  const side = bgSideFor(curTarget);
+  return [
+    { role: ImageBlob.ROLE.Background, face: false, side: -1,
+      label: "背景（两屏共用，铺满 " + side + "×" + side + "）" },
+    { role: ImageBlob.ROLE.BackgroundNight, face: false, side: -1, night: true,
+      label: "夜间底图（两屏共用，铺满 " + side + "×" + side + "）" }
+  ].concat(faceSlots());
 }
 
 function bgSideFor(target) {
@@ -2174,6 +2353,14 @@ function bgSideFor(target) {
 
 // 这一格现在放的是哪张（同 role 取 order 最小的那张 —— 与设备端取用规则一致）
 function slotItem(spec) { return pick(spec.role); }
+
+// ★★ R5：预览该用哪张底图 —— 白天挡 = role 1；夜间挡 = role 23，
+//   夜间底图**没传**时退回 role 1（与设备同一条降级口径：缺图不是错误）。
+function bgRoleForSlot() {
+  if (themeSlot !== "night") return ImageBlob.ROLE.Background;
+  return pick(ImageBlob.ROLE.BackgroundNight) ? ImageBlob.ROLE.BackgroundNight
+                                              : ImageBlob.ROLE.Background;
+}
 
 // 一张图显示在格子里的缩略图：按**当前槽位**的画布画，并标出透明。
 // ★ 直接用 renderToTarget(item, 54, 54) 会走"整图 contain 到 54×54"，
@@ -2208,11 +2395,17 @@ function buildOwnerSlots() {
   ownerSlotSpecs().forEach(spec => {
     const cell = document.createElement("div");
     cell.className = "slotcell";
-    // 背景那一格单独一个标记：check-owner-mode.js 用它把"背景 1 个"数出来。
+    // 两张底图各有一个标记：check-owner-mode.js 用它把"背景 1 + 夜间底图 1"数出来。
     // ★ 表情那 10 格不必逐格打标 —— 容器上那一处 `data-ocap="face"` +
     //   faceSlots() 正好 10 个，这两条加起来就是"表情 10 格"的判据
     //   （逐格打标会让同一个数字有两处来源，反而容易分叉）。
-    if (!spec.face) cell.setAttribute("data-ocap", "bgimage");
+    // ★★ 两个 setAttribute 必须写成**字面量**（不能 `spec.night ? "x" : "y"`）：
+    //   check-owner-mode.js 是按字面量数这类标签的，三元表达式它数不到 ——
+    //   而"数不到"会让那条守卫**静默失效**（比报错更糟）。
+    if (!spec.face) {
+      if (spec.night) cell.setAttribute("data-ocap", "nightbg");
+      else cell.setAttribute("data-ocap", "bgimage");
+    }
     cell.setAttribute("data-role", String(spec.role));
 
     const lb = document.createElement("div");
@@ -2224,7 +2417,8 @@ function buildOwnerSlots() {
     meta.textContent = it
       ? (it.name + "　" + it.w + "×" + it.h +
          (wantAlpha(it.role) ? "　RGB565A8" : "　RGB565"))
-      : (spec.face ? "空（缺图会按降级链用别的一张）" : "空（会露出主题底色）");
+      : (spec.face ? "空（缺图会按降级链用别的一张）"
+                   : (spec.night ? "空（夜间用白天那张，不是错误）" : "空（会露出主题底色）"));
     lb.appendChild(meta);
 
     const cv = document.createElement("canvas");
@@ -2414,9 +2608,10 @@ function clearSlot(spec, it) {
 //     ——「① 配色」与「② 图片」各一个「打开安装包…」按钮，与 `save` 同一个道理：
 //     两个按钮**共用**那个隐藏输入框 #file-theme 与同一条 readAssetFile()，
 //     不是两套导入实现。
-const OWNER_CAPS = ["bg", "arc", "rpm", "speed", "coolant", "intake", "plate",
+const OWNER_CAPS = ["daynight", "bg", "arc", "rpm", "speed", "coolant", "intake", "plate",
                     "redline", "overspeed", "face", "import", "save"];
 const OWNER_EXPECT = {
+  daynight: 1,    // ★ R5：白天 / 夜间切换（同一套控件、两份主题对象）
   bg: 1,          // 背景色
   arc: 4,         // 四条弧的点亮色（转速外弧 / 水温内弧 / 车速外弧 / 进气内弧）
   rpm: 1,         // 转速数字颜色（readout.rpm_color，左屏 = 转速屏 = 从板）
@@ -2531,16 +2726,30 @@ function ownerOpaBind(id, get, set) {
 function buildOwnerControls() {
   if (!document.getElementById("oc-bg")) return;
 
+  // ---- ⓪ 白天 / 夜间（★ 2026-10-17 R5，docs/NIGHT-MODE.md §9.1）----
+  // 只切"在读哪一份对象"，**控件是同一套**（HTML 里那几行一个都没复制）。
+  // ★ 两个按钮不新增状态：真正的状态就是 T / TD / TNight 三个变量（见文件头那段）。
+  ["oc-slot-day", "oc-slot-night"].forEach(id => {
+    const b = document.getElementById(id);
+    if (b && !b.dataset.wired) {
+      b.dataset.wired = "1";
+      b.addEventListener("click", () => setThemeSlot(id === "oc-slot-night" ? "night" : "day"));
+    }
+  });
+  syncThemeSlotUi();
+
   // ---- ① 配色：背景 / 四条弧的点亮色 / 数字 ----
   const bg = ownerColorBind("oc-bg", null, null, () => T.bg_color, v => { T.bg_color = v; });
   const arcs = [];
   // ★ 用 forEach（不用 for...of）：四行是**静态**写在 HTML 里的，
   //   这里只是按同一个顺序把值灌进去 —— 见 #owner 那段注释。
+  // ★★ R5：这里**不能**把 `T.screens[s].arcs[i]` 取出来存成闭包变量（原来是那样写的）——
+  //   切到夜间挡时 `T` 换成了另一个对象，存下来的那个 `a` 还指着白天那条弧 ⇒
+  //   "在夜间改弧颜色，改的是白天"。所以读写都写成 `T.screens[spec.s]…`（每次取值）。
   OWNER_ARCS.forEach((spec, k) => {
-    const a = T.screens[spec.s].arcs[spec.i];
-    if (!a) return;
     const r = ownerColorBind("oc-arc" + k, "oc-arc" + k + "-lb", spec.label,
-                             () => a.value_color, v => { a.value_color = v; });
+                             () => T.screens[spec.s].arcs[spec.i].value_color,
+                             v => { T.screens[spec.s].arcs[spec.i].value_color = v; });
     if (r) arcs.push(r);
   });
   // ★★ 2026-10-15（车主："转速/速度现在就拆开"）：原来这里只有一个 `oc-digit`
@@ -3168,12 +3377,14 @@ function cropConfirm() {
           "）⇒ 弧带那一圈可能露出主题底色。换一张更大的图，或在「高级 → 图片列表」里调目标宽度。",
           "warn");
     }
-    items.push({ id: nextId++, img: sq, name: srcName + "-背景", role: slot.role,
+    items.push({ id: nextId++, img: sq,
+                 name: srcName + (slot.night ? "-夜间底图" : "-背景"), role: slot.role,
                  order: 0, fit: "cover", w: w, h: w });
     cropClose();
     render();
     say("已取景并放进槽位「" + slot.label + "」：按 **cover** 输出 " + w + "×" + w +
         "（图盖满整个框、不露底；可用 JPEG / WebP、不要求透明）。\n" +
+        (slot.night ? "★ 这一张只在**夜间**用；不传就用白天那张（不是错误）。\n" : "") +
         "点「保存安装包」就把它连同配色打成一个 assets.bin。", "ok");
     return;
   }
@@ -3664,7 +3875,9 @@ function drawScreen(cv, which, stage, opts) {
   const step = stage || FaceStages.STAGES[0];
 
   // 1. 背景图（最底层；两屏共用一张）
-  const bgItem = pick(ImageBlob.ROLE.Background);
+  //   ★★ R5：切到「夜间」挡时预览用**夜间底图**（role 23）；没传就退回白天那张 ——
+  //     与设备端"没这张图 ⇒ 用白天那张"是**同一条降级口径**（不是错误）。
+  const bgItem = pick(bgRoleForSlot());
   if (bgItem) blitCentered(ctx, bgItem, cx, cy, W, H);
 
   // 2. 表情（在弧**下面**）
@@ -3873,8 +4086,10 @@ function render(rebuildGrid) {
   else syncStageGridHighlight();
 
   // ---- 高级那一栏的同步（值都来自 T / items，只同步不重建）----
+  //   ★★ R5：JSON 文本框显示的是**文件那一份**（白天 + 夜间段），不是"当前正在编辑
+  //     的那一份" —— 它一直以来的身份就是"导出的 theme.json 长什么样"，别改成半份。
   const jsonEl = document.getElementById("json");
-  if (jsonEl) jsonEl.value = JSON.stringify({ theme: T }, null, 2);
+  if (jsonEl) jsonEl.value = themeFileText();
   const bgEl = document.getElementById("bg-color");
   if (bgEl) bgEl.value = themeBgHex();
   buildArcSourceLine();
@@ -5294,10 +5509,11 @@ function setupZoom() {
 //   一个按钮（#btn-theme-export）—— 与 make-golden-hashes.js 抠出来的那句**逐字一致**。
 // ============================================================
 function exportThemeJson() {
-  const text = JSON.stringify({ theme: T }, null, 2);
+  const text = themeFileText();
   download(new Blob([text], { type: "application/json" }), "theme.json");
   const bytes = new Blob([text]).size;
-  say("已导出 theme.json（" + bytes + " 字节）。\n\n" +
+  const nb = (text.indexOf('"night"') >= 0) ? "带 night 段（夜间只记与白天的差异）" : "只有 theme 段";
+  say("已导出 theme.json（" + bytes + " 字节，" + nb + "）。\n\n" +
       "刷到 theme 分区（端口按你电脑上的改）：\n" +
       "python -m esptool --chip esp32 -p COM3 write_flash 0x210000 theme.json\n\n" +
       "注意：配色属于 theme 分区、图片属于 image 分区；想一次刷完就点「导出 assets.bin」。" +
@@ -5603,8 +5819,12 @@ document.getElementById("btn-assets-export").addEventListener("click", () => exp
 document.getElementById("btn-apply").addEventListener("click", () => {
   try {
     // 同"导入文件":允许 0xRRGGBB 的写法(固件也接受)，走**同一条**接收路径
-    const t = ThemeJson.themeObject(ThemeJson.parseThemeJson(document.getElementById("json").value));
+    // ★★ R5：文本框里是**整份文件**（白天 + 夜间段）⇒ 两份一起应用
+    //   （缺 night 段时 = 夜间退回"白天副本"，与导入老文件同一套口径）。
+    const parsed = ThemeJson.parseThemeJson(document.getElementById("json").value);
+    const t = ThemeJson.themeObject(parsed);
     mergeImportedTheme(t);
+    applyImportedNight(parsed && parsed.night);
     themeSource = "本页改过（从 JSON 文本框应用的）";
     forgetThemeSrcBytes();
     saveThemeToLocal();
@@ -5628,11 +5848,18 @@ document.getElementById("btn-copy").addEventListener("click", async () => {
 
 document.getElementById("btn-default").addEventListener("click", () => {
   T = defaultTheme();
+  // ★★ R5：「恢复默认」= 整份回到固件默认 ⇒ 夜间那一份也回到"白天副本"，
+  //   而且把当前指针切回白天（否则屏幕上还在编辑一个已经被丢掉的对象）。
+  TD = T;
+  TNight = null;
+  themeSlot = "day";
+  nightTouched = false;
+  syncThemeSlotUi();
   themeSource = "固件默认主题（整份，已恢复）";
   forgetThemeSrcBytes();
   saveThemeToLocal();
   applyThemeToUi();
-  say("已恢复默认主题（整份：配色 + 五官几何 + 开机毫秒 + 告警阈值）。");
+  say("已恢复默认主题（整份：配色 + 五官几何 + 开机毫秒 + 告警阈值；夜间 = 白天副本）。");
 });
 
 document.getElementById("btn-reset-theme").addEventListener("click", resetColorsToFirmware);
@@ -5666,8 +5893,10 @@ say("就绪。本页 = **配色 + 图片两页合并后的一页**：① 配色 
     "共用同一份主题状态（T）与同一份图片清单（items）。\n" +
     "当前目标板：" + tinfo0.label + "（image 分区 " + (partBytes() / 1024) + " KB；" +
     "画布上限、占用百分比都按这块板算）。\n" +
-    "车主模式：① 配色分区改色（背景/四条弧/数字/红区/超速 + 3 个预设）；" +
-    "② 图片分区管 11 个槽位（背景 1 + 表情 10），每格都能换图/清除。\n" +
+    "车主模式：① 配色分区改色（背景/四条弧/数字/红区/超速 + 3 个预设；" +
+    "顶上「白天 / 夜间」切两套，各自独立）；" +
+    "② 图片分区管 12 个槽位（背景 1 + 夜间底图 1 + 表情 10），每格都能换图/清除。\n" +
+    "★ 夜间底图**不传就用白天那张**（不是错误）；导出的 theme.json 里夜间段只记与白天的差异。\n" +
     "★ 表情图必须带透明背景（PNG）：JPEG 会被拒绝（请另存为 PNG）；表情拖进去会弹框选。\n" +
     "★ 原有的全部控件（角度/半径/线宽/字号/中心 y/量程/开机毫秒/告警阈值/JSON/图片列表/" +
     "刷写/占用）都在顶栏那个「高级」里，一个都没删。\n" +
@@ -5694,7 +5923,7 @@ say("就绪。本页 = **配色 + 图片两页合并后的一页**：① 配色 
 //     （外壳从 iframe 的 documentElement 上也能读到，不必进 JS 世界）
 //   · 没有这些标志 = 老页面或没跑起来 —— 外壳该就此喊一声，而不是等车主点空按钮
 // ============================================================
-const OWNER_MODE_VERSION = "2026-10-15.3";
+const OWNER_MODE_VERSION = "2026-10-17.1";
 const OWNER_MODE_CAPS = {
   // 「写进板子」当场用当前状态打包：**不需要先保存**、**不产生下载**
   flashNoSave: true,
@@ -5703,7 +5932,13 @@ const OWNER_MODE_CAPS = {
   // 「保存安装包」的下载名带时间戳（assets-2026-10-15-2130.bin）
   snapshotStampName: true,
   // 页面上仍然给一条 esptool 命令（没有客户端时的唯一出路）
-  cliCommand: true
+  cliCommand: true,
+  // ★★ 2026-10-17（夜间模式 R5）：配色有**白天 / 夜间两套**，导出的 theme.json 是
+  //   {"theme": …, "night": …}（docs/NIGHT-MODE.md §8.1）。外壳读到这一位就知道
+  //   "这页能存两套"，不会把 night 段当成脏数据。
+  nightTheme: true,
+  // ★★ R5：图片页有「夜间底图」槽位（image 段 role 23；**可以不传**，不传就用白天那张）
+  nightBackground: true
 };
 try {
   window.__OWNER_MODE_VERSION = OWNER_MODE_VERSION;
