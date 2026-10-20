@@ -1647,3 +1647,24 @@ void dash_display_poll() {
 }
 
 #endif  // DASH_DISPLAY_RGB
+
+// ============================================================
+// ============================================================
+// ★★ 夜间模式：按**百分比**设背光（2026-10-20，见 `docs/NIGHT-MODE.md` §2）
+//
+// ★ 最容易漏的一步：**必须同时更新面板守护的影子值**。守护每 2 s 回读一次 LEDC
+//   占空比、与影子比较；影子不同步，它就把这次调暗当成"背光被改了"，2 s 后自己
+//   重写回去 —— "夜间调暗"会被悄悄撤销（日志里会出现
+//   `panelguard: backlight rd=… -> rewritten`，这正是判据）。
+// ★ 只在**档位翻转那一拍**由调用方调一次，不要放进渲染循环。
+// ============================================================
+#if defined(DASH_DISPLAY_RGB)
+
+void dash_display_set_backlight_pct(uint8_t pct) {
+  if (pct > 100) pct = 100;
+  const uint32_t duty = (uint32_t)((1u << RGB_BL_LEDC_BITS) * (uint32_t)pct / 100u);
+  ledcWrite((uint8_t)RGB_PIN_BL, duty);
+  g_panel_guard.setBacklightDuty(duty);   // ★ 影子跟着走，否则守护会撤销这次改动
+}
+
+#endif  // DASH_DISPLAY_RGB

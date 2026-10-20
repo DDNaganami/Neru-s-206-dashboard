@@ -336,3 +336,15 @@ void dash_display_poll() {
 #error "dash_display 实驱动尚未实现:先按上面步骤写驱动,再移除 DASH_DISPLAY_STUB"
 
 #endif
+
+// ★★ 夜间模式：背光接口的**兜底空实现**（2026-10-20）。
+//   只给"既不是 RGB 也不是 SPI"的档（宿主机 pcpreview / 无屏桩）用；
+//   真实现在 `dash_display_rgb.cpp`（RGB 档）与 `dash_display_spi.cpp`（已退货的 240 档）。
+//   ★ 三个文件里**只能有一个**定义（`#if` 互斥），否则链接期就是 duplicate symbol。
+#if !defined(DASH_DISPLAY_RGB) && !defined(DASH_DISPLAY_SPI)
+
+void dash_display_set_backlight_pct(uint8_t pct) {
+  (void)pct;
+}
+
+#endif

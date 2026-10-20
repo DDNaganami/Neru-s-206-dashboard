@@ -66,6 +66,7 @@ static inline long lroundf(float v) { return (long)(v >= 0.0f ? (v + 0.5f) : (v 
 #include "ui_model.h"
 #include "van_phy.h"
 #include "van_replay.h"
+#include "night_mode.h"   // 夜间模式判据(车灯 3s 进 / 10s 出,纯函数)
 
 // pcpreview 的输入注入（键盘 + preview/inject.txt）—— 只在这个 env 里编
 // （实现整个在 src/preview_input.cpp 的 `#if defined(DASH_DISPLAY_PREVIEW)` 里）。
@@ -3344,7 +3345,22 @@ void loop() {
     //   ★ 顺序：**先 render（把这一拍的档位推上屏）、再把它报给主板** ——
     //     反过来写会让 `left_face` 比屏上晚一拍（200 ms 的错位，肉眼看不出来，
     //     但"屏上显示的档位"与"主板日志里记的档位"就不是同一个时刻的了）。
-    const ArcDashView view = make_view(st_mut, now);
+    // ---- ★★ 夜间模式（2026-10-20）：车灯亮 3 s 进夜间、灭 10 s 回白天 ----
+    //   判据在 `lib/dashcore/night_mode.h`（纯函数，native 用例钉住迟滞/抖动/数据不可信）。
+    //   ★ 只在**翻转那一拍**写一次背光：与"逐帧写样式 ⇒ 移动横纹"同一条纪律。
+    //   ★ 数据不可信时判据**保持当前态**（见那个头文件的说明）——宁可该暗没暗，
+    //     也不要夜里忽然亮一下。
+    {
+      static NightModeState night_st;
+      static const NightModeConfig night_cfg;   // 3s 进 / 10s 出 / 75% / 30%（默认值）
+      const bool lamps_on = (st_mut.low_beam || st_mut.position_lamp);
+      if (night_mode_update(night_st, now, lamps_on, trust == DataTrustReason::kNone, night_cfg)) {
+        const uint8_t pct = night_mode_pct(night_st, night_cfg);
+        dash_display_set_backlight_pct(pct);
+        dash_logf("bl: night=%u pct=%u (lamp=%s)\n", night_st.night ? 1u : 0u, (unsigned)pct,
+                  lamps_on ? (st_mut.low_beam ? "low_beam" : "position_lamp") : "off");
+      }
+    }    const ArcDashView view = make_view(st_mut, now);
     // ★★ 2026-10-15：第 2 个参数从 `lamps`（六格灯）换成红区/超速那两个输入 ——
     //   阈值取**告警层那份配置**（唯一出处），超速那一位取告警层的结论。
     dash_ui_render(view, g_alerts.config(), overspeed_alert, g_sys, diag_in, now);

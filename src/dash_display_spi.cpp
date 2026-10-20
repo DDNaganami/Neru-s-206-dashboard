@@ -354,3 +354,15 @@ void dash_display_poll() {
 //   现在先固定 80%,等实屏在车上看过再定档位。
 
 #endif  // DASH_DISPLAY_SPI
+
+// ★★ 夜间模式：背光接口（2026-10-20）。
+//   SPI 那一档是**已退货**的 240 双圆屏（见 README「微雪双屏 240×240」），当前两块 2.8C
+//   走 RGB 档 ⇒ 这里留空实现，不猜那个 env 的通道名。哪天真要复活，按文件里的
+//   `SPI_BL_DUTY_PCT` 那两个通道写 duty 即可（8 位分辨率：`255 * pct / 100`）。
+#if defined(DASH_DISPLAY_SPI)
+
+void dash_display_set_backlight_pct(uint8_t pct) {
+  (void)pct;
+}
+
+#endif  // DASH_DISPLAY_SPI

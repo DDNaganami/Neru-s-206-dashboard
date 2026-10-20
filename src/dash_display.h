@@ -10,6 +10,13 @@ lv_display_t* dash_display_right();
 // 每个主循环调一次:设备上为空;pcpreview 里落 BMP 帧(见 preview/preview.html)
 void dash_display_poll();
 
+// ★★ 夜间模式：按**百分比**设背光（2026-10-20，见 `docs/NIGHT-MODE.md` §2）。
+//   · 白天基准 75% / 夜间 30%，档位常量在调用方（`lib/dashcore/night_mode.h`）；
+//   · ★ 只在**档位翻转那一拍**调一次，不要放进渲染循环；
+//   · 设备端内部会**同步面板守护的影子值**（否则守护 2 s 后把背光重写回去）；
+//   · pcpreview / 已退货的 SPI 档是**空实现**（宿主机没有 LEDC）。
+void dash_display_set_backlight_pct(uint8_t pct);
+
 // ---- 只给 pcpreview 用的三个小接口（**只有预览那一支有定义**，见 dash_display.cpp）
 //
 // ★ 为什么帧号要暴露出来（2026-09-24 新增）：告警那一拍的"屏上闪"是跟着

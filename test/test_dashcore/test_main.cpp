@@ -29,6 +29,7 @@ void register_system_status_tests(void); // 系统状态层:数据不可信提�
 //   随 `lib/dashcore/buzzer_exio.*` 与 test_buzzer_exio.cpp 一起删除 ——
 //   车主原话"蜂鸣器功能砍掉，节省资源"。
 void register_panel_guard_tests(void);   // 面板健康守护:回读对账/按影子重写/背光/2秒周期/自愈(2026-09-24)
+void register_night_mode_tests(void);    // 夜间模式判据:3s 进 / 10s 出 / 抖不动 / 数据不可信不动(2026-10-20)
 void register_boot_persist_tests(void);  // 跨重启留档:上一次 reason/上一次跑了多久/守护累计(2026-09-25)
 void register_serial_cmd_tests(void);    // 串口单字符命令的判据层:d/r/i/w + 别多吃回放字符(2026-09-24)
 void register_role_layout_tests(void);   // 角色 ↔ 屏幕的映射:哪块板显示哪一屏(2026-09-25)
@@ -110,6 +111,7 @@ int main(void) {
   //   一不一致"以及"背光占空还对不对"；判据/时钟/输出全是注入的 ⇒ 宿主机可测。
   //   同样排在 face_stages 之前（顺序纪律见上）。
   register_panel_guard_tests();
+  register_night_mode_tests();
   // ★ 2026-09-25 新增：**跨重启留档**（BootPersist）—— 起因是"累计启动次数 31 → 32
   //   多了一次，而上一次的复位原因没有留档 ⇒ 判不出那次是断电还是板子自己掉电"。
   //   它把三样东西写进 NVS 并在开机那一行一起打：上一次的 reason、**上一次运行了多久**
