@@ -45,7 +45,7 @@
 | DATA0..DATA15 | 5, 45, 48, 47, 21, 14, 13, 12, 11, 10, 9, 46, 3, 8, 18, 17 | 顺序**照抄**，见下 |
 | 3 线 SPI：SDA(MOSI) | 1 | 只用于写初始化命令 |
 | 3 线 SPI：SCLK | 2 | |
-| 背光 LCD_BL | 6 | LEDC：20kHz / 10 位 / 50% |
+| 背光 LCD_BL | 6 | LEDC：20kHz / 10 位 / **75%**（白天基准，2026-10-17 车主定；夜间模式往下调，见 `docs/NIGHT-MODE.md`） |
 | I2C SDA / SCL | 15 / 7 | 板上共用（TCA9554 / QMI8658 / PCF85063） |
 | LCD_RST | **EXIO1**（TCA9554，非 GPIO） | 低 10ms → 高 → 等 50ms |
 | LCD_CS | **EXIO3**（TCA9554，非 GPIO） | 写命令期间拉低；写完拉高 |
@@ -261,7 +261,7 @@ heap  : 223 KB
 image : 分区 8192 KB @ 0x254000(编译期口径 8192 KB)
 obd: 未启用(-DOBD_SERIAL=0),只跑 Sim 假数据
 rgb: RGB565 480x480 pclk=30000000Hz 数据位=16 已就绪(第二块屏待接)
-rgb: 板=微雪 ESP32-S3-LCD-2.8C(非触控) ST7701 RST=EXIO1 CS=EXIO3 BL=GPIO6/PWM20000 @50%
+rgb: 板=微雪 ESP32-S3-LCD-2.8C(非触控) ST7701 RST=EXIO1 CS=EXIO3 BL=GPIO6/PWM20000 @75%
 ```
 
 稳定后每秒两行（节选）：

@@ -383,7 +383,7 @@ boot: reason=… n=… up=…ms | prev=… | hb=… | role=SLAVE
 link: 从板侧就绪(§5, LINK_ROLE=0) TX=GPIO43 RX=GPIO44 @115200 8N1 —— 真 PHY(UART0),等主板的 TICK/DATA
 mute: 0 (loaded from NVS)
 image: 已加载 9 张图 (1843200 字节数据)
-rgb: 板=微雪 ESP32-S3-LCD-2.8C(非触控) ST7701 RST=EXIO1 CS=EXIO3 BL=GPIO6/PWM20000 @50%
+rgb: 板=微雪 ESP32-S3-LCD-2.8C(非触控) ST7701 RST=EXIO1 CS=EXIO3 BL=GPIO6/PWM20000 @75%
 boot anim done (收尾补一次 boot_apply: faceStage=1 → 表情 opa=COVER)
 ```
 
