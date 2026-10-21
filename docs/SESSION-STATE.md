@@ -565,11 +565,17 @@ native 369→**387**、蜂鸣器**已砍**、OBD-BLE 早已落地）；★ 另�
   系统化写在 `docs/BUILD-ENV.md` **坑 8**；同类还有 **坑 9**：`PLATFORMIO_BUILD_DIR` 也**必须纯 ASCII**
   （`C:\206dash-scratch\final-builds\<master|slave>`，一块板一个子目录）；
   **坑 10** = env 的 `-D` 覆盖源码默认值（bounce 那条就是它）✓
-- ★ harness 的 shell 是 **Windows PowerShell 5.1**（不是 pwsh 7）⇒ 三条连带：
+- ★ harness 的 shell 是 **Windows PowerShell 5.1**（**2026-10-21 实测仍是**：工具进程就是
+  `C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe`，`PSEdition=Desktop`）⇒ 三条连带：
   ① 自己写的 `.ps1` **必须纯 ASCII**（无 BOM 的 UTF-8 会被按 GBK 读，连 `C:\Users\张九思\…` 这种
   字面路径都会解析坏 ⇒ robocopy 报 16）；② `*> log` 会**吞掉原生命令的 stderr**（gcc 的原话就没了）
   ⇒ 用 `cmd /c "… > log 2>&1"`；③ `$ErrorActionPreference='Stop'` 会把原生命令的**第一条 stderr**
   当终止错误、把构建掐死 ⇒ 用 `'Continue'` + 显式判据。
+  ★★ **2026-10-21：车主装好了 pwsh 7.6.7**（`WindowsApps\pwsh.exe`，`PSEdition=Core`）。
+  但它**没有**替换掉工具 shell —— 上面三条**照旧成立**。需要 7.x 能力时显式用
+  `pwsh -NoProfile -File <脚本>`（实测 `tools\build\pio.ps1` 在 7.6.7 下跑 `pcpreview` 是
+  **SUCCESS**）；★ 别从 5.1 里 `pwsh -Command '…含双引号…'`，引号会被 5.1 吃掉
+  （坑 11，见 `docs/BUILD-ENV.md`）。
 - ★ 掐死/中断过的 pcpreview 会留下 `program.exe` 占着文件 ⇒ 下一次链接报
   **"拒绝访问"**（日志里只有这一行）⇒ 先 `Get-Process program | Stop-Process -Force`。
 - 构建环境事实（**2026-10-17 重新实测**，这一条上一版写反了）：`C:\.platformio\penv\…`（pio.ps1 用）

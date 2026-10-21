@@ -66,6 +66,9 @@ $env:PYTHONUTF8='1'          # ★ 不能省 —— 不设它，构建会以两�
 .\tools\build\pio.ps1 -Cmd 'run -e esp32s3-rgb-slave-now  -t upload --upload-port COM8'   # 从板
 ```
 
+★ **shell 现状（2026-10-21 复检）**：工具 shell 仍是 Windows PowerShell **5.1**；`pwsh` **7.6.7** 已装
+（`pwsh -NoProfile -File <脚本>` 可用，`pio.ps1` 在它下面实跑过 SUCCESS）⇒ 5.1 那几条纪律**未作废**
+（`.ps1` 纯 ASCII、`*> log` 吞原生 stderr 等，详见 `docs/BUILD-ENV.md` 与它的「坑 11」）。
 ★ **判据看 `[SUCCESS]` 那一行，别看退出码** —— 这台机器上 pio 编成功时也可能返回 1（与"裸 `python` 占位返回 0 却零产出"是同一个病的两面）。要判定产物是不是新生成的，再对一眼 mtime/哈希（帧看 `preview/frames/l_0030.bmp`，镜像看 `[SUCCESS]`）。
 
 编译目标（**两块板当前用哪两份，看 `-now` 那两行**）：

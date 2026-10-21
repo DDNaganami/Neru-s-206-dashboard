@@ -278,3 +278,40 @@ native / pcpreview / esp32s3-rgb-slave-now 三项全 `[SUCCESS]`、上传也 `Ha
 ⇒ 两块板跑的**一直不是同一个档**：主板 30 行、从板 10 行。同一份源码、同一个"横纹"问题，
 从板反复犯而主板从不犯 —— 差异就在这一行 `-D` 上，不在源码里。
 
+
+---
+
+## 2026-10-21 环境复检（车主装好 pwsh 7 之后）
+
+**一句话**：pwsh **7.6.7 装好了、能用**，但**工具 shell 仍然是 Windows PowerShell 5.1**
+⇒ 上面那 10 条坑（尤其坑 7「纯 ASCII」、5.1 的原生 stderr 行为）**一条都没作废**。
+
+实测（本机，2026-10-21）：
+
+| 项 | 实测 |
+|---|---|
+| **工具 shell** | `C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe`，**5.1.26100**，`PSEdition=Desktop` |
+| **pwsh** | `%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe` → **7.6.7**，`PSEdition=Core` |
+| 代码页 / 编码 | `chcp` = **936**（GBK）；但 `$OutputEncoding` 与 `[Console]::OutputEncoding` = **utf-8**（harness 每次调用设的） |
+| 裸 `python` | 仍是**商店占位**：`--version` **exit 9009、零输出** ⇒ 「别用裸 python」**继续有效** |
+| 另一份 python | `%LOCALAPPDATA%\Python\pythoncore-3.14-64\python.exe`（`py -0p` 可见）。★ 本站复检：它 **platformio / esptool / intelhex 一个都没有** —— 旧文那句「有 platformio 6.2.0 但没有 esptool」**已过期**，结论不变：别用它 |
+| 两个 venv | `C:\.platformio\penv`（Py 3.11.7）与 `C:\206dash-scratch\pio-core-mix\penv`（Py **3.14.7**）**都是 platformio 6.2.0**；后者另有 esptool / intelhex / pyserial ✓（`tools/app/*.py` 那套检查脚本就用它） |
+| 工具链 | `C:\206dash-scratch\zigbin\` 的 `gcc.cmd / g++.cmd / cc.cmd / c++.cmd` 都在 ✓（`C:\mingw64` 仍不存在） |
+| 目录 | `C:\206dash-build`、`C:\206dash-repo`、`C:\temp`、`.pio-pylibs` 都在 ✓ |
+| 其它 | git **2.55.0**、node **v24.21.0**、robocopy 在 `C:\WINDOWS\system32` ✓；C 盘空闲 **387 GB** |
+
+### 坑 11（新）：别从 5.1 里给 `pwsh -Command` 塞**带双引号**的脚本
+
+实测：在 5.1 里执行 `pwsh -Command '"a" + $x'`，**内层双引号会被 5.1 吃掉**，pwsh 收到的是一句
+残句（例如 `chcp= + ((chcp) -replace [^0-9],)`），报一串 `ParserError` —— 看着像"pwsh 坏了"，
+其实是 5.1 的原生参数引号规则。
+**正确姿势**：把要跑的内容写成 `.ps1`（**UTF-8 带 BOM**，两个 shell 都能正确读），再
+`pwsh -NoProfile -File <那个脚本>`。
+★ 特意带 BOM：不带 BOM 的中文 `.ps1` 在 5.1 下就是坑 7（被按 GBK 读、整段当代码执行）。
+
+### 用什么 shell 跑什么（建议）
+
+- **日常构建 / 刷写**：`tools\build\pio.ps1` 两边都验过（5.1 长期在用；7.6.7 上 `pcpreview`
+  实跑 **SUCCESS 11 s**）⇒ 习惯不用改。
+- **要用 7.x 语法、或更准的原生命令 stderr 行为**（一次性诊断脚本）：显式 `pwsh -NoProfile -File …`。
+- **`tools\build\pio.ps1` 继续纯 ASCII** —— 坑 7 的理由没变：它也可能被 5.1 调。
