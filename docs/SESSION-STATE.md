@@ -565,17 +565,20 @@ native 369→**387**、蜂鸣器**已砍**、OBD-BLE 早已落地）；★ 另�
   系统化写在 `docs/BUILD-ENV.md` **坑 8**；同类还有 **坑 9**：`PLATFORMIO_BUILD_DIR` 也**必须纯 ASCII**
   （`C:\206dash-scratch\final-builds\<master|slave>`，一块板一个子目录）；
   **坑 10** = env 的 `-D` 覆盖源码默认值（bounce 那条就是它）✓
-- ★ harness 的 shell 是 **Windows PowerShell 5.1**（**2026-10-21 实测仍是**：工具进程就是
-  `C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe`，`PSEdition=Desktop`）⇒ 三条连带：
-  ① 自己写的 `.ps1` **必须纯 ASCII**（无 BOM 的 UTF-8 会被按 GBK 读，连 `C:\Users\张九思\…` 这种
-  字面路径都会解析坏 ⇒ robocopy 报 16）；② `*> log` 会**吞掉原生命令的 stderr**（gcc 的原话就没了）
-  ⇒ 用 `cmd /c "… > log 2>&1"`；③ `$ErrorActionPreference='Stop'` 会把原生命令的**第一条 stderr**
-  当终止错误、把构建掐死 ⇒ 用 `'Continue'` + 显式判据。
-  ★★ **2026-10-21：车主装好了 pwsh 7.6.7**（`WindowsApps\pwsh.exe`，`PSEdition=Core`）。
-  但它**没有**替换掉工具 shell —— 上面三条**照旧成立**。需要 7.x 能力时显式用
-  `pwsh -NoProfile -File <脚本>`（实测 `tools\build\pio.ps1` 在 7.6.7 下跑 `pcpreview` 是
-  **SUCCESS**）；★ 别从 5.1 里 `pwsh -Command '…含双引号…'`，引号会被 5.1 吃掉
-  （坑 11，见 `docs/BUILD-ENV.md`）。
+- ★★ harness 的 shell **2026-10-21 起是 pwsh 7.6.7**（`PSEdition=Core`，进程在
+  `…\WindowsApps\Microsoft.PowerShell_7.6.7.0_x64__…\pwsh.exe`）。换 shell 这件事的机制值得记住：
+  harness 用 `dsh-pwsh-local` 的 `resolvePwshPath()` 在**宿主进程构造 executor 时解析一次**，
+  候选顺序 = `%ProgramFiles%\PowerShell\7\pwsh.exe` → PATH 里各项的 `pwsh.exe` →
+  `System32\…\v1.0\powershell.exe`(5.1)。所以**装了 pwsh 必须重启 `dsh web` 宿主**（重开页面/新会话不算）。
+  ★ 顺带认清了"内嵌"的真相：起作用的是 **VS Code 扩展 `vithrive.deepseek-harness-vscode`** —— 它
+  带 `dshPanel.autoStart`（默认 true，检测到没跑就执行 `dsh web`）与 `dshPanel.killOnDispose`；
+  但 VS Code 重启后它**认不出**上一轮留下的孤儿 node ⇒ 那个老进程会一直活着、继续用 5.1。
+  彻底关：设 `dshPanel.autoStart=false` → 按命令行杀 `node … bin.js web` → 需要时再起。
+- ★ 5.1 那三条**连带**（无 BOM 的 UTF-8 `.ps1` 被按 GBK 读 / `*> log` 吞原生 stderr /
+  `$ErrorActionPreference='Stop'` 掐死原生命令）**在我的工具 shell 里已经实测消失**
+  （2026-10-21 复检 #3）；但**纪律不撤**，因为 **PC 客户端仍用 5.1**：
+  `tools/app/server.py` 里 `subprocess.run(["powershell", …])` ⇒ `tools\build\pio.ps1` **继续纯 ASCII**。
+  `PYTHONUTF8` / `PYTHONIOENCODING` 也继续设（那是 python + GBK 代码页 `chcp 936` 的问题，与 shell 版本无关）。
 - ★ 掐死/中断过的 pcpreview 会留下 `program.exe` 占着文件 ⇒ 下一次链接报
   **"拒绝访问"**（日志里只有这一行）⇒ 先 `Get-Process program | Stop-Process -Force`。
 - 构建环境事实（**2026-10-17 重新实测**，这一条上一版写反了）：`C:\.platformio\penv\…`（pio.ps1 用）

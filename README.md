@@ -66,9 +66,11 @@ $env:PYTHONUTF8='1'          # ★ 不能省 —— 不设它，构建会以两�
 .\tools\build\pio.ps1 -Cmd 'run -e esp32s3-rgb-slave-now  -t upload --upload-port COM8'   # 从板
 ```
 
-★ **shell 现状（2026-10-21 复检）**：工具 shell 仍是 Windows PowerShell **5.1**；`pwsh` **7.6.7** 已装
-（`pwsh -NoProfile -File <脚本>` 可用，`pio.ps1` 在它下面实跑过 SUCCESS）⇒ 5.1 那几条纪律**未作废**
-（`.ps1` 纯 ASCII、`*> log` 吞原生 stderr 等，详见 `docs/BUILD-ENV.md` 与它的「坑 11」）。
+★ **shell 现状（2026-10-21 复检 #3）**：工具 shell 现在是 **pwsh 7.6.7**（`PSEdition=Core`），
+`./tools/build/pio.ps1 -Cmd 'test -e native'` 可以直呼（实测 PASSED，393 例 / 391 通过）。
+但 **`pio.ps1` 仍保持纯 ASCII、`PYTHONUTF8` 仍必须显式设** —— 因为 **PC 客户端仍用 Windows PowerShell
+5.1 起它**（`tools/app/server.py` 里 `subprocess.run(["powershell", …])`），而 `PYTHONUTF8` 那条是
+python + GBK 代码页的问题、与 shell 版本无关。机制与体检数字见 `docs/BUILD-ENV.md`「2026-10-21」几节。
 ★ **判据看 `[SUCCESS]` 那一行，别看退出码** —— 这台机器上 pio 编成功时也可能返回 1（与"裸 `python` 占位返回 0 却零产出"是同一个病的两面）。要判定产物是不是新生成的，再对一眼 mtime/哈希（帧看 `preview/frames/l_0030.bmp`，镜像看 `[SUCCESS]`）。
 
 编译目标（**两块板当前用哪两份，看 `-now` 那两行**）：

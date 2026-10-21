@@ -365,3 +365,31 @@ native / pcpreview / esp32s3-rgb-slave-now 三项全 `[SUCCESS]`、上传也 `Ha
 - 重启之后仍然**不建议**改的：`tools\build\pio.ps1` 保持纯 ASCII、继续显式设
   `PYTHONUTF8/PYTHONIOENCODING`（那两条是 python + GBK 代码页的问题，与 shell 版本无关）；
   裸 `python` 仍是商店占位（9009/零输出），一样别用。
+### 复检 #3（2026-10-21 重启宿主之后）：工具 shell **已经是 pwsh 7.6.7**
+
+实测：`PSVersion 7.6.7` / `PSEdition Core` / 进程
+`C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.7.0_x64__8wekyb3d8bbwe\pwsh.exe`；
+宿主 node 是重启后新起的（`CreationDate 2026/10/21 13:54`）。
+
+**三种 5.1 特有的毛病各验一次，都消失了**：
+
+| 验的东西 | 结果 |
+|---|---|
+| 原生命令 stderr 会不会被当成 PowerShell 错误 | ✅ 不再（`node -e "console.error('ERR-LINE')"` 能正常捕获） |
+| `*> file` 会不会吞掉原生 stderr | ✅ 不再（文件里 `ERR-LINE` 与 `OUT-LINE` 都在） |
+| 不带 BOM 的中文 `.ps1` 会不会被按 GBK 读 | ✅ 不再（`'张九思'` 读出来长度 3） |
+| 直接跑仓库脚本 | ✅ `./tools/build/pio.ps1 -Cmd 'test -e native'` ⇒ **PASSED，393 例 / 2 跳过 / 391 通过**（不用再 `powershell -File` 包一层） |
+
+**★ 但这两条纪律不能撤（原因变了，结论没变）**：
+
+- `tools\build\pio.ps1` **继续纯 ASCII**：**PC 客户端仍用 5.1 起它** ——
+  `tools/app/server.py:774` 是 `subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", …])`。
+  另外车主的快捷方式/旧文档也可能走 5.1。
+- `PYTHONUTF8` / `PYTHONIOENCODING` **继续显式设**：那是 **python + GBK 代码页**（`chcp` 仍是 936）
+  的问题，与 shell 版本无关；`pio.ps1` 自己已经把这两条写死了。
+- 裸 `python` 仍是商店占位（`--version` → 9009、零输出），继续别用。
+
+**新 shell 下我这边可以怎么干**：直接 `./xxx.ps1`、用 7.x 语法（三元 `? :`、`??`）等，不用再为 5.1 绕弯。
+但**仓库里的判据脚本仍按跨 shell 兼容写**（它们也可能被客户端或旧 shell 调用），别为了用新语法改它们。
+★ 小坑：`.NET` 的 `[System.IO.File]::ReadAllText('相对路径')` 在 pwsh 7 里**不跟随 `Set-Location`**
+（它认的是进程 CWD）⇒ 脚本里要么传绝对路径，要么用 `Join-Path $PSScriptRoot …`。
