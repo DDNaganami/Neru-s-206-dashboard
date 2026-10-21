@@ -346,3 +346,22 @@ native / pcpreview / esp32s3-rgb-slave-now 三项全 `[SUCCESS]`、上传也 `Ha
   ★ 这是改**组合（composition）**，按规矩要先读 `editing-cordis-compositions`。
 - **两条都不影响现在干活**：`tools\build\pio.ps1` 在 5.1 / 7.x 下都验过；重启后我用
   `$PSVersionTable` 一句话确认到底换了没有。
+### 2026-10-21 复检 #2（车主重装并"重启"之后）：还是 5.1，原因已定位到**宿主进程没重启**
+
+- pwsh 确实装回来了：Appx `Microsoft.PowerShell **7.6.7.0**`
+  （`C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.7.0_x64__8wekyb3d8bbwe`），
+  `%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe` 别名 `Test-Path=True`。
+- ★ 用 harness 自己的 `resolvePwshPath()` 跑一遍：现在它会选
+  **候选 #13 `…\WindowsApps\pwsh.exe`**（"存在(可 spawn)"），而 5.1 那条回退是 **#18**
+  ⇒ **解析器这一层已经通了**。
+- ★★ 但工具 shell 仍是 5.1 —— 因为**宿主进程没换**：`Get-CimInstance Win32_Process` 里
+  跑 `dsh web --host 127.0.0.1 --port 3080` 的那个 node 进程 pid **31568**，
+  `CreationDate = 2026/10/20 16:20:16`（**前一天**）。executor 是它构造的，
+  当时的解析结果缓存到现在。
+- ⇒ **要换 shell 必须重启这个宿主进程本身**（关掉 `dsh web` 再原样起一次）。
+  重启页面 / 新开一个会话 / 重开浏览器都**不算**（那只是新建了个子 node）。
+- 重启后用一行确认：`$PSVersionTable.PSVersion` + `(Get-Process -Id $PID).Path`，
+  期望是 `7.6.x` / `…\pwsh.exe`。
+- 重启之后仍然**不建议**改的：`tools\build\pio.ps1` 保持纯 ASCII、继续显式设
+  `PYTHONUTF8/PYTHONIOENCODING`（那两条是 python + GBK 代码页的问题，与 shell 版本无关）；
+  裸 `python` 仍是商店占位（9009/零输出），一样别用。
