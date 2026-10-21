@@ -8749,3 +8749,22 @@ native 383 用例（381 通过/2 跳过）；`pcpreview`、`esp32s3-rgb-slave-no
   所以车主现有的配色与图仍然是刷之前那份（已回读确认）。
 - ③ 之前那次"板子一直在跑 Sim 假数据"的现象照旧：这次读到的 `spd=100% rpm=100%` 就是假数据扫到顶，
   不是车上的真值。
+
+## 2026-10-21 —— 车主："预览图这的弧没有圆角了，是 bug 还是漏掉了什么"
+
+**结论：固件没问题，是编辑器预览漏了。**
+
+- **真渲染是圆头的（量过）**：`build_arcs()` 对 `LV_MAIN` 与 `LV_PART_INDICATOR` 都设了
+  `lv_obj_set_style_arc_rounded(..., true)`（2026-09-21 修过"只设 INDICATOR ⇒ 弧尾平头"）。
+  在真落帧（`frames-after-default-theme/l_0140.bmp`）上沿中径（r=193）量"墨水"的起始角：
+  **131°**，而标称起点是 135° ⇒ **端帽外伸 4.0°**，与圆头理论值
+  `atan((w/2)/r) = atan(12/193) = 3.56°` 吻合（平头应为 0°）。
+- **预览是平头的（原因）**：`tools/theme-editor/index.html` 的 `drawArc()` 用 canvas
+  `ctx.arc() + stroke()` 画弧，而 canvas 的默认 `lineCap` 是 `butt` ⇒ 预览与屏上不同形，
+  车主据此以为屏上也平头。
+- **修法**：`drawArc()` 里临时设 `ctx.lineCap = "round"`，用完还原（`lineCap` 是 canvas 的
+  **粘性状态**，不还原会污染同一上下文里的其它描边）。端帽外伸量随之与 LVGL 一致。
+- **判据**：`check-owner-mode` **587** / `smoke-pages` **193** / `syntax-check-pages` **34** /
+  `test-gauge-geometry` **65** 全绿；**三个指纹未变**（这一处只影响预览画面，不进打包字节）。
+- exe 重打 **17,923,507 B**；冒烟：起 `--no-window --port 8899` 抓页面 ⇒ 与源码**逐字节相同**
+  （337,034 B，含 `ctx.lineCap = "round"`）。⚠️ 换过 exe 必须完全退出旧客户端再开新的。

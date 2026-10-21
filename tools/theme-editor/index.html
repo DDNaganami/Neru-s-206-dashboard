@@ -2097,6 +2097,16 @@ function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, valueColor, trackColo
   //   这条对"表情会不会压到弧"很要紧 —— 差 12 像素就足以误判。
   const rr = r - w / 2;
   const rad = degToRad;
+  // ★★ 圆头（2026-10-20 补）：固件 `build_arcs()` 对 **MAIN 与 INDICATOR 都**设了
+  //   `lv_obj_set_style_arc_rounded(..., true)`（2026-09-21 修过"只设 INDICATOR ⇒
+  //   弧尾看着是平头"那条），**真屏是圆头**；而 canvas 的默认 `lineCap` 是 `butt`
+  //   ⇒ 本函数的预览一直是**平头**，与屏上不一致（车主据此问"预览图的弧没有圆角，
+  //   是 bug 吗"）。实测真帧：转速弧的墨迹从 **131°** 就开始了（标称起点 135°），
+  //   即端帽外伸 **4.0°**，与圆头理论值 `atan((w/2)/r) = 3.56°` 吻合 ⇒ 固件没问题，
+  //   是这里漏了 `lineCap`。改成 round 之后预览与 LVGL 同形（端帽同样外伸 w/2）。
+  //   ★ 用完还原：`lineCap` 是 canvas 的**粘性状态**，别让它污染同一上下文里的其它描边。
+  const prevCap = ctx.lineCap;
+  ctx.lineCap = "round";
   ctx.beginPath();
   ctx.arc(cx, cy, rr, rad(endDeg), rad(startDeg), true);
   ctx.lineWidth = w;
@@ -2117,6 +2127,7 @@ function drawArc(ctx, cx, cy, r, w, startDeg, endDeg, t01, valueColor, trackColo
     }
     ctx.lineWidth = w; ctx.strokeStyle = valueColor; ctx.stroke();
   }
+  ctx.lineCap = prevCap;   // ★ 还原（见上面那段说明）
 }
 
 // ---- 配色控件(与主题编辑器同一套字段名与交互) ----
