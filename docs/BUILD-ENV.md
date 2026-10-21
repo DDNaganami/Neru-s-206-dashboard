@@ -315,3 +315,34 @@ native / pcpreview / esp32s3-rgb-slave-now 三项全 `[SUCCESS]`、上传也 `Ha
   实跑 **SUCCESS 11 s**）⇒ 习惯不用改。
 - **要用 7.x 语法、或更准的原生命令 stderr 行为**（一次性诊断脚本）：显式 `pwsh -NoProfile -File …`。
 - **`tools\build\pio.ps1` 继续纯 ASCII** —— 坑 7 的理由没变：它也可能被 5.1 调。
+### 怎么让 harness 真用上 pwsh 7（2026-10-21 查证：harness 侧结论）
+
+我这些工具调用用的是哪个 shell，**不是我挑的**，是 harness 按自己的规则选的。规则在
+`@deepseek-ai/dsh-pwsh-local` 的 `resolvePwshPath()`（我把这个模块 import 进来直接调过，不是猜的）：
+
+1. **配置优先**：`pwshPath` 有值 ⇒ 原样用（`PwshLocalExecutor.Config` 里就是 `pwshPath: z.string()`）。
+2. 否则按顺序取**第一个"存在且能 spawn"**的：
+   ① `%ProgramFiles%\PowerShell\7\pwsh.exe` →
+   ② **PATH 里每一项的 `pwsh.exe`**（商店版就落在这一步：`%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe`）→
+   ③ `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`（= 5.1）。
+3. ★★ **只在 executor 构造时解析一次（一进程一次）** ⇒ 装完 pwsh **必须重启 harness 才生效**。
+   这就是「pwsh 装好了、工具却还是 5.1」的全部机制 —— 我那天的 shell 从会话开头到结束都是 5.1。
+
+**实测踩到的两件事（同一天，都记下来）**：
+
+- 商店版（Appx）的 `pwsh.exe` 是 `WindowsApps` 下的 **app execution alias**：`lstatSync` 有时能看到
+  （`isSymbolicLink=true, size=85`），而解析器只认这一条路；那天晚些时候**整包消失**了
+  （`Get-AppxPackage -Name '*PowerShell*'` 空、`where pwsh` 找不到、`winget list` 也没有）⇒
+  同一个路径先能 lstat、后 ENOENT。**商店别名不可靠。**
+- ⇒ **推荐用 winget/MSI 装**：`winget install --id Microsoft.PowerShell` 会落到
+  `C:\Program Files\PowerShell\7\pwsh.exe`，正是解析器的**第一候选**，不依赖 PATH、也不受商店别名抖动影响。
+- 想彻底钉死：在 `%USERPROFILE%\.dsh\profiles\web\cordis.patch.yml` 给 `pwsh-sandbox` 那一行加
+  ```yaml
+  - id: pwsh-sandbox
+    config:
+      pwshPath: 'C:\Program Files\PowerShell\7\pwsh.exe'
+  ```
+  （`pwsh-sandbox` 是 `PwshLocalExecutor` 的子类，共用同一个 config schema；`pwshPath` 是"配了就信任"。）
+  ★ 这是改**组合（composition）**，按规矩要先读 `editing-cordis-compositions`。
+- **两条都不影响现在干活**：`tools\build\pio.ps1` 在 5.1 / 7.x 下都验过；重启后我用
+  `$PSVersionTable` 一句话确认到底换了没有。
