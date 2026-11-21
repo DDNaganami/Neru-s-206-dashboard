@@ -10,7 +10,8 @@
 //   本文件**不自己写 5500 / 150 这两个数** —— 上一轮"两套阈值"的教训就是
 //   屏上那个数与会报的那个数各写一份，于是车主从来看不出红区提示。
 #include "alert_view.h"     // AlertView（告警 → 视图）+ AlertsConfig（阈值）
-#include "nav_ui.h"      // 导航页（feat/nav-cluster）：左屏铺导航页 / 预览合成数据
+#include "nav_ui.h"
+#include "nav_source_ble.h"   // BLE 导航源（只在 DASH_NAV_BLE 的 env 里有实现）
 // ★ 开机时的角色标签（2026-09-25）要读 `LINK_ROLE` —— 那是"这块板是谁"的**唯一**出处
 //   （编译期唯一权威，§5）。本文件不新增任何角色判据，只是把它印到屏上。
 #include "link_role.h"
@@ -1525,6 +1526,9 @@ void dash_ui_init() {
 #elif defined(DASH_MODE_NAV) && (LINK_ROLE == 0)
   nav_ui_attach(nullptr);          // 本板默认显示（从板只有一块屏）
 #endif
+#if defined(DASH_NAV_BLE)
+  nav_source_ble_start();          // 手机做 central，本板做 peripheral（见 nav_source_ble.h）
+#endif
 }
 
 void dash_ui_tick(uint32_t now_ms) {
@@ -1574,6 +1578,11 @@ void dash_ui_tick(uint32_t now_ms) {
 
 #if defined(DASH_DISPLAY_PREVIEW)
   // 预览专用：没有真实 BLE 源，用时间戳合成"像在导航"的数据（见 nav_ui.cpp）
+#if defined(DASH_NAV_BLE)
+  // 设备侧：把 BLE 收到的字节解成帧 → 更新导航页（主循环上下文，不在 NimBLE 任务里）
+  nav_source_ble_tick(now_ms);
+  nav_ui_update(nav_source_ble_state());
+#endif
   nav_ui_preview_tick(now_ms);
 #endif
 

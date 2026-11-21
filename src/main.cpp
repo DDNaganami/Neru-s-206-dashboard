@@ -67,6 +67,7 @@ static inline long lroundf(float v) { return (long)(v >= 0.0f ? (v + 0.5f) : (v 
 #include "van_phy.h"
 #include "van_replay.h"
 #include "night_mode.h"   // 夜间模式判据(车灯 3s 进 / 10s 出,纯函数)
+#include "nav_source_ble.h"   // BLE 导航源（DASH_NAV_BLE 的 env 才有实现）
 
 // pcpreview 的输入注入（键盘 + preview/inject.txt）—— 只在这个 env 里编
 // （实现整个在 src/preview_input.cpp 的 `#if defined(DASH_DISPLAY_PREVIEW)` 里）。
@@ -3354,7 +3355,17 @@ void loop() {
       static NightModeState night_st;
       static const NightModeConfig night_cfg;   // 3s 进 / 10s 出 / 75% / 30%（默认值）
       const bool lamps_on = (st_mut.low_beam || st_mut.position_lamp);
-      if (night_mode_update(night_st, now, lamps_on, trust == DataTrustReason::kNone, night_cfg)) {
+#if defined(DASH_NAV_BLE)
+      // 车主 2026-11-21：夜间优先跟高德 10019 走；导航不可用时函数内部退回车灯那套
+      const bool flipped = night_mode_update_nav(
+          night_st, now, lamps_on, nav_state_night_ok(nav_source_ble_state()),
+          nav_state_night_is_night(nav_source_ble_state()),
+          trust == DataTrustReason::kNone, night_cfg);
+#else
+      const bool flipped = night_mode_update(night_st, now, lamps_on,
+                                             trust == DataTrustReason::kNone, night_cfg);
+#endif
+      if (flipped) {
         const uint8_t pct = night_mode_pct(night_st, night_cfg);
         dash_display_set_backlight_pct(pct);
         dash_logf("bl: night=%u pct=%u (lamp=%s)\n", night_st.night ? 1u : 0u, (unsigned)pct,
