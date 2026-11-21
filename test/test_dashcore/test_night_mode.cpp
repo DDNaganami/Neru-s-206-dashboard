@@ -103,6 +103,71 @@ static void test_timestamp_wrap_is_safe(void) {
   TEST_ASSERT_TRUE(st.night);
 }
 
+
+// ⑦ ★ 导航驱动（2026-11-21 车主：夜间优先跟高德昼夜走）
+//   nav 的结论是"此刻该不该用夜间配色"，比车灯（会车闪灯/隧道开灯都会误触发）更准。
+//   判据：nav 可用时**立即**采信（不进迟滞窗口）；不可用时退回车灯那套原逻辑。
+static void test_nav_source_wins_over_lamps(void) {
+  const NightModeConfig cfg = defaultCfg();
+  NightModeState st;
+
+  // 车灯没开、但高德说"现在该夜间" ⇒ 立刻进夜间，来源记 nav
+  TEST_ASSERT_TRUE(night_mode_update_nav(st, 0u, false, true, true, true, cfg));
+  TEST_ASSERT_TRUE(st.night);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)NightSource::Nav, (uint8_t)st.src);
+  TEST_ASSERT_EQUAL_UINT8(cfg.night_pct, night_mode_pct(st, cfg));
+
+  // 已经在夜间：再来一帧"夜间"⇒ 不报翻转（不许每帧都写背光）
+  TEST_ASSERT_FALSE(night_mode_update_nav(st, 100u, false, true, true, true, cfg));
+
+  // 高德说"白天" ⇒ 立刻回白天（车灯此时还亮着也不管）
+  TEST_ASSERT_TRUE(night_mode_update_nav(st, 200u, true, true, false, true, cfg));
+  TEST_ASSERT_FALSE(st.night);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)NightSource::Nav, (uint8_t)st.src);
+}
+
+// ⑧ nav 不可用（没连/超时）⇒ 退回车灯：仍然要等 3 s，来源记 lamps
+static void test_nav_unavailable_falls_back_to_lamps(void) {
+  const NightModeConfig cfg = defaultCfg();
+  NightModeState st;
+  // nav_ok=false，车灯亮：3 s 之前不许翻
+  TEST_ASSERT_FALSE(night_mode_update_nav(st, 0u, true, false, false, true, cfg));
+  TEST_ASSERT_FALSE(st.night);
+  TEST_ASSERT_FALSE(night_mode_update_nav(st, cfg.enter_ms - 1u, true, false, false, true, cfg));
+  TEST_ASSERT_TRUE(night_mode_update_nav(st, cfg.enter_ms, true, false, false, true, cfg));
+  TEST_ASSERT_TRUE(st.night);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)NightSource::Lamps, (uint8_t)st.src);
+}
+
+// ⑨ nav 从"有"变成"没有"：不立刻改主意（否则一掉线屏就闪一下）
+static void test_nav_dropout_does_not_flip_immediately(void) {
+  const NightModeConfig cfg = defaultCfg();
+  NightModeState st;
+  night_mode_update_nav(st, 0u, false, true, true, true, cfg);   // nav 说夜间
+  TEST_ASSERT_TRUE(st.night);
+  // 掉线：nav_ok=false、车灯也没亮 ⇒ 车灯判据要等 exit_ms（10 s）才回白天
+  // ★ 计时从**掉线那一刻**（1000 ms）算起，不是从开机算起：车灯判据重新计时。
+  const uint32_t drop = 1000u;
+  TEST_ASSERT_FALSE(night_mode_update_nav(st, drop, false, false, false, true, cfg));
+  TEST_ASSERT_TRUE(st.night);
+  TEST_ASSERT_FALSE(night_mode_update_nav(st, drop + cfg.exit_ms - 1u, false, false, false, true, cfg));
+  TEST_ASSERT_TRUE(st.night);
+  TEST_ASSERT_TRUE(night_mode_update_nav(st, drop + cfg.exit_ms, false, false, false, true, cfg));
+  TEST_ASSERT_FALSE(st.night);
+}
+
+// ⑩ 数据不可信 + nav 不可用 ⇒ 一个字节都不动（原口径保留）
+static void test_nav_and_data_both_untrusted_holds(void) {
+  const NightModeConfig cfg = defaultCfg();
+  NightModeState st;
+  TEST_ASSERT_FALSE(night_mode_update_nav(st, 0u, true, false, false, false, cfg));
+  TEST_ASSERT_FALSE(st.night);
+  for (uint32_t t = 0; t < 60000u; t += 500u) {
+    TEST_ASSERT_FALSE(night_mode_update_nav(st, t, true, false, false, false, cfg));
+  }
+  TEST_ASSERT_FALSE(st.night);
+}
+
 void register_night_mode_tests(void) {
   RUN_TEST(test_enter_needs_three_seconds);
   RUN_TEST(test_exit_needs_ten_seconds);
@@ -110,4 +175,8 @@ void register_night_mode_tests(void) {
   RUN_TEST(test_data_untrusted_holds_state);
   RUN_TEST(test_stays_day_without_lamps);
   RUN_TEST(test_timestamp_wrap_is_safe);
+  RUN_TEST(test_nav_source_wins_over_lamps);
+  RUN_TEST(test_nav_unavailable_falls_back_to_lamps);
+  RUN_TEST(test_nav_dropout_does_not_flip_immediately);
+  RUN_TEST(test_nav_and_data_both_untrusted_holds);
 }

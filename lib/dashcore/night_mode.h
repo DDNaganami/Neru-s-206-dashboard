@@ -27,10 +27,17 @@ struct NightModeConfig {
   uint8_t  night_pct = 30;     // 夜间亮度（%,先按 30 起步，车上看着调）
 };
 
+// 这一拍"进/出夜间"的**触发源**（判据相同、来源不同 ⇒ 日志里要写清是谁说的）
+enum class NightSource : uint8_t {
+  Lamps = 0,   // 近光/仪表盘灯（原方案，兜底）
+  Nav   = 1,   // 高德 `KEY_TYPE=10019` 的昼夜（车主 2026-11-21：优先）
+};
+
 struct NightModeState {
   bool     night = false;   // 当前是不是夜间态
   bool     want  = false;   // 正在等的目标态（与 night 不同 = 计时中）
   uint32_t since = 0;       // 进入"这个候选态"的时刻（ms）
+  NightSource src = NightSource::Lamps;   // 最近一次翻转是谁触发的（日志用）
 };
 
 // 每拍调一次。返回 **true = 这一拍翻转了**（调用方据此去写背光/主题 -- 只写一次！）。
@@ -68,4 +75,40 @@ inline bool night_mode_update(NightModeState& st, uint32_t now, bool lamp_on, bo
 // 当前该给多少背光百分比（翻转后调用方拿它去写一次）。
 inline uint8_t night_mode_pct(const NightModeState& st, const NightModeConfig& cfg) {
   return st.night ? cfg.night_pct : cfg.day_pct;
+}
+
+// ---------------------------------------------------------------------------
+// ★★ 2026-11-21（车主）：**夜间优先跟高德昼夜走**，车灯降级为兜底
+//
+// 为什么导航优先：高德的 `10019`（37 白天 / 38 夜晚）是"此刻该不该用夜间配色"的
+// **直接结论**，而车灯只是代理指标 —— 白天进隧道开灯、夜里会车闪灯都会误触发。
+// 车主原话："比车灯更好"。
+//
+// 判据（复用同一个状态机，只换输入）：
+//   · `nav_ok`（导航新鲜**且这一帧确实带了昼夜结论**）⇒ **立即**采信，不进迟滞窗口
+//     （导航自己已是稳定状态，不是"闪一下"的瞬时量）；
+//   · `nav_ok == false`（高德没开 / 没连 / 超时）⇒ 退回车灯那套 3s/10s 迟滞，
+//     **原行为一个字节都不改**（`night_mode_update()` 原样调用）；
+//   · 翻转时把 `st.src` 记成 Nav/Lamps，调用方据此打日志。
+//
+// 返回 true = 这一拍翻转了（调用方去写一次背光 + 打一行日志）。
+// ---------------------------------------------------------------------------
+inline bool night_mode_update_nav(NightModeState& st, uint32_t now, bool lamp_on,
+                                  bool nav_ok, bool nav_night, bool data_ok,
+                                  const NightModeConfig& cfg) {
+  if (nav_ok) {
+    st.since = now;
+    st.want  = nav_night;
+    if (st.night == nav_night) return false;   // 已经在目标态：什么都不做
+    st.night = nav_night;
+    st.src   = NightSource::Nav;
+    return true;
+  }
+  const bool flipped = night_mode_update(st, now, lamp_on, data_ok, cfg);
+  if (flipped) st.src = NightSource::Lamps;
+  return flipped;
+}
+
+inline const char* night_source_name(NightSource s) {
+  return s == NightSource::Nav ? "nav" : "lamps";
 }
