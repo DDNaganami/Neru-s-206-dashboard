@@ -181,11 +181,14 @@ static void test_screen_gauge_mapping(void) {
   TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)ArcKind::Coolant, (uint8_t)d.screens[0].arcs[1].kind,
                                   "水温弧必须在左屏(转速表)上");
 
-  // 右屏 = 速度表:外圈车速弧 + 内圈进气温度弧(2026-09 新增,与左屏对称)
+  // ★★ 2026-11-21 分支 feat/nav-cluster：右屏改为「转速 + 进气」
+  //   车主改装后定案：手动挡 + 独立水温表 ⇒ 水温不需要；左屏整屏让给导航页，
+  //   于是"转数"搬到右屏当主读数（车速数字在导航页上，不占这一屏）。
+  //   ⇒ 这条判据从"右屏外弧=车速"改成"右屏外弧=转速"，其余（两条弧 + 进气在右屏）不变。
   TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, d.screens[1].arc_count,
-                                  "右屏应有两条弧(车速 + 进气温度)");
-  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)ArcKind::Speed, (uint8_t)d.screens[1].arcs[0].kind,
-                                  "右屏外弧必须是车速(法系车右=速度表)");
+                                  "右屏应有两条弧(转速 + 进气温度)");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)ArcKind::Rpm, (uint8_t)d.screens[1].arcs[0].kind,
+                                  "右屏外弧必须是转速(nav 分支:左屏让给导航)");
   TEST_ASSERT_EQUAL_UINT8_MESSAGE((uint8_t)ArcKind::Intake, (uint8_t)d.screens[1].arcs[1].kind,
                                   "进气温度弧必须在右屏(速度表)上");
 

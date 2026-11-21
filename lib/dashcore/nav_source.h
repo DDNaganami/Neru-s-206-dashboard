@@ -1,0 +1,97 @@
+#pragma once
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#include "nav_proto.h"
+#include "nav_state.h"
+
+// ============================================================
+// 导航字节流 → NavFrame → NavState（**传输无关**的源骨架）
+//
+// 为什么先做这一层：BLE 只是"一包一包字节"的管子。真正容易错的是
+// **粘包/半包**（BLE 一次 notify 可能只给半帧，也可能两帧挤在一起）——
+// 那部分与蓝牙无关，可以在这里用纯函数钉住，等到接 BLE 时只剩
+// "把收到的字节喂进来"这一行。
+//
+// 用法（将来的 nav_source_ble 回调里）：
+//     nav_source_push(g_nav_src, data, len, now_ms, state);
+// 返回这一批字节里**成功上账**的帧数。
+//
+// ★ 缓冲策略：环形字节缓冲 128 B（最多 3 帧多一点的余量）。
+//   · 找不到魔数 ⇒ 逐字节丢弃（噪音/串口日志混进来时不卡死）；
+//   · 头部说 road_len=23 ⇒ 一帧 39 B；缓冲不够就等下一包；
+//   · CRC 错 ⇒ 丢 1 字节再重新对齐（**不是**丢整缓冲：可能是"魔数撞车"，
+//     真帧就在后面几个字节处）。
+// ============================================================
+
+static const size_t kNavSrcBuf = 128u;
+
+struct NavSource {
+  uint8_t buf[kNavSrcBuf];
+  size_t  len = 0;
+  uint32_t crc_errors = 0;     // CRC 失败次数（诊断/日志用）
+  uint32_t garbage_bytes = 0;  // 找不到魔数被丢掉的字节数
+  uint32_t frames = 0;         // 成功解出的帧数
+};
+
+// 一帧在缓冲里够不够完整：先读 road_len（第 12 字节），算出总长
+static inline size_t nav_frame_size_from_header(const uint8_t* p, size_t avail) {
+  if (avail < 13u) return 0;          // 连 road_len 都还没到
+  const uint8_t road_len = p[12];
+  if (road_len > kNavRoadMax) return 0;
+  return (size_t)14u + (size_t)road_len + 2u;
+}
+
+// 喂一批字节；解出的帧经 nav_state_apply 上账。
+// 返回这一批里上账的帧数（0 = 还没凑够一帧 / 全是坏数据）。
+inline size_t nav_source_push(NavSource& src, const uint8_t* data, size_t len,
+                              uint32_t now_ms, NavState& st) {
+  if (!data || len == 0) return 0;
+  size_t applied = 0;
+
+  for (size_t i = 0; i < len; ++i) {
+    // 缓冲满：只可能是"半帧 + 后面还在等" ⇒ 丢最老的 1 字节保命（不会发生 39 < 128）
+    if (src.len >= kNavSrcBuf) {
+      memmove(src.buf, src.buf + 1, src.len - 1);
+      --src.len;
+    }
+    src.buf[src.len++] = data[i];
+
+    for (;;) {
+      // 丢掉魔数之前的垃圾（并计数）
+      size_t off = 0;
+      while (off < src.len && src.buf[off] != kNavProtoMagic) ++off;
+      if (off > 0) {
+        memmove(src.buf, src.buf + off, src.len - off);
+        src.len -= off;
+        src.garbage_bytes += (uint32_t)off;
+      }
+      if (src.len < kNavFrameMin) break;
+
+      const size_t need = nav_frame_size_from_header(src.buf, src.len);
+      if (need == 0) {   // 头部坏（road_len 越界）⇒ 丢一个字节重新对齐
+        memmove(src.buf, src.buf + 1, src.len - 1);
+        --src.len;
+        ++src.crc_errors;
+        continue;
+      }
+      if (src.len < need) break;   // 半包：等下一批
+
+      NavFrame f;
+      if (nav_unpack(src.buf, need, &f)) {
+        nav_state_apply(st, f, now_ms);
+        src.frames++;
+        ++applied;
+        memmove(src.buf, src.buf + need, src.len - need);
+        src.len -= need;
+        continue;
+      }
+      // CRC/版本不符：可能是魔数撞车 ⇒ 丢 1 字节再找
+      memmove(src.buf, src.buf + 1, src.len - 1);
+      --src.len;
+      ++src.crc_errors;
+    }
+  }
+  return applied;
+}

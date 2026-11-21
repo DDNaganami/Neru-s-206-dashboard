@@ -420,7 +420,18 @@ inline void theme_set_defaults(Theme& t) {
   L.arcs[1] = ArcStyle{ ArcKind::Coolant,   0, 180, 168, 10,
                         lv_color_hex(0x232323), 153, lv_color_hex(0x7CFF6B), 1 };
 
-  // 右屏 = 速度表:车速弧 + 进气温度弧
+  // ★★ 2026-11-21 分支 feat/nav-cluster：**右屏改为「转速 + 进气」**（车主改装后定案）
+  //
+  // 为什么这么改：手动挡＋独立水温表 ⇒ 水温不再需要；左屏整屏让给导航页
+  // （`src/nav_ui.cpp` 盖住表盘），所以"转数"必须搬到右屏当主读数。
+  // 车速数字不占本屏 —— 导航页右下角已经有（高德 `CUR_SPEED`），
+  // 而本主题的读数结构是「一个主读数 + 一个副表」，硬塞第三个会让主数字变成进气。
+  //
+  // 保留的对称性：外圈拱上（转速，24 宽、135→405，红区染红照旧）+
+  // 内圈兜下（进气，10 宽、0→180、reverse）—— 与改装前**同一套几何**，
+  // 只是把"车速"换成"转速"、把"水温"这一层彻底去掉。
+  //
+  // 右屏 = 转速表：转速弧（主）+ 进气温度弧（副）
   //
   // ★ 进气温度弧(2026-09 用户实测 OBD 010F 可用后加的)按"左右对称"设计:
   //   它和水温弧用**完全相同的几何**(0→180、radius 168、width 10、reverse=1),
@@ -433,8 +444,8 @@ inline void theme_set_defaults(Theme& t) {
   //   把副表排前面会让速度表的大数字变成进气温度(dash_ui 的 primary_kind)。
   ScreenTheme& R = t.screens[1];
   R.arc_count = 2; R.show_face = 1;
-  R.arcs[0] = ArcStyle{ ArcKind::Speed,   135, 405, 205, 24,
-                        lv_color_hex(0x232323), 153, lv_color_hex(0x39C5FF), 0 };
+  R.arcs[0] = ArcStyle{ ArcKind::Rpm,     135, 405, 205, 24,
+                        lv_color_hex(0x232323), 153, lv_color_hex(0xFF5C5C), 0 };
   R.arcs[1] = ArcStyle{ ArcKind::Intake,    0, 180, 168, 10,
                         lv_color_hex(0x232323), 153, lv_color_hex(0xFFB020), 1 };
 }
