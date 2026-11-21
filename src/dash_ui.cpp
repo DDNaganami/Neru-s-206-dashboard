@@ -10,6 +10,7 @@
 //   本文件**不自己写 5500 / 150 这两个数** —— 上一轮"两套阈值"的教训就是
 //   屏上那个数与会报的那个数各写一份，于是车主从来看不出红区提示。
 #include "alert_view.h"     // AlertView（告警 → 视图）+ AlertsConfig（阈值）
+#include "nav_ui.h"      // 导航页（feat/nav-cluster）：左屏铺导航页 / 预览合成数据
 // ★ 开机时的角色标签（2026-09-25）要读 `LINK_ROLE` —— 那是"这块板是谁"的**唯一**出处
 //   （编译期唯一权威，§5）。本文件不新增任何角色判据，只是把它印到屏上。
 #include "link_role.h"
@@ -1514,6 +1515,16 @@ void dash_ui_init() {
 
   g_boot.start(millis());
   dash_logf("206 dash boot\n");
+
+  // ---- 导航分支（feat/nav-cluster）----
+  // 设备：左屏（从板）铺导航页，盖住底下的表盘；数据来自 BLE（nav_source_ble），
+  //       阶段 A 还没接 → 显示 "NO NAV" —— 这是**对的**：没数据就别装作有。
+  // 预览：同一条路，数据由 `nav_ui_preview_tick()` 合成，好让落帧验证布局。
+#if defined(DASH_DISPLAY_PREVIEW)
+  nav_ui_attach(dash_display_left());
+#elif defined(DASH_MODE_NAV) && (LINK_ROLE == 0)
+  nav_ui_attach(nullptr);          // 本板默认显示（从板只有一块屏）
+#endif
 }
 
 void dash_ui_tick(uint32_t now_ms) {
@@ -1560,6 +1571,11 @@ void dash_ui_tick(uint32_t now_ms) {
     dash_logf("boot anim done (收尾补一次 boot_apply: faceStage=%u → 表情 opa=COVER)\n",
               (unsigned)g_boot.faceStage(now_ms));
   }
+
+#if defined(DASH_DISPLAY_PREVIEW)
+  // 预览专用：没有真实 BLE 源，用时间戳合成"像在导航"的数据（见 nav_ui.cpp）
+  nav_ui_preview_tick(now_ms);
+#endif
 
   lv_timer_handler();
 }
