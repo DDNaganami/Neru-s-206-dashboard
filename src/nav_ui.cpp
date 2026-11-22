@@ -8,6 +8,9 @@
 #if defined(DASH_NAV_BLE)
 #include "nav_source_ble.h"
 #include <esp_heap_caps.h>
+// lv_image_decoder_dsc_t 的**完整定义**在私有头里（公开的 lv_types.h 只有前置声明）；
+// 主动解码要把结构体放在栈上，所以必须包含它。
+#include "src/image/lv_image_decoder_private.h"
 #endif
 
 // ============================================================
@@ -328,27 +331,66 @@ static void map_poll() {
   const uint8_t* jpg = nav_source_ble_image(&len, &gen);
   if (!jpg || len == 0 || gen == g.map_gen || !g.map) return;
 
-  // ★ 同一指针 LVGL 会按 src 缓存解码结果 ⇒ 用两个 dsc 轮换，指针一变必然重解码
-  static lv_image_dsc_t dscs[2];
-  static uint8_t which = 0;
-  which ^= 1;
-  lv_image_dsc_t& dsc = dscs[which];
-  memset(&dsc, 0, sizeof(dsc));
-  dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
-  dsc.header.cf = LV_COLOR_FORMAT_RAW;   // 让解码器自己识别 JPEG
-  dsc.data = jpg;
-  dsc.data_size = (uint32_t)len;
+  // ★★ 主动解码（不是 widget 的延迟解码）：
+  //   ① widget 延迟到绘制时才读 src 数据，而 BLE 缓冲随时被下一张覆盖；
+  //   ② 直接给 `cf=RAW` 的 dsc 时 probe 返回 OK 但 header.w/h = 0（实测），widget 没有尺寸可画。
+  //   ⇒ 先 decode 一次拿到 RGB565 像素，拷进自有 PSRAM，再用明确的 RGB565 dsc 贴图。
+  static uint8_t* dec = nullptr;
+  static lv_image_dsc_t out;
+  if (!dec) {
+    dec = (uint8_t*)heap_caps_malloc(360u * 360u * 2u, MALLOC_CAP_SPIRAM);
+    if (!dec) { dash_logf("img: 解码缓冲分配失败\n"); return; }
+  }
 
-  { lv_image_header_t hdr; memset(&hdr, 0, sizeof(hdr));
-    lv_result_t pr = lv_image_decoder_get_info(&dsc, &hdr);
-    dash_logf("img: probe=%d %ux%u cf=%d\n", (int)pr, (unsigned)hdr.w, (unsigned)hdr.h, (int)hdr.cf); }
-  lv_image_set_src(g.map, &dsc);
+  lv_image_dsc_t src;
+  memset(&src, 0, sizeof(src));
+  src.header.magic = LV_IMAGE_HEADER_MAGIC;
+  // ★★ 关键：`LV_COLOR_FORMAT_RAW` 会被 LVGL 当成"原始像素"（尺寸取自 header，而我们没给
+  //   ⇒ 解出来 0x0）；要让它**嗅探格式**，cf 必须是 UNKNOWN。
+  src.header.cf = LV_COLOR_FORMAT_UNKNOWN;
+  src.data = jpg;
+  src.data_size = (uint32_t)len;
+
+  lv_image_decoder_dsc_t d;
+  memset(&d, 0, sizeof(d));
+  lv_image_decoder_args_t args;
+  memset(&args, 0, sizeof(args));
+  args.no_cache = true;
+
+  const lv_result_t r = lv_image_decoder_open(&d, &src, &args);
+  if (r != LV_RESULT_OK || d.decoded == nullptr) {
+    dash_logf("img: 解码失败 r=%d len=%u\n", (int)r, (unsigned)len);
+    return;
+  }
+  const lv_draw_buf_t* b = d.decoded;
+  // ★ 尺寸以**解码器给出的 header** 为准：LVGL 9.3 里 draw_buf 的 header.w/h 可能为 0
+  //   （实测），而 d.header 一定是解码后的真实尺寸。
+  uint32_t w = d.header.w, h = d.header.h;
+  if (w == 0u || h == 0u) { w = b->header.w; h = b->header.h; }
+  if (w == 0 || h == 0 || w * h * 2u > 360u * 360u * 2u) {
+    dash_logf("img: 尺寸异常 %ux%u\n", (unsigned)w, (unsigned)h);
+    lv_image_decoder_close(&d);
+    return;
+  }
+  memcpy(dec, b->data, (size_t)w * h * 2u);
+  lv_image_decoder_close(&d);
+
+  memset(&out, 0, sizeof(out));
+  out.header.magic = LV_IMAGE_HEADER_MAGIC;
+  out.header.cf = LV_COLOR_FORMAT_RGB565;
+  out.header.w = (uint16_t)w;
+  out.header.h = (uint16_t)h;
+  out.header.stride = (uint16_t)(w * 2u);
+  out.data = dec;
+  out.data_size = w * h * 2u;
+
+  lv_image_set_src(g.map, &out);
   lv_image_set_scale(g.map, 384);        // 240 -> 360（1.5x）
   lv_obj_clear_flag(g.map, LV_OBJ_FLAG_HIDDEN);
   lv_obj_move_background(g.map);
   lv_obj_invalidate(g.map);
   g.map_gen = gen;
-  dash_logf("img: 提交 %u bytes (gen=%u)\n", (unsigned)len, (unsigned)gen);
+  dash_logf("img: 上屏 %ux%u (%u bytes)\n", (unsigned)w, (unsigned)h, (unsigned)len);
 }
 #endif
 
