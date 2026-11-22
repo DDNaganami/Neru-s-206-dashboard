@@ -84,7 +84,11 @@ class NavLink private constructor(private val ctx: Context) {
         }
         val crc = crc16(buf.array(), 0, 4 + n * 4)
         buf.put(crc.toByte()); buf.put((crc shr 8).toByte())
-        if (routeSeq % 5 == 1) Log.i(TAG, "route frame: n=$n seq=$routeSeq")
+        if (routeSeq % 5 == 1) {
+            val dxs = (0 until n).map { pts[it].first }
+            val dys = (0 until n).map { pts[it].second }
+            Log.i(TAG, "route frame: n=$n seq=$routeSeq dx=${dxs.min()}..${dxs.max()} dy=${dys.min()}..${dys.max()}")
+        }
         push(buf.array())
     }
 
