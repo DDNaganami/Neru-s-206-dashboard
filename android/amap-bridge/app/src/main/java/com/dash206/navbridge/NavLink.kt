@@ -264,6 +264,11 @@ class NavLink private constructor(private val ctx: Context) {
             Log.i(TAG, "服务发现完成，RX=${rx != null} mtu=$mtu")
         }
 
+        override fun onCharacteristicWrite(g: BluetoothGatt?, c: BluetoothGattCharacteristic?, status: Int) {
+            writing = false
+            pumpWrites()
+        }
+
         override fun onMtuChanged(g: BluetoothGatt, newMtu: Int, status: Int) {
             mtu = newMtu
             Log.i(TAG, "mtu changed: $newMtu status=$status")
@@ -275,13 +280,33 @@ class NavLink private constructor(private val ctx: Context) {
         push(buildFrame(0, 0, 0, 0, 0, 0, nightFlag, false, ""))
     }
 
+    // ★ 2026-11-22 实测：一次连发 46 个图片分片，从第 2 片起 write 全返回 false
+    //   —— BLE 的 GATT 一次只允许一个未完成的写。改成"写完一个再发下一个"：
+    //   队列 + onCharacteristicWrite 回调推进。
+    private val writeQueue = java.util.ArrayDeque<ByteArray>()
+    @Volatile private var writing = false
+
     @SuppressLint("MissingPermission")
     private fun push(frame: ByteArray) {
+        if (rx == null) return
+        writeQueue.addLast(frame)
+        pumpWrites()
+    }
+
+    @SuppressLint("MissingPermission")
+    @Synchronized
+    private fun pumpWrites() {
+        if (writing) return
         val c = rx ?: return
+        val frame = writeQueue.pollFirst() ?: return
         c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         c.value = frame
+        writing = true
         val ok = gatt?.writeCharacteristic(c) ?: false
-        if (!ok) Log.w(TAG, "write failed (len=${frame.size} mtu=$mtu)")
+        if (!ok) {
+            writing = false
+            Log.w(TAG, "write failed (len=${frame.size} mtu=$mtu)")
+        }
     }
 
     // ---------------- 前台服务 ----------------
