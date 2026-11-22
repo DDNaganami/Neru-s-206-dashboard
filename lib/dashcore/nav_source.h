@@ -45,17 +45,22 @@ struct NavSource {
 // 一帧在缓冲里够不够完整：先读 road_len（第 12 字节），算出总长
 // 两种帧共用同一个环缓冲：按魔数分派（0xA7 = 导航快照，0xA8 = 路线几何）
 // 0xAA 多折线帧的长度（按每条线的 count 累加，长度必须精确）
+// ★★ 约定（2026-11-22 修正）：这三个按魔数算长度的函数
+//   · 返回 `(size_t)-1` = **还不够**（上层 break 等下一批字节）
+//   · 返回 `1`          = 头非法（上层丢 1 字节重新对齐）
+//   · 返回 >1           = 完整帧长
+//   以前"不够/非法"都返回 0，会被当成"不是这三种帧"而落到 0xA7 的布局去解
+//   ⇒ 半包时丢字节、crc_err 每秒涨 1（实测就是这个现象）。
 static inline size_t nav_map_frame_size(const uint8_t* p, size_t avail) {
-  if (avail < 6u) return 0;
+  if (avail < 4u) return (size_t)-1;
   const uint8_t lines = p[3];
-  if (lines == 0u || lines > kNavMapMaxLines) return 0;
+  if (lines == 0u || lines > kNavMapMaxLines) return 1u;
   size_t o = 6u;
   for (uint8_t i = 0; i < lines; ++i) {
-    if (o >= avail) return 0;
+    if (o >= avail) return (size_t)-1;
     const uint8_t c = p[o];
-    if (c < 2u || c > 40u) return 0;
+    if (c < 2u || c > 40u) return 1u;
     o += 1u + (size_t)c * 4u;
-    if (o > avail) return 0;
   }
   return o + 2u;
 }
@@ -64,15 +69,15 @@ static inline size_t nav_frame_size_any(const uint8_t* p, size_t avail) {
   if (avail < 1u) return 0;
   if (p[0] == kNavMapMagic) return nav_map_frame_size(p, avail);
   if (p[0] == kNavImgMagic) {
-    if (avail < 7u) return 0;
+    if (avail < 7u) return (size_t)-1;
     const uint16_t dlen = (uint16_t)((uint16_t)p[5] | ((uint16_t)p[6] << 8));
-    if (dlen == 0u || dlen > kNavImgChunkMax) return 0;
+    if (dlen == 0u || dlen > kNavImgChunkMax) return 1u;
     return 7u + (size_t)dlen + 2u;
   }
   if (p[0] == kNavRouteMagic) {
-    if (avail < 4u) return 0;
+    if (avail < 4u) return (size_t)-1;
     const uint8_t c = p[3];
-    if (c == 0u || c > kNavRouteMax) return 0;
+    if (c == 0u || c > kNavRouteMax) return 1u;
     return 4u + (size_t)c * 4u + 2u;
   }
   return 0;   // 0xA7 走下面的旧函数
