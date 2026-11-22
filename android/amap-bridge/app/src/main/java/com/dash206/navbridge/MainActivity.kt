@@ -15,5 +15,11 @@ class MainActivity : Activity() {
                 Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT), 1)
         }
         startForegroundService(Intent(this, NavLink.Svc::class.java))
+
+        // 阶段 B：自己跑高德导航（拿路线几何）。目的地先用一个固定点做联调
+        // （天安门，39.908722 / 116.397499）；以后改成 App 里选点或从广播的 endPOIName 解析。
+        AmapRouteBridge.start(this)
+        AmapRouteBridge.setDestination(39.908722, 116.397499)
+        AmapRouteBridge.startNavigation()
     }
 }

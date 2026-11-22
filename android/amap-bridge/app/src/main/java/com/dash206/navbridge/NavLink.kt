@@ -71,6 +71,22 @@ class NavLink private constructor(private val ctx: Context) {
         return buf.array()
     }
 
+    /** 阶段 B：发路线几何帧（0xA8），与固件 nav_route.h 逐字节一致 */
+    fun sendRoute(pts: List<Pair<Int, Int>>) {
+        if (pts.isEmpty()) return
+        val n = minOf(pts.size, 24)
+        val buf = ByteBuffer.allocate(4 + n * 4 + 2).order(ByteOrder.LITTLE_ENDIAN)
+        buf.put(0xA8.toByte()); buf.put(1.toByte())
+        buf.put((routeSeq++ and 0xFF).toByte()); buf.put(n.toByte())
+        for (i in 0 until n) {
+            buf.putShort(pts[i].first.toShort())
+            buf.putShort(pts[i].second.toShort())
+        }
+        val crc = crc16(buf.array(), 0, 4 + n * 4)
+        buf.put(crc.toByte()); buf.put((crc shr 8).toByte())
+        push(buf.array())
+    }
+
     /** CRC-16/CCITT-FALSE（0xFFFF / 0x1021，不反射）—— 与固件同一条 */
     private fun crc16(p: ByteArray, off: Int, len: Int): Int {
         var crc = 0xFFFF
@@ -82,6 +98,7 @@ class NavLink private constructor(private val ctx: Context) {
     }
 
     @Volatile private var seq = 0
+    @Volatile private var routeSeq = 0
 
     // ---------------- 高德解析 ----------------
     fun onAmapBroadcast(i: Intent) {
