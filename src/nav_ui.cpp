@@ -207,15 +207,19 @@ void path_draw_cb(lv_event_t* e) {
     lv_draw_line_dsc_init(&rl);
     const int ox = cx;
     const int oy = yb - 16;          // 车图标在底部中间
-    for (uint8_t pass = 0; pass < 2u; ++pass) {
-      rl.width = (pass == 0u) ? 26 : 16;
-      rl.color = lv_color_hex((pass == 0u) ? 0x1B3A47u : kAccent);
-      rl.opa   = (pass == 0u) ? LV_OPA_90 : LV_OPA_COVER;
+    // ★ 2026-11-22 视觉升级：把导航路线画成"地图里的道路"——
+    //   三层：深色描边(42) → 沥青灰(32) → 青色中心虚线(5，隔段画)。
+    //   之前只有"描边+亮线"，看起来就是一根发光条，不像路。
+    for (uint8_t pass = 0; pass < 3u; ++pass) {
+      rl.width = (pass == 0u) ? 42 : (pass == 1u) ? 32 : 5;
+      rl.color = lv_color_hex((pass == 0u) ? 0x10161Bu
+                              : (pass == 1u) ? 0x39434Cu : kAccent);
+      rl.opa   = LV_OPA_COVER;
       int px = 0, py = 0;
       for (uint8_t i = 0; i < g.route.count; ++i) {
         const int sx2 = ox + (int)((float)g.route.pts[i].dx * scale);
         const int sy2 = oy + (int)((float)g.route.pts[i].dy * scale);
-        if (i > 0) {
+        if (i > 0 && (pass < 2u || (i % 2) == 0)) {   // 中心虚线：隔段画
           rl.p1.x = px; rl.p1.y = py;
           rl.p2.x = sx2; rl.p2.y = sy2;
           lv_draw_line(layer, &rl);
