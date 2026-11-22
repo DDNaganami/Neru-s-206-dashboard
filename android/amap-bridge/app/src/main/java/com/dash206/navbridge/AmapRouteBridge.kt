@@ -48,9 +48,28 @@ object AmapRouteBridge {
         if (started) return
         started = true
         try {
+            // ★★ 高德 SDK 10.x 强制要求：**任何** SDK 接口调用之前必须先同意隐私合规，
+            //   否则 getInstance 直接抛异常（实测日志："确保调用SDK任何接口前先调用更新隐私合规
+            //   updatePrivacyShow、updatePrivacyAgree 两个接口并且参数值都为 true"）。
+            //   我们这里在 App 内声明已同意（应用是自己用，隐私弹窗由用户即车主本人授权）。
+            com.amap.api.maps.MapsInitializer.updatePrivacyShow(ctx.applicationContext, true, true)
+            com.amap.api.maps.MapsInitializer.updatePrivacyAgree(ctx.applicationContext, true)
+
             val n = AMapNavi.getInstance(ctx.applicationContext)
             navi = n
             n.addAMapNaviListener(object : NaviAdapter() {
+                override fun onCalculateRouteSuccess(a0: IntArray) {
+                    Log.i(TAG, "路线算好了，startNavi")
+                    // ★ 台面联调用**模拟导航**（沿路线自动"开"）：室内没有 GPS 定位，GPS 模式下
+                    //   onLocationChange 一次都不来 ⇒ 板子收不到任何路线帧。
+                    //   上车后改成 NaviType.GPS 即可（一行）。
+                    navi?.startNavi(com.amap.api.navi.enums.NaviType.EMULATOR)
+                }
+
+                override fun onCalculateRouteFailure(a0: Int) {
+                    Log.e(TAG, "算路失败 code=$a0")
+                }
+
                 override fun onLocationChange(loc: AMapNaviLocation) {
                     val loc2 = loc;
                     val path = navi?.naviPath ?: return       // getNaviPath()
@@ -80,7 +99,10 @@ object AmapRouteBridge {
         }
         try {
             val end = listOf(NaviLatLng(destLat, destLon))
-            val ok = n.calculateDriveRoute(null, end, null, 1 /* 避免拥堵 */)
+            // ★ 起点必须显式给：传 null 表示"用当前位置"，而本机没装高德定位 SDK
+            //   （APSService 不存在）⇒ 算路直接返回 false。联调先给一个离目的地 1 km 的点。
+            val from = listOf(NaviLatLng(destLat - 0.009, destLon))
+            val ok = n.calculateDriveRoute(from, end, null, 1 /* 避免拥堵 */)
             Log.i(TAG, "calculateDriveRoute=$ok")
         } catch (t: Throwable) {
             Log.e(TAG, "起导航失败: ${t.message}")
