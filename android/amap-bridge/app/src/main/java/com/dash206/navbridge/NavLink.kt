@@ -120,6 +120,9 @@ class NavLink private constructor(private val ctx: Context) {
         (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter?.bluetoothLeScanner
     }
     @Volatile private var rx: BluetoothGattCharacteristic? = null
+    // ★★ 2026-11-22 实测：默认 MTU 23 ⇒ 单包只能写 20 字节，而我们的帧 15~39 字节
+    //   （带路名就 25+）⇒ Android 会截断，板子侧 CRC 全错、帧数 0。必须先谈 MTU 再写。
+    @Volatile private var mtu = 23
 
     @SuppressLint("MissingPermission")
     fun startBle() {
@@ -131,9 +134,15 @@ class NavLink private constructor(private val ctx: Context) {
     private val scanCb = object : ScanCallback() {
         @SuppressLint("MissingPermission")
         override fun onScanResult(type: Int, r: ScanResult) {
-            Log.i(TAG, "scan: ${r.device.address} name=${r.device.name}")
-            if (r.device.name == DEV_NAME) {
+            val uuids = r.scanRecord?.serviceUuids?.joinToString(",") { it.uuid.toString() }
+            Log.i(TAG, "scan: ${r.device.address} name=${r.device.name} uuids=$uuids")
+            // ★ 128 位服务 UUID(16B)+名字(11B)+flags(3B) 超过 31 字节广播上限 ⇒ NimBLE 会把
+            //   名字挤出广播包（实测手机扫到板子时 name=null）⇒ **按服务 UUID 认板子**，名字只作日志。
+            val byName = r.device.name == DEV_NAME
+            val byUuid = uuids?.contains(SVC.toString(), ignoreCase = true) == true
+            if (byName || byUuid) {
                 scanner?.stopScan(this)
+                Log.i(TAG, "connectGatt -> ${r.device.address}")
                 gatt = r.device.connectGatt(ctx, false, gattCb)
             }
         }
@@ -142,8 +151,9 @@ class NavLink private constructor(private val ctx: Context) {
     private val gattCb = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            Log.i(TAG, "gatt state: status=$status newState=$newState")
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                g.requestMtu(64); g.discoverServices()
+                g.requestMtu(185); g.discoverServices()
             } else {
                 g.close(); gatt = null; rx = null
                 Handler(Looper.getMainLooper()).postDelayed({ startBle() }, 3000)
@@ -152,7 +162,12 @@ class NavLink private constructor(private val ctx: Context) {
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             rx = g.getService(SVC)?.getCharacteristic(RX)
-            Log.i(TAG, "服务发现完成，RX=${rx != null}")
+            Log.i(TAG, "服务发现完成，RX=${rx != null} mtu=$mtu")
+        }
+
+        override fun onMtuChanged(g: BluetoothGatt, newMtu: Int, status: Int) {
+            mtu = newMtu
+            Log.i(TAG, "mtu changed: $newMtu status=$status")
         }
     }
 
@@ -166,7 +181,8 @@ class NavLink private constructor(private val ctx: Context) {
         val c = rx ?: return
         c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
         c.value = frame
-        gatt?.writeCharacteristic(c)
+        val ok = gatt?.writeCharacteristic(c) ?: false
+        if (!ok) Log.w(TAG, "write failed (len=${frame.size} mtu=$mtu)")
     }
 
     // ---------------- 前台服务 ----------------
@@ -197,18 +213,10 @@ class NavLink private constructor(private val ctx: Context) {
             }
             link.startBle()
 
-            // 高德停发时补一帧"无效"（3 s 后），避免屏上停在旧指令
-            Handler(Looper.getMainLooper()).postDelayed(invalidator, 3000)
-        }
-
-        private val invalidator = object : Runnable {
-            override fun run() {
-                if (SystemClock.elapsedRealtime() - link.lastNavMs > 3000) {
-                    // 无效帧：road_len = 0、flags = 0（固件按超时降级为 NO NAV）
-                    link.setInvalid()
-                }
-                Handler(Looper.getMainLooper()).postDelayed(this, 1000)
-            }
+            // ★★ 2026-11-22 实测删掉"每秒推一帧全 0 当无效"：
+            //   它会把真数据盖成 0（板子串口看到 rx 帧数在涨、字段全 0）。
+            //   现在无效判定交给**固件侧超时降级**（nav_state_tick，3 s 无新帧 ⇒ NO NAV），
+            //   手机只发真实数据。
         }
 
         override fun onDestroy() {

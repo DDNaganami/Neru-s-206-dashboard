@@ -1576,13 +1576,17 @@ void dash_ui_tick(uint32_t now_ms) {
               (unsigned)g_boot.faceStage(now_ms));
   }
 
-#if defined(DASH_DISPLAY_PREVIEW)
-  // 预览专用：没有真实 BLE 源，用时间戳合成"像在导航"的数据（见 nav_ui.cpp）
 #if defined(DASH_NAV_BLE)
   // 设备侧：把 BLE 收到的字节解成帧 → 更新导航页（主循环上下文，不在 NimBLE 任务里）
+  // ★★ 2026-11-22 实测修正：这两行原来被误插在 `#if defined(DASH_DISPLAY_PREVIEW)` **里面**
+  //    ⇒ 设备固件里整段被编掉，导航页永远停在 "NO NAV"（手机已连上、帧已写出也不动）。
+  //    现在放在预览分支**之外**，与预览那条合成数据互斥。
   nav_source_ble_tick(now_ms);
   nav_ui_update(nav_source_ble_state());
 #endif
+
+#if defined(DASH_DISPLAY_PREVIEW)
+  // 预览专用：没有真实 BLE 源，用时间戳合成"像在导航"的数据（见 nav_ui.cpp）
   nav_ui_preview_tick(now_ms);
 #endif
 

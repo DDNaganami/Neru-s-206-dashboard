@@ -93,7 +93,7 @@ size_t nav_source_ble_tick(uint32_t now_ms) {
   if (!g_started) return 0;
   // 把环里的字节搬到栈缓冲再出临界区解析（临界区内只做 memcpy）
   uint8_t chunk[64];
-  size_t total = 0;
+  size_t frames = 0;
   for (;;) {
     size_t n = 0;
     portENTER_CRITICAL(&g_mux);
@@ -103,10 +103,27 @@ size_t nav_source_ble_tick(uint32_t now_ms) {
     }
     portEXIT_CRITICAL(&g_mux);
     if (n == 0) break;
-    nav_source_push(g_src, chunk, n, now_ms, g_state);
-    total += n;
+    frames += nav_source_push(g_src, chunk, n, now_ms, g_state);   // 返回"上账的帧数"
   }
-  return total;
+  // ★★ 2026-11-22 实测补上：超时降级必须每拍都跑，否则手机停发后屏上会**永远停在最后一帧**
+  //   （那正是 nav_state.h 要避免的事：宁可不显示，也不显示过期指令）。
+  {
+    static NavTimeouts t;
+    nav_state_tick(g_state, now_ms, t);
+  }
+
+  // 每秒最多一行：能一眼看出"帧到底到没到板子上"（BLE 连上 ≠ 帧能解析）
+  {
+    static uint32_t last_log_ms = 0;
+    if ((uint32_t)(now_ms - last_log_ms) >= 1000u) {
+      last_log_ms = now_ms;
+      dash_logf("nav: rx frames=%u last(turn=%u dist=%u spd=%u hdg=%u) crc_err=%u\n",
+                (unsigned)g_state.good_frames, (unsigned)g_state.turn,
+                (unsigned)g_state.dist_m, (unsigned)g_state.speed_kph,
+                (unsigned)g_state.heading_cdeg, (unsigned)g_src.crc_errors);
+    }
+  }
+  return frames;
 }
 
 const NavState& nav_source_ble_state() { return g_state; }
