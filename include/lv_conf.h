@@ -56,3 +56,6 @@
 #endif
 
 #endif
+
+// 阶段 B2：地图图片走 JPEG（App 端截图 → BLE → 板上解码）
+#define LV_USE_TJPGD 1

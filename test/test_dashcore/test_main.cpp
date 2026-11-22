@@ -32,7 +32,8 @@ void register_panel_guard_tests(void);   // 面板健康守护:回读对账/按�
 void register_night_mode_tests(void);    // 夜间模式判据:3s 进 / 10s 出 / 抖不动 / 数据不可信不动(2026-10-20)
 void register_nav_tests(void);
 void register_nav_source_tests(void);
-void register_nav_route_tests(void);     // 阶段 B：路线几何帧（0xA8）+ 与快照混流(2026-11-22)    // 导航字节流:半包/粘包/噪音/坏CRC后重同步(2026-11-21)           // 导航短报文 + 导航状态:黄金字节/坏帧/超时降级/昼夜新鲜度(2026-11-21)
+void register_nav_route_tests(void);
+void register_nav_img_tests(void);      // 阶段 B2：地图图片分片 0xA9 + 重组(2026-11-22)     // 阶段 B：路线几何帧（0xA8）+ 与快照混流(2026-11-22)    // 导航字节流:半包/粘包/噪音/坏CRC后重同步(2026-11-21)           // 导航短报文 + 导航状态:黄金字节/坏帧/超时降级/昼夜新鲜度(2026-11-21)
 void register_boot_persist_tests(void);  // 跨重启留档:上一次 reason/上一次跑了多久/守护累计(2026-09-25)
 void register_serial_cmd_tests(void);    // 串口单字符命令的判据层:d/r/i/w + 别多吃回放字符(2026-09-24)
 void register_role_layout_tests(void);   // 角色 ↔ 屏幕的映射:哪块板显示哪一屏(2026-09-25)
@@ -118,6 +119,7 @@ int main(void) {
   register_nav_tests();
   register_nav_source_tests();
   register_nav_route_tests();
+  register_nav_img_tests();
   // ★ 2026-09-25 新增：**跨重启留档**（BootPersist）—— 起因是"累计启动次数 31 → 32
   //   多了一次，而上一次的复位原因没有留档 ⇒ 判不出那次是断电还是板子自己掉电"。
   //   它把三样东西写进 NVS 并在开机那一行一起打：上一次的 reason、**上一次运行了多久**

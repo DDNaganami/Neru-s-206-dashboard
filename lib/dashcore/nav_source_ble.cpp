@@ -6,6 +6,8 @@
 
 #include "dash_log.h"
 #include "nav_source.h"
+#include "nav_img.h"
+#include <esp_heap_caps.h>
 
 namespace {
 
@@ -21,6 +23,9 @@ size_t   g_tail = 0;   // 读（主循环）
 portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
 
 NavSource g_src;
+NavImgRx g_img_rx;                 // 地图图片重组（缓冲放 PSRAM）
+uint8_t* g_img_buf = nullptr;
+uint32_t g_img_seen = 0;
 NavState  g_state;
 uint32_t  g_drops = 0;   // 环满丢弃的字节数（只记数，不刷日志）
 
@@ -92,6 +97,16 @@ bool nav_source_ble_start() {
   adv->enableScanResponse(true);
   adv->start();
 
+  // 地图图片缓冲：32 KB 放 PSRAM（内部 RAM 只剩 ~50KB，别抢）
+  g_img_buf = (uint8_t*)heap_caps_malloc(kNavImgBufferMax, MALLOC_CAP_SPIRAM);
+  if (g_img_buf) {
+    nav_img_rx_init(g_img_rx, g_img_buf, kNavImgBufferMax);
+    g_src.img = &g_img_rx;
+    dash_logf("img: 重组缓冲 %u B @PSRAM\n", (unsigned)kNavImgBufferMax);
+  } else {
+    dash_logf("img: PSRAM 分配失败，图片通道关闭\n");
+  }
+
   g_started = true;
   dash_logf("nav: BLE peripheral 起来了（name=%s）\\n", kDevName);
   return true;
@@ -118,6 +133,13 @@ size_t nav_source_ble_tick(uint32_t now_ms) {
   {
     static NavTimeouts t;
     nav_state_tick(g_state, now_ms, t);
+  }
+
+  // 图片整图收齐就报一行（大小/尺寸由解码那一步再打）
+  if (g_src.img_ready != g_img_seen) {
+    g_img_seen = g_src.img_ready;
+    dash_logf("img: ok %u bytes (jpg), total=%u\n",
+              (unsigned)(g_img_rx.len), (unsigned)g_img_seen);
   }
 
   // 每秒最多一行：能一眼看出"帧到底到没到板子上"（BLE 连上 ≠ 帧能解析）

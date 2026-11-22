@@ -6,6 +6,7 @@
 #include "nav_proto.h"
 #include "nav_state.h"
 #include "nav_route.h"
+#include "nav_img.h"
 
 // ============================================================
 // 导航字节流 → NavFrame → NavState（**传输无关**的源骨架）
@@ -26,7 +27,7 @@
 //     真帧就在后面几个字节处）。
 // ============================================================
 
-static const size_t kNavSrcBuf = 128u;
+static const size_t kNavSrcBuf = 320u;   // ★ 要放得下最大的单片：7 头 + 256 数据 + 2 CRC = 265
 
 struct NavSource {
   uint8_t buf[kNavSrcBuf];
@@ -34,12 +35,20 @@ struct NavSource {
   uint32_t crc_errors = 0;     // CRC 失败次数（诊断/日志用）
   uint32_t garbage_bytes = 0;  // 找不到魔数被丢掉的字节数
   uint32_t frames = 0;         // 成功解出的帧数
+  NavImgRx* img = nullptr;     // 图片重组器（由 BLE 层提供缓冲；nullptr = 不接图片）
+  uint32_t  img_ready = 0;     // 收齐的整图数量
 };
 
 // 一帧在缓冲里够不够完整：先读 road_len（第 12 字节），算出总长
 // 两种帧共用同一个环缓冲：按魔数分派（0xA7 = 导航快照，0xA8 = 路线几何）
 static inline size_t nav_frame_size_any(const uint8_t* p, size_t avail) {
   if (avail < 1u) return 0;
+  if (p[0] == kNavImgMagic) {
+    if (avail < 7u) return 0;
+    const uint16_t dlen = (uint16_t)((uint16_t)p[5] | ((uint16_t)p[6] << 8));
+    if (dlen == 0u || dlen > kNavImgChunkMax) return 0;
+    return 7u + (size_t)dlen + 2u;
+  }
   if (p[0] == kNavRouteMagic) {
     if (avail < 4u) return 0;
     const uint8_t c = p[3];
@@ -75,7 +84,7 @@ inline size_t nav_source_push(NavSource& src, const uint8_t* data, size_t len,
       // 丢掉魔数之前的垃圾（并计数）
       size_t off = 0;
       while (off < src.len && src.buf[off] != kNavProtoMagic &&
-             src.buf[off] != kNavRouteMagic) ++off;
+             src.buf[off] != kNavRouteMagic && src.buf[off] != kNavImgMagic) ++off;
       if (off > 0) {
         memmove(src.buf, src.buf + off, src.len - off);
         src.len -= off;
@@ -100,7 +109,13 @@ inline size_t nav_source_push(NavSource& src, const uint8_t* data, size_t len,
       if (src.len < need) break;   // 半包：等下一批
 
       bool ok = false;
-      if (is_route) {
+      if (src.buf[0] == kNavImgMagic) {
+        NavImgChunk c;
+        if (src.img && nav_img_unpack_chunk(src.buf, need, &c)) {
+          if (nav_img_rx_push(*src.img, c)) src.img_ready++;
+          ok = true;   // 分片本身合法就算"上账"（不要求整图齐）
+        }
+      } else if (is_route) {
         NavRoute r;
         if (nav_route_unpack(src.buf, need, &r)) {
           nav_route_apply(st.route, r, now_ms);
