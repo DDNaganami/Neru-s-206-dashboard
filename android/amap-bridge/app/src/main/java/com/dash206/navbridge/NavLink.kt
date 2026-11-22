@@ -86,6 +86,8 @@ class NavLink private constructor(private val ctx: Context) {
     // ---------------- 高德解析 ----------------
     fun onAmapBroadcast(i: Intent) {
         val type = i.getIntExtra("KEY_TYPE", -1)
+        // ★ 诊断：把收到的每类广播打一行，用来回答"这个版本的高德还发不发"（go/no-go 判据）
+        Log.i(TAG, "amap KEY_TYPE=$type extras=${i.extras?.keySet()?.joinToString(",")}")
         when (type) {
             10001 -> {
                 val icon = i.getIntExtra("NEW_ICON", i.getIntExtra("ICON", 0))
@@ -98,6 +100,7 @@ class NavLink private constructor(private val ctx: Context) {
                 val road = i.getStringExtra("NEXT_ROAD_NAME")?.take(ROAD_MAX) ?: ""
                 val arrived = icon == 15
                 lastNavMs = SystemClock.elapsedRealtime()
+                Log.i(TAG, "nav icon=$icon dist=$dist spd=$speed hdg=$heading road=$road")
                 push(buildFrame(icon, dist, speed, heading, remainMin, limit, nightFlag,
                                 arrived, road))
             }
@@ -120,6 +123,7 @@ class NavLink private constructor(private val ctx: Context) {
 
     @SuppressLint("MissingPermission")
     fun startBle() {
+        Log.i(TAG, "startBle: scanning for $DEV_NAME")
         scanner?.startScan(null, ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), scanCb)
     }
@@ -127,6 +131,7 @@ class NavLink private constructor(private val ctx: Context) {
     private val scanCb = object : ScanCallback() {
         @SuppressLint("MissingPermission")
         override fun onScanResult(type: Int, r: ScanResult) {
+            Log.i(TAG, "scan: ${r.device.address} name=${r.device.name}")
             if (r.device.name == DEV_NAME) {
                 scanner?.stopScan(this)
                 gatt = r.device.connectGatt(ctx, false, gattCb)
@@ -180,7 +185,16 @@ class NavLink private constructor(private val ctx: Context) {
                 .setSmallIcon(android.R.drawable.ic_menu_mylocation).build())
 
             // ★ Android 13+/HyperOS：动态注册才能收到高德广播
-            registerReceiver(recv, IntentFilter(NavLink.AMAP_ACTION))
+            // ★ Android 14（targetSdk 34）起：动态注册必须显式声明能不能接收外部广播。
+            //   高德是**别的应用** ⇒ 必须 RECEIVER_EXPORTED，否则 SecurityException 直接崩服务
+            //   （2026-11-22 在小米 14 上一次真机启动就复现了）。
+            val filter = IntentFilter(NavLink.AMAP_ACTION)
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(recv, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                registerReceiver(recv, filter)
+            }
             link.startBle()
 
             // 高德停发时补一帧"无效"（3 s 后），避免屏上停在旧指令
