@@ -143,7 +143,23 @@ void path_draw_cb(lv_event_t* e) {
   // ★ 阶段 B3：周围道路（0xAA 多折线）——先画"路网"，再画高亮路线与车标。
   //   1 米 ≈ 1.1 px（300 m 约占 330 px），车在底部中间。
   if (g.roads.valid) {
-    const float SC = 1.1f;
+    // 自适应：把全部道路点缩进画布（留 20 px 边距）
+    float mdx = 1.0f, mdy = 1.0f;
+    for (uint8_t li = 0; li < g.roads.lines; ++li) {
+      const NavMapLine& L2 = g.roads.line[li];
+      for (uint8_t pi = 0; pi < L2.count; ++pi) {
+        const float ax = fabsf((float)L2.dx[pi]);
+        const float ay = fabsf((float)L2.dy[pi]);
+        if (ax > mdx) mdx = ax;
+        if (ay > mdy) mdy = ay;
+      }
+    }
+    const float boxw = (float)(a.x2 - a.x1) - 40.0f;
+    const float boxh = (float)(a.y2 - a.y1) - 40.0f;
+    float SC = (boxw * 0.5f) / mdx;
+    if (boxh / mdy < SC) SC = boxh / mdy;
+    if (SC > 4.0f) SC = 4.0f;
+    if (SC < 0.2f) SC = 0.2f;
     const int ox0 = cx;
     const int oy0 = yb - 16;
     lv_draw_line_dsc_t rl0;
@@ -311,8 +327,10 @@ void nav_ui_attach(lv_display_t* disp) {
   // 示意路径（车图标上方那一段）
   g.path = lv_obj_create(g.root);
   lv_obj_remove_style_all(g.path);
-  lv_obj_set_size(g.path, 260, 74);
-  lv_obj_set_pos(g.path, (kRes - 260) / 2, 250);
+  // ★★ 2026-11-22：画布必须够大。原来 260×74，而道路点按 1.1 px/米 展开到 600 m
+  //    ⇒ 大部分线落在对象边界外，被 LVGL 裁掉（屏上什么都看不到）。
+  lv_obj_set_size(g.path, 360, 360);
+  lv_obj_set_pos(g.path, (kRes - 360) / 2, (kRes - 360) / 2);
   lv_obj_add_event_cb(g.path, path_draw_cb, LV_EVENT_DRAW_MAIN, nullptr);
 
   // 距离（大号数字 + 单位）

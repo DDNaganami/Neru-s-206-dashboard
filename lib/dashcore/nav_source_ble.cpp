@@ -147,9 +147,11 @@ size_t nav_source_ble_tick(uint32_t now_ms) {
     static uint32_t last_log_ms = 0;
     if ((uint32_t)(now_ms - last_log_ms) >= 1000u) {
       last_log_ms = now_ms;
-      dash_logf("nav: rx frames=%u img=%u bad=%u ready=%u last(turn=%u dist=%u spd=%u hdg=%u) crc_err=%u\n",
+      dash_logf("nav: rx frames=%u img=%u bad=%u ready=%u map=%u(map_v=%u lines=%u) last(turn=%u dist=%u spd=%u hdg=%u) crc_err=%u\n",
                 (unsigned)g_src.frames, (unsigned)g_src.img_chunks, (unsigned)g_src.img_bad,
-                (unsigned)g_src.img_ready, (unsigned)g_state.turn, (unsigned)g_state.dist_m,
+                (unsigned)g_src.img_ready, (unsigned)g_src.map_frames,
+                g_state.map.valid ? 1u : 0u, (unsigned)g_state.map.lines,
+                (unsigned)g_state.turn, (unsigned)g_state.dist_m,
                 (unsigned)g_state.speed_kph, (unsigned)g_state.heading_cdeg,
                 (unsigned)g_src.crc_errors);
     }

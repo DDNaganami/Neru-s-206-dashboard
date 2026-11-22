@@ -40,6 +40,7 @@ struct NavSource {
   uint32_t  img_ready = 0;     // 收齐的整图数量
   uint32_t  img_chunks = 0;    // 收到的合法分片数
   uint32_t  img_bad = 0;       // 分片解包失败次数
+  uint32_t  map_frames = 0;    // 成功解出的 0xAA 地图帧数
 };
 
 // 一帧在缓冲里够不够完整：先读 road_len（第 12 字节），算出总长
@@ -150,6 +151,7 @@ inline size_t nav_source_push(NavSource& src, const uint8_t* data, size_t len,
           m.valid = true;
           m.updated_ms = now_ms;
           st.map = m;
+          src.map_frames++;
           ok = true;
         }
       } else if (is_route) {
