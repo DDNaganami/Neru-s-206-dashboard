@@ -74,7 +74,7 @@ class NavLink private constructor(private val ctx: Context) {
     /** 阶段 B2：发一张 JPEG（0xA9 分片，与固件 nav_img.h 逐字节一致） */
     fun sendImage(jpeg: ByteArray) {
         if (jpeg.isEmpty()) return
-        val chunkMax = 200
+        val chunkMax = 160
         val total = (jpeg.size + chunkMax - 1) / chunkMax
         if (total == 0 || total > 200) return
         val fid = imageSeq++
