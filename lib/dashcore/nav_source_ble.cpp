@@ -45,8 +45,15 @@ class RxCallbacks : public NimBLECharacteristicCallbacks {
 
 class SrvCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* s, NimBLEConnInfo& info) override {
-    (void)s; (void)info;
-    dash_logf("nav: ble central 已连接\\n");
+    // 实验 2（2026-11-22）：横纹与射频事件密度相关 =>
+    //   ① 连上就停广播（少一类射频活动）；
+    //   ② 连接间隔 60~90ms、latency 2（事件少 3~4 倍；导航 1 Hz 推送不敏感）。
+    if (s) {
+      NimBLEAdvertising* a = NimBLEDevice::getAdvertising();
+      if (a) a->stop();
+      s->updateConnParams(info.getConnHandle(), 48, 72, 2, 500);   // void 返回
+      dash_logf("nav: connected; adv stopped; conn 60~90ms/lat2\n");
+    }
   }
   void onDisconnect(NimBLEServer* s, NimBLEConnInfo& info, int reason) override {
     (void)s; (void)info; (void)reason;
@@ -65,6 +72,7 @@ bool nav_source_ble_start() {
   if (g_started) return true;
   NimBLEDevice::init(kDevName);
   NimBLEDevice::setMTU(185);
+  NimBLEDevice::setPower(ESP_PWR_LVL_N12);   // 实验 2：-12 dBm
 
   NimBLEServer* srv = NimBLEDevice::createServer();
   if (!srv) return false;
