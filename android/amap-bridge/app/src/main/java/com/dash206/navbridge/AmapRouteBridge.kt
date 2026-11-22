@@ -27,8 +27,8 @@ import kotlin.math.sin
  */
 object AmapRouteBridge {
     private const val TAG = "AmapRoute"
-    private const val MAX_POINTS = 12
-    private const val AHEAD_M = 300.0
+    private const val MAX_POINTS = 24
+    private const val AHEAD_M = 600.0
 
     @Volatile private var navi: AMapNavi? = null
     private var started = false
@@ -133,7 +133,7 @@ object AmapRouteBridge {
             if (fwd < -2.0) continue                 // 车后面的点不要
             if (fwd > AHEAD_M) break
             // 隔点抽稀：保证 24 点能覆盖 300 m（~12 m 一个点）
-            if (fwd - lastForward < 12.0 && out.isNotEmpty()) continue
+            if (fwd - lastForward < 25.0 && out.isNotEmpty()) continue
             lastForward = fwd
             // dy 用负：屏坐标 y 向下，前方 = 负
             out.add(Pair(right.toInt(), (-fwd).toInt()))

@@ -145,23 +145,37 @@ void path_draw_cb(lv_event_t* e) {
     if (scale > 4.0f) scale = 4.0f;
     if (scale < 0.2f) scale = 0.2f;
 
+    // 道路"带状"画法：先粗描边（深色，像地图路基），再叠一条亮色内线
     lv_draw_line_dsc_t rl;
     lv_draw_line_dsc_init(&rl);
-    rl.color = lv_color_hex(kAccent);
-    rl.width = 12;
-    rl.opa = LV_OPA_90;
     const int ox = cx;
     const int oy = yb - 16;          // 车图标在底部中间
-    int px = 0, py = 0;
-    for (uint8_t i = 0; i < g.route.count; ++i) {
-      const int sx2 = ox + (int)((float)g.route.pts[i].dx * scale);
-      const int sy2 = oy + (int)((float)g.route.pts[i].dy * scale);
-      if (i > 0) {
-        rl.p1.x = px; rl.p1.y = py;
-        rl.p2.x = sx2; rl.p2.y = sy2;
-        lv_draw_line(layer, &rl);
+    for (uint8_t pass = 0; pass < 2u; ++pass) {
+      rl.width = (pass == 0u) ? 26 : 16;
+      rl.color = lv_color_hex((pass == 0u) ? 0x1B3A47u : kAccent);
+      rl.opa   = (pass == 0u) ? LV_OPA_90 : LV_OPA_COVER;
+      int px = 0, py = 0;
+      for (uint8_t i = 0; i < g.route.count; ++i) {
+        const int sx2 = ox + (int)((float)g.route.pts[i].dx * scale);
+        const int sy2 = oy + (int)((float)g.route.pts[i].dy * scale);
+        if (i > 0) {
+          rl.p1.x = px; rl.p1.y = py;
+          rl.p2.x = sx2; rl.p2.y = sy2;
+          lv_draw_line(layer, &rl);
+        }
+        px = sx2; py = sy2;
       }
-      px = sx2; py = sy2;
+      // 终点（前方路口）画一个圆点，提示"这段路的尽头"
+      if (pass == 1u && px != 0) {
+        lv_draw_rect_dsc_t endd;
+        lv_draw_rect_dsc_init(&endd);
+        endd.bg_color = lv_color_hex(0xFFFFFFu);
+        endd.bg_opa = LV_OPA_COVER;
+        endd.radius = LV_RADIUS_CIRCLE;
+        lv_area_t ea;
+        ea.x1 = px - 6; ea.y1 = py - 6; ea.x2 = px + 6; ea.y2 = py + 6;
+        lv_draw_rect(layer, &endd, &ea);
+      }
     }
     return;
   }
