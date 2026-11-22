@@ -135,7 +135,20 @@ void path_draw_cb(lv_event_t* e) {
     rl.color = lv_color_hex(kAccent);
     rl.width = 12;
     rl.opa = LV_OPA_90;
-    const int scale = 2;                 // 1 米 -> 2 px（近处这段路）
+    // ★ 自适应缩放：按点的包围盒缩到路径框内（原来写死 2 px/米，长路线会跑出画框被裁）
+    float maxx = 1.0f, maxy = 1.0f;
+    for (uint8_t i = 0; i < g.route.count; ++i) {
+      const float ax = fabsf((float)g.route.pts[i].dx);
+      const float ay = fabsf((float)g.route.pts[i].dy);
+      if (ax > maxx) maxx = ax;
+      if (ay > maxy) maxy = ay;
+    }
+    const float half_w = (float)((a.x2 - a.x1) / 2) - 12.0f;
+    const float full_h = (float)(a.y2 - a.y1) - 24.0f;
+    float scale = half_w / maxx;
+    if (full_h / maxy < scale) scale = full_h / maxy;
+    if (scale > 4.0f) scale = 4.0f;      // 别把 10 m 的短段放大成整屏
+    if (scale < 0.3f) scale = 0.3f;
     int px = 0, py = 0;
     for (uint8_t i = 0; i < g.route.count; ++i) {
       // 旋转：把"右/前"的局部坐标转到 heading-up 屏幕坐标
