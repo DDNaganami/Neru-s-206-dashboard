@@ -1583,7 +1583,6 @@ void dash_ui_tick(uint32_t now_ms) {
   //    现在放在预览分支**之外**，与预览那条合成数据互斥。
   nav_source_ble_tick(now_ms);
   nav_ui_update(nav_source_ble_state());
-  }
 #endif
 
 #if defined(DASH_DISPLAY_PREVIEW)
