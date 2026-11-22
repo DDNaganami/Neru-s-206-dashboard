@@ -84,6 +84,19 @@ object AmapRouteBridge {
                     if (pts.size >= 2 && nowMs - lastSendMs >= 1000) {
                         lastSendMs = nowMs
                         NavLink.get(ctx).sendRoute(pts)
+                        // ★ 同时发"快照"（0xA7）：箭头/距离/车速才有内容可显示。
+                        //   数据全在 AMapNavi：当前步骤 → 图标；步骤剩余长度 → 距离；定位 → 车速/车头。
+                        run {
+                            val steps = path.steps
+                            val idx = loc2.curStepIndex
+                            val step = if (steps != null && idx in 0 until steps.size) steps[idx] else null
+                            val icon = step?.iconType ?: 9          // 9 = 直行（高德编号）
+                            val dist = step?.length ?: 0
+                            NavLink.get(ctx).sendSnapshot(
+                                icon, dist, loc2.speed.toInt().coerceIn(0, 255),
+                                (loc2.bearing * 100f).toInt(), 0, 0, null, false, ""
+                            )
+                        }
                         // 阶段 B3：同一批点按 ≤24 点切成 ≤4 条线，作为"路网"发（0xAA）
                         NavLink.get(ctx).sendMap(pts.chunked(24).take(4))
                     }

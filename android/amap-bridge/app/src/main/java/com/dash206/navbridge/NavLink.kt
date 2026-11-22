@@ -71,6 +71,14 @@ class NavLink private constructor(private val ctx: Context) {
         return buf.array()
     }
 
+    /** 阶段 A 的快照帧（0xA7）—— 箭头/距离/车速的来源。固件 nav_proto.h 逐字节一致 */
+    fun sendSnapshot(turn: Int, distM: Int, speedKph: Int, headingCdeg: Int,
+                     remainMin: Int, speedLimit: Int, night: Boolean?, arrived: Boolean,
+                     road: String) {
+        push(buildFrame(turn, distM, speedKph, headingCdeg, remainMin, speedLimit,
+                        night, arrived, road))
+    }
+
     /** 阶段 B3：发"地图窗口"（0xAA 多折线，与固件 nav_map.h 逐字节一致） */
     fun sendMap(lines: List<List<Pair<Int, Int>>>) {
         if (lines.isEmpty()) return
