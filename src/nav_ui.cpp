@@ -38,6 +38,7 @@ struct Ui {
   lv_obj_t* path = nullptr;   // 示意路径（不是真地图：高德广播不给坐标）
   lv_obj_t* car = nullptr;
   lv_obj_t* nonav = nullptr;
+  NavRoute route;      // 阶段 B：路线几何（手机发来的局部坐标，单位米）
 
   // 缓存："值变了才重排"
   bool     have = false;
@@ -124,6 +125,33 @@ void path_draw_cb(lv_event_t* e) {
   ld.color = lv_color_hex(kAccent);
   ld.width = 10;
   ld.opa = LV_OPA_80;
+
+  // 阶段 B：有真实路线点就画它（heading-up：车头朝上）
+  if (g.route.valid && g.route.count >= 2u) {
+    const float hd = (float)(g.heading / 100.0f) * 3.14159265f / 180.0f;
+    const float ch = cosf(hd), sh = sinf(hd);
+    lv_draw_line_dsc_t rl;
+    lv_draw_line_dsc_init(&rl);
+    rl.color = lv_color_hex(kAccent);
+    rl.width = 12;
+    rl.opa = LV_OPA_90;
+    const int scale = 2;                 // 1 米 -> 2 px（近处这段路）
+    int px = 0, py = 0;
+    for (uint8_t i = 0; i < g.route.count; ++i) {
+      // 旋转：把"右/前"的局部坐标转到 heading-up 屏幕坐标
+      const float mx = (float)g.route.pts[i].dx * (float)scale;
+      const float my = (float)g.route.pts[i].dy * (float)scale;
+      const int sx2 = cx + (int)(mx * ch - my * sh);
+      const int sy2 = (yb - 20) + (int)(mx * sh + my * ch);
+      if (i > 0) {
+        rl.p1.x = px; rl.p1.y = py;
+        rl.p2.x = sx2; rl.p2.y = sy2;
+        lv_draw_line(layer, &rl);
+      }
+      px = sx2; py = sy2;
+    }
+    return;
+  }
 
   const int dir = turn_angle(g.turn);   // 0=直行 -90=左 90=右 180=掉头
   if (dir == 0) {
@@ -260,6 +288,7 @@ void nav_ui_update(const NavState& s) {
   }
   g.have = true;
   g.valid = valid;
+  g.route = s.route;
 
   // 没有数据：整页只留 "NO NAV"（不许显示过期数据）
   if (!valid) {
@@ -332,6 +361,13 @@ void nav_ui_preview_tick(uint32_t now_ms) {
                                    (uint8_t)NavTurn::Right, (uint8_t)NavTurn::UTurn,
                                    (uint8_t)NavTurn::RampIn, (uint8_t)NavTurn::Arrive};
   s.turn = kTurns[(now_ms / 4000u) % (sizeof(kTurns) / sizeof(kTurns[0]))];
+  // 阶段 B：合成一条"S 形"路线（局部坐标，米），验证真路线渲染
+  s.route.valid = true;
+  s.route.count = 10;
+  for (uint8_t i = 0; i < s.route.count; ++i) {
+    s.route.pts[i].dx = (int16_t)((int)i * 6 - 30);
+    s.route.pts[i].dy = (int16_t)(-(int)i * 18);
+  }
   nav_ui_update(s);
 }
 #endif

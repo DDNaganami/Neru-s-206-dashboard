@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "nav_proto.h"
+#include "nav_route.h"
 
 // ============================================================
 // 导航状态（纯数据 + 超时降级）—— 不碰 LVGL、不碰 BLE、不依赖 Arduino
@@ -36,6 +37,7 @@ struct NavState {
   char     road[kNavRoadMax + 1] = {0};
   uint8_t  seq          = 255;     // 上一帧序号（255 = 还没收到过）
   uint32_t last_ms      = 0;
+  NavRoute route;            // 阶段 B：路线几何（没收到就是 valid=false）
   uint32_t good_frames  = 0;
   uint32_t bad_frames   = 0;       // 由调用方在解包失败时 `++`
 };

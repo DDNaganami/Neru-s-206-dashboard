@@ -5,6 +5,7 @@
 
 #include "nav_proto.h"
 #include "nav_state.h"
+#include "nav_route.h"
 
 // ============================================================
 // 导航字节流 → NavFrame → NavState（**传输无关**的源骨架）
@@ -36,6 +37,18 @@ struct NavSource {
 };
 
 // 一帧在缓冲里够不够完整：先读 road_len（第 12 字节），算出总长
+// 两种帧共用同一个环缓冲：按魔数分派（0xA7 = 导航快照，0xA8 = 路线几何）
+static inline size_t nav_frame_size_any(const uint8_t* p, size_t avail) {
+  if (avail < 1u) return 0;
+  if (p[0] == kNavRouteMagic) {
+    if (avail < 4u) return 0;
+    const uint8_t c = p[3];
+    if (c == 0u || c > kNavRouteMax) return 0;
+    return 4u + (size_t)c * 4u + 2u;
+  }
+  return 0;   // 0xA7 走下面的旧函数
+}
+
 static inline size_t nav_frame_size_from_header(const uint8_t* p, size_t avail) {
   if (avail < 13u) return 0;          // 连 road_len 都还没到
   const uint8_t road_len = p[12];
@@ -61,15 +74,23 @@ inline size_t nav_source_push(NavSource& src, const uint8_t* data, size_t len,
     for (;;) {
       // 丢掉魔数之前的垃圾（并计数）
       size_t off = 0;
-      while (off < src.len && src.buf[off] != kNavProtoMagic) ++off;
+      while (off < src.len && src.buf[off] != kNavProtoMagic &&
+             src.buf[off] != kNavRouteMagic) ++off;
       if (off > 0) {
         memmove(src.buf, src.buf + off, src.len - off);
         src.len -= off;
         src.garbage_bytes += (uint32_t)off;
       }
-      if (src.len < kNavFrameMin) break;
-
-      const size_t need = nav_frame_size_from_header(src.buf, src.len);
+      // ★ 2026-11-22：这里原来先卡 `src.len < kNavFrameMin`（16 = 快照帧最小长度），
+      //   而路线帧最短只有 10 字节（1 点）⇒ 路线帧会被整帧跳过。现在先按魔数分派：
+      //   路线帧自己算长度，快照帧才用 16 字节这条门槛。
+      if (src.len < 4u) break;
+      size_t need = nav_frame_size_any(src.buf, src.len);
+      const bool is_route = (need != 0u);
+      if (!is_route) {
+        if (src.len < kNavFrameMin) break;
+        need = nav_frame_size_from_header(src.buf, src.len);
+      }
       if (need == 0) {   // 头部坏（road_len 越界）⇒ 丢一个字节重新对齐
         memmove(src.buf, src.buf + 1, src.len - 1);
         --src.len;
@@ -78,9 +99,21 @@ inline size_t nav_source_push(NavSource& src, const uint8_t* data, size_t len,
       }
       if (src.len < need) break;   // 半包：等下一批
 
-      NavFrame f;
-      if (nav_unpack(src.buf, need, &f)) {
-        nav_state_apply(st, f, now_ms);
+      bool ok = false;
+      if (is_route) {
+        NavRoute r;
+        if (nav_route_unpack(src.buf, need, &r)) {
+          nav_route_apply(st.route, r, now_ms);
+          ok = true;
+        }
+      } else {
+        NavFrame f;
+        if (nav_unpack(src.buf, need, &f)) {
+          nav_state_apply(st, f, now_ms);
+          ok = true;
+        }
+      }
+      if (ok) {
         src.frames++;
         ++applied;
         memmove(src.buf, src.buf + need, src.len - need);
