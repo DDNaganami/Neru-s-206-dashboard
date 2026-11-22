@@ -147,13 +147,21 @@ size_t nav_source_ble_tick(uint32_t now_ms) {
     static uint32_t last_log_ms = 0;
     if ((uint32_t)(now_ms - last_log_ms) >= 1000u) {
       last_log_ms = now_ms;
-      dash_logf("nav: rx frames=%u last(turn=%u dist=%u spd=%u hdg=%u) crc_err=%u\n",
-                (unsigned)g_src.frames, (unsigned)g_state.turn,
-                (unsigned)g_state.dist_m, (unsigned)g_state.speed_kph,
-                (unsigned)g_state.heading_cdeg, (unsigned)g_src.crc_errors);
+      dash_logf("nav: rx frames=%u img=%u bad=%u ready=%u last(turn=%u dist=%u spd=%u hdg=%u) crc_err=%u\n",
+                (unsigned)g_src.frames, (unsigned)g_src.img_chunks, (unsigned)g_src.img_bad,
+                (unsigned)g_src.img_ready, (unsigned)g_state.turn, (unsigned)g_state.dist_m,
+                (unsigned)g_state.speed_kph, (unsigned)g_state.heading_cdeg,
+                (unsigned)g_src.crc_errors);
     }
   }
   return frames;
+}
+
+const uint8_t* nav_source_ble_image(size_t* len, uint32_t* gen) {
+  if (!g_img_buf || !g_img_rx.complete) return nullptr;
+  if (len) *len = g_img_rx.len;
+  if (gen) *gen = g_src.img_ready;
+  return g_img_buf;
 }
 
 const NavState& nav_source_ble_state() { return g_state; }

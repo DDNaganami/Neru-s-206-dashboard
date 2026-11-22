@@ -37,6 +37,8 @@ struct NavSource {
   uint32_t frames = 0;         // 成功解出的帧数
   NavImgRx* img = nullptr;     // 图片重组器（由 BLE 层提供缓冲；nullptr = 不接图片）
   uint32_t  img_ready = 0;     // 收齐的整图数量
+  uint32_t  img_chunks = 0;    // 收到的合法分片数
+  uint32_t  img_bad = 0;       // 分片解包失败次数
 };
 
 // 一帧在缓冲里够不够完整：先读 road_len（第 12 字节），算出总长
@@ -112,8 +114,11 @@ inline size_t nav_source_push(NavSource& src, const uint8_t* data, size_t len,
       if (src.buf[0] == kNavImgMagic) {
         NavImgChunk c;
         if (src.img && nav_img_unpack_chunk(src.buf, need, &c)) {
+          src.img_chunks++;
           if (nav_img_rx_push(*src.img, c)) src.img_ready++;
           ok = true;   // 分片本身合法就算"上账"（不要求整图齐）
+        } else {
+          src.img_bad++;
         }
       } else if (is_route) {
         NavRoute r;

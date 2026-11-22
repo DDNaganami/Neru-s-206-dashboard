@@ -29,3 +29,7 @@ size_t nav_source_ble_tick(uint32_t now_ms);
 
 // 最近一次解析出来的状态（主循环渲染用；超时判据仍由 nav_state_tick 负责）。
 const NavState& nav_source_ble_state();
+
+// 阶段 B2：最近一张**收齐**的 JPEG（buf 在 PSRAM，gen 每收齐一张 +1）。
+// 返回 nullptr = 还没有图。调用方（nav_ui）负责解码与显示。
+const uint8_t* nav_source_ble_image(size_t* len, uint32_t* gen);

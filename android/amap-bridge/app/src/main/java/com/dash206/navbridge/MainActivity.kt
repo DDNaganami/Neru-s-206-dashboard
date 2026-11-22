@@ -42,9 +42,9 @@ class MainActivity : Activity() {
         var sent = 0
         val task = object : Runnable {
             override fun run() {
-                if (sent++ < 30) {
+                if (sent++ < 12) {
                     NavLink.get(this@MainActivity).sendImage(jpeg)
-                    h.postDelayed(this, 2000)
+                    h.postDelayed(this, 10000)
                 }
             }
         }
@@ -73,7 +73,7 @@ class MainActivity : Activity() {
         cv.drawText("MAP TEST", 76f, 160f, p)
 
         val bos = ByteArrayOutputStream()
-        bmp.compress(Bitmap.CompressFormat.JPEG, 60, bos)
+        bmp.compress(Bitmap.CompressFormat.JPEG, 40, bos)
         return bos.toByteArray()
     }
 }

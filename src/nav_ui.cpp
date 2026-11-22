@@ -5,6 +5,10 @@
 #include <string.h>
 
 #include "dash_log.h"
+#if defined(DASH_NAV_BLE)
+#include "nav_source_ble.h"
+#include <esp_heap_caps.h>
+#endif
 
 // ============================================================
 // 导航页（左屏）—— 阶段 A：几何占位 + 文案
@@ -40,6 +44,8 @@ struct Ui {
   lv_obj_t* nonav = nullptr;
   NavRoute route;      // 阶段 B：路线几何（手机发来的局部坐标，单位米）
   uint8_t route_seq = 0xFF;   // 上一次画过的路线帧序号（变了就重绘）
+  lv_obj_t* map = nullptr;    // 阶段 B2：地图图片（360x360 居中，最底层）
+  uint32_t  map_gen = 0;      // 已经贴上去的那张图的代数
 
   // 缓存："值变了才重排"
   bool     have = false;
@@ -297,6 +303,14 @@ void nav_ui_attach(lv_display_t* disp) {
   g.speed_unit = make_label(g.root, &lv_font_montserrat_14, kDim, 300, 408);
   lv_label_set_text(g.speed_unit, "km/h");
 
+  // 阶段 B2：地图（最底层；路线/车标画在它上面）
+  g.map = lv_image_create(g.root);
+  lv_obj_remove_style_all(g.map);
+  lv_obj_set_size(g.map, 360, 360);
+  lv_obj_set_pos(g.map, (kRes - 360) / 2, (kRes - 360) / 2);
+  lv_obj_add_flag(g.map, LV_OBJ_FLAG_HIDDEN);   // 没收到图就不显示
+  lv_obj_move_background(g.map);                // 垫底
+
   // "没有导航数据"
   g.nonav = make_label(g.root, &lv_font_montserrat_24, kWarn, 0, 210);
   lv_obj_set_width(g.nonav, kRes);
@@ -305,8 +319,41 @@ void nav_ui_attach(lv_display_t* disp) {
   lv_obj_add_flag(g.nonav, LV_OBJ_FLAG_HIDDEN);
 }
 
+#if defined(DASH_NAV_BLE)
+// 把手机发来的 JPEG 交给 LVGL 自己的解码器（tjpgd），不再碰私有解码结构体。
+// ★ 为什么要 lv_image_cache_drop：同一张图的内存指针不变，LVGL 会按 src 指针缓存解码结果，
+//   不 drop 的话第二张图开始永远显示第一张。
+static void map_poll() {
+  size_t len = 0; uint32_t gen = 0;
+  const uint8_t* jpg = nav_source_ble_image(&len, &gen);
+  if (!jpg || len == 0 || gen == g.map_gen || !g.map) return;
+
+  // ★ 同一指针 LVGL 会按 src 缓存解码结果 ⇒ 用两个 dsc 轮换，指针一变必然重解码
+  static lv_image_dsc_t dscs[2];
+  static uint8_t which = 0;
+  which ^= 1;
+  lv_image_dsc_t& dsc = dscs[which];
+  memset(&dsc, 0, sizeof(dsc));
+  dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+  dsc.header.cf = LV_COLOR_FORMAT_RAW;   // 让解码器自己识别 JPEG
+  dsc.data = jpg;
+  dsc.data_size = (uint32_t)len;
+
+  lv_image_set_src(g.map, &dsc);
+  lv_image_set_scale(g.map, 384);        // 240 -> 360（1.5x）
+  lv_obj_clear_flag(g.map, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_background(g.map);
+  lv_obj_invalidate(g.map);
+  g.map_gen = gen;
+  dash_logf("img: 提交 %u bytes (gen=%u)\n", (unsigned)len, (unsigned)gen);
+}
+#endif
+
 void nav_ui_update(const NavState& s) {
   if (!g.root) return;
+#if defined(DASH_NAV_BLE)
+  map_poll();
+#endif
 
   // ★★ 2026-11-22 实测修正：阶段 B 的手机**只发路线帧（0xA8）**，不发快照帧（0xA7），
   //   而 `s.valid` 只有快照帧会置位 ⇒ 光有路线时整页被判成"没数据"，一路显示 NO NAV。
