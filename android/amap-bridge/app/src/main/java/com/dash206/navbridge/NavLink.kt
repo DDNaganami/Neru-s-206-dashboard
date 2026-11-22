@@ -71,6 +71,28 @@ class NavLink private constructor(private val ctx: Context) {
         return buf.array()
     }
 
+    /** 阶段 B2：发一张 JPEG（0xA9 分片，与固件 nav_img.h 逐字节一致） */
+    fun sendImage(jpeg: ByteArray) {
+        if (jpeg.isEmpty()) return
+        val chunkMax = 200
+        val total = (jpeg.size + chunkMax - 1) / chunkMax
+        if (total == 0 || total > 200) return
+        val fid = imageSeq++
+        for (idx in 0 until total) {
+            val off = idx * chunkMax
+            val n = minOf(chunkMax, jpeg.size - off)
+            val buf = ByteBuffer.allocate(7 + n + 2).order(ByteOrder.LITTLE_ENDIAN)
+            buf.put(0xA9.toByte()); buf.put(1.toByte())
+            buf.put((fid and 0xFF).toByte()); buf.put(idx.toByte()); buf.put(total.toByte())
+            buf.putShort(n.toShort())
+            buf.put(jpeg, off, n)
+            val crc = crc16(buf.array(), 0, 7 + n)
+            buf.put(crc.toByte()); buf.put((crc shr 8).toByte())
+            push(buf.array())
+        }
+        if (fid % 5 == 1) Log.i(TAG, "image: ${jpeg.size}B in $total chunks (fid=$fid)")
+    }
+
     /** 阶段 B：发路线几何帧（0xA8），与固件 nav_route.h 逐字节一致 */
     fun sendRoute(pts: List<Pair<Int, Int>>) {
         if (pts.isEmpty()) return
@@ -104,6 +126,7 @@ class NavLink private constructor(private val ctx: Context) {
 
     @Volatile private var seq = 0
     @Volatile private var routeSeq = 0
+    @Volatile private var imageSeq = 0
 
     // ---------------- 高德解析 ----------------
     fun onAmapBroadcast(i: Intent) {
