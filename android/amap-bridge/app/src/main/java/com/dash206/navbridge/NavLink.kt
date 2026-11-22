@@ -71,6 +71,28 @@ class NavLink private constructor(private val ctx: Context) {
         return buf.array()
     }
 
+    /** 阶段 B3：发"地图窗口"（0xAA 多折线，与固件 nav_map.h 逐字节一致） */
+    fun sendMap(lines: List<List<Pair<Int, Int>>>) {
+        if (lines.isEmpty()) return
+        val n = minOf(lines.size, 8)
+        var total = 0
+        for (i in 0 until n) total += lines[i].size
+        if (total == 0 || total > 96) return
+        val buf = ByteBuffer.allocate(6 + total * 4 + n + 2).order(ByteOrder.LITTLE_ENDIAN)
+        buf.put(0xAA.toByte()); buf.put(1.toByte())
+        buf.put((mapSeq++ and 0xFF).toByte()); buf.put(n.toByte())
+        buf.put(total.toByte()); buf.put(0.toByte())
+        for (i in 0 until n) {
+            val L = lines[i]
+            buf.put(L.size.toByte())
+            for (p in L) { buf.putShort(p.first.toShort()); buf.putShort(p.second.toShort()) }
+        }
+        val crc = crc16(buf.array(), 0, buf.position())
+        buf.put(crc.toByte()); buf.put((crc shr 8).toByte())
+        push(buf.array())
+        if (mapSeq % 5 == 1) Log.i(TAG, "map: lines=$n pts=$total")
+    }
+
     /** 阶段 B2：发一张 JPEG（0xA9 分片，与固件 nav_img.h 逐字节一致） */
     fun sendImage(jpeg: ByteArray) {
         if (jpeg.isEmpty()) return
@@ -127,6 +149,7 @@ class NavLink private constructor(private val ctx: Context) {
     @Volatile private var seq = 0
     @Volatile private var routeSeq = 0
     @Volatile private var imageSeq = 0
+    @Volatile private var mapSeq = 0
 
     // ---------------- 高德解析 ----------------
     fun onAmapBroadcast(i: Intent) {

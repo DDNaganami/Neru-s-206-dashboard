@@ -84,6 +84,8 @@ object AmapRouteBridge {
                     if (pts.size >= 2 && nowMs - lastSendMs >= 1000) {
                         lastSendMs = nowMs
                         NavLink.get(ctx).sendRoute(pts)
+                        // 阶段 B3：同一批点按 ≤24 点切成 ≤4 条线，作为"路网"发（0xAA）
+                        NavLink.get(ctx).sendMap(pts.chunked(24).take(4))
                     }
                 }
             })

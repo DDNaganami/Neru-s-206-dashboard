@@ -10,7 +10,6 @@
 #include <esp_heap_caps.h>
 // lv_image_decoder_dsc_t 的**完整定义**在私有头里（公开的 lv_types.h 只有前置声明）；
 // 主动解码要把结构体放在栈上，所以必须包含它。
-#include "src/image/lv_image_decoder_private.h"
 #endif
 
 // ============================================================
@@ -46,6 +45,8 @@ struct Ui {
   lv_obj_t* car = nullptr;
   lv_obj_t* nonav = nullptr;
   NavRoute route;      // 阶段 B：路线几何（手机发来的局部坐标，单位米）
+  NavMap   roads;      // 阶段 B3：周围道路折线（0xAA）
+  uint8_t  roads_seq = 0xFF;   // 上次画过的道路帧序号
   uint8_t route_seq = 0xFF;   // 上一次画过的路线帧序号（变了就重绘）
   lv_obj_t* map = nullptr;    // 阶段 B2：地图图片（360x360 居中，最底层）
   uint32_t  map_gen = 0;      // 已经贴上去的那张图的代数
@@ -139,6 +140,37 @@ void path_draw_cb(lv_event_t* e) {
   // 阶段 B：有真实路线点就画它。
   // ★ 协议里的点已经是**车体局部坐标**（手机侧按 heading 转过：dx 右、dy 前=负）
   //   ⇒ 这里**不能再转一次**（2026-11-22 预览里出现的锯齿线就是重复旋转造成的）。
+  // ★ 阶段 B3：周围道路（0xAA 多折线）——先画"路网"，再画高亮路线与车标。
+  //   1 米 ≈ 1.1 px（300 m 约占 330 px），车在底部中间。
+  if (g.roads.valid) {
+    const float SC = 1.1f;
+    const int ox0 = cx;
+    const int oy0 = yb - 16;
+    lv_draw_line_dsc_t rl0;
+    lv_draw_line_dsc_init(&rl0);
+    for (uint8_t li = 0; li < g.roads.lines; ++li) {
+      const NavMapLine& L = g.roads.line[li];
+      if (L.count < 2u) continue;
+      // 外描边（深色路基）+ 内亮线（灰蓝，区别于高亮的导航路线）
+      for (uint8_t pass = 0; pass < 2u; ++pass) {
+        rl0.width = (pass == 0u) ? 14 : 8;
+        rl0.color = lv_color_hex((pass == 0u) ? 0x14181Cu : 0x3C4A55u);
+        rl0.opa = (pass == 0u) ? LV_OPA_70 : LV_OPA_COVER;
+        int px0 = 0, py0 = 0;
+        for (uint8_t pi = 0; pi < L.count; ++pi) {
+          const int sx0 = ox0 + (int)((float)L.dx[pi] * SC);
+          const int sy0 = oy0 + (int)((float)L.dy[pi] * SC);
+          if (pi > 0) {
+            rl0.p1.x = px0; rl0.p1.y = py0;
+            rl0.p2.x = sx0; rl0.p2.y = sy0;
+            lv_draw_line(layer, &rl0);
+          }
+          px0 = sx0; py0 = sy0;
+        }
+      }
+    }
+  }
+
   if (g.route.valid && g.route.count >= 2u) {
     float maxx = 1.0f, maxy = 1.0f;
     for (uint8_t i = 0; i < g.route.count; ++i) {
@@ -322,83 +354,8 @@ void nav_ui_attach(lv_display_t* disp) {
   lv_obj_add_flag(g.nonav, LV_OBJ_FLAG_HIDDEN);
 }
 
-#if defined(DASH_NAV_BLE)
-// 把手机发来的 JPEG 交给 LVGL 自己的解码器（tjpgd），不再碰私有解码结构体。
-// ★ 为什么要 lv_image_cache_drop：同一张图的内存指针不变，LVGL 会按 src 指针缓存解码结果，
-//   不 drop 的话第二张图开始永远显示第一张。
-static void map_poll() {
-  size_t len = 0; uint32_t gen = 0;
-  const uint8_t* jpg = nav_source_ble_image(&len, &gen);
-  if (!jpg || len == 0 || gen == g.map_gen || !g.map) return;
-
-  // ★★ 主动解码（不是 widget 的延迟解码）：
-  //   ① widget 延迟到绘制时才读 src 数据，而 BLE 缓冲随时被下一张覆盖；
-  //   ② 直接给 `cf=RAW` 的 dsc 时 probe 返回 OK 但 header.w/h = 0（实测），widget 没有尺寸可画。
-  //   ⇒ 先 decode 一次拿到 RGB565 像素，拷进自有 PSRAM，再用明确的 RGB565 dsc 贴图。
-  static uint8_t* dec = nullptr;
-  static lv_image_dsc_t out;
-  if (!dec) {
-    dec = (uint8_t*)heap_caps_malloc(360u * 360u * 2u, MALLOC_CAP_SPIRAM);
-    if (!dec) { dash_logf("img: 解码缓冲分配失败\n"); return; }
-  }
-
-  lv_image_dsc_t src;
-  memset(&src, 0, sizeof(src));
-  src.header.magic = LV_IMAGE_HEADER_MAGIC;
-  // ★★ 关键：`LV_COLOR_FORMAT_RAW` 会被 LVGL 当成"原始像素"（尺寸取自 header，而我们没给
-  //   ⇒ 解出来 0x0）；要让它**嗅探格式**，cf 必须是 UNKNOWN。
-  src.header.cf = LV_COLOR_FORMAT_UNKNOWN;
-  src.data = jpg;
-  src.data_size = (uint32_t)len;
-
-  lv_image_decoder_dsc_t d;
-  memset(&d, 0, sizeof(d));
-  lv_image_decoder_args_t args;
-  memset(&args, 0, sizeof(args));
-  args.no_cache = true;
-
-  const lv_result_t r = lv_image_decoder_open(&d, &src, &args);
-  if (r != LV_RESULT_OK || d.decoded == nullptr) {
-    dash_logf("img: 解码失败 r=%d len=%u\n", (int)r, (unsigned)len);
-    return;
-  }
-  const lv_draw_buf_t* b = d.decoded;
-  // ★ 尺寸以**解码器给出的 header** 为准：LVGL 9.3 里 draw_buf 的 header.w/h 可能为 0
-  //   （实测），而 d.header 一定是解码后的真实尺寸。
-  uint32_t w = d.header.w, h = d.header.h;
-  if (w == 0u || h == 0u) { w = b->header.w; h = b->header.h; }
-  if (w == 0 || h == 0 || w * h * 2u > 360u * 360u * 2u) {
-    dash_logf("img: 尺寸异常 %ux%u\n", (unsigned)w, (unsigned)h);
-    lv_image_decoder_close(&d);
-    return;
-  }
-  memcpy(dec, b->data, (size_t)w * h * 2u);
-  lv_image_decoder_close(&d);
-
-  memset(&out, 0, sizeof(out));
-  out.header.magic = LV_IMAGE_HEADER_MAGIC;
-  out.header.cf = LV_COLOR_FORMAT_RGB565;
-  out.header.w = (uint16_t)w;
-  out.header.h = (uint16_t)h;
-  out.header.stride = (uint16_t)(w * 2u);
-  out.data = dec;
-  out.data_size = w * h * 2u;
-
-  lv_image_set_src(g.map, &out);
-  lv_image_set_scale(g.map, 384);        // 240 -> 360（1.5x）
-  lv_obj_clear_flag(g.map, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_move_background(g.map);
-  lv_obj_invalidate(g.map);
-  g.map_gen = gen;
-  dash_logf("img: 上屏 %ux%u (%u bytes)\n", (unsigned)w, (unsigned)h, (unsigned)len);
-}
-#endif
-
 void nav_ui_update(const NavState& s) {
   if (!g.root) return;
-#if defined(DASH_NAV_BLE)
-  map_poll();
-#endif
 
   // ★★ 2026-11-22 实测修正：阶段 B 的手机**只发路线帧（0xA8）**，不发快照帧（0xA7），
   //   而 `s.valid` 只有快照帧会置位 ⇒ 光有路线时整页被判成"没数据"，一路显示 NO NAV。
@@ -414,6 +371,11 @@ void nav_ui_update(const NavState& s) {
   g.valid = valid;
   g.route_seq = s.route.seq;
   g.route = s.route;
+  if (s.map.seq != g.roads_seq) {
+    g.roads_seq = s.map.seq;
+    g.roads = s.map;
+    lv_obj_invalidate(g.path);
+  }
 
   // 什么都没有：整页只留 "NO NAV"（不许显示过期数据）
   if (!any) {
@@ -501,6 +463,17 @@ void nav_ui_preview_tick(uint32_t now_ms) {
                                    (uint8_t)NavTurn::RampIn, (uint8_t)NavTurn::Arrive};
   s.turn = kTurns[(now_ms / 4000u) % (sizeof(kTurns) / sizeof(kTurns[0]))];
   // 阶段 B：合成一条"S 形"路线（局部坐标，米），验证真路线渲染
+  s.map.valid = true;
+  s.map.seq = (uint8_t)(now_ms / 1000u);
+  s.map.lines = 2;
+  for (uint8_t li = 0; li < 2; ++li) {
+    NavMapLine& L = s.map.line[li];
+    L.count = 8;
+    for (uint8_t pi = 0; pi < L.count; ++pi) {
+      if (li == 0) { L.dx[pi] = (int16_t)((int)pi * 20 - 70); L.dy[pi] = 0; }
+      else         { L.dx[pi] = 0; L.dy[pi] = (int16_t)(-((int)pi * 40)); }
+    }
+  }
   s.route.valid = true;
   s.route.count = 10;
   for (uint8_t i = 0; i < s.route.count; ++i) {

@@ -7,6 +7,7 @@
 #include "nav_state.h"
 #include "nav_route.h"
 #include "nav_img.h"
+#include "nav_map.h"
 
 // ============================================================
 // 导航字节流 → NavFrame → NavState（**传输无关**的源骨架）
@@ -43,8 +44,25 @@ struct NavSource {
 
 // 一帧在缓冲里够不够完整：先读 road_len（第 12 字节），算出总长
 // 两种帧共用同一个环缓冲：按魔数分派（0xA7 = 导航快照，0xA8 = 路线几何）
+// 0xAA 多折线帧的长度（按每条线的 count 累加，长度必须精确）
+static inline size_t nav_map_frame_size(const uint8_t* p, size_t avail) {
+  if (avail < 6u) return 0;
+  const uint8_t lines = p[3];
+  if (lines == 0u || lines > kNavMapMaxLines) return 0;
+  size_t o = 6u;
+  for (uint8_t i = 0; i < lines; ++i) {
+    if (o >= avail) return 0;
+    const uint8_t c = p[o];
+    if (c < 2u || c > 40u) return 0;
+    o += 1u + (size_t)c * 4u;
+    if (o > avail) return 0;
+  }
+  return o + 2u;
+}
+
 static inline size_t nav_frame_size_any(const uint8_t* p, size_t avail) {
   if (avail < 1u) return 0;
+  if (p[0] == kNavMapMagic) return nav_map_frame_size(p, avail);
   if (p[0] == kNavImgMagic) {
     if (avail < 7u) return 0;
     const uint16_t dlen = (uint16_t)((uint16_t)p[5] | ((uint16_t)p[6] << 8));
@@ -86,7 +104,8 @@ inline size_t nav_source_push(NavSource& src, const uint8_t* data, size_t len,
       // 丢掉魔数之前的垃圾（并计数）
       size_t off = 0;
       while (off < src.len && src.buf[off] != kNavProtoMagic &&
-             src.buf[off] != kNavRouteMagic && src.buf[off] != kNavImgMagic) ++off;
+             src.buf[off] != kNavRouteMagic && src.buf[off] != kNavImgMagic &&
+             src.buf[off] != kNavMapMagic) ++off;
       if (off > 0) {
         memmove(src.buf, src.buf + off, src.len - off);
         src.len -= off;
@@ -119,6 +138,14 @@ inline size_t nav_source_push(NavSource& src, const uint8_t* data, size_t len,
           ok = true;   // 分片本身合法就算"上账"（不要求整图齐）
         } else {
           src.img_bad++;
+        }
+      } else if (src.buf[0] == kNavMapMagic) {
+        NavMap m;
+        if (nav_map_unpack(src.buf, need, &m)) {
+          m.valid = true;
+          m.updated_ms = now_ms;
+          st.map = m;
+          ok = true;
         }
       } else if (is_route) {
         NavRoute r;
