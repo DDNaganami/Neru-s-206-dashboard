@@ -33,6 +33,12 @@ object AmapRouteBridge {
     @Volatile private var navi: AMapNavi? = null
     private var started = false
     @Volatile private var lastSendMs = 0L
+    // ★ 2026-11-22：模拟导航跑完/卡住后 onLocationChange 会停 ⇒ 屏上内容 5 s 后整片消失。
+    //   看门狗：6 s 没定位就重新起一次导航（上车切 GPS 后这层同样有用：GPS 失锁时重算）。
+    @Volatile private var lastLocMs = 0L
+    // ★ 2026-11-22：路线/路网帧会触发整片重绘（300×300），1 Hz 太频 ⇒ 横纹回来了。
+    //   大帧降到 0.4 Hz（2.5 s），快照帧仍 1 Hz（箭头/距离/车速只重绘小区域）。
+    @Volatile private var lastBigMs = 0L
 
     @Volatile private var destLat = 0.0
     @Volatile private var destLon = 0.0
@@ -81,9 +87,11 @@ object AmapRouteBridge {
                         coords.map { it.latitude to it.longitude }
                     )
                     val nowMs = android.os.SystemClock.elapsedRealtime()
+                    lastLocMs = nowMs
                     if (pts.size >= 2 && nowMs - lastSendMs >= 1000) {
                         lastSendMs = nowMs
-                        NavLink.get(ctx).sendRoute(pts)
+                        val big = nowMs - lastBigMs >= 2500
+                        if (big) { lastBigMs = nowMs; NavLink.get(ctx).sendRoute(pts) }
                         // ★ 同时发"快照"（0xA7）：箭头/距离/车速才有内容可显示。
                         //   数据全在 AMapNavi：当前步骤 → 图标；步骤剩余长度 → 距离；定位 → 车速/车头。
                         run {
@@ -98,11 +106,23 @@ object AmapRouteBridge {
                             )
                         }
                         // 阶段 B3：同一批点按 ≤24 点切成 ≤4 条线，作为"路网"发（0xAA）
-                        NavLink.get(ctx).sendMap(pts.chunked(24).take(4))
+                        if (big) NavLink.get(ctx).sendMap(pts.chunked(24).take(4))
                     }
                 }
             })
             Log.i(TAG, "AMapNavi 已初始化")
+            val h = android.os.Handler(android.os.Looper.getMainLooper())
+            h.postDelayed(object : Runnable {
+                override fun run() {
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (lastLocMs != 0L && now - lastLocMs > 6000) {
+                        Log.w(TAG, "6s 没有定位，重起导航")
+                        startNavigation()
+                        lastLocMs = now
+                    }
+                    h.postDelayed(this, 3000)
+                }
+            }, 3000)
         } catch (t: Throwable) {
             Log.e(TAG, "AMapNavi 初始化失败: ${t.message}")
         }

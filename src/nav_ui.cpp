@@ -210,16 +210,15 @@ void path_draw_cb(lv_event_t* e) {
     // ★ 2026-11-22 视觉升级：把导航路线画成"地图里的道路"——
     //   三层：深色描边(42) → 沥青灰(32) → 青色中心虚线(5，隔段画)。
     //   之前只有"描边+亮线"，看起来就是一根发光条，不像路。
-    for (uint8_t pass = 0; pass < 3u; ++pass) {
-      rl.width = (pass == 0u) ? 42 : (pass == 1u) ? 32 : 5;
-      rl.color = lv_color_hex((pass == 0u) ? 0x10161Bu
-                              : (pass == 1u) ? 0x39434Cu : kAccent);
-      rl.opa   = LV_OPA_COVER;
+    for (uint8_t pass = 0; pass < 2u; ++pass) {
+      rl.width = (pass == 0u) ? 22 : 12;
+      rl.color = lv_color_hex((pass == 0u) ? 0x141A20u : 0x35C6F4u);
+      rl.opa   = (pass == 0u) ? LV_OPA_COVER : LV_OPA_90;
       int px = 0, py = 0;
       for (uint8_t i = 0; i < g.route.count; ++i) {
         const int sx2 = ox + (int)((float)g.route.pts[i].dx * scale);
         const int sy2 = oy + (int)((float)g.route.pts[i].dy * scale);
-        if (i > 0 && (pass < 2u || (i % 2) == 0)) {   // 中心虚线：隔段画
+        if (i > 0) {
           rl.p1.x = px; rl.p1.y = py;
           rl.p2.x = sx2; rl.p2.y = sy2;
           lv_draw_line(layer, &rl);
@@ -333,8 +332,8 @@ void nav_ui_attach(lv_display_t* disp) {
   lv_obj_remove_style_all(g.path);
   // ★★ 2026-11-22：画布必须够大。原来 260×74，而道路点按 1.1 px/米 展开到 600 m
   //    ⇒ 大部分线落在对象边界外，被 LVGL 裁掉（屏上什么都看不到）。
-  lv_obj_set_size(g.path, 360, 360);
-  lv_obj_set_pos(g.path, (kRes - 360) / 2, (kRes - 360) / 2);
+  lv_obj_set_size(g.path, 300, 300);
+  lv_obj_set_pos(g.path, (kRes - 300) / 2, (kRes - 300) / 2);
   lv_obj_add_event_cb(g.path, path_draw_cb, LV_EVENT_DRAW_MAIN, nullptr);
 
   // 距离（大号数字 + 单位）

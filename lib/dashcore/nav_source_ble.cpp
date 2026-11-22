@@ -132,6 +132,7 @@ size_t nav_source_ble_tick(uint32_t now_ms) {
   //   （那正是 nav_state.h 要避免的事：宁可不显示，也不显示过期指令）。
   {
     static NavTimeouts t;
+    t.stale_ms = 5000u;          // 2026-11-22：3s 太紧，BLE 偶发丢一帧就整片消失
     nav_state_tick(g_state, now_ms, t);
   }
 
