@@ -35,6 +35,7 @@ struct Ui {
   lv_obj_t* unit = nullptr;
   lv_obj_t* speed = nullptr;
   lv_obj_t* speed_unit = nullptr;
+  lv_obj_t* path = nullptr;   // 示意路径（不是真地图：高德广播不给坐标）
   lv_obj_t* car = nullptr;
   lv_obj_t* nonav = nullptr;
 
@@ -105,6 +106,46 @@ void arrow_draw_cb(lv_event_t* e) {
 
 }
 
+// 示意路径：底部竖线 + 到路口按 turn 拐弯（左/右/掉头/直行）。
+// ★ 为什么是"示意"：高德广播只给转向图标与距离，**不给路线坐标**（见
+//   docs/BRANCH-NAV-FEASIBILITY.md §11）。真路径要等阶段 B（自研 App + 高德 SDK）。
+void path_draw_cb(lv_event_t* e) {
+  lv_obj_t* obj = (lv_obj_t*)lv_event_get_target(e);
+  lv_layer_t* layer = lv_event_get_layer(e);
+  lv_area_t a;
+  lv_obj_get_coords(obj, &a);
+  const int cx = (a.x1 + a.x2) / 2;
+  const int yb = a.y2;               // 底部（靠车图标）
+  const int yt = a.y1;               // 顶部（前方）
+  const int bend = (yt + yb) / 2;    // 拐弯高度
+
+  lv_draw_line_dsc_t ld;
+  lv_draw_line_dsc_init(&ld);
+  ld.color = lv_color_hex(kAccent);
+  ld.width = 10;
+  ld.opa = LV_OPA_80;
+
+  const int dir = turn_angle(g.turn);   // 0=直行 -90=左 90=右 180=掉头
+  if (dir == 0) {
+    ld.p1.x = cx; ld.p1.y = yb;
+    ld.p2.x = cx; ld.p2.y = yt;
+    lv_draw_line(layer, &ld);
+  } else if (dir == 180) {
+    ld.p1.x = cx; ld.p1.y = yb; ld.p2.x = cx; ld.p2.y = bend;
+    lv_draw_line(layer, &ld);
+    ld.p1.x = cx; ld.p1.y = bend; ld.p2.x = cx + 70; ld.p2.y = bend;
+    lv_draw_line(layer, &ld);
+  } else {
+    const int sx = (dir > 0) ? 70 : -70;   // 右转往右拐
+    ld.p1.x = cx; ld.p1.y = yb; ld.p2.x = cx; ld.p2.y = bend;
+    lv_draw_line(layer, &ld);
+    ld.p1.x = cx; ld.p1.y = bend; ld.p2.x = cx + sx; ld.p2.y = bend;
+    lv_draw_line(layer, &ld);
+    ld.p1.x = cx + sx; ld.p1.y = bend; ld.p2.x = cx + sx; ld.p2.y = yt;
+    lv_draw_line(layer, &ld);
+  }
+}
+
 void car_draw_cb(lv_event_t* e) {
   lv_obj_t* obj = (lv_obj_t*)lv_event_get_target(e);
   lv_layer_t* layer = lv_event_get_layer(e);
@@ -171,12 +212,19 @@ void nav_ui_attach(lv_display_t* disp) {
   lv_obj_set_pos(g.arrow, (kRes - 200) / 2, 26);
   lv_obj_add_event_cb(g.arrow, arrow_draw_cb, LV_EVENT_DRAW_MAIN, nullptr);
 
+  // 示意路径（车图标上方那一段）
+  g.path = lv_obj_create(g.root);
+  lv_obj_remove_style_all(g.path);
+  lv_obj_set_size(g.path, 260, 74);
+  lv_obj_set_pos(g.path, (kRes - 260) / 2, 250);
+  lv_obj_add_event_cb(g.path, path_draw_cb, LV_EVENT_DRAW_MAIN, nullptr);
+
   // 距离（大号数字 + 单位）
-  g.dist = make_label(g.root, &lv_font_montserrat_48, kInk, 0, 214);
+  g.dist = make_label(g.root, &lv_font_montserrat_48, kInk, 0, 168);
   lv_obj_set_width(g.dist, kRes);
   lv_obj_set_style_text_align(g.dist, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_text(g.dist, "---");
-  g.unit = make_label(g.root, &lv_font_montserrat_24, kDim, 0, 268);
+  g.unit = make_label(g.root, &lv_font_montserrat_24, kDim, 0, 220);
   lv_obj_set_width(g.unit, kRes);
   lv_obj_set_style_text_align(g.unit, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_text(g.unit, "");
@@ -195,7 +243,7 @@ void nav_ui_attach(lv_display_t* disp) {
   lv_label_set_text(g.speed_unit, "km/h");
 
   // "没有导航数据"
-  g.nonav = make_label(g.root, &lv_font_montserrat_24, kWarn, 0, 214);
+  g.nonav = make_label(g.root, &lv_font_montserrat_24, kWarn, 0, 210);
   lv_obj_set_width(g.nonav, kRes);
   lv_obj_set_style_text_align(g.nonav, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_text(g.nonav, "NO NAV");
@@ -216,6 +264,7 @@ void nav_ui_update(const NavState& s) {
   // 没有数据：整页只留 "NO NAV"（不许显示过期数据）
   if (!valid) {
     lv_obj_add_flag(g.arrow, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(g.path, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(g.dist, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(g.unit, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(g.car, LV_OBJ_FLAG_HIDDEN);
@@ -226,6 +275,7 @@ void nav_ui_update(const NavState& s) {
   }
 
   lv_obj_clear_flag(g.arrow, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(g.path, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(g.dist, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(g.unit, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(g.car, LV_OBJ_FLAG_HIDDEN);
@@ -238,6 +288,7 @@ void nav_ui_update(const NavState& s) {
   if (ang != g.angle) {
     g.angle = ang;
     lv_obj_invalidate(g.arrow);
+    lv_obj_invalidate(g.path);   // 路径的拐弯方向跟着 turn 变
   }
 
   // 距离文案："300" + "m" / "1.2" + "km"
