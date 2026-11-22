@@ -27,11 +27,12 @@ import kotlin.math.sin
  */
 object AmapRouteBridge {
     private const val TAG = "AmapRoute"
-    private const val MAX_POINTS = 24
+    private const val MAX_POINTS = 12
     private const val AHEAD_M = 300.0
 
     @Volatile private var navi: AMapNavi? = null
     private var started = false
+    @Volatile private var lastSendMs = 0L
 
     @Volatile private var destLat = 0.0
     @Volatile private var destLon = 0.0
@@ -79,7 +80,9 @@ object AmapRouteBridge {
                         p.latitude, p.longitude, loc2.bearing,
                         coords.map { it.latitude to it.longitude }
                     )
-                    if (pts.size >= 2) {
+                    val nowMs = android.os.SystemClock.elapsedRealtime()
+                    if (pts.size >= 2 && nowMs - lastSendMs >= 1000) {
+                        lastSendMs = nowMs
                         NavLink.get(ctx).sendRoute(pts)
                     }
                 }
