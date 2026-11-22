@@ -133,11 +133,17 @@ class NavLink private constructor(private val ctx: Context) {
     @Volatile private var lastNavMs = 0L
 
     // ---------------- BLE ----------------
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private var gatt: BluetoothGatt? = null
+    @Volatile private var connecting = false
     private val scanner: BluetoothLeScanner? by lazy {
         (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter?.bluetoothLeScanner
     }
     @Volatile private var rx: BluetoothGattCharacteristic? = null
+    // ★ 2026-11-22 实测：这台小米 14 重启蓝牙后**扫描回调一条都不来**
+    //   （ScanManager 显示 startScan 已注册、没有 onScanFailed），但按地址直连是可靠的。
+    //   车上是"一块固定板子"，所以扫描只当快路径，5 s 内没扫到就**按 MAC 直连**。
+    private val BOARD_ADDR = "90:70:69:EA:F6:B5"
     // ★★ 2026-11-22 实测：默认 MTU 23 ⇒ 单包只能写 20 字节，而我们的帧 15~39 字节
     //   （带路名就 25+）⇒ Android 会截断，板子侧 CRC 全错、帧数 0。必须先谈 MTU 再写。
     @Volatile private var mtu = 23
@@ -145,11 +151,57 @@ class NavLink private constructor(private val ctx: Context) {
     @SuppressLint("MissingPermission")
     fun startBle() {
         Log.i(TAG, "startBle: scanning for $DEV_NAME")
-        scanner?.startScan(null, ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), scanCb)
+        try {
+            scanner?.startScan(null, ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), scanCb)
+        } catch (t: Throwable) {
+            Log.e(TAG, "startScan 抛异常: ${t.message}")
+        }
+        // 直连兜底：5 s 内没扫到就按地址连（不依赖扫描）
+        handler.postDelayed(object : Runnable {
+            override fun run() {
+                if (rx == null && gatt == null) {
+                    Log.w(TAG, "connectDirect: 扫描没结果，按 MAC 直连 $BOARD_ADDR")
+                    try {
+                        val adapter = (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+                        connectTo(adapter.getRemoteDevice(BOARD_ADDR))
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "直连失败: ${t.message}")
+                    }
+                }
+            }
+        }, 5_000)
+
+        // watchdog：10 s 还没连上就停/起一次扫描（配额被限时这能把它"抖"回来）
+        handler.postDelayed(object : Runnable {
+            override fun run() {
+                if (rx == null && !connecting) {
+                    Log.w(TAG, "watchdog: 10 s 没连上，重启扫描")
+                    try { scanner?.stopScan(scanCb) } catch (_: Throwable) {}
+                    startBle()
+                }
+            }
+        }, 10_000)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun connectTo(dev: BluetoothDevice) {
+        if (connecting) return
+        connecting = true
+        try { scanner?.stopScan(scanCb) } catch (_: Throwable) {}
+        Log.i(TAG, "connectGatt -> ${dev.address}")
+        try {
+            gatt?.close()                      // 旧连接必须关掉，否则新写入会一直 false
+        } catch (_: Throwable) {}
+        gatt = dev.connectGatt(ctx, false, gattCb)
     }
 
     private val scanCb = object : ScanCallback() {
+        // ★ Android 对"App 扫描太频繁"有配额（30 s 内 5 次起），超了会**只回调 onScanFailed**
+        //   而一条扫描结果都不给（2026-11-22 实测：scan 行数 = 0、蓝牙却是开的、权限也 granted）
+        override fun onScanFailed(errorCode: Int) {
+            Log.e(TAG, "onScanFailed: $errorCode（SCAN_FAILED_APPLICATION_REGISTRATION_FAILED=1, 过多=6）")
+        }
         @SuppressLint("MissingPermission")
         override fun onScanResult(type: Int, r: ScanResult) {
             val uuids = r.scanRecord?.serviceUuids?.joinToString(",") { it.uuid.toString() }
@@ -160,8 +212,7 @@ class NavLink private constructor(private val ctx: Context) {
             val byUuid = uuids?.contains(SVC.toString(), ignoreCase = true) == true
             if (byName || byUuid) {
                 scanner?.stopScan(this)
-                Log.i(TAG, "connectGatt -> ${r.device.address}")
-                gatt = r.device.connectGatt(ctx, false, gattCb)
+                connectTo(r.device)
             }
         }
     }
@@ -170,10 +221,13 @@ class NavLink private constructor(private val ctx: Context) {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             Log.i(TAG, "gatt state: status=$status newState=$newState")
+            connecting = false
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 g.requestMtu(185); g.discoverServices()
             } else {
-                g.close(); gatt = null; rx = null
+                rx = null; connecting = false
+                try { g.close() } catch (_: Throwable) {}
+                gatt = null
                 Handler(Looper.getMainLooper()).postDelayed({ startBle() }, 3000)
             }
         }
@@ -197,7 +251,7 @@ class NavLink private constructor(private val ctx: Context) {
     @SuppressLint("MissingPermission")
     private fun push(frame: ByteArray) {
         val c = rx ?: return
-        c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        c.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         c.value = frame
         val ok = gatt?.writeCharacteristic(c) ?: false
         if (!ok) Log.w(TAG, "write failed (len=${frame.size} mtu=$mtu)")

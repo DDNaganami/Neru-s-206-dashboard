@@ -118,7 +118,7 @@ size_t nav_source_ble_tick(uint32_t now_ms) {
     if ((uint32_t)(now_ms - last_log_ms) >= 1000u) {
       last_log_ms = now_ms;
       dash_logf("nav: rx frames=%u last(turn=%u dist=%u spd=%u hdg=%u) crc_err=%u\n",
-                (unsigned)g_state.good_frames, (unsigned)g_state.turn,
+                (unsigned)g_src.frames, (unsigned)g_state.turn,
                 (unsigned)g_state.dist_m, (unsigned)g_state.speed_kph,
                 (unsigned)g_state.heading_cdeg, (unsigned)g_src.crc_errors);
     }

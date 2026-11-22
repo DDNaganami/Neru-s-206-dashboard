@@ -39,6 +39,7 @@ struct Ui {
   lv_obj_t* car = nullptr;
   lv_obj_t* nonav = nullptr;
   NavRoute route;      // 阶段 B：路线几何（手机发来的局部坐标，单位米）
+  uint8_t route_seq = 0xFF;   // 上一次画过的路线帧序号（变了就重绘）
 
   // 缓存："值变了才重排"
   bool     have = false;
@@ -126,16 +127,10 @@ void path_draw_cb(lv_event_t* e) {
   ld.width = 10;
   ld.opa = LV_OPA_80;
 
-  // 阶段 B：有真实路线点就画它（heading-up：车头朝上）
+  // 阶段 B：有真实路线点就画它。
+  // ★ 协议里的点已经是**车体局部坐标**（手机侧按 heading 转过：dx 右、dy 前=负）
+  //   ⇒ 这里**不能再转一次**（2026-11-22 预览里出现的锯齿线就是重复旋转造成的）。
   if (g.route.valid && g.route.count >= 2u) {
-    const float hd = (float)(g.heading / 100.0f) * 3.14159265f / 180.0f;
-    const float ch = cosf(hd), sh = sinf(hd);
-    lv_draw_line_dsc_t rl;
-    lv_draw_line_dsc_init(&rl);
-    rl.color = lv_color_hex(kAccent);
-    rl.width = 12;
-    rl.opa = LV_OPA_90;
-    // ★ 自适应缩放：按点的包围盒缩到路径框内（原来写死 2 px/米，长路线会跑出画框被裁）
     float maxx = 1.0f, maxy = 1.0f;
     for (uint8_t i = 0; i < g.route.count; ++i) {
       const float ax = fabsf((float)g.route.pts[i].dx);
@@ -147,15 +142,20 @@ void path_draw_cb(lv_event_t* e) {
     const float full_h = (float)(a.y2 - a.y1) - 24.0f;
     float scale = half_w / maxx;
     if (full_h / maxy < scale) scale = full_h / maxy;
-    if (scale > 4.0f) scale = 4.0f;      // 别把 10 m 的短段放大成整屏
-    if (scale < 0.3f) scale = 0.3f;
+    if (scale > 4.0f) scale = 4.0f;
+    if (scale < 0.2f) scale = 0.2f;
+
+    lv_draw_line_dsc_t rl;
+    lv_draw_line_dsc_init(&rl);
+    rl.color = lv_color_hex(kAccent);
+    rl.width = 12;
+    rl.opa = LV_OPA_90;
+    const int ox = cx;
+    const int oy = yb - 16;          // 车图标在底部中间
     int px = 0, py = 0;
     for (uint8_t i = 0; i < g.route.count; ++i) {
-      // 旋转：把"右/前"的局部坐标转到 heading-up 屏幕坐标
-      const float mx = (float)g.route.pts[i].dx * (float)scale;
-      const float my = (float)g.route.pts[i].dy * (float)scale;
-      const int sx2 = cx + (int)(mx * ch - my * sh);
-      const int sy2 = (yb - 20) + (int)(mx * sh + my * ch);
+      const int sx2 = ox + (int)((float)g.route.pts[i].dx * scale);
+      const int sy2 = oy + (int)((float)g.route.pts[i].dy * scale);
       if (i > 0) {
         rl.p1.x = px; rl.p1.y = py;
         rl.p2.x = sx2; rl.p2.y = sy2;
@@ -294,17 +294,23 @@ void nav_ui_attach(lv_display_t* disp) {
 void nav_ui_update(const NavState& s) {
   if (!g.root) return;
 
+  // ★★ 2026-11-22 实测修正：阶段 B 的手机**只发路线帧（0xA8）**，不发快照帧（0xA7），
+  //   而 `s.valid` 只有快照帧会置位 ⇒ 光有路线时整页被判成"没数据"，一路显示 NO NAV。
+  //   判据改成：**快照或路线，有一份能画就画**。
   const bool valid = s.valid;
-  if (g.have && g.valid == valid && g.turn == s.turn && g.dist_m == s.dist_m &&
+  const bool any = s.valid || s.route.valid;
+  if (g.have && g.valid == valid && g.route.valid == s.route.valid &&
+      g.route_seq == s.route.seq && g.turn == s.turn && g.dist_m == s.dist_m &&
       g.speed_kph == s.speed_kph && g.heading == s.heading_cdeg) {
     return;   // 一个字节都没变 ⇒ 连重绘都不发
   }
   g.have = true;
   g.valid = valid;
+  g.route_seq = s.route.seq;
   g.route = s.route;
 
-  // 没有数据：整页只留 "NO NAV"（不许显示过期数据）
-  if (!valid) {
+  // 什么都没有：整页只留 "NO NAV"（不许显示过期数据）
+  if (!any) {
     lv_obj_add_flag(g.arrow, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(g.path, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(g.dist, LV_OBJ_FLAG_HIDDEN);
@@ -316,14 +322,24 @@ void nav_ui_update(const NavState& s) {
     return;
   }
 
-  lv_obj_clear_flag(g.arrow, LV_OBJ_FLAG_HIDDEN);
+  // 路线/车标：有任一数据就画
   lv_obj_clear_flag(g.path, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(g.dist, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(g.unit, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(g.car, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(g.speed, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(g.speed_unit, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(g.nonav, LV_OBJ_FLAG_HIDDEN);
+  // 箭头/距离/车速：只有**快照帧**在时才可信（否则宁可空着，也不显示 0 m / 0 km/h）
+  if (valid) {
+    lv_obj_clear_flag(g.arrow, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(g.dist, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(g.unit, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(g.speed, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(g.speed_unit, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(g.arrow, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(g.dist, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(g.unit, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(g.speed, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(g.speed_unit, LV_OBJ_FLAG_HIDDEN);
+  }
 
   // 箭头角度
   const int ang = turn_angle(s.turn);
@@ -331,6 +347,10 @@ void nav_ui_update(const NavState& s) {
     g.angle = ang;
     lv_obj_invalidate(g.arrow);
     lv_obj_invalidate(g.path);   // 路径的拐弯方向跟着 turn 变
+  }
+  if (g.route_seq == s.route.seq && s.route.valid) {
+    // 路线帧序号变了 ⇒ 折线本身变了（与 turn 无关）
+    lv_obj_invalidate(g.path);
   }
 
   // 距离文案："300" + "m" / "1.2" + "km"
