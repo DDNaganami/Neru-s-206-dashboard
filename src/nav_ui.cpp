@@ -339,6 +339,9 @@ static void map_poll() {
   dsc.data = jpg;
   dsc.data_size = (uint32_t)len;
 
+  { lv_image_header_t hdr; memset(&hdr, 0, sizeof(hdr));
+    lv_result_t pr = lv_image_decoder_get_info(&dsc, &hdr);
+    dash_logf("img: probe=%d %ux%u cf=%d\n", (int)pr, (unsigned)hdr.w, (unsigned)hdr.h, (int)hdr.cf); }
   lv_image_set_src(g.map, &dsc);
   lv_image_set_scale(g.map, 384);        // 240 -> 360（1.5x）
   lv_obj_clear_flag(g.map, LV_OBJ_FLAG_HIDDEN);
